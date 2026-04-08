@@ -159,6 +159,17 @@ local-agent/
   bot_service.py            # Bot process manager
 ```
 
+## Contributing
+
+This is a personal project that I actively develop and use daily. Updates come from my private dev environment and get synced here regularly — so you'll see frequent commits from me rather than a traditional PR workflow.
+
+That said, I'm totally open to ideas, suggestions, and feedback! If you:
+- **Have an idea** — open an issue and let's talk about it
+- **Found a bug** — open an issue with what happened
+- **Want to contribute code** — PRs are welcome, just know I may not review them immediately since this is a solo project
+
+I built this to scratch my own itch, but if it's useful to you too, that's awesome. Don't be shy about reaching out.
+
 ## Learning Articles
 
 AI-generated developer learning articles:

@@ -184,6 +184,59 @@ def git_status(repo: Path) -> str:
     return result.stdout.strip()
 
 
+def _get_recent_private_commits(since_last_publish: bool = True) -> list[str]:
+    """Get recent commit messages from the private repo.
+
+    If since_last_publish is True, gets commits since the last publish
+    to the public repo. Otherwise gets the last 5 commits.
+    """
+    try:
+        # Get the last publish timestamp from the public repo
+        if since_last_publish and PUBLIC_REPO.exists():
+            result = subprocess.run(
+                ["git", "log", "-1", "--format=%aI"],
+                cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=10,
+            )
+            last_publish = result.stdout.strip()
+            if last_publish:
+                # Get private commits since that timestamp
+                result = subprocess.run(
+                    ["git", "log", f"--since={last_publish}", "--format=%s", "--no-merges"],
+                    cwd=PRIVATE_REPO, capture_output=True, text=True, timeout=10,
+                )
+                commits = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+                if commits:
+                    return commits
+
+        # Fallback: last 5 non-merge commits
+        result = subprocess.run(
+            ["git", "log", "-5", "--format=%s", "--no-merges"],
+            cwd=PRIVATE_REPO, capture_output=True, text=True, timeout=10,
+        )
+        return [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+    except Exception:
+        return []
+
+
+def _build_publish_message(copied: int, deleted: int) -> str:
+    """Build a descriptive commit message from private repo's recent changes."""
+    commits = _get_recent_private_commits()
+
+    if not commits:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return f"Update ({timestamp})\n\n{copied} files synced."
+
+    # Use the most recent commit as the title
+    title = commits[0]
+
+    # If there are multiple commits, list them
+    if len(commits) == 1:
+        return title
+    else:
+        body = "\n".join(f"- {c}" for c in commits)
+        return f"{title}\n\nChanges included:\n{body}"
+
+
 def git_commit_and_push(repo: Path, message: str) -> bool:
     """Stage all, commit, and push."""
     try:
@@ -264,9 +317,8 @@ def main() -> None:
             print("Cancelled.")
             sys.exit(0)
 
-    # Step 5: Commit and push
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    message = f"Sync from private repo ({timestamp})\n\n{copied} files synced, {deleted} stale files removed."
+    # Step 5: Build commit message from private repo's recent commits
+    message = _build_publish_message(copied, deleted)
 
     print("Step 4: Committing and pushing...")
     if git_commit_and_push(PUBLIC_REPO, message):
