@@ -53,12 +53,12 @@ software developer
 
 ## 2026-03-14 10:00 - user_info
 Name: Jeremy Gillespie
-Discord: gman386
+Discord: testuser
 
 ---
 
 ## 2026-03-14 10:00 - resume
-**Current Role:** Senior Software Engineer at Franklin Templeton (2022-present)
+**Current Role:** Senior Software Engineer at Acme Corp (2022-present)
 - Working on cloud infrastructure with AWS CDK
 - Python, Django, PostgreSQL stack
 
@@ -82,11 +82,11 @@ User prefers dark mode and concise responses.
     conv_file.write_text(
         """# Conversations
 
-### 10:00:00 - gman386
+### 10:00:00 - testuser
 **Q:** Hello!
 **A:** Hi there! How can I help you today?
 
-### 10:05:00 - gman386
+### 10:05:00 - testuser
 **Q:** What's the weather like?
 **A:** I don't have access to weather data, but you can check weather.com.
 """,

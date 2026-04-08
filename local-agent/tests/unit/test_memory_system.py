@@ -165,16 +165,16 @@ Important information to always remember.
 
 ---
 
-## 2026-03-15 14:30 - user_info/gman386
+## 2026-03-15 14:30 - user_info/testuser
 Name: Jeremy Gillespie
-Works at: Franklin Templeton
+Works at: Acme Corp
 Role: Senior Software Engineer
 
-## 2026-03-15 14:31 - preferences/gman386
+## 2026-03-15 14:31 - preferences/testuser
 Likes Python programming
 Interested in AI and LLMs
 
-## 2026-03-15 14:32 - projects/gman386
+## 2026-03-15 14:32 - projects/testuser
 Working on Technomancer Discord bot project
 """
 
@@ -186,7 +186,7 @@ Working on Technomancer Discord bot project
         # Should contain the actual content, not "No permanent memories"
         assert "No permanent memories" not in result
         assert "Jeremy Gillespie" in result
-        assert "Franklin Templeton" in result
+        assert "Acme Corp" in result
         assert "Python programming" in result
         # Should be the full content for the think command to display
         assert "Permanent Memories" in result

@@ -43,17 +43,17 @@ def sample_conversations():
     """Sample conversations for testing extraction."""
     return [
         {
-            "user": "gman386",
+            "user": "testuser",
             "message": "I really prefer Django over Flask for bigger projects. The ORM is just better.",
             "response": "That makes sense - Django's ORM is more full-featured for complex data models.",
         },
         {
-            "user": "gman386",
-            "message": "Working on a new RPA project at Franklin Templeton using Python and AWS Lambda.",
+            "user": "testuser",
+            "message": "Working on a new RPA project at Acme Corp using Python and AWS Lambda.",
             "response": "Sounds like a great use case for serverless with your automation work!",
         },
         {
-            "user": "gman386",
+            "user": "testuser",
             "message": "I've been into retro gaming lately, playing a lot of SNES stuff on weekends.",
             "response": "Nice! What games have you been playing?",
         },
@@ -67,7 +67,7 @@ def mock_agent_with_facts():
     agent.run = MagicMock(
         return_value=json.dumps([
             {"category": "preferences", "fact": "Prefers Django over Flask for large projects", "confidence": "high"},
-            {"category": "experiences", "fact": "Works at Franklin Templeton on RPA projects", "confidence": "high"},
+            {"category": "experiences", "fact": "Works at Acme Corp on RPA projects", "confidence": "high"},
             {"category": "preferences", "fact": "Enjoys retro gaming, especially SNES, on weekends", "confidence": "high"},
         ])
     )
@@ -204,7 +204,7 @@ class TestBuildPrompt:
     def test_prompt_includes_conversations(self, sample_conversations):
         prompt = build_extraction_prompt(sample_conversations, {})
         assert "Django over Flask" in prompt
-        assert "Franklin Templeton" in prompt
+        assert "Acme Corp" in prompt
         assert "SNES" in prompt
 
     def test_prompt_includes_existing_facts(self, sample_conversations):

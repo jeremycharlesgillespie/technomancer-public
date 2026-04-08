@@ -67,19 +67,19 @@ class TestSaveArticleHtml:
         docs_path = tmp_path / "docs"
         learning_path = docs_path / "learning"
 
+        test_url = "https://test.github.io/technomancer"
         with patch.object(github_pages, "DOCS_PATH", docs_path):
             with patch.object(github_pages, "LEARNING_PATH", learning_path):
-                _, url = github_pages.save_article_html(
-                    topic="Test Topic",
-                    category="python",
-                    content="Content",
-                    date=datetime(2026, 3, 15),
-                )
+                with patch.object(github_pages, "GITHUB_PAGES_URL", test_url):
+                    _, url = github_pages.save_article_html(
+                        topic="Test Topic",
+                        category="python",
+                        content="Content",
+                        date=datetime(2026, 3, 15),
+                    )
 
-                assert url.startswith(
-                    "https://jeremycharlesgillespie.github.io/technomancer/learning/"
-                )
-                assert ".html" in url
+                    assert url.startswith(f"{test_url}/learning/")
+                    assert ".html" in url
 
     def test_regenerates_index(self, tmp_path):
         """Test that index is regenerated after saving."""
@@ -223,8 +223,7 @@ class TestGetArticleUrl:
 
     def test_returns_correct_url(self):
         """Test that correct URL is returned."""
-        url = github_pages.get_article_url("2026-03-15_python_test.html")
-        assert (
-            url
-            == "https://jeremycharlesgillespie.github.io/technomancer/learning/2026-03-15_python_test.html"
-        )
+        test_url = "https://test.github.io/technomancer"
+        with patch.object(github_pages, "GITHUB_PAGES_URL", test_url):
+            url = github_pages.get_article_url("2026-03-15_python_test.html")
+            assert url == f"{test_url}/learning/2026-03-15_python_test.html"

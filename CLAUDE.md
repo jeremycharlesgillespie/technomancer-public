@@ -294,7 +294,7 @@ python bot_service.py status
 Expected output: `Bot running: True`
 
 If the bot is NOT running:
-1. Check the crash log: `tail -50 "C:/Users/razor/main/LLM Memory/Permanent/crash_log.md"`
+1. Check the crash log: `tail -50 "<vault_path>/LLM Memory/Permanent/crash_log.md"`
 2. Try starting manually: `python bot_service.py start`
 3. Check status again
 4. If still not running, investigate the error before telling the user it's deployed
@@ -319,7 +319,7 @@ python bot_service.py status
 Expected output: `Bot running: True`
 
 If the bot is NOT running:
-1. Check the crash log: `tail -50 "C:/Users/razor/main/LLM Memory/Permanent/crash_log.md"`
+1. Check the crash log: `tail -50 "<vault_path>/LLM Memory/Permanent/crash_log.md"`
 2. Try starting manually: `python bot_service.py start`
 3. Check status again: `python bot_service.py status`
 4. If still not running, investigate the error before telling the user it's deployed

@@ -69,7 +69,7 @@ obsidian-agent = "agent.obsidian_agent:main"
 discord-agent = "agent.discord_bot:main"
 
 [project.urls]
-Homepage = "https://github.com/razor/local-agent"
+Homepage = "https://github.com/jeremycharlesgillespie/technomancer-public"
 
 [tool.setuptools.packages.find]
 where = ["."]

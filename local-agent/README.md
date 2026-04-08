@@ -6,7 +6,7 @@ Ollama-powered autonomous agent with tools for file operations, memory, Obsidian
 
 AI-generated developer learning articles, created daily by the bot via Claude API:
 
-**[Browse Learning Articles](https://jeremycharlesgillespie.github.io/technomancer/learning/)**
+**[Browse Learning Articles](<your-github-pages-url>/learning/)**
 
 Topics include Python, Oracle, Neo4j, system design, and best practices. New articles are generated daily at 8:00 AM.
 

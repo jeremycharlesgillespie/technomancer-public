@@ -274,7 +274,7 @@ class TestFindMemoryConnections:
         memory_system.recent_conversations.append(
             ConversationEntry(
                 timestamp=datetime.now(),
-                user="gman386",
+                user="testuser",
                 message="How do I use Python lambda functions?",
                 response="Lambda functions in Python are anonymous functions...",
             )
@@ -291,7 +291,7 @@ class TestFindMemoryConnections:
         }
         matches = find_memory_connections(article)
         assert len(matches) >= 1
-        assert "gman386" in matches[0]
+        assert "testuser" in matches[0]
 
     def test_no_matches_returns_empty(self, memory_system, monkeypatch):
         """Should return empty list when no conversations match."""
@@ -317,7 +317,7 @@ class TestFindMemoryConnections:
             memory_system.recent_conversations.append(
                 ConversationEntry(
                     timestamp=datetime.now() - timedelta(hours=i),
-                    user="gman386",
+                    user="testuser",
                     message=f"Python question number {i} about features",
                     response=f"Python answer {i}",
                 )
@@ -357,7 +357,7 @@ class TestFindMemoryConnections:
         memory_system.recent_conversations.append(
             ConversationEntry(
                 timestamp=datetime.now(),
-                user="gman386",
+                user="testuser",
                 message="Tell me about Python and Django frameworks",
                 response="Python Django are great for web development.",
             )
