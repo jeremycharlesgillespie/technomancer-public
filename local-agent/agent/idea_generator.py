@@ -337,32 +337,41 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
     return created
 
 
+def _notify_discord_sync(ideas: list[dict[str, str]]) -> None:
+    """Blocking helper that sends a Discord notification via the bridge.
+
+    Runs in a thread (called via asyncio.to_thread) so it never blocks
+    the event loop or starves the Discord heartbeat.
+    """
+    import requests
+
+    token_file = Path(__file__).parent.parent / ".bridge_token"
+    if not token_file.exists():
+        return
+
+    lines = [f"**{len(ideas)} new idea(s) on the board:**"]
+    for idea in ideas:
+        cat = idea.get("category", "")
+        lines.append(f"- [{cat}] {idea['title']}")
+    lines.append("\nhttp://localhost:8322")
+
+    token = token_file.read_text(encoding="utf-8").strip()
+    requests.post(
+        "http://127.0.0.1:8321/api/send",
+        headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
+        json={"message": "\n".join(lines)},
+        timeout=30,
+    )
+
+
 async def _notify_discord(ideas: list[dict[str, str]]) -> None:
     """Send a notification to Discord with idea titles.
 
-    Args:
-        ideas: List of idea dicts with "title" and "category" keys
+    Uses asyncio.to_thread so the blocking HTTP call doesn't stall
+    the event loop (which was causing heartbeat timeouts).
     """
     try:
-        import requests
-
-        token_file = Path(__file__).parent.parent / ".bridge_token"
-        if not token_file.exists():
-            return
-
-        lines = [f"**{len(ideas)} new idea(s) on the board:**"]
-        for idea in ideas:
-            cat = idea.get("category", "")
-            lines.append(f"- [{cat}] {idea['title']}")
-        lines.append("\nhttp://localhost:8322")
-
-        token = token_file.read_text(encoding="utf-8").strip()
-        requests.post(
-            "http://127.0.0.1:8321/api/send",
-            headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
-            json={"message": "\n".join(lines)},
-            timeout=30,
-        )
+        await asyncio.to_thread(_notify_discord_sync, ideas)
     except Exception as e:
         logger.warning(f"[IdeaGen] Discord notification failed: {e}")
 
