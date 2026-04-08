@@ -62,8 +62,8 @@ Discord (#llm_chat)          Discord (#claude-code)        Idea Board (port 8322
 
 ```bash
 # Clone the repo
-git clone https://github.com/jeremycharlesgillespie/technomancer.git
-cd technomancer/local-agent
+git clone https://github.com/jeremycharlesgillespie/technomancer-public.git
+cd technomancer-public/local-agent
 
 # Configure environment
 cp .env.example .env
