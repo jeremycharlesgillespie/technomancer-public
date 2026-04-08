@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Git rebase vs merge: when to use each - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Git rebase vs merge: when to use each</h1>
+            <p class="meta">best_practices &bull; April 08, 2026</p>
+        </header>
+        <main>
+<h1>Git Rebase vs Merge: When to Use Each</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Git rebase and merge are two fundamental approaches to integrating changes from one branch into another, but they work very differently under the hood. <strong>Merge</strong> creates a new commit that combines the histories of two branches, preserving the original branch structure and creating a &quot;merge commit&quot; that shows where branches came together. <strong>Rebase</strong>, on the other hand, rewrites commit history by taking commits from one branch and replaying them on top of another branch, creating a linear, cleaner-looking history.</p>
+
+<p>Think of merge as creating a fork in the road that eventually converges, while rebase is like picking up your commits and placing them in a straight line. Both get your code integrated, but the resulting project history looks completely different. This matters more than you might think, especially when you&#x27;re working on complex Django applications with multiple developers, managing database migrations, or coordinating deployments to AWS environments.</p>
+
+<p>Here&#x27;s a simple illustration of the difference:</p>
+
+<pre><code class="language-bash"># Starting point - you&#x27;re on feature branch
+git checkout feature-branch
+
+<h1>Option 1: Merge (preserves history)</h1>
+git checkout main
+git merge feature-branch  # Creates merge commit
+
+<h1>Option 2: Rebase (rewrites history)  </h1>
+git checkout feature-branch
+git rebase main  # Replays your commits on top of main
+git checkout main
+git merge feature-branch  # Fast-forward merge, no merge commit
+</code></pre>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Understanding when to use rebase versus merge is crucial for senior developers working with complex Python/Django codebases. When you&#x27;re managing database migrations across PostgreSQL and Oracle environments, a clean, linear commit history makes it exponentially easier to track which migration was applied when, debug rollback scenarios, and coordinate with DevOps teams managing AWS deployments. Imagine trying to trace a problematic Django model change through a tangled web of merge commits versus a clean, chronological sequence—the difference in debugging time can be hours.</p>
+
+<p>This knowledge becomes even more valuable when you&#x27;re building automation tools or RPA solutions that interact with your version control system. Clean commit histories make it easier to write scripts that analyze code changes, trigger specific CI/CD pipelines based on commit content, or integrate with Discord bots that notify teams about deployment-critical changes. Senior developers who understand these nuances are often the ones trusted with release management, code review processes, and architectural decisions that impact entire development workflows.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through practical scenarios you&#x27;ll encounter in Django development. First, here&#x27;s how to handle a typical feature branch workflow:</p>
+
+<pre><code class="language-bash"># You&#x27;re working on a new Django model for your AI/LLM integration
+git checkout -b feature/ollama-integration
+<h1>... make commits for your Ollama model integration ...</h1>
+git add models.py views.py
+git commit -m &quot;Add Ollama LLM integration model&quot;
+git add tests.py
+git commit -m &quot;Add comprehensive tests for Ollama integration&quot;
+
+<h1>Meanwhile, main branch has moved forward with database changes</h1>
+<h1>Option 1: Merge approach (preserves your branch history)</h1>
+git checkout main
+git pull origin main
+git merge feature/ollama-integration
+<h1>This creates a merge commit showing branch integration</h1>
+
+<h1>Option 2: Rebase approach (clean linear history)</h1>
+git checkout feature/ollama-integration
+git rebase main  # Replays your commits on top of latest main
+<h1>Resolve any conflicts in your commits</h1>
+git checkout main
+git merge feature/ollama-integration  # Fast-forward, no merge commit
+</code></pre>
+
+<p>For more complex scenarios involving database migrations, here&#x27;s a Python script that can help automate your rebase workflow while checking for Django migration conflicts:</p>
+
+<pre><code class="language-python">import subprocess
+import os
+import sys
+
+<p>def safe_rebase_with_migration_check():<br>
+    &quot;&quot;&quot;<br>
+    Safely rebase feature branch while checking for Django migration conflicts<br>
+    Useful for Django projects with PostgreSQL/Oracle backends<br>
+    &quot;&quot;&quot;<br>
+    try:<br>
+        # Store current branch<br>
+        current_branch = subprocess.check_output(<br>
+            [&quot;git&quot;, &quot;rev-parse&quot;, &quot;--abbrev-ref&quot;, &quot;HEAD&quot;], <br>
+            text=True<br>
+        ).strip()<br>
+        <br>
+        if current_branch == &quot;main&quot;:<br>
+            print(&quot;❌ Don&#x27;t rebase from main branch&quot;)<br>
+            return False<br>
+            <br>
+        # Check for uncommitted changes<br>
+        status = subprocess.check_output([&quot;git&quot;, &quot;status&quot;, &quot;--porcelain&quot;], text=True)<br>
+        if status.strip():<br>
+            print(&quot;❌ You have uncommitted changes. Commit or stash them first.&quot;)<br>
+            return False<br>
+            <br>
+        # Fetch latest changes<br>
+        subprocess.run([&quot;git&quot;, &quot;fetch&quot;, &quot;origin&quot;], check=True)<br>
+        <br>
+        # Check for Django migration files in both branches<br>
+        main_migrations = get_migration_files(&quot;origin/main&quot;)<br>
+        feature_migrations = get_migration_files(current_branch)<br>
+        <br>
+        if has_migration_conflicts(main_migrations, feature_migrations):<br>
+            print(&quot;⚠️  Potential migration conflicts detected!&quot;)<br>
+            print(&quot;Consider creating a new migration after rebase.&quot;)<br>
+            <br>
+        # Perform the rebase<br>
+        print(f&quot;🔄 Rebasing {current_branch} onto origin/main...&quot;)<br>
+        result = subprocess.run([&quot;git&quot;, &quot;rebase&quot;, &quot;origin/main&quot;], <br>
+                              capture_output=True, text=True)<br>
+        <br>
+        if result.returncode != 0:<br>
+            print(&quot;❌ Rebase failed. Resolve conflicts and run &#x27;git rebase --continue&#x27;&quot;)<br>
+            return False<br>
+            <br>
+        print(&quot;✅ Rebase completed successfully!&quot;)<br>
+        return True<br>
+        <br>
+    except subprocess.CalledProcessError as e:<br>
+        print(f&quot;❌ Git operation failed: {e}&quot;)<br>
+        return False</p>
+
+<p>def get_migration_files(branch):<br>
+    &quot;&quot;&quot;Get list of Django migration files in a branch&quot;&quot;&quot;<br>
+    try:<br>
+        files = subprocess.check_output([<br>
+            &quot;git&quot;, &quot;ls-tree&quot;, &quot;-r&quot;, &quot;--name-only&quot;, branch<br>
+        ], text=True).strip().split(&#x27;\n&#x27;)<br>
+        return [f for f in files if &#x27;/migrations/&#x27; in f and f.endswith(&#x27;.py&#x27;)]<br>
+    except subprocess.CalledProcessError:<br>
+        return []</p>
+
+<p>def has_migration_conflicts(main_migrations, feature_migrations):<br>
+    &quot;&quot;&quot;Basic check for potential migration number conflicts&quot;&quot;&quot;<br>
+    main_numbers = set()<br>
+    feature_numbers = set()<br>
+    <br>
+    for migration in main_migrations:<br>
+        # Extract migration number (e.g., 0001, 0002)<br>
+        parts = migration.split(&#x27;/&#x27;)[-1].split(&#x27;_&#x27;)<br>
+        if parts[0].isdigit():<br>
+            main_numbers.add(parts[0])<br>
+            <br>
+    for migration in feature_migrations:<br>
+        parts = migration.split(&#x27;/&#x27;)[-1].split(&#x27;_&#x27;)<br>
+        if parts[0].isdigit():<br>
+            feature_numbers.add(parts[0])<br>
+            <br>
+    return bool(main_numbers.intersection(feature_numbers))</p>
+
+<p>if __name__ == &quot;__main__&quot;:<br>
+    safe_rebase_with_migration_check()<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Cleaning up feature branches before merge</strong>: When you&#x27;ve made multiple &quot;work in progress&quot; commits while developing a Django feature, rebase lets you squash and organize these into logical, reviewable commits before the code review process.</li>
+</ul>
+<ul>
+<li><strong>Integrating upstream changes in long-running branches</strong>: If you&#x27;re working on a complex Ollama integration that takes weeks, regularly rebasing onto main keeps your branch current without creating dozens of merge commits that clutter the project history.</li>
+</ul>
+<ul>
+<li><strong>Preparing database migration sequences</strong>: When working with PostgreSQL or Oracle schema changes, rebase helps ensure your Django migrations apply cleanly in the correct order, especially crucial for production deployments on AWS where rollbacks are expensive.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Public/shared branches</strong>: Never rebase commits that have been pushed to shared branches where other developers might have based their work. This breaks their local repositories and creates chaos in team environments.</li>
+</ul>
+<ul>
+<li><strong>Merge commits from main</strong>: Don&#x27;t rebase branches that contain merge commits from main—this can create duplicate commits and confusing history. Instead, use merge to preserve the integration points.</li>
+</ul>
+<strong>Common pitfalls to watch for:</strong>
+
+<ul>
+<li><strong>Force pushing without communication</strong>: After rebasing, you&#x27;ll need to force push (<code>git push --force-with-lease</code> is safer), but always coordinate with team members first.</li>
+<li><strong>Rebasing too frequently</strong>: Constantly rebasing shared feature branches makes collaboration difficult. Establish team guidelines about when rebasing is appropriate.</li>
+<li><strong>Ignoring merge conflicts during rebase</strong>: Unlike merge conflicts that happen once, rebase conflicts can occur multiple times as each commit is replayed. Take time to resolve them properly rather than rushing through.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Merge preserves history, rebase rewrites it</strong>: Choose based on whether you need to maintain the exact timeline of development or prefer a clean, linear story</li>
+<li><strong>Use rebase for private feature branches</strong>: Clean up your commits before sharing with the team, especially for Django migrations and database schema changes  </li>
+<li><strong>Use merge for integration points</strong>: When combining work from multiple developers or bringing major features into main branches</li>
+<li><strong>Force-push safely</strong>: Always use <code>--force-with-lease</code> and communicate with your team when rebasing shared branches</li>
+<li><strong>Automate conflict detection</strong>: Build tools (like the Python script above) to catch potential issues with database migrations and other critical files before they become problems in production</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

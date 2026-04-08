@@ -86,7 +86,9 @@ def send_lifecycle_notification(event: str, details: str = "") -> None:
     message += f"\n*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
 
     try:
-        requests.post(webhook_url, json={"content": message}, timeout=5)
+        from .discord_rate_limit import retry_request
+
+        retry_request(requests.post, webhook_url, json={"content": message}, timeout=5)
     except Exception as e:
         log(f"Failed to send lifecycle notification: {e}")
 

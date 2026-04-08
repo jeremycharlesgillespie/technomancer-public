@@ -2,6 +2,7 @@
 Notifications - Send alerts to Discord, ntfy, etc.
 """
 
+import os
 from datetime import datetime
 
 try:
@@ -9,8 +10,7 @@ try:
 except ImportError:
     requests = None
 
-
-import os
+from .discord_rate_limit import retry_request
 
 # Webhook URL loaded from environment — never hardcode secrets
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -57,7 +57,8 @@ def discord_send(
             # Simple message
             payload = {"content": message}
 
-        response = requests.post(
+        response = retry_request(
+            requests.post,
             url,
             json=payload,
             headers={"Content-Type": "application/json"},
@@ -94,7 +95,8 @@ def discord_send_file(
             return f"Error: File not found: {file_path}"
 
         with open(path, "rb") as f:
-            response = requests.post(
+            response = retry_request(
+                requests.post,
                 url,
                 data={"content": message} if message else None,
                 files={"file": (path.name, f)},
