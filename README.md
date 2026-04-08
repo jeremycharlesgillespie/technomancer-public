@@ -172,7 +172,11 @@ I built this to scratch my own itch, but if it's useful to you too, that's aweso
 
 ## Learning Articles
 
-The bot generates daily AI-powered developer learning articles and can deploy them to GitHub Pages. Set up your own GitHub Pages site by enabling it in your repo settings and configuring `GITHUB_PAGES_URL` in `.env`.
+AI-generated developer learning articles, created daily by the bot:
+
+**[Browse Learning Articles](https://jeremycharlesgillespie.github.io/technomancer-public/learning/)**
+
+Topics include Python, system design, databases, and best practices. New articles are generated and deployed automatically.
 
 ## License
 
