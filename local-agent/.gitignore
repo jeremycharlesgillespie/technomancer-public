@@ -5,3 +5,4 @@ local-agent/profiling/
 profiling/
 data/
 sent_articles.json
+.publish_blocklist

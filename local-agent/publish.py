@@ -85,15 +85,29 @@ SYNC_PATHS = [
     "docs/",
 ]
 
-# Patterns that should NEVER appear in public code
-SECRET_PATTERNS = [
+# Patterns that should NEVER appear in public code.
+# Generic patterns are hardcoded; personal patterns are loaded from
+# .publish_blocklist (gitignored) so they don't appear in the repo.
+_GENERIC_PATTERNS = [
     r"sk-ant-api\w+",
-    r"MTQ4MTgz\w+",
     r"discord\.com/api/webhooks/\d+/\w+",
-    r"C:\\Users\\razor",
-    r"gman386",
-    r"Franklin Templeton",
 ]
+
+_BLOCKLIST_FILE = Path(__file__).parent / ".publish_blocklist"
+
+
+def _load_secret_patterns() -> list[str]:
+    """Load secret scan patterns from generic list + personal blocklist file."""
+    patterns = list(_GENERIC_PATTERNS)
+    if _BLOCKLIST_FILE.exists():
+        for line in _BLOCKLIST_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                patterns.append(line)
+    return patterns
+
+
+SECRET_PATTERNS = _load_secret_patterns()
 
 
 def should_exclude(path: Path) -> bool:
