@@ -140,25 +140,61 @@ async def handle_evolve(message: Any, user: str) -> None:
         await message.reply("Sorry, only the bot owner can trigger evolution.")
         return
 
-    await message.reply("Starting self-improvement cycle... I'll post results when done.")
+    await message.reply("Starting self-improvement cycle (up to 60 min)... I'll post results when done.")
     log(f"Evolution cycle triggered by {user}")
 
-    async def run_evolve():
+    async def run_evolve() -> None:
+        """Run auto_improve.py and update evolve status on completion."""
+        import json
+        status_file = Path(__file__).parent.parent / ".evolve_status.json"
+        start_time = datetime.now()
+
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
                 [sys.executable, str(Path(__file__).parent.parent / "auto_improve.py")],
                 capture_output=True,
                 text=True,
-                timeout=1800,
+                timeout=3600,  # 60 minutes
                 cwd=Path(__file__).parent.parent,
             )
-            if result.returncode != 0 and result.stderr:
-                log(f"Evolution error: {result.stderr[:200]}")
+            elapsed = (datetime.now() - start_time).total_seconds()
+
+            if result.returncode == 0:
+                log(f"Evolution cycle completed in {elapsed:.0f}s")
+                await message.channel.send(f"Evolution cycle completed ({elapsed:.0f}s)")
+            else:
+                error = result.stderr[:300] or result.stdout[-300:]
+                log(f"Evolution failed (exit {result.returncode}, {elapsed:.0f}s): {error}")
+                await message.channel.send(f"Evolution failed (exit {result.returncode}):\n```\n{error}\n```")
+
+                # Update status file so dashboard shows failure
+                try:
+                    status = {"running": False, "phase": "failed", "progress": f"Exit code {result.returncode}: {error[:200]}"}
+                    status_file.write_text(json.dumps(status), encoding="utf-8")
+                except OSError:
+                    pass
+
         except subprocess.TimeoutExpired:
-            log("Evolution cycle timed out (30 min)")
+            elapsed = (datetime.now() - start_time).total_seconds()
+            log(f"Evolution cycle timed out after {elapsed:.0f}s (60 min limit)")
+            await message.channel.send(f"Evolution timed out after {elapsed:.0f}s. Check the idea board for partial results.")
+
+            try:
+                status = {"running": False, "phase": "timeout", "progress": f"Timed out after {elapsed:.0f}s"}
+                status_file.write_text(json.dumps(status), encoding="utf-8")
+            except OSError:
+                pass
+
         except Exception as e:
             log(f"Evolution error: {e}")
+            await message.channel.send(f"Evolution error: {e}")
+
+            try:
+                status = {"running": False, "phase": "error", "progress": str(e)[:200]}
+                status_file.write_text(json.dumps(status), encoding="utf-8")
+            except OSError:
+                pass
 
     asyncio.create_task(run_evolve())
 
