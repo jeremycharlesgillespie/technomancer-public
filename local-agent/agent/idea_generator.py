@@ -361,7 +361,7 @@ async def _notify_discord(ideas: list[dict[str, str]]) -> None:
             "http://127.0.0.1:8321/api/send",
             headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
             json={"message": "\n".join(lines)},
-            timeout=10,
+            timeout=30,
         )
     except Exception as e:
         logger.warning(f"[IdeaGen] Discord notification failed: {e}")
