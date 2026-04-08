@@ -132,7 +132,7 @@ def _load_codebase_summary() -> str:
     return "\n".join(lines)
 
 
-def _load_news_articles() -> str:
+async def _load_news_articles() -> str:
     """Fetch ALL articles from ALL RSS feeds (not just the 1 picked for Discord).
 
     Returns:
@@ -141,12 +141,7 @@ def _load_news_articles() -> str:
     try:
         from .news_digest import fetch_all_news
 
-        # fetch_all_news is async, run it in a new loop
-        loop = asyncio.new_event_loop()
-        try:
-            articles = loop.run_until_complete(fetch_all_news())
-        finally:
-            loop.close()
+        articles = await fetch_all_news()
 
         if not articles:
             return "No recent news available."
@@ -297,7 +292,7 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
 
     # Gather all inputs
     codebase = _load_codebase_summary()
-    news = _load_news_articles()
+    news = await _load_news_articles()
     conversations = _load_conversations()
     errors = _load_errors()
     performance = _load_performance()
