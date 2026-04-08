@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python descriptors and the descriptor protocol - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Python descriptors and the descriptor protocol</h1>
+            <p class="meta">python &bull; April 01, 2026</p>
+        </header>
+        <main>
+<h1>Python Descriptors and the Descriptor Protocol: Your Gateway to Cleaner, More Powerful Code</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Python descriptors are special objects that define how attribute access is handled for other objects. Think of them as customizable middlemen that intercept when you get, set, or delete attributes on a class instance. They implement the descriptor protocol through three magic methods: <code>__get__()</code>, <code>__set__()</code>, and <code>__delete__()</code>. When you access an attribute like <code>obj.name</code>, Python checks if that attribute is a descriptor and, if so, calls the appropriate descriptor method instead of just returning the raw value.</p>
+
+<p>Here&#x27;s what makes descriptors fascinating: they&#x27;re everywhere in Python, even if you don&#x27;t realize it. Properties, methods, static methods, class methods, and even functions are all descriptors under the hood. Every time you use <code>@property</code> or call a method on an object, you&#x27;re leveraging the descriptor protocol. This isn&#x27;t just academic knowledge—understanding descriptors gives you insight into how Python really works and unlocks powerful patterns for writing cleaner, more maintainable code.</p>
+
+<pre><code class="language-python">class LoggedAttribute:
+    def __init__(self, name):
+        self.name = name
+        self.value = None
+    
+    def __get__(self, obj, objtype=None):
+        print(f&quot;Getting {self.name}: {self.value}&quot;)
+        return self.value
+    
+    def __set__(self, obj, value):
+        print(f&quot;Setting {self.name} to: {value}&quot;)
+        self.value = value
+
+<p>class MyClass:<br>
+    attr = LoggedAttribute(&quot;attr&quot;)</p>
+
+<p>obj = MyClass()<br>
+obj.attr = &quot;Hello&quot;  # Output: Setting attr to: Hello<br>
+print(obj.attr)     # Output: Getting attr: Hello<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering descriptors elevates your Django development significantly. When you understand that Django&#x27;s model fields are descriptors, you can create custom field types that automatically handle validation, database conversion, and caching. For instance, you could build a descriptor that automatically encrypts sensitive data before storing it in PostgreSQL or Oracle, or one that validates API keys against AWS services. This knowledge transforms you from someone who uses Django&#x27;s built-in fields to someone who can extend the framework with sophisticated, reusable components.</p>
+
+<p>From a career perspective, descriptor knowledge sets you apart in senior developer interviews and code reviews. When working with complex Django applications that interact with multiple databases (PostgreSQL for transactional data, Oracle for legacy systems), you can create descriptors that handle cross-database relationships or implement caching strategies that work seamlessly with AWS ElastiCache. This deep understanding of Python&#x27;s object model also makes you more effective when building automation tools and RPA solutions—you can create descriptors that automatically log API calls, handle retries, or manage state across different AWS services. Companies value developers who can write elegant, maintainable code that leverages Python&#x27;s advanced features appropriately.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a practical descriptor that you might use in a Django application with AWS integration. This descriptor will handle API keys, automatically retrieving them from AWS Systems Manager Parameter Store when needed:</p>
+
+<pre><code class="language-python">import boto3
+from functools import lru_cache
+
+<p>class AWSParameterDescriptor:<br>
+    def __init__(self, parameter_name, decrypt=True):<br>
+        self.parameter_name = parameter_name<br>
+        self.decrypt = decrypt<br>
+        self.cached_value = None<br>
+    <br>
+    def __get__(self, obj, objtype=None):<br>
+        if obj is None:<br>
+            return self<br>
+        <br>
+        if self.cached_value is None:<br>
+            self.cached_value = self._fetch_parameter()<br>
+        return self.cached_value<br>
+    <br>
+    def __set__(self, obj, value):<br>
+        # Update both cache and AWS Parameter Store<br>
+        self._update_parameter(value)<br>
+        self.cached_value = value<br>
+    <br>
+    def _fetch_parameter(self):<br>
+        ssm = boto3.client(&#x27;ssm&#x27;)<br>
+        response = ssm.get_parameter(<br>
+            Name=self.parameter_name,<br>
+            WithDecryption=self.decrypt<br>
+        )<br>
+        return response[&#x27;Parameter&#x27;][&#x27;Value&#x27;]<br>
+    <br>
+    def _update_parameter(self, value):<br>
+        ssm = boto3.client(&#x27;ssm&#x27;)<br>
+        ssm.put_parameter(<br>
+            Name=self.parameter_name,<br>
+            Value=value,<br>
+            Overwrite=True<br>
+        )</p>
+
+<p>class DatabaseConfig:<br>
+    postgres_password = AWSParameterDescriptor(&#x27;/myapp/db/postgres/password&#x27;)<br>
+    oracle_password = AWSParameterDescriptor(&#x27;/myapp/db/oracle/password&#x27;)<br>
+    api_key = AWSParameterDescriptor(&#x27;/myapp/external/api_key&#x27;)</p>
+
+<h1>Usage in Django settings or configuration</h1>
+config = DatabaseConfig()
+db_password = config.postgres_password  # Automatically fetches from AWS
+</code></pre>
+
+<p>For Django model integration, here&#x27;s a descriptor that handles database-specific data formatting:</p>
+
+<pre><code class="language-python">class DatabaseSpecificField:
+    def __init__(self, postgres_format=None, oracle_format=None):
+        self.postgres_format = postgres_format or (lambda x: x)
+        self.oracle_format = oracle_format or (lambda x: x)
+        self.field_name = None
+    
+    def __set_name__(self, owner, name):
+        # Called when the descriptor is assigned to a class attribute
+        self.field_name = f&quot;_{name}&quot;
+    
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return getattr(obj, self.field_name, None)
+    
+    def __set__(self, obj, value):
+        # Format value based on database type from Django settings
+        from django.conf import settings
+        
+        if &#x27;postgresql&#x27; in settings.DATABASES[&#x27;default&#x27;][&#x27;ENGINE&#x27;]:
+            formatted_value = self.postgres_format(value)
+        elif &#x27;oracle&#x27; in settings.DATABASES[&#x27;default&#x27;][&#x27;ENGINE&#x27;]:
+            formatted_value = self.oracle_format(value)
+        else:
+            formatted_value = value
+        
+        setattr(obj, self.field_name, formatted_value)
+
+<p>class MyModel:<br>
+    # Handle different date formats for different databases<br>
+    special_date = DatabaseSpecificField(<br>
+        postgres_format=lambda x: x.strftime(&#x27;%Y-%m-%d %H:%M:%S&#x27;),<br>
+        oracle_format=lambda x: x.strftime(&#x27;%d-MON-YY HH24:MI:SS&#x27;)<br>
+    )<br>
+</code></pre></p>
+
+<p>The <code>__set_name__</code> method is particularly useful—it&#x27;s called automatically when Python creates the class, giving your descriptor access to the attribute name it&#x27;s assigned to.</p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Django model field customization</strong>: Create descriptors for fields that need special validation, formatting, or database-specific behavior. Perfect for handling differences between PostgreSQL JSON fields and Oracle CLOB storage.</li>
+</ul>
+<ul>
+<li><strong>Configuration management with AWS</strong>: Descriptors that automatically fetch configuration values from AWS Parameter Store, Secrets Manager, or DynamoDB, with built-in caching and error handling.</li>
+</ul>
+<ul>
+<li><strong>API client attribute management</strong>: When building Discord bots or other API integrations, descriptors can handle token refresh, rate limiting, and automatic retries transparently.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Simple data storage</strong>: If you just need to store and retrieve a value without any special behavior, a regular attribute or property is simpler and more readable.</li>
+</ul>
+<ul>
+<li><strong>Performance-critical paths</strong>: Descriptors add overhead to attribute access. In tight loops or high-frequency operations, the extra method calls can impact performance significantly.</li>
+</ul>
+Common pitfalls to watch for: Remember that descriptors are shared across all instances of a class. If you store instance-specific data directly on the descriptor object, you&#x27;ll get unexpected behavior where all instances share the same value. Always store instance-specific data on the instance itself (usually using <code>obj.__dict__</code>) or use weak references to map instances to their values.
+
+<p>Another gotcha: descriptors only work when accessed as class attributes, not instance attributes. If you assign directly to <code>obj.__dict__</code>, you&#x27;ll bypass the descriptor entirely. This can be useful for debugging but often causes confusion when the descriptor suddenly stops working.</p>
+
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Descriptors are the foundation of Python&#x27;s object model</strong>—understanding them gives you insight into how properties, methods, and Django model fields actually work under the hood.</li>
+</ul>
+<ul>
+<li><strong>The <code>__set_name__</code> method is your friend</strong>—use it to automatically configure descriptors with their attribute names, making them more reusable and less error-prone.</li>
+</ul>
+<ul>
+<li><strong>Descriptors excel at cross-cutting concerns</strong>—logging, validation, caching, and database formatting are perfect use cases where descriptors keep your business logic clean and concerns separated.</li>
+</ul>
+<ul>
+<li><strong>Instance data requires careful handling</strong>—never store instance-specific values directly on the descriptor; always use the instance&#x27;s <code>__dict__</code> or a mapping strategy to avoid shared state between instances.</li>
+</ul>
+<ul>
+<li><strong>They&#x27;re powerful but not always necessary</strong>—before writing a descriptor, consider if a simple property or method would accomplish the same goal with less complexity and better readability.</li>
+</ul>
+Understanding descriptors transforms you from a Python user to someone who truly understands the language&#x27;s elegance. When you&#x27;re building Django applications that span multiple databases, integrating with AWS services, or creating automation tools, descriptors give you the power to write code that&#x27;s both sophisticated and maintainable. They&#x27;re one of those concepts that, once mastered, will change how you approach object-oriented design in Python forever.
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

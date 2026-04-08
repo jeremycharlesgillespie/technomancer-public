@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Learning Articles - Technomancer</title>
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Developer Learning</h1>
+        <p class="meta">Daily insights to level up your skills</p>
+    </header>
+    <main>
+        <ul class="article-list">
+            <li>
+                <a href="2026-04-08_neo4j_neo4j.html">Neo4J</a>
+                <span class="category">Neo4J</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-collections-module-counter-defaultdict-dequ.html">Python Collections Module Counter Defaultdict Dequ</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-context-managers-and-the-with-statement.html">Python Context Managers And The With Statement</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-decorators-from-basics-to-advanced-patterns.html">Python Decorators From Basics To Advanced Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-f-strings-advanced-formatting-tricks.html">Python F Strings Advanced Formatting Tricks</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-factory-pattern-and-abstract-base-classes.html">Python Factory Pattern And Abstract Base Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-generators-and-lazy-evaluation-for-memory-e.html">Python Generators And Lazy Evaluation For Memory E</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-init-py-and-package-organization.html">Python Init Py And Package Organization</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-itertools-for-efficient-iteration-patterns.html">Python Itertools For Efficient Iteration Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-match-statements-structural-pattern-matchin.html">Python Match Statements Structural Pattern Matchin</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-pathlib-for-modern-file-path-handling.html">Python Pathlib For Modern File Path Handling</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-positional-only-and-keyword-only-parameters.html">Python Positional Only And Keyword Only Parameters</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-slots-for-memory-efficient-classes.html">Python Slots For Memory Efficient Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-string-interning-and-small-integer-caching.html">Python String Interning And Small Integer Caching</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-08_python_python-walrus-operator-practical-uses.html">Python Walrus Operator Practical Uses</a>
+                <span class="category">Python</span>
+                <span class="date">April 08, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_neo4j_neo4j.html">Neo4J</a>
+                <span class="category">Neo4J</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_functools-module-lru-cache-partial-reduce-and-wrap.html">Functools Module Lru Cache Partial Reduce And Wrap</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-asyncio-fundamentals-and-asyncawait-pattern.html">Python Asyncio Fundamentals And Asyncawait Pattern</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-context-managers-and-the-with-statement.html">Python Context Managers And The With Statement</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-dataclasses-vs-pydantic-models-when-to-use-.html">Python Dataclasses Vs Pydantic Models When To Use </a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-decorators-from-basics-to-advanced-patterns.html">Python Decorators From Basics To Advanced Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-dependency-injection-patterns.html">Python Dependency Injection Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-f-strings-advanced-formatting-tricks.html">Python F Strings Advanced Formatting Tricks</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-generators-and-lazy-evaluation-for-memory-e.html">Python Generators And Lazy Evaluation For Memory E</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-init-py-and-package-organization.html">Python Init Py And Package Organization</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-itertools-for-efficient-iteration-patterns.html">Python Itertools For Efficient Iteration Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-logging-module-best-practices.html">Python Logging Module Best Practices</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-match-statements-structural-pattern-matchin.html">Python Match Statements Structural Pattern Matchin</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-memory-optimization-techniques.html">Python Memory Optimization Techniques</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-metaclasses-understanding-and-practical-use.html">Python Metaclasses Understanding And Practical Use</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-pathlib-for-modern-file-path-handling.html">Python Pathlib For Modern File Path Handling</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-positional-only-and-keyword-only-parameters.html">Python Positional Only And Keyword Only Parameters</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-profiling-with-cprofile-and-line-profiler.html">Python Profiling With Cprofile And Line Profiler</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-slots-for-memory-efficient-classes.html">Python Slots For Memory Efficient Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-strategy-pattern-for-runtime-algorithm-sele.html">Python Strategy Pattern For Runtime Algorithm Sele</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-string-interning-and-small-integer-caching.html">Python String Interning And Small Integer Caching</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-type-hints-and-static-type-checking-with-my.html">Python Type Hints And Static Type Checking With My</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-unittest-vs-pytest-testing-strategies.html">Python Unittest Vs Pytest Testing Strategies</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_python-walrus-operator-practical-uses.html">Python Walrus Operator Practical Uses</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-07_python_pythons-gil-and-strategies-for-cpu-bound-paralleli.html">Pythons Gil And Strategies For Cpu Bound Paralleli</a>
+                <span class="category">Python</span>
+                <span class="date">April 07, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_neo4j_neo4j.html">Neo4J</a>
+                <span class="category">Neo4J</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_functools-module-lru-cache-partial-reduce-and-wrap.html">Functools Module Lru Cache Partial Reduce And Wrap</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-asyncio-fundamentals-and-asyncawait-pattern.html">Python Asyncio Fundamentals And Asyncawait Pattern</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-collections-module-counter-defaultdict-dequ.html">Python Collections Module Counter Defaultdict Dequ</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-context-managers-and-the-with-statement.html">Python Context Managers And The With Statement</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-dataclasses-vs-pydantic-models-when-to-use-.html">Python Dataclasses Vs Pydantic Models When To Use </a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-decorators-from-basics-to-advanced-patterns.html">Python Decorators From Basics To Advanced Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-dependency-injection-patterns.html">Python Dependency Injection Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-f-strings-advanced-formatting-tricks.html">Python F Strings Advanced Formatting Tricks</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-factory-pattern-and-abstract-base-classes.html">Python Factory Pattern And Abstract Base Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-generators-and-lazy-evaluation-for-memory-e.html">Python Generators And Lazy Evaluation For Memory E</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-itertools-for-efficient-iteration-patterns.html">Python Itertools For Efficient Iteration Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-logging-module-best-practices.html">Python Logging Module Best Practices</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-memory-optimization-techniques.html">Python Memory Optimization Techniques</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-metaclasses-understanding-and-practical-use.html">Python Metaclasses Understanding And Practical Use</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-observer-pattern-with-callbacks-and-events.html">Python Observer Pattern With Callbacks And Events</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-pathlib-for-modern-file-path-handling.html">Python Pathlib For Modern File Path Handling</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-positional-only-and-keyword-only-parameters.html">Python Positional Only And Keyword Only Parameters</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-profiling-with-cprofile-and-line-profiler.html">Python Profiling With Cprofile And Line Profiler</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-singleton-pattern-implementation-and-altern.html">Python Singleton Pattern Implementation And Altern</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-slots-for-memory-efficient-classes.html">Python Slots For Memory Efficient Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-strategy-pattern-for-runtime-algorithm-sele.html">Python Strategy Pattern For Runtime Algorithm Sele</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-string-interning-and-small-integer-caching.html">Python String Interning And Small Integer Caching</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-type-hints-and-static-type-checking-with-my.html">Python Type Hints And Static Type Checking With My</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-unittest-vs-pytest-testing-strategies.html">Python Unittest Vs Pytest Testing Strategies</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-06_python_python-walrus-operator-practical-uses.html">Python Walrus Operator Practical Uses</a>
+                <span class="category">Python</span>
+                <span class="date">April 06, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_neo4j_neo4j.html">Neo4J</a>
+                <span class="category">Neo4J</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_oracle_oracle-redo-logs-and-recovery-concepts.html">Oracle Redo Logs And Recovery Concepts</a>
+                <span class="category">Oracle</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_functools-module-lru-cache-partial-reduce-and-wrap.html">Functools Module Lru Cache Partial Reduce And Wrap</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-asyncio-fundamentals-and-asyncawait-pattern.html">Python Asyncio Fundamentals And Asyncawait Pattern</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-collections-module-counter-defaultdict-dequ.html">Python Collections Module Counter Defaultdict Dequ</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-dataclasses-vs-pydantic-models-when-to-use-.html">Python Dataclasses Vs Pydantic Models When To Use </a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-dependency-injection-patterns.html">Python Dependency Injection Patterns</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-f-strings-advanced-formatting-tricks.html">Python F Strings Advanced Formatting Tricks</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-factory-pattern-and-abstract-base-classes.html">Python Factory Pattern And Abstract Base Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-generators-and-lazy-evaluation-for-memory-e.html">Python Generators And Lazy Evaluation For Memory E</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-init-py-and-package-organization.html">Python Init Py And Package Organization</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-logging-module-best-practices.html">Python Logging Module Best Practices</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-match-statements-structural-pattern-matchin.html">Python Match Statements Structural Pattern Matchin</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-memory-optimization-techniques.html">Python Memory Optimization Techniques</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-metaclasses-understanding-and-practical-use.html">Python Metaclasses Understanding And Practical Use</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-pathlib-for-modern-file-path-handling.html">Python Pathlib For Modern File Path Handling</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-positional-only-and-keyword-only-parameters.html">Python Positional Only And Keyword Only Parameters</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-singleton-pattern-implementation-and-altern.html">Python Singleton Pattern Implementation And Altern</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-slots-for-memory-efficient-classes.html">Python Slots For Memory Efficient Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-string-interning-and-small-integer-caching.html">Python String Interning And Small Integer Caching</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-type-hints-and-static-type-checking-with-my.html">Python Type Hints And Static Type Checking With My</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-unittest-vs-pytest-testing-strategies.html">Python Unittest Vs Pytest Testing Strategies</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_python-walrus-operator-practical-uses.html">Python Walrus Operator Practical Uses</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-05_python_pythons-gil-and-strategies-for-cpu-bound-paralleli.html">Pythons Gil And Strategies For Cpu Bound Paralleli</a>
+                <span class="category">Python</span>
+                <span class="date">April 05, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-04_system-design_event-sourcing-storing-state-as-events.html">Event Sourcing Storing State As Events</a>
+                <span class="category">System Design</span>
+                <span class="date">April 04, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_neo4j_neo4j.html">Neo4J</a>
+                <span class="category">Neo4J</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_oracle_oracle-merge-statement-for-upsert-operations.html">Oracle Merge Statement For Upsert Operations</a>
+                <span class="category">Oracle</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-asyncio-fundamentals-and-asyncawait-pattern.html">Python Asyncio Fundamentals And Asyncawait Pattern</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-dataclasses-vs-pydantic-models-when-to-use-.html">Python Dataclasses Vs Pydantic Models When To Use </a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-f-strings-advanced-formatting-tricks.html">Python F Strings Advanced Formatting Tricks</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-factory-pattern-and-abstract-base-classes.html">Python Factory Pattern And Abstract Base Classes</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-init-py-and-package-organization.html">Python Init Py And Package Organization</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-logging-module-best-practices.html">Python Logging Module Best Practices</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-match-statements-structural-pattern-matchin.html">Python Match Statements Structural Pattern Matchin</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-memory-optimization-techniques.html">Python Memory Optimization Techniques</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-positional-only-and-keyword-only-parameters.html">Python Positional Only And Keyword Only Parameters</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-singleton-pattern-implementation-and-altern.html">Python Singleton Pattern Implementation And Altern</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-strategy-pattern-for-runtime-algorithm-sele.html">Python Strategy Pattern For Runtime Algorithm Sele</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-string-interning-and-small-integer-caching.html">Python String Interning And Small Integer Caching</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_python-walrus-operator-practical-uses.html">Python Walrus Operator Practical Uses</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-03_python_pythons-gil-and-strategies-for-cpu-bound-paralleli.html">Pythons Gil And Strategies For Cpu Bound Paralleli</a>
+                <span class="category">Python</span>
+                <span class="date">April 03, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-02_best-practices_documentation-as-code-keeping-docs-current.html">Documentation As Code Keeping Docs Current</a>
+                <span class="category">Best Practices</span>
+                <span class="date">April 02, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-02_oracle_oracle-execution-plans-and-explain-plan-analysis.html">Oracle Execution Plans And Explain Plan Analysis</a>
+                <span class="category">Oracle</span>
+                <span class="date">April 02, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-02_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">April 02, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-02_system-design_kafka-vs-rabbitmq-when-to-use-each.html">Kafka Vs Rabbitmq When To Use Each</a>
+                <span class="category">System Design</span>
+                <span class="date">April 02, 2026</span>
+            </li>
+            <li>
+                <a href="2026-04-01_python_python-descriptors-and-the-descriptor-protocol.html">Python Descriptors And The Descriptor Protocol</a>
+                <span class="category">Python</span>
+                <span class="date">April 01, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-31_best-practices_error-handling-in-apis-status-codes-and-messages.html">Error Handling In Apis Status Codes And Messages</a>
+                <span class="category">Best Practices</span>
+                <span class="date">March 31, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-30_python_python-match-statements-structural-pattern-matchin.html">Python Match Statements Structural Pattern Matchin</a>
+                <span class="category">Python</span>
+                <span class="date">March 30, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-29_system-design_cache-invalidation-strategies-and-patterns.html">Cache Invalidation Strategies And Patterns</a>
+                <span class="category">System Design</span>
+                <span class="date">March 29, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-28_best-practices_semantic-versioning-semver-best-practices.html">Semantic Versioning Semver Best Practices</a>
+                <span class="category">Best Practices</span>
+                <span class="date">March 28, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-27_best-practices_technical-debt-identification-and-management.html">Technical Debt Identification And Management</a>
+                <span class="category">Best Practices</span>
+                <span class="date">March 27, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-26_oracle_oracle-connection-pooling-best-practices.html">Oracle Connection Pooling Best Practices</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 26, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-25_best-practices_test-driven-development-tdd-workflow.html">Test Driven Development Tdd Workflow</a>
+                <span class="category">Best Practices</span>
+                <span class="date">March 25, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-24_fpga_fpga.html">Fpga</a>
+                <span class="category">Fpga</span>
+                <span class="date">March 24, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-24_oracle_oracle-plsql-cursors-implicit-vs-explicit.html">Oracle Plsql Cursors Implicit Vs Explicit</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 24, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-23_python_python-memory-optimization-techniques.html">Python Memory Optimization Techniques</a>
+                <span class="category">Python</span>
+                <span class="date">March 23, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-22_python_python-slots-for-memory-efficient-classes.html">Python Slots For Memory Efficient Classes</a>
+                <span class="category">Python</span>
+                <span class="date">March 22, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-21_system-design_acid-vs-base-choosing-consistency-models.html">Acid Vs Base Choosing Consistency Models</a>
+                <span class="category">System Design</span>
+                <span class="date">March 21, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-21_system-design_distributed-tracing-with-opentelemetry.html">Distributed Tracing With Opentelemetry</a>
+                <span class="category">System Design</span>
+                <span class="date">March 21, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-20_oracle_oracle-analytic-functions-over-partition-by-window.html">Oracle Analytic Functions Over Partition By Window</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 20, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-20_oracle_oracle-connection-pooling-best-practices.html">Oracle Connection Pooling Best Practices</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 20, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-19_best-practices_logging-best-practices-structured-logging.html">Logging Best Practices Structured Logging</a>
+                <span class="category">Best Practices</span>
+                <span class="date">March 19, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-19_oracle_oracle-result-cache-for-repeated-queries.html">Oracle Result Cache For Repeated Queries</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 19, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-18_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">March 18, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-16_oracle_oracle-tablespace-management-and-storage-optimizat.html">Oracle Tablespace Management And Storage Optimizat</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 16, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-15_custom_neo4j.html">Neo4J</a>
+                <span class="category">Custom</span>
+                <span class="date">March 15, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-15_oracle_oracle-plsql-exception-handling-patterns.html">Oracle Plsql Exception Handling Patterns</a>
+                <span class="category">Oracle</span>
+                <span class="date">March 15, 2026</span>
+            </li>
+            <li>
+                <a href="2026-03-15_python_python-list-comprehensions-vs-generator-expression.html">Python List Comprehensions Vs Generator Expression</a>
+                <span class="category">Python</span>
+                <span class="date">March 15, 2026</span>
+            </li>
+        </ul>
+    </main>
+</body>
+</html>

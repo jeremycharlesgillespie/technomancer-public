@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle execution plans and EXPLAIN PLAN analysis - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle execution plans and EXPLAIN PLAN analysis</h1>
+            <p class="meta">oracle &bull; April 02, 2026</p>
+        </header>
+        <main>
+<h1>Oracle Execution Plans and EXPLAIN PLAN Analysis: Your Secret Weapon for Database Performance</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Oracle execution plans are detailed roadmaps that show exactly how the database engine will execute your SQL queries. Think of them as the GPS navigation for your database queries - they reveal the route Oracle chooses to retrieve your data, including which indexes it uses, how tables are joined, and in what order operations are performed. Every time you run a SQL statement, Oracle&#x27;s optimizer creates an execution plan behind the scenes, determining the most efficient path to get your results.</p>
+
+<p>Understanding execution plans is crucial because they expose performance bottlenecks before they become production nightmares. While PostgreSQL developers might be familiar with <code>EXPLAIN</code> commands, Oracle&#x27;s EXPLAIN PLAN offers more granular control and detailed cost analysis. For developers working with hybrid environments (PostgreSQL for new projects, Oracle for legacy systems), mastering both tools gives you a significant advantage in database optimization.</p>
+
+<p>Here&#x27;s a simple example of generating an execution plan in Oracle:</p>
+
+<pre><code class="language-sql">-- Generate execution plan for a query
+EXPLAIN PLAN FOR
+SELECT e.employee_name, d.department_name
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+WHERE e.salary &gt; 50000;
+
+<p>-- View the execution plan<br>
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);<br>
+</code></pre></p>
+
+<p>This reveals exactly how Oracle will execute your query, including estimated costs, rows processed, and access methods used.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering Oracle execution plans transforms you from a developer who writes queries to one who writes <em>optimized</em> queries. In enterprise environments where Oracle databases often contain millions or billions of records, the difference between a well-optimized query and a poorly performing one can mean the difference between sub-second response times and queries that timeout after minutes. This skill is particularly valuable when you&#x27;re building Django applications that need to interface with existing Oracle systems, or when migrating data between Oracle and PostgreSQL environments.</p>
+
+<p>From a career perspective, execution plan analysis is a specialized skill that sets senior developers apart from junior ones. Companies with large Oracle installations desperately need developers who can troubleshoot performance issues, especially in hybrid cloud environments on AWS where database costs directly impact the bottom line. When you can identify that a missing index is causing a full table scan on a 50-million-row table, or optimize a query that&#x27;s consuming excessive RDS resources, you become indispensable to your organization.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s dive into practical execution plan analysis with real examples you can adapt to your environment. I&#x27;ll show you how to integrate this into your Python/Django workflow for maximum effectiveness.</p>
+
+<p><strong>Step 1: Generate and Analyze Basic Execution Plans</strong></p>
+
+<p>First, let&#x27;s create a comprehensive execution plan analysis:</p>
+
+<pre><code class="language-sql">-- Set up detailed execution plan output
+SET PAGESIZE 1000
+SET LINESIZE 200
+
+<p>-- Generate plan with runtime statistics<br>
+EXPLAIN PLAN SET STATEMENT_ID = &#x27;test_query&#x27; FOR<br>
+SELECT e.employee_id, e.name, d.department_name, s.salary_amount<br>
+FROM employees e<br>
+JOIN departments d ON e.dept_id = d.dept_id<br>
+LEFT JOIN salaries s ON e.employee_id = s.employee_id<br>
+WHERE e.hire_date &gt; DATE &#x27;2020-01-01&#x27;<br>
+AND d.active_flag = &#x27;Y&#x27;<br>
+ORDER BY s.salary_amount DESC;</p>
+
+<p>-- Display detailed execution plan<br>
+SELECT PLAN_TABLE_OUTPUT <br>
+FROM TABLE(DBMS_XPLAN.DISPLAY(&#x27;PLAN_TABLE&#x27;,&#x27;test_query&#x27;,&#x27;ADVANCED&#x27;));<br>
+</code></pre></p>
+
+<p><strong>Step 2: Integrate with Python for Automated Analysis</strong></p>
+
+<p>Here&#x27;s a Python script that automates execution plan collection and analysis, perfect for integrating into your Django management commands or monitoring scripts:</p>
+
+<pre><code class="language-python">import cx_Oracle
+import pandas as pd
+from datetime import datetime
+
+<p>class OracleExecutionPlanAnalyzer:<br>
+    def __init__(self, connection_string):<br>
+        self.connection = cx_Oracle.connect(connection_string)<br>
+        <br>
+    def analyze_query_performance(self, sql_query, statement_id=None):<br>
+        &quot;&quot;&quot;<br>
+        Analyze query performance and return execution plan details<br>
+        &quot;&quot;&quot;<br>
+        if not statement_id:<br>
+            statement_id = f&quot;analysis_{datetime.now().strftime(&#x27;%Y%m%d_%H%M%S&#x27;)}&quot;<br>
+        <br>
+        cursor = self.connection.cursor()<br>
+        <br>
+        try:<br>
+            # Generate execution plan<br>
+            explain_sql = f&quot;EXPLAIN PLAN SET STATEMENT_ID = &#x27;{statement_id}&#x27; FOR {sql_query}&quot;<br>
+            cursor.execute(explain_sql)<br>
+            <br>
+            # Retrieve execution plan<br>
+            plan_query = &quot;&quot;&quot;<br>
+            SELECT id, parent_id, operation, options, object_name, <br>
+                   cost, cardinality, bytes, cpu_cost, io_cost<br>
+            FROM plan_table <br>
+            WHERE statement_id = :stmt_id <br>
+            ORDER BY id<br>
+            &quot;&quot;&quot;<br>
+            <br>
+            cursor.execute(plan_query, {&#x27;stmt_id&#x27;: statement_id})<br>
+            results = cursor.fetchall()<br>
+            <br>
+            # Convert to pandas DataFrame for easier analysis<br>
+            columns = [&#x27;ID&#x27;, &#x27;Parent_ID&#x27;, &#x27;Operation&#x27;, &#x27;Options&#x27;, &#x27;Object_Name&#x27;,<br>
+                      &#x27;Cost&#x27;, &#x27;Cardinality&#x27;, &#x27;Bytes&#x27;, &#x27;CPU_Cost&#x27;, &#x27;IO_Cost&#x27;]<br>
+            df = pd.DataFrame(results, columns=columns)<br>
+            <br>
+            # Analyze for common performance issues<br>
+            performance_issues = self._identify_performance_issues(df)<br>
+            <br>
+            return {<br>
+                &#x27;execution_plan&#x27;: df,<br>
+                &#x27;performance_issues&#x27;: performance_issues,<br>
+                &#x27;total_cost&#x27;: df[&#x27;Cost&#x27;].max() if not df[&#x27;Cost&#x27;].isnull().all() else 0<br>
+            }<br>
+            <br>
+        finally:<br>
+            cursor.close()<br>
+    <br>
+    def _identify_performance_issues(self, plan_df):<br>
+        &quot;&quot;&quot;<br>
+        Identify common performance issues in execution plans<br>
+        &quot;&quot;&quot;<br>
+        issues = []<br>
+        <br>
+        # Check for full table scans on large tables<br>
+        full_scans = plan_df[plan_df[&#x27;Operation&#x27;] == &#x27;TABLE ACCESS FULL&#x27;]<br>
+        if not full_scans.empty:<br>
+            issues.append({<br>
+                &#x27;type&#x27;: &#x27;FULL_TABLE_SCAN&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Full table scans detected&#x27;,<br>
+                &#x27;objects&#x27;: full_scans[&#x27;Object_Name&#x27;].tolist()<br>
+            })<br>
+        <br>
+        # Check for high-cost operations<br>
+        high_cost_ops = plan_df[plan_df[&#x27;Cost&#x27;] &gt; 1000]<br>
+        if not high_cost_ops.empty:<br>
+            issues.append({<br>
+                &#x27;type&#x27;: &#x27;HIGH_COST_OPERATION&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Operations with cost &gt; 1000 detected&#x27;,<br>
+                &#x27;operations&#x27;: high_cost_ops[[&#x27;Operation&#x27;, &#x27;Object_Name&#x27;, &#x27;Cost&#x27;]].to_dict(&#x27;records&#x27;)<br>
+            })<br>
+        <br>
+        # Check for nested loop joins with high cardinality<br>
+        nested_loops = plan_df[(plan_df[&#x27;Operation&#x27;] == &#x27;NESTED LOOPS&#x27;) &amp; (plan_df[&#x27;Cardinality&#x27;] &gt; 10000)]<br>
+        if not nested_loops.empty:<br>
+            issues.append({<br>
+                &#x27;type&#x27;: &#x27;INEFFICIENT_JOIN&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Nested loop joins with high cardinality&#x27;,<br>
+                &#x27;details&#x27;: nested_loops[[&#x27;Cardinality&#x27;, &#x27;Cost&#x27;]].to_dict(&#x27;records&#x27;)<br>
+            })<br>
+        <br>
+        return issues</p>
+
+<h1>Usage example in Django management command</h1>
+analyzer = OracleExecutionPlanAnalyzer(&#x27;username/password@localhost:1521/XE&#x27;)
+
+<h1>Analyze a problematic query</h1>
+problematic_query = &quot;&quot;&quot;
+SELECT o.order_id, c.customer_name, p.product_name
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+JOIN order_items oi ON o.order_id = oi.order_id
+JOIN products p ON oi.product_id = p.product_id
+WHERE o.order_date &gt; SYSDATE - 30
+&quot;&quot;&quot;
+
+<p>analysis = analyzer.analyze_query_performance(problematic_query)<br>
+print(f&quot;Total query cost: {analysis[&#x27;total_cost&#x27;]}&quot;)<br>
+for issue in analysis[&#x27;performance_issues&#x27;]:<br>
+    print(f&quot;Issue: {issue[&#x27;type&#x27;]} - {issue[&#x27;description&#x27;]}&quot;)<br>
+</code></pre></p>
+
+<p><strong>Step 3: Advanced Plan Analysis with Hints</strong></p>
+
+<p>Sometimes you need to test different execution strategies. Here&#x27;s how to use Oracle hints to force different execution plans and compare performance:</p>
+
+<pre><code class="language-sql">-- Test different join methods
+-- Hash Join version
+EXPLAIN PLAN SET STATEMENT_ID = &#x27;hash_join&#x27; FOR
+SELECT /<em>+ USE_HASH(e,d) </em>/ e.name, d.department_name
+FROM employees e JOIN departments d ON e.dept_id = d.dept_id;
+
+<p>-- Nested Loop version  <br>
+EXPLAIN PLAN SET STATEMENT_ID = &#x27;nested_loop&#x27; FOR<br>
+SELECT /<em>+ USE_NL(e,d) </em>/ e.name, d.department_name  <br>
+FROM employees e JOIN departments d ON e.dept_id = d.dept_id;</p>
+
+<p>-- Compare costs<br>
+SELECT statement_id, operation, cost <br>
+FROM plan_table <br>
+WHERE statement_id IN (&#x27;hash_join&#x27;, &#x27;nested_loop&#x27;)<br>
+AND id = 0;<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Pre-production query optimization</strong>: Before deploying Django applications that query Oracle databases, analyze execution plans to catch performance issues early. This is especially crucial when migrating from PostgreSQL where query patterns might not translate efficiently.</li>
+</ul>
+<ul>
+<li><strong>Troubleshooting production slowdowns</strong>: When your AWS RDS Oracle instance shows high CPU or I/O, execution plans help pinpoint which queries are consuming resources. Perfect for those 3 AM production incidents.</li>
+</ul>
+<ul>
+<li><strong>Database migration planning</strong>: When moving between Oracle and PostgreSQL, execution plans help you understand which queries need optimization in the target database. Essential for accurate migration timelines and performance expectations.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Simple OLTP queries with obvious access patterns</strong>: Don&#x27;t over-analyze straightforward primary key lookups or simple inserts. The overhead isn&#x27;t worth it for queries that consistently run under 10ms.</li>
+</ul>
+<ul>
+<li><strong>Ad-hoc reporting queries that run infrequently</strong>: If a query runs once a month and takes 30 seconds, spending hours optimizing it might not be cost-effective compared to focusing on frequently-executed queries.</li>
+</ul>
+<strong>Common Pitfalls:</strong>
+<ul>
+<li><strong>Trusting estimated costs blindly</strong>: Oracle&#x27;s cost-based optimizer makes estimates based on statistics. If your statistics are stale, the execution plan might be misleading. Always update table statistics before major analysis.</li>
+<li><strong>Ignoring bind variable usage</strong>: Execution plans can vary dramatically based on actual parameter values. What looks efficient for one set of values might perform poorly with different inputs.</li>
+<li><strong>Focusing only on cost numbers</strong>: A higher-cost plan might actually perform better in your specific environment due to parallel processing or better memory utilization.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Execution plans are diagnostic tools, not just academic exercises</strong> - They directly translate to faster applications and lower AWS database costs in production environments.</li>
+</ul>
+<ul>
+<li><strong>Integrate plan analysis into your development workflow</strong> - Don&#x27;t wait for performance problems to surface; make execution plan review part of your code review process, especially for queries touching large tables.</li>
+</ul>
+<ul>
+<li><strong>Master both Oracle and PostgreSQL execution analysis</strong> - Understanding the differences between <code>EXPLAIN PLAN</code> and PostgreSQL&#x27;s <code>EXPLAIN</code> makes you valuable in hybrid database environments and migration projects.</li>
+</ul>
+<ul>
+<li><strong>Automate what you can measure</strong> - Use Python scripts to automatically flag problematic execution plans before they reach production, similar to how you&#x27;d use automated testing for application code.</li>
+</ul>
+<ul>
+<li><strong>Focus on the biggest wins first</strong> - A single full table scan elimination can provide more performance improvement than optimizing dozens of already-efficient queries. Always start with the highest-cost operations in your analysis.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

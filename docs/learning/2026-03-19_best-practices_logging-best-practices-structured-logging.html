@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logging best practices: structured logging - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Logging best practices: structured logging</h1>
+            <p class="meta">best_practices &bull; March 19, 2026</p>
+        </header>
+        <main>
+<h1>Logging Best Practices: Structured Logging</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Structured logging is the practice of writing log messages in a consistent, machine-readable format instead of free-form text strings. Rather than logging &quot;User john@example.com failed to login at 2024-01-15&quot;, you&#x27;d log structured data with clear key-value pairs like <code>{&quot;timestamp&quot;: &quot;2024-01-15T10:30:00Z&quot;, &quot;event&quot;: &quot;login_failed&quot;, &quot;user_email&quot;: &quot;john@example.com&quot;, &quot;ip_address&quot;: &quot;192.168.1.100&quot;}</code>.</p>
+
+<p>This approach transforms your logs from human-readable stories into queryable data. When every log entry follows a predictable structure, you can easily search, filter, aggregate, and analyze your application&#x27;s behavior. Think of it as the difference between keeping notes in a diary versus storing information in a database – both contain the same information, but one is dramatically more useful for finding patterns and answering specific questions.</p>
+
+<pre><code class="language-javascript">// Traditional logging (hard to parse)
+console.log(<code>User ${email} attempted login from ${ip} and failed due to invalid password</code>);
+
+<p>// Structured logging (machine-readable)<br>
+logger.info(&#x27;login_attempt&#x27;, {<br>
+  user_email: email,<br>
+  ip_address: ip,<br>
+  success: false,<br>
+  failure_reason: &#x27;invalid_password&#x27;,<br>
+  timestamp: new Date().toISOString()<br>
+});<br>
+</code></pre></p>
+
+<p>Modern applications generate thousands of log entries per minute. Without structure, finding specific events or understanding system behavior becomes like searching for a needle in a haystack. Structured logging turns that haystack into an organized warehouse where you can quickly locate exactly what you need.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering structured logging significantly elevates your debugging and system monitoring skills, making you more valuable in any development team. When production issues arise (and they always do), developers who understand structured logging can diagnose problems in minutes rather than hours. You&#x27;ll be able to quickly correlate events across different services, track user journeys through complex workflows, and identify performance bottlenecks with surgical precision.</p>
+
+<p>This skill becomes even more critical as you work with microservices architectures, distributed systems, or any application that scales beyond a single server. Engineering managers and senior developers recognize that good logging practices are often what separates junior developers from those ready for senior roles. Companies increasingly rely on observability and monitoring to maintain system reliability, and structured logging is the foundation of effective observability. Understanding these concepts positions you for roles in DevOps, site reliability engineering, and senior backend development where system monitoring expertise is essential.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing structured logging step by step, starting with choosing the right tools and establishing consistent patterns.</p>
+
+<p><strong>Step 1: Choose Your Logging Library</strong></p>
+
+<p>For JavaScript/Node.js applications, popular structured logging libraries include Winston, Pino, and Bunyan. Here&#x27;s a basic setup with Winston:</p>
+
+<pre><code class="language-javascript">const winston = require(&#x27;winston&#x27;);
+
+<p>const logger = winston.createLogger({<br>
+  level: &#x27;info&#x27;,<br>
+  format: winston.format.combine(<br>
+    winston.format.timestamp(),<br>
+    winston.format.errors({ stack: true }),<br>
+    winston.format.json()<br>
+  ),<br>
+  transports: [<br>
+    new winston.transports.File({ filename: &#x27;error.log&#x27;, level: &#x27;error&#x27; }),<br>
+    new winston.transports.File({ filename: &#x27;combined.log&#x27; }),<br>
+    new winston.transports.Console({<br>
+      format: winston.format.simple()<br>
+    })<br>
+  ]<br>
+});</p>
+
+<p>module.exports = logger;<br>
+</code></pre></p>
+
+<p><strong>Step 2: Define Your Log Schema</strong></p>
+
+<p>Establish consistent field names across your application. Create a logging utility that enforces this structure:</p>
+
+<pre><code class="language-javascript">class StructuredLogger {
+  constructor(service_name, version) {
+    this.service_name = service_name;
+    this.version = version;
+  }
+
+<p>createLogEntry(level, event_name, data = {}) {<br>
+    return {<br>
+      timestamp: new Date().toISOString(),<br>
+      level: level,<br>
+      service_name: this.service_name,<br>
+      service_version: this.version,<br>
+      event_name: event_name,<br>
+      ...data<br>
+    };<br>
+  }</p>
+
+<p>info(event_name, data) {<br>
+    const logEntry = this.createLogEntry(&#x27;info&#x27;, event_name, data);<br>
+    logger.info(logEntry);<br>
+  }</p>
+
+<p>error(event_name, error, data = {}) {<br>
+    const logEntry = this.createLogEntry(&#x27;error&#x27;, event_name, {<br>
+      error_message: error.message,<br>
+      error_stack: error.stack,<br>
+      ...data<br>
+    });<br>
+    logger.error(logEntry);<br>
+  }</p>
+
+<p>warn(event_name, data) {<br>
+    const logEntry = this.createLogEntry(&#x27;warn&#x27;, event_name, data);<br>
+    logger.warn(logEntry);<br>
+  }<br>
+}</p>
+
+<p>// Usage<br>
+const appLogger = new StructuredLogger(&#x27;user-service&#x27;, &#x27;1.2.3&#x27;);</p>
+
+<p>// In your application code<br>
+appLogger.info(&#x27;user_created&#x27;, {<br>
+  user_id: user.id,<br>
+  user_email: user.email,<br>
+  registration_source: &#x27;web_form&#x27;<br>
+});</p>
+
+<p>appLogger.error(&#x27;database_connection_failed&#x27;, error, {<br>
+  database_host: config.db.host,<br>
+  retry_attempt: 3<br>
+});<br>
+</code></pre></p>
+
+<p><strong>Step 3: Add Context and Correlation</strong></p>
+
+<p>For web applications, add middleware to inject request context:</p>
+
+<pre><code class="language-javascript">const express = require(&#x27;express&#x27;);
+const { v4: uuidv4 } = require(&#x27;uuid&#x27;);
+
+<p>function loggingMiddleware(req, res, next) {<br>
+  req.correlation_id = uuidv4();<br>
+  req.logger = {<br>
+    info: (event, data) =&gt; appLogger.info(event, {<br>
+      correlation_id: req.correlation_id,<br>
+      request_method: req.method,<br>
+      request_url: req.url,<br>
+      user_id: req.user?.id,<br>
+      ...data<br>
+    }),<br>
+    error: (event, error, data) =&gt; appLogger.error(event, error, {<br>
+      correlation_id: req.correlation_id,<br>
+      request_method: req.method,<br>
+      request_url: req.url,<br>
+      user_id: req.user?.id,<br>
+      ...data<br>
+    })<br>
+  };<br>
+  next();<br>
+}</p>
+
+<p>app.use(loggingMiddleware);</p>
+
+<p>// In your route handlers<br>
+app.post(&#x27;/api/orders&#x27;, (req, res) =&gt; {<br>
+  try {<br>
+    const order = createOrder(req.body);<br>
+    req.logger.info(&#x27;order_created&#x27;, {<br>
+      order_id: order.id,<br>
+      order_total: order.total,<br>
+      items_count: order.items.length<br>
+    });<br>
+    res.json(order);<br>
+  } catch (error) {<br>
+    req.logger.error(&#x27;order_creation_failed&#x27;, error, {<br>
+      request_body: req.body<br>
+    });<br>
+    res.status(500).json({ error: &#x27;Failed to create order&#x27; });<br>
+  }<br>
+});<br>
+</code></pre></p>
+
+<p><strong>Step 4: Implement Log Levels Consistently</strong></p>
+
+<p>Use log levels strategically:<br>
+<ul><br>
+<li><code>ERROR</code>: System errors, exceptions, failed operations</li><br>
+<li><code>WARN</code>: Recoverable issues, deprecated usage, performance concerns</li><br>
+<li><code>INFO</code>: Important business events, successful operations</li><br>
+<li><code>DEBUG</code>: Detailed execution flow (disabled in production)</li><br>
+</ul><br>
+<h2>Where to Use / Where NOT to Use</h2></p>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Production applications with monitoring requirements</strong>: When you need to track system health, user behavior, or business metrics in production environments.</li><br>
+<li><strong>Microservices architectures</strong>: Where you need to trace requests across multiple services and correlate logs from different components.</li><br>
+<li><strong>High-traffic applications</strong>: When you generate enough log volume that manual inspection becomes impractical and you need automated analysis.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Simple scripts or one-off utilities</strong>: The overhead isn&#x27;t justified for throwaway code or simple automation scripts.</li><br>
+<li><strong>Local development with minimal complexity</strong>: Basic console.log might be sufficient for simple debugging during development.</li><br>
+</ul><br>
+<strong>Common Pitfalls to Watch For:</strong></p>
+
+<ol>
+<li><strong>Over-logging</strong>: Don&#x27;t log every variable assignment or function entry. Focus on meaningful events and state changes.</li>
+</ol>
+<ol>
+<li><strong>Inconsistent field names</strong>: Using <code>userId</code> in one place and <code>user_id</code> in another makes querying difficult. Establish and enforce naming conventions.</li>
+</ol>
+<ol>
+<li><strong>Logging sensitive data</strong>: Never log passwords, API keys, or personal information. Always sanitize data before logging.</li>
+</ol>
+<ol>
+<li><strong>Ignoring performance impact</strong>: Excessive logging can impact application performance. Use appropriate log levels and consider async logging for high-volume scenarios.</li>
+</ol>
+<ol>
+<li><strong>Missing correlation IDs</strong>: Without request correlation, troubleshooting distributed systems becomes nearly impossible.</li>
+</ol>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Structure beats volume</strong>: A few well-structured log entries are infinitely more valuable than hundreds of unstructured text logs.</li>
+<li><strong>Consistency is crucial</strong>: Establish and enforce logging standards across your entire application to enable effective querying and analysis.</li>
+<li><strong>Context is king</strong>: Always include relevant context like user IDs, request IDs, and timestamps to make logs actionable.</li>
+<li><strong>Plan for scale</strong>: Design your logging strategy to work when your application handles 10x or 100x more traffic than today.</li>
+<li><strong>Logs are data</strong>: Treat your logs as a valuable dataset that can provide insights into user behavior, system performance, and business metrics.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

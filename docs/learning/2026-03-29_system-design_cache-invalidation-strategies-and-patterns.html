@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cache invalidation strategies and patterns - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Cache invalidation strategies and patterns</h1>
+            <p class="meta">system_design &bull; March 29, 2026</p>
+        </header>
+        <main>
+<h1>Cache Invalidation Strategies and Patterns: A Developer&#x27;s Guide to Data Consistency</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Cache invalidation is the process of removing or updating cached data when the underlying data changes, ensuring that your application serves fresh, consistent information to users. Think of it as the bouncer at a nightclub who decides when old information needs to leave and fresh data can enter. It&#x27;s one of the classic &quot;hard problems&quot; in computer science, alongside naming things and off-by-one errors.</p>
+
+<p>Why does this matter so much? In modern applications, especially those built with Django and backed by PostgreSQL or Oracle, caching is essential for performance. Your users expect sub-second response times, but complex database queries can take hundreds of milliseconds or more. Without proper cache invalidation, you&#x27;ll either serve stale data (breaking user trust) or invalidate too aggressively (killing performance). The challenge is finding the sweet spot where your cache stays fresh enough to be reliable but persists long enough to provide real performance benefits.</p>
+
+<p>Here&#x27;s a simple example of cache invalidation in Django using Redis:</p>
+
+<pre><code class="language-python">from django.core.cache import cache
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from myapp.models import Product
+
+<p>@receiver(post_save, sender=Product)<br>
+def invalidate_product_cache(sender, instance, **kwargs):<br>
+    # Remove specific product from cache<br>
+    cache.delete(f&#x27;product_{instance.id}&#x27;)<br>
+    # Remove category listing that might include this product<br>
+    cache.delete(f&#x27;category_{instance.category_id}_products&#x27;)<br>
+    # Clear homepage featured products if this was featured<br>
+    if instance.featured:<br>
+        cache.delete(&#x27;homepage_featured_products&#x27;)<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering cache invalidation strategies directly elevates your value as a full-stack developer working with Python and PostgreSQL/Oracle systems. When you can confidently architect caching layers that maintain data consistency while delivering performance, you&#x27;re solving one of the most common pain points in web applications. This knowledge becomes especially valuable when working with Django applications on AWS, where you might be dealing with ElastiCache for Redis, CloudFront CDN invalidation, and database read replicas that introduce additional consistency challenges.</p>
+
+<p>Understanding cache invalidation patterns makes you the developer who can diagnose why users are seeing old product prices, why inventory counts seem wrong, or why new features aren&#x27;t appearing for some users. You&#x27;ll be able to design systems that scale gracefully, implement effective monitoring for cache hit rates, and troubleshoot performance issues that often stump developers who treat caching as a &quot;set it and forget it&quot; solution. In senior roles, this knowledge helps you make informed architectural decisions about when to use write-through vs. write-back caching, how to handle cache warming strategies, and how to design cache hierarchies that work effectively across microservices.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing the four main cache invalidation strategies you&#x27;ll use in Django applications, with practical examples for each.</p>
+
+<p><strong>1. TTL-Based Invalidation</strong></p>
+
+<p>Time-to-live (TTL) invalidation is the simplest approach—cache entries expire after a set time period. This works well for data that changes predictably or where slight staleness is acceptable.</p>
+
+<pre><code class="language-python">from django.core.cache import cache
+from django.conf import settings
+import time
+
+<p>class CacheService:<br>
+    @staticmethod<br>
+    def get_user_profile(user_id):<br>
+        cache_key = f&#x27;user_profile_{user_id}&#x27;<br>
+        profile = cache.get(cache_key)<br>
+        <br>
+        if profile is None:<br>
+            # Simulate expensive database operation<br>
+            profile = UserProfile.objects.select_related(&#x27;company&#x27;, &#x27;subscription&#x27;).get(id=user_id)<br>
+            # Cache for 15 minutes<br>
+            cache.set(cache_key, profile, timeout=900)<br>
+            <br>
+        return profile<br>
+    <br>
+    @staticmethod<br>
+    def get_dashboard_stats(user_id):<br>
+        cache_key = f&#x27;dashboard_stats_{user_id}&#x27;<br>
+        stats = cache.get(cache_key)<br>
+        <br>
+        if stats is None:<br>
+            # Expensive aggregation query<br>
+            stats = DashboardData.objects.filter(<br>
+                user_id=user_id<br>
+            ).aggregate(<br>
+                total_orders=Count(&#x27;order&#x27;),<br>
+                revenue=Sum(&#x27;order__total&#x27;),<br>
+                avg_order_value=Avg(&#x27;order__total&#x27;)<br>
+            )<br>
+            # Cache for 5 minutes since stats change frequently<br>
+            cache.set(cache_key, stats, timeout=300)<br>
+            <br>
+        return stats<br>
+</code></pre></p>
+
+<p><strong>2. Event-Driven Invalidation</strong></p>
+
+<p>This strategy invalidates cache entries immediately when related data changes. It&#x27;s more complex but provides better consistency.</p>
+
+<pre><code class="language-python">from django.db import transaction
+from django.core.cache import cache
+from celery import shared_task
+
+<p>class SmartCacheInvalidator:<br>
+    @staticmethod<br>
+    def invalidate_user_related_cache(user_id, changed_fields=None):<br>
+        &quot;&quot;&quot;Intelligently invalidate only affected cache entries&quot;&quot;&quot;<br>
+        cache_keys_to_delete = []<br>
+        <br>
+        # Always invalidate direct user cache<br>
+        cache_keys_to_delete.append(f&#x27;user_profile_{user_id}&#x27;)<br>
+        <br>
+        # Conditionally invalidate based on what changed<br>
+        if not changed_fields or &#x27;subscription_id&#x27; in changed_fields:<br>
+            cache_keys_to_delete.extend([<br>
+                f&#x27;user_permissions_{user_id}&#x27;,<br>
+                f&#x27;subscription_limits_{user_id}&#x27;,<br>
+                f&#x27;dashboard_stats_{user_id}&#x27;<br>
+            ])<br>
+        <br>
+        if not changed_fields or &#x27;company_id&#x27; in changed_fields:<br>
+            cache_keys_to_delete.extend([<br>
+                f&#x27;company_users_{user_id}&#x27;,<br>
+                f&#x27;team_dashboard_{user_id}&#x27;<br>
+            ])<br>
+        <br>
+        # Use delete_many for efficiency<br>
+        cache.delete_many(cache_keys_to_delete)<br>
+        <br>
+        # Async regeneration of critical caches<br>
+        regenerate_critical_caches.delay(user_id)</p>
+
+<p>@shared_task<br>
+def regenerate_critical_caches(user_id):<br>
+    &quot;&quot;&quot;Pre-warm important caches to avoid cache stampede&quot;&quot;&quot;<br>
+    CacheService.get_user_profile(user_id)<br>
+    CacheService.get_dashboard_stats(user_id)</p>
+
+<h1>Connect to Django signals</h1>
+@receiver(post_save, sender=UserProfile)
+def handle_user_profile_change(sender, instance, **kwargs):
+    changed_fields = None
+    if hasattr(instance, &#x27;_dirty_fields&#x27;):
+        changed_fields = instance._dirty_fields
+    
+    SmartCacheInvalidator.invalidate_user_related_cache(
+        instance.user_id, 
+        changed_fields
+    )
+</code></pre>
+
+<p><strong>3. Version-Based Invalidation</strong></p>
+
+<p>Version-based invalidation uses version numbers or timestamps to determine if cached data is current. This is particularly useful for APIs and when you need fine-grained control.</p>
+
+<pre><code class="language-python">import hashlib
+import json
+from datetime import datetime
+
+<p>class VersionedCacheService:<br>
+    @staticmethod<br>
+    def get_api_response(endpoint, params, dependencies=None):<br>
+        &quot;&quot;&quot;Cache API responses with dependency versioning&quot;&quot;&quot;<br>
+        <br>
+        # Create cache key from endpoint and parameters<br>
+        param_hash = hashlib.md5(<br>
+            json.dumps(params, sort_keys=True).encode()<br>
+        ).hexdigest()[:8]<br>
+        <br>
+        cache_key = f&#x27;api_{endpoint}_{param_hash}&#x27;<br>
+        <br>
+        # Check if dependencies have changed<br>
+        if dependencies:<br>
+            current_version = VersionedCacheService._get_dependency_version(dependencies)<br>
+            cached_data = cache.get(cache_key)<br>
+            <br>
+            if cached_data and cached_data.get(&#x27;version&#x27;) == current_version:<br>
+                return cached_data[&#x27;data&#x27;]<br>
+        <br>
+        # Generate fresh data<br>
+        fresh_data = VersionedCacheService._generate_api_response(endpoint, params)<br>
+        <br>
+        # Cache with current version<br>
+        cache_data = {<br>
+            &#x27;data&#x27;: fresh_data,<br>
+            &#x27;version&#x27;: current_version if dependencies else int(time.time()),<br>
+            &#x27;generated_at&#x27;: datetime.utcnow().isoformat()<br>
+        }<br>
+        <br>
+        cache.set(cache_key, cache_data, timeout=3600)  # 1 hour TTL as backup<br>
+        return fresh_data<br>
+    <br>
+    @staticmethod<br>
+    def _get_dependency_version(dependencies):<br>
+        &quot;&quot;&quot;Generate version hash from dependency tables&quot;&quot;&quot;<br>
+        version_parts = []<br>
+        <br>
+        for table_name in dependencies:<br>
+            # Get latest update timestamp from each dependency table<br>
+            latest_update = cache.get(f&#x27;table_version_{table_name}&#x27;)<br>
+            if not latest_update:<br>
+                # Fallback to database query<br>
+                latest_update = VersionLog.objects.filter(<br>
+                    table_name=table_name<br>
+                ).aggregate(<br>
+                    latest=Max(&#x27;updated_at&#x27;)<br>
+                )[&#x27;latest&#x27;]<br>
+                cache.set(f&#x27;table_version_{table_name}&#x27;, latest_update, timeout=60)<br>
+            <br>
+            version_parts.append(str(latest_update))<br>
+        <br>
+        return hashlib.md5(&#x27;|&#x27;.join(version_parts).encode()).hexdigest()<br>
+</code></pre></p>
+
+<p><strong>4. Tag-Based Invalidation</strong></p>
+
+<p>Tag-based invalidation groups related cache entries under common tags for bulk operations. This is excellent for complex relationships.</p>
+
+<pre><code class="language-python">from django_cache_tagging import cache
+
+<p>class TaggedCacheService:<br>
+    @staticmethod<br>
+    def get_product_data(product_id):<br>
+        cache_key = f&#x27;product_{product_id}&#x27;<br>
+        tags = [f&#x27;product_{product_id}&#x27;, &#x27;products&#x27;, &#x27;catalog&#x27;]<br>
+        <br>
+        product_data = cache.get(cache_key)<br>
+        if not product_data:<br>
+            product_data = Product.objects.select_related(<br>
+                &#x27;category&#x27;, &#x27;brand&#x27;<br>
+            ).get(id=product_id)<br>
+            <br>
+            # Add category and brand tags for bulk invalidation<br>
+            tags.extend([<br>
+                f&#x27;category_{product_data.category_id}&#x27;,<br>
+                f&#x27;brand_{product_data.brand_id}&#x27;<br>
+            ])<br>
+            <br>
+            cache.set(cache_key, product_data, timeout=1800, tags=tags)<br>
+        <br>
+        return product_data<br>
+    <br>
+    @staticmethod<br>
+    def invalidate_category(category_id):<br>
+        &quot;&quot;&quot;Invalidate all products in a category&quot;&quot;&quot;<br>
+        cache.invalidate_tags([f&#x27;category_{category_id}&#x27;])<br>
+    <br>
+    @staticmethod<br>
+    def invalidate_brand(brand_id):<br>
+        &quot;&quot;&quot;Invalidate all products from a brand&quot;&quot;&quot;<br>
+        cache.invalidate_tags([f&#x27;brand_{brand_id}&#x27;])<br>
+    <br>
+    @staticmethod<br>
+    def clear_entire_catalog():<br>
+        &quot;&quot;&quot;Nuclear option: clear all product-related cache&quot;&quot;&quot;<br>
+        cache.invalidate_tags([&#x27;catalog&#x27;])<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>High-traffic Django applications with read-heavy workloads</strong> where database queries are expensive and data doesn&#x27;t change frequently. E-commerce product catalogs, user profiles, and content management systems are perfect examples.</li>
+</ul>
+<ul>
+<li><strong>API responses that aggregate data from multiple PostgreSQL/Oracle tables</strong> where the underlying data changes infrequently but queries are complex. Financial reports, analytics dashboards, and recommendation engines benefit greatly from smart caching.</li>
+</ul>
+<ul>
+<li><strong>AWS applications using ElastiCache or CloudFront</strong> where you need to coordinate invalidation across multiple cache layers. Multi-tier applications with edge caching, application-level caching, and database query caching need sophisticated invalidation strategies.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Data changes extremely frequently</strong> (multiple times per second) or when perfect consistency is critical. Financial transactions, real-time inventory systems, and live chat applications often create more overhead than benefit with complex caching.</li>
+</ul>
+<ul>
+<li><strong>Simple CRUD applications with low traffic</strong> where the overhead of maintaining cache invalidation logic outweighs the performance benefits. If your database can handle the load without caching, keep it simple.</li>
+</ul>
+<strong>Common pitfalls to watch for:</strong>
+
+<p>The cache stampede problem occurs when multiple requests try to regenerate the same expired cache entry simultaneously, potentially overwhelming your database. Always implement cache warming and consider using locks or queues for expensive operations. Another major pitfall is the cascading invalidation problem—when invalidating one cache entry triggers a cascade of other invalidations, potentially clearing your entire cache. Design your tag hierarchies carefully and monitor cache hit rates to catch this early.</p>
+
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Choose your invalidation strategy based on data access patterns, not convenience</strong>—TTL for predictable data, event-driven for critical consistency, version-based for complex dependencies, and tag-based for hierarchical relationships.</li>
+</ul>
+<ul>
+<li><strong>Monitor cache hit rates and invalidation frequency religiously</strong>—a cache with a hit rate below 70% or excessive invalidation events is often worse than no cache at all.</li>
+</ul>
+<ul>
+<li><strong>Design your cache keys and tagging strategy upfront</strong>—refactoring cache invalidation logic in production is painful and error-prone, so invest time in planning your cache hierarchy.</li>
+</ul>
+<ul>
+<li><strong>Implement cache warming and pre-generation strategies</strong>—users should never wait for expensive cache regeneration; use background tasks to keep critical caches populated.</li>
+</ul>
+<ul>
+<li><strong>Test your invalidation logic as thoroughly as your business logic</strong>—cache-related bugs are notoriously difficult to reproduce and debug, especially in distributed systems across AWS infrastructure.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

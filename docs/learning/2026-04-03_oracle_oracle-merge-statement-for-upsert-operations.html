@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle MERGE statement for upsert operations - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle MERGE statement for upsert operations</h1>
+            <p class="meta">oracle &bull; April 03, 2026</p>
+        </header>
+        <main>
+<h1>Master Oracle MERGE: The Upsert Operation That Will Transform Your Data Sync Workflows</h1>
+
+<h2>Quick Overview</h2>
+
+<p>The Oracle MERGE statement is your Swiss Army knife for handling &quot;upsert&quot; operations – those scenarios where you need to either INSERT new records or UPDATE existing ones based on whether they already exist in your target table. Think of it as a conditional data synchronization operation that eliminates the need for separate INSERT and UPDATE statements, making your data operations atomic and efficient.</p>
+
+<p>If you&#x27;ve worked with PostgreSQL&#x27;s <code>INSERT ... ON CONFLICT</code> or Django&#x27;s <code>update_or_create()</code>, you&#x27;ll love MERGE because it provides similar functionality but with more granular control and better performance for bulk operations. The MERGE statement evaluates a condition, and based on whether matching records exist, it can insert new data, update existing records, or even delete them – all in a single atomic operation.</p>
+
+<p>Here&#x27;s a simple example that demonstrates the concept:</p>
+
+<pre><code class="language-sql">MERGE INTO user_profiles target
+USING (SELECT &#x27;john_doe&#x27; as username, &#x27;john@example.com&#x27; as email, 
+              TO_DATE(&#x27;2024-01-15&#x27;, &#x27;YYYY-MM-DD&#x27;) as last_login FROM dual) source
+ON (target.username = source.username)
+WHEN MATCHED THEN
+    UPDATE SET email = source.email, last_login = source.last_login
+WHEN NOT MATCHED THEN
+    INSERT (username, email, last_login, created_at)
+    VALUES (source.username, source.email, source.last_login, SYSDATE);
+</code></pre>
+
+<p>This single statement handles both inserting new users and updating existing ones, eliminating race conditions and reducing database round trips.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering Oracle MERGE positions you as a database optimization expert who understands enterprise-grade data synchronization patterns. In your Python/Django applications, you&#x27;re likely dealing with scenarios where external APIs, batch jobs, or real-time data streams need to sync with your Oracle backend. Instead of writing complex Python logic with multiple database queries, MERGE lets you push this logic to the database layer where it belongs – resulting in better performance, reduced network overhead, and fewer concurrency issues.</p>
+
+<p>This knowledge becomes particularly valuable when working with AWS-based architectures where you&#x27;re processing large datasets through Lambda functions, Glue jobs, or EC2-based batch processing. Companies using Oracle in hybrid cloud environments (which is extremely common) need developers who can write efficient data synchronization code that minimizes cloud-to-database traffic costs and execution time. Understanding MERGE also demonstrates your grasp of ACID properties and database internals – skills that separate senior developers from junior ones when designing systems that handle financial transactions, user data synchronization, or any scenario where data consistency is critical.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing MERGE operations in a real-world Django application that syncs user activity data from multiple sources.</p>
+
+<p><strong>Step 1: Basic MERGE Structure</strong></p>
+
+<p>Start with the fundamental MERGE syntax. Here&#x27;s a practical example for updating user analytics data:</p>
+
+<pre><code class="language-sql">MERGE INTO user_analytics target
+USING (
+    SELECT user_id, page_views, session_duration, last_activity
+    FROM temp_analytics_data
+) source
+ON (target.user_id = source.user_id)
+WHEN MATCHED THEN
+    UPDATE SET 
+        page_views = target.page_views + source.page_views,
+        total_session_duration = target.total_session_duration + source.session_duration,
+        last_activity = GREATEST(target.last_activity, source.last_activity),
+        updated_at = SYSDATE
+WHEN NOT MATCHED THEN
+    INSERT (user_id, page_views, total_session_duration, last_activity, created_at, updated_at)
+    VALUES (source.user_id, source.page_views, source.session_duration, 
+            source.last_activity, SYSDATE, SYSDATE);
+</code></pre>
+
+<p><strong>Step 2: Python Integration with cx_Oracle</strong></p>
+
+<p>Here&#x27;s how to execute MERGE operations from your Python/Django application:</p>
+
+<pre><code class="language-python">import cx_Oracle
+from django.conf import settings
+from typing import List, Dict, Any
+
+<p>class UserAnalyticsSync:<br>
+    def __init__(self):<br>
+        self.connection = cx_Oracle.connect(<br>
+            user=settings.ORACLE_USER,<br>
+            password=settings.ORACLE_PASSWORD,<br>
+            dsn=settings.ORACLE_DSN<br>
+        )<br>
+    <br>
+    def bulk_upsert_analytics(self, analytics_data: List[Dict[str, Any]]) -&gt; int:<br>
+        &quot;&quot;&quot;<br>
+        Perform bulk upsert of user analytics data using Oracle MERGE<br>
+        Returns number of rows processed<br>
+        &quot;&quot;&quot;<br>
+        merge_sql = &quot;&quot;&quot;<br>
+        MERGE INTO user_analytics target<br>
+        USING (<br>
+            SELECT :user_id as user_id, <br>
+                   :page_views as page_views,<br>
+                   :session_duration as session_duration,<br>
+                   TO_DATE(:last_activity, &#x27;YYYY-MM-DD HH24:MI:SS&#x27;) as last_activity<br>
+            FROM dual<br>
+        ) source<br>
+        ON (target.user_id = source.user_id)<br>
+        WHEN MATCHED THEN<br>
+            UPDATE SET <br>
+                page_views = target.page_views + source.page_views,<br>
+                total_session_duration = target.total_session_duration + source.session_duration,<br>
+                last_activity = GREATEST(target.last_activity, source.last_activity),<br>
+                updated_at = SYSDATE<br>
+        WHEN NOT MATCHED THEN<br>
+            INSERT (user_id, page_views, total_session_duration, <br>
+                   last_activity, created_at, updated_at)<br>
+            VALUES (source.user_id, source.page_views, source.session_duration,<br>
+                   source.last_activity, SYSDATE, SYSDATE)<br>
+        &quot;&quot;&quot;<br>
+        <br>
+        cursor = self.connection.cursor()<br>
+        try:<br>
+            # Execute as batch for better performance<br>
+            cursor.executemany(merge_sql, analytics_data)<br>
+            rows_affected = cursor.rowcount<br>
+            self.connection.commit()<br>
+            return rows_affected<br>
+        except cx_Oracle.Error as error:<br>
+            self.connection.rollback()<br>
+            raise Exception(f&quot;Oracle MERGE failed: {error}&quot;)<br>
+        finally:<br>
+            cursor.close()</p>
+
+<h1>Usage in Django view or Celery task</h1>
+def sync_user_analytics(request):
+    analytics_sync = UserAnalyticsSync()
+    
+    # Sample data from API or batch processing
+    analytics_data = [
+        {
+            &#x27;user_id&#x27;: 1001,
+            &#x27;page_views&#x27;: 5,
+            &#x27;session_duration&#x27;: 320,
+            &#x27;last_activity&#x27;: &#x27;2024-01-15 14:30:22&#x27;
+        },
+        {
+            &#x27;user_id&#x27;: 1002,
+            &#x27;page_views&#x27;: 12,
+            &#x27;session_duration&#x27;: 890,
+            &#x27;last_activity&#x27;: &#x27;2024-01-15 15:45:10&#x27;
+        }
+    ]
+    
+    rows_processed = analytics_sync.bulk_upsert_analytics(analytics_data)
+    return JsonResponse({&#x27;status&#x27;: &#x27;success&#x27;, &#x27;rows_processed&#x27;: rows_processed})
+</code></pre>
+
+<p><strong>Step 3: Advanced MERGE with Conditional Logic</strong></p>
+
+<p>For complex scenarios, you can add WHERE clauses and multiple conditions:</p>
+
+<pre><code class="language-sql">MERGE INTO product_inventory target
+USING (
+    SELECT product_id, quantity_change, warehouse_id, operation_type
+    FROM inventory_updates
+    WHERE processed = 0
+) source
+ON (target.product_id = source.product_id AND target.warehouse_id = source.warehouse_id)
+WHEN MATCHED THEN
+    UPDATE SET 
+        current_stock = CASE 
+            WHEN source.operation_type = &#x27;ADD&#x27; THEN target.current_stock + source.quantity_change
+            WHEN source.operation_type = &#x27;REMOVE&#x27; THEN target.current_stock - source.quantity_change
+            ELSE target.current_stock
+        END,
+        last_updated = SYSDATE
+    WHERE target.current_stock &gt;= 0  -- Prevent negative inventory
+WHEN NOT MATCHED THEN
+    INSERT (product_id, warehouse_id, current_stock, last_updated)
+    VALUES (source.product_id, source.warehouse_id, 
+            GREATEST(source.quantity_change, 0), SYSDATE)
+    WHERE source.operation_type = &#x27;ADD&#x27;;  -- Only insert for additions
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Data synchronization from external APIs</strong>: When your Django app receives webhook data or batch updates from third-party services that need to update existing records or create new ones</li>
+<li><strong>ETL processes in AWS environments</strong>: Perfect for Glue jobs or Lambda functions that process data from S3 and need to update Oracle tables efficiently</li>
+<li><strong>Real-time analytics aggregation</strong>: When collecting user behavior data, IoT sensor readings, or application metrics that need to be rolled up into summary tables</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Simple single-record operations</strong>: If you&#x27;re just updating one user&#x27;s profile, a standard UPDATE statement is clearer and more maintainable</li>
+<li><strong>High-frequency, small transactions</strong>: MERGE has overhead; for rapid-fire single-row operations, individual INSERT/UPDATE statements might perform better</li>
+<li><strong>Complex business logic requirements</strong>: When your upsert logic involves multiple tables or complex validation that&#x27;s better handled in Python application code</li>
+</ul>
+<strong>Common pitfalls to watch for:</strong>
+<ul>
+<li><strong>Lock escalation</strong>: MERGE can lock more rows than expected; test with realistic data volumes</li>
+<li><strong>Source data duplicates</strong>: Ensure your source query doesn&#x27;t contain duplicates, or Oracle will throw ORA-30926 errors</li>
+<li><strong>Performance with large datasets</strong>: Without proper indexing on join columns, MERGE can be slower than separate operations</li>
+<li><strong>Error handling complexity</strong>: MERGE failures can be harder to debug than individual INSERT/UPDATE failures</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>MERGE is your go-to solution for bulk data synchronization</strong> – it handles INSERT and UPDATE operations atomically, reducing database round trips and eliminating race conditions in your Django applications</li>
+</ul>
+<ul>
+<li><strong>Push data logic to the database layer</strong> – instead of writing complex Python loops with individual database calls, MERGE moves the heavy lifting to Oracle where it belongs, improving performance and reducing AWS data transfer costs</li>
+</ul>
+<ul>
+<li><strong>Master the USING clause construction</strong> – whether sourcing from temporary tables, subqueries, or VALUES clauses, understanding how to structure your source data is key to MERGE success</li>
+</ul>
+<ul>
+<li><strong>Index your ON condition columns</strong> – MERGE performance depends heavily on efficient joins, so ensure proper indexing on columns used in your merge conditions</li>
+</ul>
+<ul>
+<li><strong>Use executemany() for bulk operations</strong> – when calling MERGE from Python, batch your operations using cx_Oracle&#x27;s executemany() method to maximize throughput and minimize connection overhead</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

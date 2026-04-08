@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed tracing with OpenTelemetry - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Distributed tracing with OpenTelemetry</h1>
+            <p class="meta">system_design &bull; March 21, 2026</p>
+        </header>
+        <main>
+<h1>Distributed Tracing with OpenTelemetry: Your Complete Implementation Guide</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Distributed tracing is like having a GPS tracker for your requests as they journey through your microservices architecture. Instead of wondering where your Django API call went after it hits your PostgreSQL database, calls an external service, and maybe triggers some AWS Lambda functions, distributed tracing shows you the complete path with precise timing and context information.</p>
+
+<p>OpenTelemetry (often called &quot;OTel&quot;) is the industry-standard toolkit that makes this magic happen. Think of it as a universal language that all your services can speak to create a unified story of what happens to each request. When a user hits your Django endpoint, OpenTelemetry creates a &quot;trace&quot; – essentially a unique ID that gets passed along to every service, database query, and external API call. Each step in the journey becomes a &quot;span&quot; with detailed metadata about timing, errors, and context.</p>
+
+<p>Here&#x27;s what a basic trace looks like in Python:</p>
+
+<pre><code class="language-python">from opentelemetry import trace
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+<h1>Set up the tracer</h1>
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+
+<p>def process_user_request(user_id):<br>
+    with tracer.start_as_current_span(&quot;process_user_request&quot;) as span:<br>
+        span.set_attribute(&quot;user.id&quot;, user_id)<br>
+        <br>
+        # This span will automatically be linked to the parent<br>
+        user_data = fetch_user_from_db(user_id)<br>
+        result = call_external_api(user_data)<br>
+        <br>
+        span.set_attribute(&quot;result.status&quot;, &quot;success&quot;)<br>
+        return result<br>
+</code></pre></p>
+
+<p>The beauty of distributed tracing becomes apparent when you&#x27;re debugging that frustrating issue where 1% of requests take 30 seconds instead of 300ms, or when you need to understand the cascade effects of a database slowdown across your entire system.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering distributed tracing with OpenTelemetry elevates you from someone who builds systems to someone who builds <em>observable</em> systems. In today&#x27;s cloud-native world, this distinction is career-defining. When you can quickly diagnose performance bottlenecks across Django services, PostgreSQL queries, and AWS infrastructure, you become the developer that teams rely on during critical incidents.</p>
+
+<p>For your specific stack, this knowledge is particularly valuable. Django&#x27;s middleware system integrates beautifully with OpenTelemetry, giving you automatic instrumentation for views, database queries, and template rendering. You can trace PostgreSQL query performance across multiple services, understand Oracle connection pooling behavior under load, and see exactly how AWS services like RDS, Lambda, or ECS contribute to your request latency. This visibility transforms how you approach performance optimization – instead of guessing which database query is slow, you see it immediately with full context.</p>
+
+<p>The RPA and automation work you&#x27;re interested in becomes significantly more reliable when you can trace execution flows across systems. Imagine debugging a Discord bot that integrates with an LLM service – distributed tracing shows you exactly where the bottleneck occurs, whether it&#x27;s in your Python processing, the Ollama model inference, or network calls. Companies desperately need developers who can architect systems with this level of observability from day one, rather than retrofitting it after problems occur.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a complete distributed tracing setup for a Django application that hits PostgreSQL and makes external API calls – a common pattern you&#x27;ll encounter.</p>
+
+<p>First, install the necessary packages:</p>
+
+<pre><code class="language-bash">pip install opentelemetry-api opentelemetry-sdk opentelemetry-instrumentation-django opentelemetry-instrumentation-psycopg2 opentelemetry-instrumentation-requests opentelemetry-exporter-jaeger
+</code></pre>
+
+<p>Create a tracing configuration module (<code>tracing.py</code>):</p>
+
+<pre><code class="language-python">import os
+from opentelemetry import trace
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.instrumentation.django import DjangoInstrumentor
+from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+
+<p>def configure_tracing():<br>
+    # Create a resource that identifies your service<br>
+    resource = Resource.create({<br>
+        &quot;service.name&quot;: &quot;django-api&quot;,<br>
+        &quot;service.version&quot;: &quot;1.0.0&quot;,<br>
+        &quot;deployment.environment&quot;: os.getenv(&quot;ENVIRONMENT&quot;, &quot;development&quot;)<br>
+    })<br>
+    <br>
+    # Set up the tracer provider<br>
+    trace.set_tracer_provider(TracerProvider(resource=resource))<br>
+    tracer_provider = trace.get_tracer_provider()<br>
+    <br>
+    # Configure Jaeger exporter (you can also use OTLP for other backends)<br>
+    jaeger_exporter = JaegerExporter(<br>
+        agent_host_name=os.getenv(&quot;JAEGER_HOST&quot;, &quot;localhost&quot;),<br>
+        agent_port=int(os.getenv(&quot;JAEGER_PORT&quot;, &quot;6831&quot;)),<br>
+    )<br>
+    <br>
+    # Add the exporter to a BatchSpanProcessor<br>
+    span_processor = BatchSpanProcessor(jaeger_exporter)<br>
+    tracer_provider.add_span_processor(span_processor)<br>
+    <br>
+    # Auto-instrument Django, PostgreSQL, and HTTP requests<br>
+    DjangoInstrumentor().instrument()<br>
+    Psycopg2Instrumentor().instrument()<br>
+    RequestsInstrumentor().instrument()</p>
+
+<h1>Call this in your Django settings</h1>
+configure_tracing()
+</code></pre>
+
+<p>Now, add this to your Django <code>settings.py</code>:</p>
+
+<pre><code class="language-python">import tracing  # This will initialize tracing
+
+<p>MIDDLEWARE = [<br>
+    # ... your existing middleware<br>
+    &#x27;opentelemetry.instrumentation.django.middleware.otel_middleware&#x27;,<br>
+    # ... rest of middleware<br>
+]<br>
+</code></pre></p>
+
+<p>Here&#x27;s how to add custom tracing to your Django views and business logic:</p>
+
+<pre><code class="language-python">from opentelemetry import trace
+from django.http import JsonResponse
+import requests
+import time
+
+<p>tracer = trace.get_tracer(__name__)</p>
+
+<p>def user_profile_api(request, user_id):<br>
+    with tracer.start_as_current_span(&quot;get_user_profile&quot;) as span:<br>
+        span.set_attribute(&quot;user.id&quot;, user_id)<br>
+        <br>
+        try:<br>
+            # Database query (automatically traced by psycopg2 instrumentation)<br>
+            user = get_user_from_db(user_id)<br>
+            span.set_attribute(&quot;user.found&quot;, True)<br>
+            <br>
+            # External API call (automatically traced by requests instrumentation)<br>
+            with tracer.start_as_current_span(&quot;enrich_user_data&quot;) as enrich_span:<br>
+                enrichment_data = requests.get(f&quot;https://api.example.com/users/{user_id}&quot;)<br>
+                enrich_span.set_attribute(&quot;external_api.status_code&quot;, enrichment_data.status_code)<br>
+                <br>
+                if enrichment_data.status_code != 200:<br>
+                    enrich_span.record_exception(Exception(&quot;External API failed&quot;))<br>
+                    enrich_span.set_status(trace.Status(trace.StatusCode.ERROR))<br>
+            <br>
+            # Custom business logic span<br>
+            with tracer.start_as_current_span(&quot;process_user_data&quot;) as process_span:<br>
+                processed_data = complex_user_processing(user, enrichment_data.json())<br>
+                process_span.set_attribute(&quot;processing.complexity_score&quot;, <br>
+                                         processed_data.get(&quot;complexity&quot;, 0))<br>
+            <br>
+            return JsonResponse(processed_data)<br>
+            <br>
+        except Exception as e:<br>
+            span.record_exception(e)<br>
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))<br>
+            return JsonResponse({&quot;error&quot;: &quot;Processing failed&quot;}, status=500)</p>
+
+<p>def complex_user_processing(user, enrichment_data):<br>
+    &quot;&quot;&quot;Simulate some complex processing that you want to trace&quot;&quot;&quot;<br>
+    with tracer.start_as_current_span(&quot;complex_processing&quot;) as span:<br>
+        # Simulate work<br>
+        time.sleep(0.1)<br>
+        <br>
+        # Add meaningful attributes<br>
+        span.set_attribute(&quot;processing.records_count&quot;, len(enrichment_data.get(&quot;records&quot;, [])))<br>
+        span.add_event(&quot;Started complex calculation&quot;)<br>
+        <br>
+        # More processing...<br>
+        result = {&quot;user_id&quot;: user.id, &quot;complexity&quot;: 42}<br>
+        <br>
+        span.add_event(&quot;Finished calculation&quot;, {&quot;result_size&quot;: len(str(result))})<br>
+        return result<br>
+</code></pre></p>
+
+<p>For AWS integration, you&#x27;ll want to trace Lambda functions and AWS service calls:</p>
+
+<pre><code class="language-python">from opentelemetry.instrumentation.boto3sqs import Boto3SqsInstrumentor
+from opentelemetry.instrumentation.botocore import BotocoreInstrumentor
+
+<h1>Add these to your tracing configuration</h1>
+BotocoreInstrumentor().instrument()
+Boto3SqsInstrumentor().instrument()
+
+<h1>Now your AWS calls are automatically traced</h1>
+import boto3
+
+<p>def process_with_aws():<br>
+    with tracer.start_as_current_span(&quot;aws_processing&quot;) as span:<br>
+        s3 = boto3.client(&#x27;s3&#x27;)<br>
+        # This S3 call will automatically create a child span<br>
+        response = s3.list_objects_v2(Bucket=&#x27;my-bucket&#x27;)<br>
+        span.set_attribute(&quot;s3.objects_count&quot;, response.get(&#x27;KeyCount&#x27;, 0))<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Microservices architectures</strong> where requests span multiple services, databases, and external APIs. Perfect for Django applications that call multiple backend services, hit both PostgreSQL and Oracle databases, and integrate with AWS services.</li><br>
+<li><strong>Performance debugging in production</strong> when you need to identify bottlenecks without reproducing issues locally. Especially valuable when dealing with intermittent slowdowns in LLM API calls or database query performance.</li><br>
+<li><strong>Complex automation workflows</strong> like RPA systems that orchestrate multiple services, Discord bots that trigger various backend processes, or AI pipelines that involve multiple processing steps across different systems.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Simple, single-service applications</strong> that don&#x27;t make external calls or have complex internal flows. The overhead isn&#x27;t worth it for a basic CRUD API with minimal logic.</li><br>
+<li><strong>Ultra-high-throughput systems</strong> where the ~1-2% performance overhead of tracing becomes significant. Consider sampling in these scenarios rather than avoiding tracing entirely.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong><br>
+<ul><br>
+<li><strong>Over-instrumenting with custom spans</strong> – resist the urge to trace every function call. Focus on service boundaries, external calls, and business-critical operations.</li><br>
+<li><strong>Not using sampling in production</strong> – tracing every single request can overwhelm your tracing backend and impact performance. Start with 1-5% sampling rates.</li><br>
+<li><strong>Forgetting about PII in span attributes</strong> – avoid adding sensitive user data directly to traces as they&#x27;re often stored longer than application logs.</li><br>
+<li><strong>Ignoring context propagation</strong> – ensure trace context flows correctly through async operations, message queues, and background tasks. Django&#x27;s async views need special attention here.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>OpenTelemetry provides automatic instrumentation</strong> for Django, PostgreSQL, Oracle (via database drivers), and AWS services – most of your tracing happens without writing extra code.</li>
+<li><strong>Focus your custom spans on business logic boundaries</strong> rather than every function call – trace user workflows, external integrations, and performance-critical sections.</li>
+<li><strong>Proper resource configuration and service naming</strong> makes traces infinitely more useful when debugging across multiple services and environments.</li>
+<li><strong>Sampling and performance considerations</strong> are crucial for production deployments – start conservative and increase visibility as needed.</li>
+<li><strong>The real value comes from end-to-end visibility</strong> – seeing how your Django views, database queries, LLM API calls, and AWS services interact gives you superpowers for debugging and optimization.</li>
+</ul>
+Distributed tracing transforms reactive debugging into proactive system understanding. With OpenTelemetry properly configured, you&#x27;ll wonder how you ever debugged distributed systems without it.
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

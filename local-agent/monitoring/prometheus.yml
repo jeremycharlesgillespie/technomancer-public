@@ -1,0 +1,14 @@
+# Prometheus configuration for Technomancer bot metrics
+# Copy this file to your Prometheus install directory (e.g., C:\prometheus\)
+
+global:
+  scrape_interval: 15s      # Scrape every 15 seconds
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "technomancer"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          app: "technomancer"
+          environment: "production"

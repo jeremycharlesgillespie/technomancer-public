@@ -1,0 +1,7 @@
+.auto_improve_report.json
+.bridge_token
+idea_board/ideas.json
+local-agent/profiling/
+profiling/
+data/
+sent_articles.json

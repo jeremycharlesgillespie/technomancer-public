@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle analytic functions: OVER, PARTITION BY, windowing - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle analytic functions: OVER, PARTITION BY, windowing</h1>
+            <p class="meta">oracle &bull; March 20, 2026</p>
+        </header>
+        <main>
+<h1>Mastering Oracle Analytic Functions: OVER, PARTITION BY, and Windowing</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Oracle analytic functions are powerful tools that allow you to perform complex calculations across sets of rows while still returning individual row-level data. Unlike regular aggregate functions that collapse multiple rows into a single result, analytic functions maintain the detail of your original query while adding calculated columns based on groups or windows of data. The magic happens with the <code>OVER</code> clause, which defines the scope of your calculation, often combined with <code>PARTITION BY</code> to create logical groups and windowing clauses to define specific row ranges.</p>
+
+<p>Think of analytic functions as a way to add &quot;context-aware&quot; calculations to your result set. Instead of needing complex self-joins or subqueries to compare a row&#x27;s value to its group average or to calculate running totals, you can achieve these results elegantly in a single query. The <code>OVER</code> clause is your control center – it tells Oracle which rows to consider for each calculation, while <code>PARTITION BY</code> acts like an invisible GROUP BY that doesn&#x27;t collapse your rows.</p>
+
+<p>Here&#x27;s a simple example that demonstrates the power:</p>
+
+<pre><code class="language-sql">SELECT 
+    employee_id,
+    department_id,
+    salary,
+    AVG(salary) OVER (PARTITION BY department_id) as dept_avg_salary,
+    RANK() OVER (PARTITION BY department_id ORDER BY salary DESC) as salary_rank
+FROM employees;
+</code></pre>
+
+<p>This query shows each employee&#x27;s individual salary alongside their department&#x27;s average salary and their rank within that department – all without losing the individual row details.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering Oracle analytic functions dramatically elevates your database development skills and makes you significantly more valuable in enterprise environments. These functions are often the difference between junior developers who write multiple queries and subqueries to achieve complex reporting requirements, and senior developers who can elegantly solve the same problems with a single, performant query. When you can transform a 50-line procedure with multiple cursors into a 10-line analytic query, you&#x27;re demonstrating the kind of deep database knowledge that commands higher salaries and senior positions.</p>
+
+<p>In today&#x27;s data-driven business environment, the ability to write sophisticated analytical queries directly impacts your career trajectory. Whether you&#x27;re building dashboards, creating reports for executives, or supporting business intelligence initiatives, analytic functions allow you to answer complex questions like &quot;How does each sales rep&#x27;s performance compare to their regional average?&quot; or &quot;What&#x27;s the running total of revenue by month, and how does this month compare to the same period last year?&quot; These are the kinds of business-critical questions that make you indispensable to your organization.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing Oracle analytic functions step by step, starting with basic concepts and building up to more complex scenarios.</p>
+
+<p><strong>Step 1: Master the Basic OVER Clause</strong></p>
+
+<p>The <code>OVER()</code> clause with empty parentheses applies the function to the entire result set:</p>
+
+<pre><code class="language-sql">SELECT 
+    product_name,
+    sales_amount,
+    SUM(sales_amount) OVER() as total_sales,
+    sales_amount / SUM(sales_amount) OVER() * 100 as percentage_of_total
+FROM product_sales;
+</code></pre>
+
+<p><strong>Step 2: Add PARTITION BY for Logical Grouping</strong></p>
+
+<p><code>PARTITION BY</code> divides your result set into groups, applying the analytic function within each group:</p>
+
+<pre><code class="language-sql">SELECT 
+    sales_rep,
+    region,
+    quarterly_sales,
+    AVG(quarterly_sales) OVER (PARTITION BY region) as region_avg,
+    quarterly_sales - AVG(quarterly_sales) OVER (PARTITION BY region) as variance_from_avg
+FROM sales_performance;
+</code></pre>
+
+<p><strong>Step 3: Incorporate ORDER BY for Ranking and Cumulative Functions</strong></p>
+
+<p>Adding <code>ORDER BY</code> within the <code>OVER</code> clause enables ranking functions and creates cumulative calculations:</p>
+
+<pre><code class="language-sql">SELECT 
+    order_date,
+    customer_id,
+    order_amount,
+    SUM(order_amount) OVER (ORDER BY order_date) as running_total,
+    ROW_NUMBER() OVER (ORDER BY order_amount DESC) as overall_rank,
+    LAG(order_amount, 1) OVER (ORDER BY order_date) as previous_order_amount
+FROM orders;
+</code></pre>
+
+<p><strong>Step 4: Implement Windowing for Precise Control</strong></p>
+
+<p>Windowing clauses give you precise control over which rows to include in calculations:</p>
+
+<pre><code class="language-sql">SELECT 
+    transaction_date,
+    daily_revenue,
+    -- 7-day moving average
+    AVG(daily_revenue) OVER (
+        ORDER BY transaction_date 
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) as seven_day_avg,
+    -- Compare to same day last week
+    LAG(daily_revenue, 7) OVER (ORDER BY transaction_date) as same_day_last_week,
+    -- Year-to-date cumulative sum
+    SUM(daily_revenue) OVER (
+        PARTITION BY EXTRACT(YEAR FROM transaction_date)
+        ORDER BY transaction_date
+        ROWS UNBOUNDED PRECEDING
+    ) as ytd_revenue
+FROM daily_sales_summary;
+</code></pre>
+
+<p><strong>Step 5: Combine Multiple Analytic Functions</strong></p>
+
+<p>The real power comes from combining multiple analytic functions in a single query:</p>
+
+<pre><code class="language-sql">SELECT 
+    employee_id,
+    department,
+    hire_date,
+    salary,
+    -- Department-based analytics
+    RANK() OVER (PARTITION BY department ORDER BY salary DESC) as dept_salary_rank,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salary) OVER (PARTITION BY department) as dept_median_salary,
+    -- Time-based analytics  
+    LAG(salary) OVER (PARTITION BY employee_id ORDER BY hire_date) as previous_salary,
+    -- Company-wide analytics
+    NTILE(4) OVER (ORDER BY salary) as salary_quartile,
+    CUME_DIST() OVER (ORDER BY salary) as salary_percentile
+FROM employee_history;
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Reporting and dashboards</strong> where you need to show individual records alongside aggregate metrics (each salesperson&#x27;s performance vs. team average)</li><br>
+<li><strong>Time-series analysis</strong> requiring running totals, moving averages, or period-over-period comparisons without the complexity of self-joins</li><br>
+<li><strong>Ranking and top-N queries</strong> where you need to identify best/worst performers within categories while maintaining all detail rows</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Simple aggregations</strong> where a basic GROUP BY would suffice – don&#x27;t overcomplicate queries that just need totals or counts</li><br>
+<li><strong>Large datasets without proper indexing</strong> as analytic functions can be resource-intensive, especially with complex windowing clauses over unindexed columns</li><br>
+</ul><br>
+<strong>Common Pitfalls to Watch:</strong></p>
+
+<ul>
+<li><strong>Performance degradation</strong>: Always ensure your <code>PARTITION BY</code> and <code>ORDER BY</code> columns are properly indexed. Analytic functions over millions of rows without indexes can bring your system to a crawl.</li>
+<li><strong>Incorrect windowing logic</strong>: Be careful with <code>ROWS</code> vs <code>RANGE</code> windowing – <code>ROWS BETWEEN 5 PRECEDING AND CURRENT ROW</code> gives you exactly 6 rows, while <code>RANGE</code> considers values, which might include more or fewer rows if there are duplicates.</li>
+<li><strong>NULL handling confusion</strong>: Functions like <code>LAG()</code> and <code>LEAD()</code> return NULL when looking beyond the partition boundaries. Plan for this in your application logic.</li>
+<li><strong>Memory consumption</strong>: Complex analytic queries with multiple partitions can consume significant memory. Monitor your sort area and PGA usage in production environments.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Analytic functions eliminate the need for complex self-joins and subqueries</strong> while providing better performance for most comparative and cumulative calculations</li>
+<li><strong>The OVER clause is your control center</strong> – empty parentheses mean entire result set, PARTITION BY creates logical groups, ORDER BY enables ranking and cumulative functions  </li>
+<li><strong>Windowing clauses provide surgical precision</strong> for calculations like moving averages, allowing you to specify exactly which rows to include in each computation</li>
+<li><strong>Proper indexing is crucial for performance</strong> – always index your PARTITION BY and ORDER BY columns to avoid full table sorts</li>
+<li><strong>Combining multiple analytic functions in a single query</strong> is often more efficient than running separate queries, but monitor resource usage and consider query complexity for maintainability</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

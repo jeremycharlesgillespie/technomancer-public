@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle PL/SQL cursors: implicit vs explicit - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle PL/SQL cursors: implicit vs explicit</h1>
+            <p class="meta">oracle &bull; March 24, 2026</p>
+        </header>
+        <main>
+<h1>Oracle PL/SQL Cursors: Implicit vs Explicit - A Developer&#x27;s Guide</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Oracle PL/SQL cursors are essentially pointers to the result sets of your SQL queries. Think of them as database iterators that help you navigate through query results row by row. Every time you execute a SQL statement in PL/SQL, Oracle creates a cursor behind the scenes to manage the data flow - these are <strong>implicit cursors</strong>. When you need more control over the process, you can declare and manage your own cursors - these are <strong>explicit cursors</strong>.</p>
+
+<p>The fundamental difference is control and visibility. Implicit cursors are Oracle&#x27;s autopilot mode - they handle simple operations automatically but give you limited feedback. Explicit cursors are manual transmission - more work to set up, but you get complete control over fetching, error handling, and performance optimization. As a developer working with Django and PostgreSQL, you&#x27;ll recognize this pattern - it&#x27;s similar to using Django&#x27;s ORM <code>.get()</code> method (which expects one result) versus manually iterating through a <code>.filter()</code> queryset.</p>
+
+<p>Here&#x27;s a simple example to illustrate the difference:</p>
+
+<pre><code class="language-sql">-- Implicit cursor (Oracle handles everything)
+BEGIN
+  UPDATE employees SET salary = salary * 1.1 WHERE department_id = 10;
+  DBMS_OUTPUT.PUT_LINE(&#x27;Updated &#x27; || SQL%ROWCOUNT || &#x27; employees&#x27;);
+END;
+
+<p>-- Explicit cursor (you control the process)<br>
+DECLARE<br>
+  CURSOR emp_cursor IS <br>
+    SELECT employee_id, salary FROM employees WHERE department_id = 10;<br>
+  emp_rec emp_cursor%ROWTYPE;<br>
+BEGIN<br>
+  OPEN emp_cursor;<br>
+  LOOP<br>
+    FETCH emp_cursor INTO emp_rec;<br>
+    EXIT WHEN emp_cursor%NOTFOUND;<br>
+    -- Custom logic for each row<br>
+    UPDATE employees SET salary = emp_rec.salary * 1.1 <br>
+    WHERE employee_id = emp_rec.employee_id;<br>
+  END LOOP;<br>
+  CLOSE emp_cursor;<br>
+END;<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Understanding cursor mechanics makes you a more versatile full-stack developer, especially when working with enterprise applications that span multiple database systems. While PostgreSQL handles cursors differently than Oracle, the underlying concepts of result set management are universal. When you&#x27;re building Django applications that need to integrate with existing Oracle systems (common in enterprise environments), knowing when to use stored procedures with explicit cursors versus letting Django&#x27;s ORM handle the heavy lifting becomes a valuable architectural decision.</p>
+
+<p>This knowledge particularly shines when you&#x27;re optimizing performance across your stack. Maybe you&#x27;re building an AI-powered automation system using Ollama that processes large datasets - understanding cursor behavior helps you write more efficient data processing pipelines. You&#x27;ll know when to push complex logic to the database layer (using explicit cursors) versus pulling data into your Python application for processing. This becomes crucial when deploying on AWS, where database connection costs and data transfer fees can add up quickly. A well-designed cursor strategy can reduce your RDS connection pool pressure and minimize data movement between your application and database tiers.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing both cursor types with practical examples you might encounter when building automation systems or integrating with existing Oracle databases.</p>
+
+<p><strong>Step 1: Understanding Implicit Cursors</strong></p>
+
+<p>Implicit cursors work automatically with single-row operations and DML statements. Here&#x27;s how to leverage their attributes:</p>
+
+<pre><code class="language-sql">-- Implicit cursor for data validation in your automation pipeline
+CREATE OR REPLACE PROCEDURE update_user_status(p_user_id NUMBER, p_status VARCHAR2)
+IS
+BEGIN
+  UPDATE users 
+  SET status = p_status, last_updated = SYSTIMESTAMP 
+  WHERE user_id = p_user_id;
+  
+  -- Use implicit cursor attributes for error handling
+  IF SQL%NOTFOUND THEN
+    RAISE_APPLICATION_ERROR(-20001, &#x27;User ID &#x27; || p_user_id || &#x27; not found&#x27;);
+  ELSIF SQL%ROWCOUNT &gt; 1 THEN
+    RAISE_APPLICATION_ERROR(-20002, &#x27;Multiple users updated - data integrity issue&#x27;);
+  ELSE
+    DBMS_OUTPUT.PUT_LINE(&#x27;Successfully updated user &#x27; || p_user_id);
+  END IF;
+  
+  COMMIT;
+EXCEPTION
+  WHEN OTHERS THEN
+    ROLLBACK;
+    -- Log to your monitoring system (could integrate with Discord webhook)
+    DBMS_OUTPUT.PUT_LINE(&#x27;Error updating user: &#x27; || SQLERRM);
+    RAISE;
+END;
+</code></pre>
+
+<p><strong>Step 2: Implementing Explicit Cursors for Complex Operations</strong></p>
+
+<p>For your AI data processing or RPA workflows, explicit cursors give you the control needed for batch operations:</p>
+
+<pre><code class="language-sql">-- Explicit cursor for processing large datasets (like training data for your LLM work)
+CREATE OR REPLACE PROCEDURE process_user_interactions(p_batch_size NUMBER DEFAULT 1000)
+IS
+  CURSOR interaction_cursor IS
+    SELECT user_id, interaction_type, interaction_data, created_date
+    FROM user_interactions 
+    WHERE processed = &#x27;N&#x27;
+    AND created_date &gt;= SYSTIMESTAMP - INTERVAL &#x27;1&#x27; DAY
+    ORDER BY created_date;
+  
+  TYPE interaction_array IS TABLE OF interaction_cursor%ROWTYPE;
+  l_interactions interaction_array;
+  l_processed_count NUMBER := 0;
+  
+BEGIN
+  OPEN interaction_cursor;
+  LOOP
+    -- Fetch in batches for better memory management
+    FETCH interaction_cursor BULK COLLECT INTO l_interactions LIMIT p_batch_size;
+    
+    -- Process each batch
+    FOR i IN 1..l_interactions.COUNT LOOP
+      -- Your custom processing logic here
+      -- This could call out to your Python AI service via HTTP
+      process_single_interaction(
+        l_interactions(i).user_id,
+        l_interactions(i).interaction_type,
+        l_interactions(i).interaction_data
+      );
+      
+      l_processed_count := l_processed_count + 1;
+    END LOOP;
+    
+    -- Mark batch as processed
+    FORALL i IN 1..l_interactions.COUNT
+      UPDATE user_interactions 
+      SET processed = &#x27;Y&#x27;, processed_date = SYSTIMESTAMP
+      WHERE user_id = l_interactions(i).user_id
+      AND created_date = l_interactions(i).created_date;
+    
+    COMMIT; -- Commit each batch
+    
+    EXIT WHEN interaction_cursor%NOTFOUND;
+  END LOOP;
+  
+  CLOSE interaction_cursor;
+  
+  -- Send notification to Discord webhook about completion
+  DBMS_OUTPUT.PUT_LINE(&#x27;Processed &#x27; || l_processed_count || &#x27; interactions&#x27;);
+  
+EXCEPTION
+  WHEN OTHERS THEN
+    IF interaction_cursor%ISOPEN THEN
+      CLOSE interaction_cursor;
+    END IF;
+    ROLLBACK;
+    RAISE;
+END;
+</code></pre>
+
+<p><strong>Step 3: Integrating with Python/Django</strong></p>
+
+<p>Here&#x27;s how you might call these procedures from your Django application:</p>
+
+<pre><code class="language-python">import cx_Oracle
+from django.conf import settings
+import logging
+
+<p>class OracleDataProcessor:<br>
+    def __init__(self):<br>
+        self.connection = cx_Oracle.connect(<br>
+            user=settings.ORACLE_USER,<br>
+            password=settings.ORACLE_PASSWORD,<br>
+            dsn=settings.ORACLE_DSN<br>
+        )<br>
+    <br>
+    def process_user_batch(self, batch_size=1000):<br>
+        &quot;&quot;&quot;Process user interactions using Oracle stored procedure with explicit cursors&quot;&quot;&quot;<br>
+        try:<br>
+            with self.connection.cursor() as cursor:<br>
+                cursor.callproc(&quot;process_user_interactions&quot;, [batch_size])<br>
+                <br>
+                # Get any output messages<br>
+                cursor.execute(&quot;SELECT output_message FROM processing_log WHERE session_id = SYS_CONTEXT(&#x27;USERENV&#x27;, &#x27;SESSIONID&#x27;)&quot;)<br>
+                results = cursor.fetchall()<br>
+                <br>
+                return {&quot;status&quot;: &quot;success&quot;, &quot;messages&quot;: results}<br>
+                <br>
+        except cx_Oracle.Error as e:<br>
+            logging.error(f&quot;Oracle processing error: {e}&quot;)<br>
+            # Send to Discord webhook for monitoring<br>
+            self.notify_discord_error(str(e))<br>
+            raise<br>
+    <br>
+    def notify_discord_error(self, error_message):<br>
+        # Integration with your Discord monitoring bot<br>
+        pass<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Implicit cursors for simple CRUD operations</strong> - Perfect for your Django model synchronization tasks or basic RPA operations where you&#x27;re updating single records and need to verify the operation succeeded.</li>
+</ul>
+<ul>
+<li><strong>Explicit cursors for ETL pipelines</strong> - When building data processing workflows for your AI projects, explicit cursors let you handle large datasets efficiently, process them in batches, and implement custom error handling.</li>
+</ul>
+<ul>
+<li><strong>Explicit cursors for complex business logic</strong> - When your automation system needs to apply intricate rules that can&#x27;t be expressed in a single SQL statement, explicit cursors let you iterate through data while maintaining transactional control.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Don&#x27;t use explicit cursors for simple lookups</strong> - If you just need to check if a record exists or grab a single value, implicit cursors or direct SQL queries are more efficient. Your Django ORM is probably better for most of these cases anyway.</li>
+</ul>
+<ul>
+<li><strong>Avoid cursors for set-based operations</strong> - If you can accomplish your task with a single UPDATE, INSERT, or DELETE statement, do that instead. Cursors add overhead and complexity. This is especially important when running on AWS RDS where you&#x27;re paying for compute time.</li>
+</ul>
+<strong>Common Pitfalls to Watch:</strong>
+
+<ul>
+<li><strong>Forgetting to close explicit cursors</strong> - This causes memory leaks and can exhaust your Oracle session limits. Always use exception handling to ensure cursors get closed.</li>
+<li><strong>Processing row-by-row when batch operations would work</strong> - Use BULK COLLECT and FORALL for better performance when dealing with large datasets.</li>
+<li><strong>Ignoring cursor attributes</strong> - Not checking %NOTFOUND, %ROWCOUNT, etc. leads to silent failures in your automation systems.</li>
+<li><strong>Mixing cursor types inappropriately</strong> - Don&#x27;t try to use explicit cursor attributes on implicit cursors or vice versa.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Implicit cursors are your default choice</strong> - Use them for straightforward DML operations and single-row SELECT INTO statements where Oracle&#x27;s automatic handling suffices for your Django integrations.</li>
+</ul>
+<ul>
+<li><strong>Explicit cursors give you control when you need it</strong> - Essential for complex data processing, batch operations, and when building robust automation systems that need detailed error handling and progress tracking.</li>
+</ul>
+<ul>
+<li><strong>Always clean up your resources</strong> - Use proper exception handling to ensure explicit cursors are closed, especially in long-running processes or when integrating with your Python applications via database connections.</li>
+</ul>
+<ul>
+<li><strong>Leverage cursor attributes for better error handling</strong> - %ROWCOUNT, %FOUND, %NOTFOUND, and %ISOPEN provide valuable feedback that can improve your application&#x27;s reliability and help with monitoring and alerting.</li>
+</ul>
+<ul>
+<li><strong>Consider your entire stack when choosing cursor strategies</strong> - Sometimes it&#x27;s better to keep complex logic in your Django application rather than in PL/SQL, especially when you need to integrate with external APIs, AI services, or cloud resources like your AWS infrastructure.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

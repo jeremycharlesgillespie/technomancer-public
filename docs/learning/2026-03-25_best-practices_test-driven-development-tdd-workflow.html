@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test-driven development (TDD) workflow - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Test-driven development (TDD) workflow</h1>
+            <p class="meta">best_practices &bull; March 25, 2026</p>
+        </header>
+        <main>
+<h1>Test-Driven Development (TDD): Your Path to Bulletproof Python Code</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Test-Driven Development (TDD) is a software development methodology where you write tests <em>before</em> writing the actual implementation code. The process follows a simple three-step cycle: <strong>Red</strong> (write a failing test), <strong>Green</strong> (write minimal code to make it pass), and <strong>Refactor</strong> (improve the code while keeping tests green). This might seem backwards at first, but it&#x27;s like having a GPS for your code—you know exactly where you&#x27;re going and when you&#x27;ve arrived.</p>
+
+<p>TDD matters because it fundamentally changes how you think about code. Instead of writing code and hoping it works, you define exactly what &quot;working&quot; means upfront. This leads to cleaner APIs, better design decisions, and dramatically fewer bugs in production. For developers working with complex systems involving Django APIs, PostgreSQL queries, and AWS services, TDD provides a safety net that catches issues before they become expensive problems.</p>
+
+<p>Here&#x27;s a simple example of TDD in action with a Django model:</p>
+
+<pre><code class="language-python"># test_user_service.py - Write the test first (RED)
+import pytest
+from django.test import TestCase
+from myapp.services import UserService
+from django.contrib.auth.models import User
+
+<p>class TestUserService(TestCase):<br>
+    def test_create_user_with_valid_email(self):<br>
+        # This test will fail initially because UserService doesn&#x27;t exist yet<br>
+        service = UserService()<br>
+        user = service.create_user_safely(&quot;test@example.com&quot;, &quot;password123&quot;)<br>
+        <br>
+        self.assertIsInstance(user, User)<br>
+        self.assertEqual(user.email, &quot;test@example.com&quot;)<br>
+        self.assertTrue(user.check_password(&quot;password123&quot;))<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>TDD transforms you from a code writer into a system designer. When you practice TDD with your Python/Django stack, you start thinking about interfaces and contracts before implementation details. This is incredibly valuable when building complex systems that integrate PostgreSQL databases, Oracle connections, and AWS services. You&#x27;ll find yourself writing more modular, testable code that&#x27;s easier to maintain and debug.</p>
+
+<p>In the enterprise world where you&#x27;re likely working with PostgreSQL and Oracle, TDD becomes your documentation. Your tests serve as living examples of how your Django models, database queries, and AWS integrations should behave. This is gold when you&#x27;re working on teams or maintaining legacy systems. Companies increasingly value developers who can write reliable, well-tested code because it reduces technical debt and increases development velocity. TDD skills also make you more attractive for senior roles where system reliability and code quality are paramount.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s implement TDD step-by-step with a realistic Django example that involves database operations—something you&#x27;ll encounter frequently when working with PostgreSQL or Oracle:</p>
+
+<p><strong>Step 1: Start with a failing test (RED)</strong></p>
+
+<pre><code class="language-python"># tests/test_ai_chat_service.py
+import pytest
+from django.test import TestCase, TransactionTestCase
+from unittest.mock import patch, Mock
+from myapp.services import AIChatService
+from myapp.models import ChatSession, ChatMessage
+
+<p>class TestAIChatService(TransactionTestCase):<br>
+    def setUp(self):<br>
+        self.service = AIChatService()<br>
+        self.user = User.objects.create_user(&#x27;testuser&#x27;, &#x27;test@example.com&#x27;)<br>
+    <br>
+    def test_create_chat_session_stores_in_database(self):<br>
+        # This will fail because AIChatService doesn&#x27;t exist yet<br>
+        session = self.service.create_session(<br>
+            user=self.user,<br>
+            model_name=&quot;llama2&quot;<br>
+        )<br>
+        <br>
+        self.assertIsNotNone(session.id)<br>
+        self.assertEqual(session.user, self.user)<br>
+        self.assertEqual(session.model_name, &quot;llama2&quot;)<br>
+        self.assertTrue(ChatSession.objects.filter(id=session.id).exists())<br>
+    <br>
+    @patch(&#x27;myapp.services.ollama_client&#x27;)<br>
+    def test_send_message_calls_ollama_and_stores_response(self, mock_ollama):<br>
+        # Mock the Ollama API response<br>
+        mock_ollama.generate.return_value = {<br>
+            &#x27;response&#x27;: &#x27;Hello! How can I help you today?&#x27;<br>
+        }<br>
+        <br>
+        session = ChatSession.objects.create(<br>
+            user=self.user,<br>
+            model_name=&quot;llama2&quot;<br>
+        )<br>
+        <br>
+        response = self.service.send_message(<br>
+            session_id=session.id,<br>
+            message=&quot;Hello&quot;<br>
+        )<br>
+        <br>
+        # Check that both user message and AI response are stored<br>
+        messages = ChatMessage.objects.filter(session=session)<br>
+        self.assertEqual(messages.count(), 2)<br>
+        self.assertEqual(response, &#x27;Hello! How can I help you today?&#x27;)<br>
+</code></pre></p>
+
+<p><strong>Step 2: Write minimal code to make it pass (GREEN)</strong></p>
+
+<pre><code class="language-python"># models.py
+from django.db import models
+from django.contrib.auth.models import User
+
+<p>class ChatSession(models.Model):<br>
+    user = models.ForeignKey(User, on_delete=models.CASCADE)<br>
+    model_name = models.CharField(max_length=50)<br>
+    created_at = models.DateTimeField(auto_now_add=True)</p>
+
+<p>class ChatMessage(models.Model):<br>
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE)<br>
+    content = models.TextField()<br>
+    is_user_message = models.BooleanField()<br>
+    timestamp = models.DateTimeField(auto_now_add=True)</p>
+
+<h1>services.py</h1>
+import requests
+from django.db import transaction
+from .models import ChatSession, ChatMessage
+
+<p>class AIChatService:<br>
+    def create_session(self, user, model_name):<br>
+        return ChatSession.objects.create(<br>
+            user=user,<br>
+            model_name=model_name<br>
+        )<br>
+    <br>
+    def send_message(self, session_id, message):<br>
+        session = ChatSession.objects.get(id=session_id)<br>
+        <br>
+        # Store user message<br>
+        ChatMessage.objects.create(<br>
+            session=session,<br>
+            content=message,<br>
+            is_user_message=True<br>
+        )<br>
+        <br>
+        # Call Ollama API (this would be mocked in tests)<br>
+        from . import ollama_client<br>
+        response = ollama_client.generate(<br>
+            model=session.model_name,<br>
+            prompt=message<br>
+        )<br>
+        <br>
+        # Store AI response<br>
+        ai_response = response[&#x27;response&#x27;]<br>
+        ChatMessage.objects.create(<br>
+            session=session,<br>
+            content=ai_response,<br>
+            is_user_message=False<br>
+        )<br>
+        <br>
+        return ai_response<br>
+</code></pre></p>
+
+<p><strong>Step 3: Refactor (REFACTOR)</strong></p>
+
+<p>Now that tests are passing, improve the code. Add error handling, connection pooling for your database, or better separation of concerns:</p>
+
+<pre><code class="language-python"># Refactored version with better error handling and AWS integration
+class AIChatService:
+    def __init__(self, s3_client=None):
+        self.s3_client = s3_client or boto3.client(&#x27;s3&#x27;)
+    
+    @transaction.atomic
+    def send_message(self, session_id, message):
+        try:
+            session = ChatSession.objects.select_for_update().get(id=session_id)
+            
+            # Store conversation in S3 for backup
+            self._backup_to_s3(session_id, message)
+            
+            # Rest of implementation...
+            
+        except ChatSession.DoesNotExist:
+            raise ValueError(f&quot;Chat session {session_id} not found&quot;)
+        except Exception as e:
+            # Log to CloudWatch or your preferred logging service
+            logger.error(f&quot;Error in send_message: {str(e)}&quot;)
+            raise
+    
+    def _backup_to_s3(self, session_id, message):
+        # Implementation for AWS S3 backup
+        pass
+</code></pre>
+
+<p>Run your tests frequently with <code>python manage.py test</code> or <code>pytest</code>. The key is keeping the cycles short—write a small test, make it pass, refactor, repeat.</p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Django API endpoints</strong>: TDD helps you define exactly what your REST APIs should return and how they should handle edge cases, especially when integrating with external services like Ollama or Discord webhooks.</li><br>
+<li><strong>Database query optimization</strong>: Write tests for your PostgreSQL/Oracle queries first to ensure they return the correct data and perform well under load.</li><br>
+<li><strong>AWS service integrations</strong>: TDD is perfect for testing S3 uploads, Lambda functions, or SQS message processing where failure modes are critical to handle correctly.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Rapid prototyping or proof-of-concepts</strong>: When you&#x27;re exploring what&#x27;s possible with a new AI model or testing Discord bot interactions, TDD can slow down discovery.</li><br>
+<li><strong>UI/frontend heavy work</strong>: While you can test Django templates, TDD isn&#x27;t as effective for visual design work or complex frontend interactions.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong><br>
+<ul><br>
+<li>Writing tests that are too coupled to implementation details—focus on behavior, not internal structure</li><br>
+<li>Not running tests frequently enough—run them after every small change</li><br>
+<li>Writing tests that depend on external services without proper mocking—this makes tests flaky and slow</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>TDD is design, not just testing</strong>: You&#x27;re designing your API and defining contracts before writing implementation code</li>
+<li><strong>Start small and iterate</strong>: Write the simplest test that fails, then make it pass with minimal code</li>
+<li><strong>Mock external dependencies</strong>: Your PostgreSQL queries, AWS calls, and Ollama API requests should be mocked in tests for speed and reliability</li>
+<li><strong>Tests are living documentation</strong>: Well-written tests show other developers (and future you) exactly how your code is supposed to work</li>
+<li><strong>TDD works exceptionally well with Django</strong>: The framework&#x27;s built-in testing tools make TDD natural for web APIs, database models, and service integrations</li>
+</ul>
+Remember, TDD isn&#x27;t about writing more code—it&#x27;s about writing better code with confidence. When you&#x27;re building systems that integrate databases, AI services, and cloud infrastructure, that confidence is invaluable.
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

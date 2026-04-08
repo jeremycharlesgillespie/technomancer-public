@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python match statements (structural pattern matching) - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Python match statements (structural pattern matching)</h1>
+            <p class="meta">python &bull; March 30, 2026</p>
+        </header>
+        <main>
+<h1>Python Match Statements: Structural Pattern Matching for Modern Developers</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Python&#x27;s match statements, introduced in Python 3.10, bring structural pattern matching to the language—think of it as switch statements on steroids. Unlike traditional switch statements that only handle simple value comparisons, Python&#x27;s match can destructure complex data types, match patterns in nested structures, and bind variables to matched components all in one elegant syntax.</p>
+
+<p>This isn&#x27;t just syntactic sugar for if-elif chains. Match statements provide a declarative way to handle complex data structures, making your code more readable and maintainable when dealing with API responses, database records, or configuration objects. The pattern matching engine can handle everything from simple value matching to complex nested dictionaries and lists, with support for guards, wildcards, and type checking.</p>
+
+<p>Here&#x27;s a simple example that shows the power beyond basic value matching:</p>
+
+<pre><code class="language-python">def process_api_response(response):
+    match response:
+        case {&quot;status&quot;: &quot;success&quot;, &quot;data&quot;: data, &quot;count&quot;: int(count)} if count &gt; 0:
+            return f&quot;Processed {count} items: {data}&quot;
+        case {&quot;status&quot;: &quot;error&quot;, &quot;message&quot;: str(msg)}:
+            raise APIError(msg)
+        case {&quot;status&quot;: &quot;empty&quot;}:
+            return &quot;No data available&quot;
+        case _:
+            raise ValueError(&quot;Unexpected response format&quot;)
+</code></pre>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering match statements elevates your Python code quality significantly, especially when working with Django APIs and AWS service responses. Instead of nested if-elif chains that become unwieldy as your application grows, you can write cleaner, more maintainable code that clearly expresses intent. This is particularly valuable when processing database query results from PostgreSQL or Oracle, where you might need to handle different result shapes or error conditions.</p>
+
+<p>For developers working with AI and automation projects using Ollama or LLMs, match statements excel at parsing structured responses and handling the various formats these systems return. When building Discord bots or RPA workflows, you&#x27;ll often encounter complex nested data structures from APIs—match statements make this data wrangling elegant and bug-resistant. Senior developers and code reviewers recognize clean pattern matching as a sign of thoughtful architecture, making this skill valuable for career advancement and code reviews.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s start with basic syntax and build up to complex real-world scenarios you&#x27;ll encounter in your Django/AWS stack.</p>
+
+<p><strong>Basic Pattern Matching:</strong></p>
+
+<pre><code class="language-python">def handle_database_result(result):
+    match result:
+        case None:
+            return &quot;No results found&quot;
+        case []:
+            return &quot;Empty result set&quot;
+        case [single_item]:
+            return f&quot;Found one item: {single_item}&quot;
+        case [first, *rest]:
+            return f&quot;Found {len(rest) + 1} items, first: {first}&quot;
+</code></pre>
+
+<p><strong>Advanced Patterns for Django/API Work:</strong></p>
+
+<pre><code class="language-python">def process_user_command(command_data):
+    match command_data:
+        # Discord bot command processing
+        case {&quot;type&quot;: &quot;slash_command&quot;, &quot;name&quot;: &quot;deploy&quot;, &quot;options&quot;: [{&quot;name&quot;: &quot;environment&quot;, &quot;value&quot;: env}]}:
+            return deploy_to_aws(env)
+        
+        # Database query result patterns
+        case {&quot;success&quot;: True, &quot;rows&quot;: [{&quot;id&quot;: int(user_id), &quot;role&quot;: &quot;admin&quot;, **user_data}]}:
+            return create_admin_response(user_id, user_data)
+        
+        # LLM response parsing
+        case {&quot;choices&quot;: [{&quot;message&quot;: {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: str(content)}}, *_]}:
+            return parse_ai_response(content)
+        
+        # AWS service responses
+        case {&quot;ResponseMetadata&quot;: {&quot;HTTPStatusCode&quot;: 200}, &quot;Items&quot;: items} if len(items) &gt; 0:
+            return process_dynamodb_items(items)
+        
+        case {&quot;Error&quot;: {&quot;Code&quot;: str(error_code), &quot;Message&quot;: str(message)}}:
+            logger.error(f&quot;AWS Error {error_code}: {message}&quot;)
+            raise AWSServiceException(error_code, message)
+</code></pre>
+
+<p><strong>Pattern Guards and Type Matching:</strong></p>
+
+<pre><code class="language-python">def validate_config(config):
+    match config:
+        # PostgreSQL connection with validation
+        case {
+            &quot;database&quot;: {&quot;host&quot;: str(host), &quot;port&quot;: int(port), &quot;name&quot;: str(db_name)}
+        } if 1 &lt;= port &lt;= 65535:
+            return PostgreSQLConfig(host, port, db_name)
+        
+        # Oracle connection pattern
+        case {
+            &quot;database&quot;: {&quot;oracle_dsn&quot;: str(dsn), &quot;service_name&quot;: str(service)}
+        } if dsn.startswith(&quot;oracle://&quot;):
+            return OracleConfig(dsn, service)
+        
+        # Invalid configurations
+        case {&quot;database&quot;: db_config}:
+            raise ConfigError(f&quot;Invalid database config: {db_config}&quot;)
+        
+        case _:
+            raise ConfigError(&quot;Database configuration required&quot;)
+</code></pre>
+
+<p><strong>Class and Object Patterns:</strong></p>
+
+<pre><code class="language-python">from dataclasses import dataclass
+from enum import Enum
+
+<p>class TaskStatus(Enum):<br>
+    PENDING = &quot;pending&quot;<br>
+    RUNNING = &quot;running&quot;<br>
+    COMPLETED = &quot;completed&quot;<br>
+    FAILED = &quot;failed&quot;</p>
+
+<p>@dataclass<br>
+class Task:<br>
+    id: int<br>
+    status: TaskStatus<br>
+    result: dict = None</p>
+
+<p>def handle_automation_task(task):<br>
+    match task:<br>
+        case Task(status=TaskStatus.COMPLETED, result={&quot;data&quot;: data}) if data:<br>
+            return process_successful_task(data)<br>
+        <br>
+        case Task(status=TaskStatus.FAILED, result={&quot;error&quot;: error_msg}):<br>
+            log_task_failure(task.id, error_msg)<br>
+            return retry_task(task)<br>
+        <br>
+        case Task(status=TaskStatus.PENDING | TaskStatus.RUNNING):<br>
+            return f&quot;Task {task.id} still processing...&quot;<br>
+        <br>
+        case _:<br>
+            raise ValueError(f&quot;Unknown task state: {task}&quot;)<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>API response processing</strong>: When handling responses from AWS services, Discord API, or LLM endpoints where the structure varies based on success/error states or response types</li>
+<li><strong>Django model serialization</strong>: Processing complex nested data from forms or API requests where you need to validate structure and extract specific fields in one operation</li>
+<li><strong>Database result transformation</strong>: Converting query results from PostgreSQL or Oracle into different formats based on the result structure, especially with JSON columns or complex joins</li>
+<li><strong>Configuration parsing</strong>: Handling complex configuration files or environment-specific settings where different deployment targets (AWS regions, database types) require different processing logic</li>
+<li><strong>State machine implementations</strong>: Building automation workflows or Discord bot command handlers where the next action depends on the current state and input pattern</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Simple value comparisons</strong>: If you just need to check <code>if status == &quot;success&quot;</code>, don&#x27;t use match—it&#x27;s overkill and less readable than a simple if statement</li>
+<li><strong>Performance-critical tight loops</strong>: Match statements have slight overhead compared to simple if-elif chains; avoid in hot code paths like data processing loops over large datasets</li>
+</ul>
+<strong>Common Pitfalls:</strong>
+
+<ul>
+<li><strong>Forgetting the wildcard case</strong>: Always include a <code>case _:</code> to handle unexpected inputs, especially when processing external API responses</li>
+<li><strong>Overcomplicating simple logic</strong>: Don&#x27;t use match for straightforward conditional logic just because it looks cool</li>
+<li><strong>Pattern order matters</strong>: More specific patterns must come before general ones, or they&#x27;ll never be reached</li>
+<li><strong>Mutable default captures</strong>: Be careful with patterns that capture mutable objects; they&#x27;re not copied, so modifications affect the original</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Match statements excel at destructuring complex data structures</strong> in one readable operation, making them perfect for API responses, database results, and configuration processing</li>
+<li><strong>Pattern guards with <code>if</code> conditions</strong> let you combine structural matching with business logic validation, reducing nested if statements</li>
+<li><strong>Use match for polymorphic data handling</strong> where the processing logic depends on both the structure and content of your data, common in Django APIs and AWS service responses  </li>
+<li><strong>Class patterns work seamlessly with dataclasses and enums</strong>, making them ideal for type-safe automation workflows and Discord bot command processing</li>
+<li><strong>Always include defensive patterns</strong> (<code>case _:</code>) when processing external data to gracefully handle unexpected formats and prevent silent failures in production systems</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>neo4j - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>neo4j</h1>
+            <p class="meta">custom &bull; March 15, 2026</p>
+        </header>
+        <main>
+<hr>
+
+<h1>Neo4j for Python Developers: When Graphs Beat Tables</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Neo4j is a graph database that stores data as nodes (entities) and relationships (connections between entities), rather than the traditional rows and columns you&#x27;re used to with PostgreSQL and Oracle. Think of it as a network where every piece of data can be directly connected to any other piece, creating a web of relationships that&#x27;s incredibly efficient for certain types of queries.</p>
+
+<p>Unlike relational databases where you&#x27;d need complex JOINs to traverse relationships, Neo4j makes these connections first-class citizens. When you need to find &quot;friends of friends&quot; or &quot;products frequently bought together,&quot; Neo4j can answer these questions in milliseconds rather than the seconds (or minutes) it might take with traditional SQL queries across multiple tables.</p>
+
+<p>Here&#x27;s a simple example of creating nodes and relationships in Neo4j using Python:</p>
+
+<pre><code class="language-python">from neo4j import GraphDatabase
+
+<p>class UserRecommendationGraph:<br>
+    def __init__(self, uri, user, password):<br>
+        self.driver = GraphDatabase.driver(uri, auth=(user, password))<br>
+    <br>
+    def create_user_and_interests(self, user_id, name, interests):<br>
+        with self.driver.session() as session:<br>
+            # Create user node and connect to interests<br>
+            session.run(&quot;&quot;&quot;<br>
+                CREATE (u:User {id: $user_id, name: $name})<br>
+                WITH u<br>
+                UNWIND $interests AS interest<br>
+                MERGE (i:Interest {name: interest})<br>
+                CREATE (u)-[:INTERESTED_IN]-&gt;(i)<br>
+            &quot;&quot;&quot;, user_id=user_id, name=name, interests=interests)<br>
+    <br>
+    def find_similar_users(self, user_id):<br>
+        with self.driver.session() as session:<br>
+            result = session.run(&quot;&quot;&quot;<br>
+                MATCH (u:User {id: $user_id})-[:INTERESTED_IN]-&gt;(i:Interest)<br>
+                MATCH (similar:User)-[:INTERESTED_IN]-&gt;(i)<br>
+                WHERE similar.id &lt;&gt; $user_id<br>
+                RETURN similar.name, count(i) as shared_interests<br>
+                ORDER BY shared_interests DESC<br>
+                LIMIT 5<br>
+            &quot;&quot;&quot;, user_id=user_id)<br>
+            return [(record[&quot;similar.name&quot;], record[&quot;shared_interests&quot;]) <br>
+                   for record in result]<br>
+</code></pre></p>
+
+<p>This example shows how naturally Neo4j handles relationship-heavy queries that would require multiple JOINs and potentially complex subqueries in traditional SQL.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Adding Neo4j to your toolkit alongside PostgreSQL and Oracle makes you incredibly versatile in solving data relationship problems. While your relational databases excel at structured data and transactions, Neo4j shines when you need to analyze connections, build recommendation engines, detect fraud patterns, or work with hierarchical data structures. This combination makes you the developer who can choose the right tool for the job rather than forcing every problem into a relational model.</p>
+
+<p>In the current AI and automation landscape, graph databases are becoming essential for building sophisticated systems. Knowledge graphs power many LLM applications, social network analysis drives recommendation systems, and dependency graphs are crucial for infrastructure automation. If you&#x27;re working with Ollama or building Discord bots that need to understand user relationships and interaction patterns, Neo4j can provide insights that would be incredibly complex to achieve with traditional databases. On AWS, Neo4j integrates well with your existing infrastructure and can complement your Django applications by handling the relationship-heavy queries while PostgreSQL manages your transactional data.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a practical example that integrates Neo4j with your existing Django and PostgreSQL setup. We&#x27;ll create a system that tracks API dependencies for your automation projects:</p>
+
+<p>First, install the Neo4j driver and set up the connection:</p>
+
+<pre><code class="language-bash">pip install neo4j
+</code></pre>
+
+<p>Create a Django service class to handle Neo4j operations:</p>
+
+<pre><code class="language-python"># services/graph_service.py
+from neo4j import GraphDatabase
+from django.conf import settings
+import logging
+
+<p>logger = logging.getLogger(__name__)</p>
+
+<p>class DependencyGraphService:<br>
+    def __init__(self):<br>
+        self.driver = GraphDatabase.driver(<br>
+            settings.NEO4J_URI,<br>
+            auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD)<br>
+        )<br>
+    <br>
+    def close(self):<br>
+        self.driver.close()<br>
+    <br>
+    def create_service_dependency(self, service_name, depends_on, dependency_type=&quot;API_CALL&quot;):<br>
+        &quot;&quot;&quot;Create or update service dependencies&quot;&quot;&quot;<br>
+        with self.driver.session() as session:<br>
+            session.run(&quot;&quot;&quot;<br>
+                MERGE (s1:Service {name: $service_name})<br>
+                MERGE (s2:Service {name: $depends_on})<br>
+                MERGE (s1)-[r:DEPENDS_ON {type: $dependency_type}]-&gt;(s2)<br>
+                SET r.last_updated = datetime()<br>
+                RETURN s1, s2, r<br>
+            &quot;&quot;&quot;, service_name=service_name, depends_on=depends_on, dependency_type=dependency_type)<br>
+    <br>
+    def find_dependency_chain(self, service_name, max_depth=5):<br>
+        &quot;&quot;&quot;Find all services that depend on a given service&quot;&quot;&quot;<br>
+        with self.driver.session() as session:<br>
+            result = session.run(&quot;&quot;&quot;<br>
+                MATCH path = (dependent:Service)-[:DEPENDS_ON*1..$max_depth]-&gt;(target:Service {name: $service_name})<br>
+                RETURN [node in nodes(path) | node.name] as dependency_chain,<br>
+                       length(path) as chain_length<br>
+                ORDER BY chain_length DESC<br>
+            &quot;&quot;&quot;, service_name=service_name, max_depth=max_depth)<br>
+            <br>
+            return [{&quot;chain&quot;: record[&quot;dependency_chain&quot;], <br>
+                    &quot;length&quot;: record[&quot;chain_length&quot;]} <br>
+                   for record in result]<br>
+    <br>
+    def detect_circular_dependencies(self):<br>
+        &quot;&quot;&quot;Find circular dependencies that could cause issues&quot;&quot;&quot;<br>
+        with self.driver.session() as session:<br>
+            result = session.run(&quot;&quot;&quot;<br>
+                MATCH (s:Service)-[:DEPENDS_ON*]-&gt;(s)<br>
+                RETURN s.name as service_with_circular_dependency<br>
+            &quot;&quot;&quot;)<br>
+            return [record[&quot;service_with_circular_dependency&quot;] for record in result]<br>
+    <br>
+    def get_critical_services(self):<br>
+        &quot;&quot;&quot;Find services that many others depend on&quot;&quot;&quot;<br>
+        with self.driver.session() as session:<br>
+            result = session.run(&quot;&quot;&quot;<br>
+                MATCH (s:Service)&lt;-[:DEPENDS_ON]-(dependent:Service)<br>
+                RETURN s.name as service, count(dependent) as dependents<br>
+                ORDER BY dependents DESC<br>
+                LIMIT 10<br>
+            &quot;&quot;&quot;)<br>
+            return [(record[&quot;service&quot;], record[&quot;dependents&quot;]) for record in result]</p>
+
+<h1>Django view integration</h1>
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from django.views import View
+import json
+
+<p>@method_decorator(csrf_exempt, name=&#x27;dispatch&#x27;)<br>
+class DependencyAnalysisView(View):<br>
+    def __init__(self):<br>
+        super().__init__()<br>
+        self.graph_service = DependencyGraphService()<br>
+    <br>
+    def post(self, request):<br>
+        &quot;&quot;&quot;Record a new dependency&quot;&quot;&quot;<br>
+        data = json.loads(request.body)<br>
+        self.graph_service.create_service_dependency(<br>
+            service_name=data[&#x27;service&#x27;],<br>
+            depends_on=data[&#x27;depends_on&#x27;],<br>
+            dependency_type=data.get(&#x27;type&#x27;, &#x27;API_CALL&#x27;)<br>
+        )<br>
+        return JsonResponse({&quot;status&quot;: &quot;dependency recorded&quot;})<br>
+    <br>
+    def get(self, request):<br>
+        &quot;&quot;&quot;Get dependency analysis&quot;&quot;&quot;<br>
+        service = request.GET.get(&#x27;service&#x27;)<br>
+        if service:<br>
+            chains = self.graph_service.find_dependency_chain(service)<br>
+            return JsonResponse({&quot;dependency_chains&quot;: chains})<br>
+        <br>
+        # Get critical services and circular dependencies<br>
+        critical = self.graph_service.get_critical_services()<br>
+        circular = self.graph_service.detect_circular_dependencies()<br>
+        <br>
+        return JsonResponse({<br>
+            &quot;critical_services&quot;: critical,<br>
+            &quot;circular_dependencies&quot;: circular<br>
+        })<br>
+</code></pre></p>
+
+<p>To integrate this with your existing PostgreSQL models, you might have a Django model that triggers Neo4j updates:</p>
+
+<pre><code class="language-python"># models.py
+from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+from .services.graph_service import DependencyGraphService
+
+<p>class APIEndpoint(models.Model):<br>
+    name = models.CharField(max_length=100)<br>
+    service_name = models.CharField(max_length=100)<br>
+    dependencies = models.ManyToManyField(&#x27;self&#x27;, blank=True)<br>
+    <br>
+    def __str__(self):<br>
+        return f&quot;{self.service_name}: {self.name}&quot;</p>
+
+<p>@receiver(post_save, sender=APIEndpoint)<br>
+def update_dependency_graph(sender, instance, created, **kwargs):<br>
+    &quot;&quot;&quot;Automatically update Neo4j when Django model changes&quot;&quot;&quot;<br>
+    if created or instance.dependencies.exists():<br>
+        graph_service = DependencyGraphService()<br>
+        for dependency in instance.dependencies.all():<br>
+            graph_service.create_service_dependency(<br>
+                service_name=instance.service_name,<br>
+                depends_on=dependency.service_name<br>
+            )<br>
+        graph_service.close()<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Recommendation systems</strong>: When building AI-powered suggestions for Discord bots or user-facing applications, Neo4j excels at finding patterns in user behavior and content relationships that would require complex SQL queries in PostgreSQL.</li><br>
+<li><strong>Infrastructure dependency mapping</strong>: For your RPA and automation projects, tracking which services depend on which APIs, databases, or external systems becomes trivial with graph queries instead of recursive SQL.</li><br>
+<li><strong>Social network analysis</strong>: Whether it&#x27;s modeling Discord server relationships, user interactions, or team collaboration patterns, graph databases naturally represent these many-to-many relationships.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Simple CRUD operations</strong>: If you&#x27;re just storing and retrieving user profiles, order data, or other straightforward relational data, stick with PostgreSQL or Oracle. Neo4j adds unnecessary complexity for basic operations.</li><br>
+<li><strong>Heavy transactional workloads</strong>: Neo4j isn&#x27;t designed for high-frequency transactional updates like financial systems or inventory management where ACID compliance and performance are critical.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong><br>
+<ul><br>
+<li><strong>Over-graphing simple relationships</strong>: Don&#x27;t migrate your entire Django model structure to Neo4j. Use it alongside your relational databases for the relationship-heavy parts only.</li><br>
+<li><strong>Ignoring data modeling</strong>: Unlike SQL where you might get away with poor normalization, graph databases require careful thought about node and relationship design upfront.</li><br>
+<li><strong>Forgetting to close connections</strong>: Neo4j connections are more resource-intensive than typical database connections, so always use context managers or explicitly close your driver connections.</li><br>
+<li><strong>Query performance assumptions</strong>: While graph traversals are fast, poorly written Cypher queries can be slower than equivalent SQL. Always use EXPLAIN to analyze your query performance.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>Neo4j complements, doesn&#x27;t replace your existing PostgreSQL/Oracle setup</strong> - use it for relationship-heavy queries while keeping transactional data in relational databases</li>
+<li><strong>Graph thinking changes how you model problems</strong> - start visualizing data as networks of connections rather than normalized tables, especially for AI and automation use cases  </li>
+<li><strong>Cypher queries feel natural once you grasp the pattern matching concept</strong> - focus on describing the shape of data relationships rather than imperative steps to find them</li>
+<li><strong>Integration with Django is straightforward</strong> - use signals and service classes to keep your graph data synchronized with your relational models without tight coupling</li>
+<li><strong>Performance scales with relationship complexity, not data volume</strong> - queries that would require multiple JOINs and temporary tables in SQL become simple traversals in Neo4j, making it perfect for LLM knowledge graphs and automation dependency tracking</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle result cache for repeated queries - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle result cache for repeated queries</h1>
+            <p class="meta">oracle &bull; March 19, 2026</p>
+        </header>
+        <main>
+<h1>Oracle Result Cache: Speed Up Your Repeated Queries Without Breaking a Sweat</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Oracle&#x27;s Result Cache is a memory-based caching mechanism that automatically stores the results of SELECT statements and PL/SQL function calls. When the same query executes again with identical parameters, Oracle can return the cached result instead of re-executing the expensive database operations. Think of it as Oracle&#x27;s built-in &quot;smart memoization&quot; – it remembers what you asked for and serves up the answer instantly the next time.</p>
+
+<p>This feature matters because database queries are often the performance bottleneck in modern applications. Whether you&#x27;re building REST APIs, processing batch jobs, or serving web applications, you&#x27;re likely running the same or similar queries repeatedly. Instead of hitting the disk, parsing SQL, and rebuilding result sets every time, the result cache lets Oracle serve data directly from memory – often delivering 10x to 100x performance improvements for cacheable queries.</p>
+
+<p>Here&#x27;s a simple example of enabling result cache on a query:</p>
+
+<pre><code class="language-sql">-- Enable result cache for this specific query
+SELECT /<em>+ RESULT_CACHE </em>/ 
+    department_name, 
+    COUNT(*) as employee_count,
+    AVG(salary) as avg_salary
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+WHERE e.hire_date &gt;= DATE &#x27;2020-01-01&#x27;
+GROUP BY department_name;
+</code></pre>
+
+<p>The <code>/<em>+ RESULT_CACHE </em>/</code> hint tells Oracle to cache this query&#x27;s results. Subsequent executions with the same SQL text will return cached data until the underlying tables change or the cache expires.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Understanding Oracle&#x27;s Result Cache elevates you from someone who just writes queries to someone who architects high-performance database solutions. In today&#x27;s competitive development landscape, performance optimization skills are what separate senior developers from junior ones. When you can identify bottlenecks and apply caching strategies effectively, you become the developer teams rely on when applications start slowing down under load.</p>
+
+<p>This knowledge opens doors to database performance tuning roles, solution architect positions, and gives you credibility when discussing system scalability with stakeholders. You&#x27;ll solve real problems like: APIs timing out under heavy load, reports that take minutes to generate, and batch processes that can&#x27;t complete within their maintenance windows. More importantly, you&#x27;ll prevent these problems by designing efficient data access patterns from the start, making you invaluable to any team building data-driven applications.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing Oracle Result Cache step by step, starting with configuration and moving to practical usage patterns.</p>
+
+<p><strong>Step 1: Verify Result Cache Configuration</strong></p>
+
+<p>First, check if result cache is enabled and properly sized in your Oracle instance:</p>
+
+<pre><code class="language-sql">-- Check current result cache settings
+SELECT name, value 
+FROM v$parameter 
+WHERE name LIKE &#x27;result_cache%&#x27;;
+
+<p>-- Check result cache memory usage<br>
+SELECT * FROM v$result_cache_statistics;<br>
+</code></pre></p>
+
+<p>If result cache isn&#x27;t enabled, you&#x27;ll need DBA privileges to configure it:</p>
+
+<pre><code class="language-sql">-- Set result cache size (example: 64MB)
+ALTER SYSTEM SET result_cache_max_size = 64M SCOPE=BOTH;
+
+<p>-- Enable result cache<br>
+ALTER SYSTEM SET result_cache_mode = MANUAL SCOPE=BOTH;<br>
+</code></pre></p>
+
+<p><strong>Step 2: Implement Query-Level Caching</strong></p>
+
+<p>Start with expensive queries that return relatively stable data. Here&#x27;s a practical example for an employee reporting system:</p>
+
+<pre><code class="language-sql">-- Cache expensive aggregation query
+SELECT /<em>+ RESULT_CACHE </em>/ 
+    d.department_name,
+    COUNT(*) as total_employees,
+    AVG(e.salary) as avg_salary,
+    MAX(e.salary) as max_salary,
+    MIN(e.hire_date) as earliest_hire
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id
+JOIN locations l ON d.location_id = l.location_id
+WHERE l.country_id = &#x27;US&#x27;
+  AND e.status = &#x27;ACTIVE&#x27;
+GROUP BY d.department_name
+ORDER BY avg_salary DESC;
+</code></pre>
+
+<p><strong>Step 3: Implement Function Result Caching</strong></p>
+
+<p>For business logic that&#x27;s called repeatedly, use PL/SQL function result caching:</p>
+
+<pre><code class="language-sql">-- Create a function with result cache
+CREATE OR REPLACE FUNCTION get_employee_performance_score(
+    p_employee_id NUMBER,
+    p_year NUMBER
+) RETURN NUMBER
+RESULT_CACHE RELIES_ON (performance_reviews, employees)
+IS
+    l_score NUMBER;
+BEGIN
+    SELECT AVG(review_score * weight_factor)
+    INTO l_score
+    FROM performance_reviews pr
+    JOIN review_criteria rc ON pr.criteria_id = rc.criteria_id
+    WHERE pr.employee_id = p_employee_id
+      AND EXTRACT(YEAR FROM pr.review_date) = p_year;
+    
+    RETURN NVL(l_score, 0);
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        RETURN 0;
+END;
+/
+
+<p>-- Usage in application queries<br>
+SELECT employee_name, <br>
+       get_employee_performance_score(employee_id, 2024) as score_2024<br>
+FROM employees <br>
+WHERE department_id = 10;<br>
+</code></pre></p>
+
+<p><strong>Step 4: Monitor and Tune Cache Performance</strong></p>
+
+<p>Implement monitoring queries to track cache effectiveness:</p>
+
+<pre><code class="language-sql">-- Monitor result cache hit ratio
+SELECT 
+    ROUND((cache_hits / (cache_hits + cache_misses)) * 100, 2) as hit_ratio_percent,
+    cache_hits,
+    cache_misses,
+    cache_creates
+FROM (
+    SELECT 
+        SUM(CASE WHEN name = &#x27;Result Cache: Find Count&#x27; THEN value END) as cache_hits,
+        SUM(CASE WHEN name = &#x27;Result Cache: Miss Count&#x27; THEN value END) as cache_misses,
+        SUM(CASE WHEN name = &#x27;Result Cache: Create Count&#x27; THEN value END) as cache_creates
+    FROM v$result_cache_statistics
+);
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Reference data lookups</strong>: Country codes, product categories, configuration settings that change infrequently but are queried constantly</li><br>
+<li><strong>Complex reporting queries</strong>: Month-end reports, dashboard aggregations, or analytics queries that take seconds to run but are requested multiple times</li><br>
+<li><strong>Expensive join operations</strong>: Queries combining multiple large tables where the underlying data is relatively stable, like customer demographics joined with geographic data</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Rapidly changing transactional data</strong>: Order status, inventory levels, real-time user activity where data freshness is critical</li><br>
+<li><strong>Queries with high cardinality parameters</strong>: User-specific data where caching won&#x27;t provide benefit because each query is unique</li><br>
+</ul><br>
+<strong>Common Pitfalls to Watch For:</strong></p>
+
+<ol>
+<li><strong>Memory pressure</strong>: Over-caching can push other important data out of the buffer pool. Monitor overall system memory usage when implementing result cache.</li>
+</ol>
+<ol>
+<li><strong>Stale data assumptions</strong>: Applications expecting real-time data might break if they suddenly start receiving cached results. Always consider data freshness requirements.</li>
+</ol>
+<ol>
+<li><strong>Parameter sensitivity</strong>: Queries with bind variables only cache when parameters match exactly. A query filtering by <code>user_id = 123</code> won&#x27;t help when the next call uses <code>user_id = 124</code>.</li>
+</ol>
+<ol>
+<li><strong>DDL invalidation</strong>: Any schema changes to tables referenced in cached results will invalidate the cache. This can cause performance spikes after deployments.</li>
+</ol>
+<ol>
+<li><strong>Debugging complexity</strong>: Cached results can make troubleshooting harder because you might not see the &quot;real&quot; query execution plan during performance analysis.</li>
+</ol>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Result cache works best for read-heavy workloads</strong> where the same expensive queries run repeatedly with stable underlying data</li>
+<li><strong>Use the <code>/<em>+ RESULT_CACHE </em>/</code> hint strategically</strong> on queries that take significant time to execute and return relatively static data</li>
+<li><strong>Function result caching is powerful for business logic</strong> that performs complex calculations or aggregations used across multiple queries</li>
+<li><strong>Monitor cache hit ratios and memory usage</strong> to ensure you&#x27;re getting value from the cache without negatively impacting overall database performance</li>
+<li><strong>Consider data freshness requirements carefully</strong> – result cache is about trading data currency for performance, so make sure that trade-off makes sense for your use case</li>
+</ul>
+<hr>
+
+<p><em>Remember: Performance optimization is about measuring first, optimizing second. Always benchmark your queries before and after implementing result cache to ensure you&#x27;re actually getting the performance benefits you expect.</em></p>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle PL/SQL exception handling patterns - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle PL/SQL exception handling patterns</h1>
+            <p class="meta">oracle &bull; March 15, 2026</p>
+        </header>
+        <main>
+<hr>
+
+<h1>Oracle PL/SQL Exception Handling Patterns: Your Guide to Bulletproof Database Code</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Oracle PL/SQL exception handling is your safety net for building resilient database applications. At its core, it&#x27;s a structured approach to anticipate, catch, and gracefully handle errors that occur during PL/SQL block execution. Think of it as Python&#x27;s try-catch blocks, but specifically designed for Oracle&#x27;s procedural language with built-in database awareness.</p>
+
+<p>Exception handling in PL/SQL matters because database operations are inherently unpredictable. Network timeouts, constraint violations, resource limitations, and data inconsistencies can derail your application at any moment. Without proper exception handling, a single database error can crash your entire Django application or leave your AWS-hosted services in an undefined state. More importantly, poor exception handling makes debugging a nightmare and creates silent failures that are nearly impossible to trace.</p>
+
+<p>Here&#x27;s a simple example that shows the basic structure:</p>
+
+<pre><code class="language-sql">DECLARE
+    v_employee_count NUMBER;
+BEGIN
+    SELECT COUNT(*)
+    INTO v_employee_count
+    FROM employees
+    WHERE department_id = 999;
+
+    DBMS_OUTPUT.PUT_LINE(&#x27;Found &#x27; || v_employee_count || &#x27; employees&#x27;);
+
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE(&#x27;Department not found&#x27;);
+    WHEN TOO_MANY_ROWS THEN
+        DBMS_OUTPUT.PUT_LINE(&#x27;Query returned multiple rows unexpectedly&#x27;);
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE(&#x27;Unexpected error: &#x27; || SQLERRM);
+        RAISE; -- Re-raise the exception for upstream handling
+END;
+</code></pre>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering PL/SQL exception handling transforms you from someone who writes database code to someone who architects reliable data systems. In your Python/Django stack, this knowledge bridges the gap between application-level error handling and database-level resilience. When you&#x27;re building Django models that interact with both PostgreSQL and Oracle databases, understanding how Oracle handles exceptions helps you design consistent error handling patterns across your entire data layer.</p>
+
+<p>This skill becomes especially valuable in AWS environments where you&#x27;re managing multiple database connections, implementing automated data pipelines, or building RPA solutions that process large datasets. Companies pay premium salaries for developers who can design systems that fail gracefully and provide meaningful error diagnostics. When your Django application can distinguish between a temporary network issue and a data integrity problem—and respond appropriately to each—you&#x27;ve moved beyond basic CRUD operations into the realm of enterprise-grade system design.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build exception handling patterns that integrate well with your existing tech stack. Start with the foundation: understanding Oracle&#x27;s exception hierarchy and creating custom exceptions for your business logic.</p>
+
+<p><strong>Step 1: Create Custom Exceptions for Business Logic</strong></p>
+
+<pre><code class="language-sql">CREATE OR REPLACE PACKAGE custom_exceptions AS
+    -- Define custom exceptions
+    invalid_employee_status EXCEPTION;
+    PRAGMA EXCEPTION_INIT(invalid_employee_status, -20001);
+
+    salary_out_of_range EXCEPTION;
+    PRAGMA EXCEPTION_INIT(salary_out_of_range, -20002);
+
+    -- Exception handling utility
+    PROCEDURE log_exception(
+        p_error_code IN VARCHAR2,
+        p_error_message IN VARCHAR2,
+        p_procedure_name IN VARCHAR2
+    );
+END custom_exceptions;
+
+<p>CREATE OR REPLACE PACKAGE BODY custom_exceptions AS<br>
+    PROCEDURE log_exception(<br>
+        p_error_code IN VARCHAR2,<br>
+        p_error_message IN VARCHAR2,<br>
+        p_procedure_name IN VARCHAR2<br>
+    ) IS<br>
+        PRAGMA AUTONOMOUS_TRANSACTION;<br>
+    BEGIN<br>
+        INSERT INTO error_log (<br>
+            error_code, <br>
+            error_message, <br>
+            procedure_name, <br>
+            error_timestamp,<br>
+            session_user<br>
+        ) VALUES (<br>
+            p_error_code,<br>
+            p_error_message,<br>
+            p_procedure_name,<br>
+            SYSTIMESTAMP,<br>
+            USER<br>
+        );<br>
+        COMMIT;<br>
+    END log_exception;<br>
+END custom_exceptions;<br>
+</code></pre></p>
+
+<p><strong>Step 2: Implement Layered Exception Handling</strong></p>
+
+<p>Create a stored procedure that demonstrates proper exception layering—catching specific exceptions first, then handling generic ones:</p>
+
+<pre><code class="language-sql">CREATE OR REPLACE PROCEDURE update_employee_salary(
+    p_employee_id IN employees.employee_id%TYPE,
+    p_new_salary IN employees.salary%TYPE,
+    p_status OUT VARCHAR2,
+    p_message OUT VARCHAR2
+) IS
+    v_current_salary employees.salary%TYPE;
+    v_employee_count NUMBER;
+    v_procedure_name VARCHAR2(50) := &#x27;update_employee_salary&#x27;;
+BEGIN
+    -- Initialize output parameters
+    p_status := &#x27;SUCCESS&#x27;;
+    p_message := &#x27;Salary updated successfully&#x27;;
+
+    -- Validate employee exists
+    SELECT COUNT(*), MAX(salary)
+    INTO v_employee_count, v_current_salary
+    FROM employees
+    WHERE employee_id = p_employee_id;
+
+    IF v_employee_count = 0 THEN
+        RAISE_APPLICATION_ERROR(-20001, &#x27;Employee ID not found: &#x27; || p_employee_id);
+    END IF;
+
+    -- Business logic validation
+    IF p_new_salary &lt; 0 OR p_new_salary &gt; 1000000 THEN
+        RAISE custom_exceptions.salary_out_of_range;
+    END IF;
+
+    -- Perform the update
+    UPDATE employees
+    SET salary = p_new_salary,
+        last_modified = SYSTIMESTAMP
+    WHERE employee_id = p_employee_id;
+
+    -- Log the change for audit purposes
+    INSERT INTO salary_audit (
+        employee_id,
+        old_salary,
+        new_salary,
+        changed_by,
+        change_timestamp
+    ) VALUES (
+        p_employee_id,
+        v_current_salary,
+        p_new_salary,
+        USER,
+        SYSTIMESTAMP
+    );
+
+EXCEPTION
+    WHEN custom_exceptions.salary_out_of_range THEN
+        p_status := &#x27;ERROR&#x27;;
+        p_message := &#x27;Salary must be between 0 and 1,000,000&#x27;;
+        custom_exceptions.log_exception(&#x27;SALARY_RANGE&#x27;, p_message, v_procedure_name);
+        ROLLBACK;
+
+    WHEN DUP_VAL_ON_INDEX THEN
+        p_status := &#x27;ERROR&#x27;;
+        p_message := &#x27;Duplicate entry detected&#x27;;
+        custom_exceptions.log_exception(&#x27;DUPLICATE_KEY&#x27;, SQLERRM, v_procedure_name);
+        ROLLBACK;
+
+    WHEN NO_DATA_FOUND THEN
+        p_status := &#x27;ERROR&#x27;;
+        p_message := &#x27;Employee not found&#x27;;
+        custom_exceptions.log_exception(&#x27;NO_DATA&#x27;, p_message, v_procedure_name);
+
+    WHEN OTHERS THEN
+        p_status := &#x27;ERROR&#x27;;
+        p_message := &#x27;Unexpected error occurred&#x27;;
+        custom_exceptions.log_exception(&#x27;UNKNOWN&#x27;, SQLERRM, v_procedure_name);
+        ROLLBACK;
+        -- Re-raise for upstream handling if needed
+        -- RAISE;
+END update_employee_salary;
+</code></pre>
+
+<p><strong>Step 3: Integrate with Python/Django</strong></p>
+
+<p>Here&#x27;s how to call your exception-aware PL/SQL from Django using cx_Oracle:</p>
+
+<pre><code class="language-python">import cx_Oracle
+from django.conf import settings
+from django.db import transaction
+import logging
+
+<p>logger = logging.getLogger(__name__)</p>
+
+<p>class EmployeeSalaryService:<br>
+    def __init__(self):<br>
+        self.connection = cx_Oracle.connect(<br>
+            settings.ORACLE_CONNECTION_STRING<br>
+        )<br>
+    <br>
+    def update_employee_salary(self, employee_id: int, new_salary: float) -&gt; dict:<br>
+        &quot;&quot;&quot;<br>
+        Update employee salary with proper exception handling<br>
+        Returns: dict with status and message<br>
+        &quot;&quot;&quot;<br>
+        cursor = self.connection.cursor()<br>
+        <br>
+        try:<br>
+            # Define output variables<br>
+            status = cursor.var(cx_Oracle.STRING)<br>
+            message = cursor.var(cx_Oracle.STRING)<br>
+            <br>
+            # Call the stored procedure<br>
+            cursor.callproc(<br>
+                &#x27;update_employee_salary&#x27;,<br>
+                [employee_id, new_salary, status, message]<br>
+            )<br>
+            <br>
+            # Get the results<br>
+            result_status = status.getvalue()<br>
+            result_message = message.getvalue()<br>
+            <br>
+            if result_status == &#x27;SUCCESS&#x27;:<br>
+                self.connection.commit()<br>
+                logger.info(f&quot;Salary updated for employee {employee_id}&quot;)<br>
+            else:<br>
+                logger.error(f&quot;Salary update failed: {result_message}&quot;)<br>
+            <br>
+            return {<br>
+                &#x27;status&#x27;: result_status,<br>
+                &#x27;message&#x27;: result_message,<br>
+                &#x27;employee_id&#x27;: employee_id<br>
+            }<br>
+            <br>
+        except cx_Oracle.DatabaseError as e:<br>
+            error, = e.args<br>
+            logger.error(f&quot;Database error in salary update: {error.message}&quot;)<br>
+            self.connection.rollback()<br>
+            <br>
+            return {<br>
+                &#x27;status&#x27;: &#x27;ERROR&#x27;,<br>
+                &#x27;message&#x27;: f&quot;Database error: {error.message}&quot;,<br>
+                &#x27;employee_id&#x27;: employee_id<br>
+            }<br>
+            <br>
+        except Exception as e:<br>
+            logger.error(f&quot;Unexpected error in salary update: {str(e)}&quot;)<br>
+            self.connection.rollback()<br>
+            <br>
+            return {<br>
+                &#x27;status&#x27;: &#x27;ERROR&#x27;,<br>
+                &#x27;message&#x27;: f&quot;System error: {str(e)}&quot;,<br>
+                &#x27;employee_id&#x27;: employee_id<br>
+            }<br>
+            <br>
+        finally:<br>
+            cursor.close()<br>
+    <br>
+    def __del__(self):<br>
+        if hasattr(self, &#x27;connection&#x27;):<br>
+            self.connection.close()<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Data migration and ETL processes</strong>: When moving data between PostgreSQL and Oracle systems, robust exception handling prevents partial migrations and provides detailed error logging for troubleshooting failed records.</li>
+</ul>
+<ul>
+<li><strong>Financial or audit-critical operations</strong>: Any procedure that modifies sensitive data should include comprehensive exception handling with audit trails, especially when building Django applications that need to maintain data integrity across multiple database systems.</li>
+</ul>
+<ul>
+<li><strong>Batch processing and automation</strong>: When building RPA solutions or automated data processing pipelines, exception handling allows your system to skip problematic records, log issues for later review, and continue processing rather than failing entirely.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Simple SELECT queries for reporting</strong>: Over-engineering read-only queries with complex exception handling adds unnecessary overhead. Use basic error handling in your Python layer instead.</li>
+</ul>
+<ul>
+<li><strong>High-frequency, low-risk operations</strong>: If you&#x27;re calling a procedure thousands of times per second and the risk of failure is minimal, extensive exception handling can impact performance. Profile first, then add complexity as needed.</li>
+</ul>
+<strong>Common pitfalls to watch for:</strong>
+
+<ul>
+<li><strong>Swallowing exceptions silently</strong>: Never use <code>WHEN OTHERS THEN NULL;</code> without logging. This creates debugging nightmares.</li>
+<li><strong>Not using PRAGMA AUTONOMOUS_TRANSACTION for logging</strong>: If your exception handler fails, you lose all error information.</li>
+<li><strong>Over-relying on generic WHEN OTHERS</strong>: Catch specific exceptions first to provide meaningful error messages.</li>
+<li><strong>Forgetting to ROLLBACK in exception handlers</strong>: Partial transactions can corrupt your data integrity.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Layer your exception handling</strong> from specific business logic errors to generic database errors, just like you structure try-catch blocks in Python</li>
+<li><strong>Always log exceptions with context</strong> using autonomous transactions so error information survives rollbacks and provides debugging insights</li>
+<li><strong>Design exception handling as part of your API contract</strong> between PL/SQL procedures and Django applications, returning structured status and message information</li>
+<li><strong>Use custom exceptions for business logic validation</strong> to distinguish between technical database errors and application-level rule violations</li>
+<li><strong>Integrate Oracle exception patterns with your existing Python error handling</strong> to create consistent error responses across your entire application stack</li>
+</ul>
+<hr>
+
+<p><em>Remember: Exception handling isn&#x27;t just about preventing crashes—it&#x27;s about building systems that fail gracefully, provide meaningful diagnostics, and maintain data integrity under adverse conditions. Master these patterns, and you&#x27;ll write database code that your future self (and your teammates) will thank you for.</em></p>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

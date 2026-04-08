@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python memory optimization techniques - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Python memory optimization techniques</h1>
+            <p class="meta">python &bull; March 23, 2026</p>
+        </header>
+        <main>
+<h1>Python Memory Optimization: Essential Techniques for Production Applications</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Python memory optimization is the practice of reducing your application&#x27;s memory footprint while maintaining performance and functionality. At its core, it involves understanding how Python manages objects in memory and implementing strategies to minimize memory allocation, reduce object overhead, and eliminate memory leaks. This includes techniques like using <code>__slots__</code>, generators instead of lists, memory pooling, and proper garbage collection management.</p>
+
+<p>Memory optimization matters more than ever in today&#x27;s development landscape. When you&#x27;re running Django applications on AWS EC2 instances, processing large datasets from PostgreSQL or Oracle databases, or building AI applications with LLMs through Ollama, memory efficiency directly impacts your infrastructure costs and application performance. A poorly optimized Python application might require twice the RAM, leading to higher AWS bills and slower response times. For developers working with automation and RPA systems that process thousands of records, memory optimization can mean the difference between a smooth operation and system crashes.</p>
+
+<p>Here&#x27;s a simple example showing the immediate impact of memory optimization:</p>
+
+<pre><code class="language-python"># Memory-heavy approach
+large_data = [x**2 for x in range(1000000)]  # Creates entire list in memory
+result = sum(large_data)
+
+<h1>Memory-optimized approach</h1>
+result = sum(x**2 for x in range(1000000))  # Generator expression - constant memory
+</code></pre>
+
+<p>The optimized version uses virtually no additional memory regardless of the range size, while the first approach consumes megabytes of RAM.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Memory optimization skills set you apart as a developer who understands production realities, not just coding basics. In your Django applications running on AWS, this knowledge translates directly to cost savings and better user experience. When you optimize memory usage, you can handle more concurrent users on the same EC2 instance, reduce database connection pooling issues with PostgreSQL and Oracle, and build more responsive APIs. Companies value developers who can scale applications efficiently because it directly impacts their bottom line.</p>
+
+<p>This expertise becomes crucial when working with AI and LLM applications through Ollama. Large language models are memory-intensive, and understanding how to optimize your Python code means you can build more sophisticated AI features without breaking the bank on infrastructure. For automation and RPA projects, memory efficiency often determines whether your scripts can process enterprise-scale data or crash halfway through. These skills make you the developer teams turn to for performance-critical projects and architectural decisions.</p>
+
+<h2>How to Implement It</h2>
+
+<h3>1. Use <code>__slots__</code> for Data Classes</h3>
+
+<p>When creating classes that will have many instances, <code>__slots__</code> can reduce memory usage by 30-50%:</p>
+
+<pre><code class="language-python"># Without slots - high memory usage
+class RegularUser:
+    def __init__(self, username, email, user_id):
+        self.username = username
+        self.email = email
+        self.user_id = user_id
+
+<h1>With slots - optimized memory usage</h1>
+class OptimizedUser:
+    __slots__ = [&#x27;username&#x27;, &#x27;email&#x27;, &#x27;user_id&#x27;]
+    
+    def __init__(self, username, email, user_id):
+        self.username = username
+        self.email = email
+        self.user_id = user_id
+</code></pre>
+
+<p>This is particularly useful for Django models or data structures you&#x27;re loading from PostgreSQL/Oracle queries.</p>
+
+<h3>2. Implement Generator Patterns</h3>
+
+<p>Replace memory-heavy list comprehensions with generators for large datasets:</p>
+
+<pre><code class="language-python"># For processing database results
+def process_user_records(queryset):
+    # Memory-heavy: loads all records
+    # processed = [transform_user(user) for user in queryset]
+    
+    # Memory-optimized: processes one at a time
+    for user in queryset:
+        yield transform_user(user)
+
+<h1>Usage in Django view</h1>
+def export_users(request):
+    users = User.objects.all()
+    processed_users = process_user_records(users)
+    
+    # Process in chunks without loading everything
+    for user_data in processed_users:
+        # Send to Discord, write to file, etc.
+        handle_user_export(user_data)
+</code></pre>
+
+<h3>3. Optimize Database Query Memory</h3>
+
+<p>When working with PostgreSQL or Oracle through Django ORM:</p>
+
+<pre><code class="language-python"># Memory-heavy approach
+def get_all_user_data():
+    users = User.objects.select_related(&#x27;profile&#x27;).all()
+    return list(users)  # Loads everything into memory
+
+<h1>Memory-optimized approach</h1>
+def get_user_data_stream():
+    return User.objects.select_related(&#x27;profile&#x27;).iterator(chunk_size=1000)
+
+<h1>For large exports or RPA processing</h1>
+def process_large_dataset():
+    for user_batch in get_user_data_stream():
+        # Process in manageable chunks
+        process_user_batch(user_batch)
+        # Memory is freed after each batch
+</code></pre>
+
+<h3>4. Memory Pooling for Frequent Objects</h3>
+
+<p>For applications that create/destroy many objects (like Discord bots or automation scripts):</p>
+
+<pre><code class="language-python">from queue import Queue
+
+<p>class ObjectPool:<br>
+    def __init__(self, create_func, reset_func, initial_size=10):<br>
+        self.create_func = create_func<br>
+        self.reset_func = reset_func<br>
+        self.pool = Queue()<br>
+        <br>
+        # Pre-populate pool<br>
+        for _ in range(initial_size):<br>
+            self.pool.put(create_func())<br>
+    <br>
+    def get_object(self):<br>
+        if self.pool.empty():<br>
+            return self.create_func()<br>
+        return self.pool.get()<br>
+    <br>
+    def return_object(self, obj):<br>
+        self.reset_func(obj)<br>
+        self.pool.put(obj)</p>
+
+<h1>Usage for Discord message processing</h1>
+def create_message_processor():
+    return {&#x27;processed_count&#x27;: 0, &#x27;errors&#x27;: []}
+
+<p>def reset_processor(processor):<br>
+    processor[&#x27;processed_count&#x27;] = 0<br>
+    processor[&#x27;errors&#x27;].clear()</p>
+
+<p>processor_pool = ObjectPool(create_message_processor, reset_processor)<br>
+</code></pre></p>
+
+<h3>5. Profile and Monitor Memory Usage</h3>
+
+<p>Always measure your optimizations:</p>
+
+<pre><code class="language-python">import tracemalloc
+import psutil
+import os
+
+<p>def memory_profiler(func):<br>
+    def wrapper(<em>args, </em>*kwargs):<br>
+        # Start tracing<br>
+        tracemalloc.start()<br>
+        <br>
+        # Get initial memory<br>
+        process = psutil.Process(os.getpid())<br>
+        initial_memory = process.memory_info().rss / 1024 / 1024  # MB<br>
+        <br>
+        result = func(<em>args, </em>*kwargs)<br>
+        <br>
+        # Get final memory and trace<br>
+        current, peak = tracemalloc.get_traced_memory()<br>
+        final_memory = process.memory_info().rss / 1024 / 1024<br>
+        <br>
+        print(f&quot;Function: {func.__name__}&quot;)<br>
+        print(f&quot;Memory change: {final_memory - initial_memory:.2f} MB&quot;)<br>
+        print(f&quot;Peak memory usage: {peak / 1024 / 1024:.2f} MB&quot;)<br>
+        <br>
+        tracemalloc.stop()<br>
+        return result<br>
+    return wrapper</p>
+
+<h1>Use on critical functions</h1>
+@memory_profiler
+def process_llm_data(large_dataset):
+    # Your memory-intensive processing here
+    pass
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Django applications with high user concurrency</strong>: Memory optimization reduces the number of required AWS instances and improves response times under load.</li><br>
+<li><strong>Data processing pipelines from PostgreSQL/Oracle</strong>: When handling large result sets, generators and iterators prevent memory overflow and enable processing of datasets larger than available RAM.</li><br>
+<li><strong>AI/LLM applications with Ollama</strong>: Memory-efficient code allows you to run larger models or handle more concurrent AI requests on the same hardware, crucial for cost-effective AI deployments.</li><br>
+<li><strong>Discord bots and automation scripts</strong>: Long-running processes that handle thousands of messages or RPA tasks benefit from memory optimization to prevent crashes and maintain consistent performance.</li><br>
+<li><strong>AWS Lambda functions</strong>: Memory optimization directly reduces execution costs and enables processing of larger datasets within Lambda&#x27;s memory limits.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Small, short-lived scripts</strong>: The complexity overhead isn&#x27;t worth it for simple automation tasks that run quickly and exit.</li><br>
+<li><strong>Development and testing environments</strong>: Over-optimization can make code harder to debug; focus on functionality first, then optimize for production.</li><br>
+<li><strong>When readability suffers significantly</strong>: If memory optimization makes code unmaintainable, consider whether the performance gain justifies the maintenance cost.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong><br>
+<ul><br>
+<li><strong>Premature optimization</strong>: Profile first, optimize second. Many developers optimize code that isn&#x27;t actually a bottleneck.</li><br>
+<li><strong>Over-using <code>__slots__</code></strong>: While memory-efficient, slots prevent adding attributes dynamically and can break some Python features like multiple inheritance.</li><br>
+<li><strong>Generator exhaustion</strong>: Generators can only be iterated once; if you need the data multiple times, you&#x27;ll need to recreate the generator or convert to a list.</li><br>
+<li><strong>Memory leaks in long-running applications</strong>: Django applications, Discord bots, and RPA scripts can accumulate memory over time if circular references aren&#x27;t properly handled.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>Memory optimization is a production skill</strong>: It directly impacts infrastructure costs, application performance, and user experience in real-world applications running on AWS.</li>
+<li><strong>Use <code>__slots__</code> for data-heavy classes</strong>: Can reduce memory usage by 30-50% for classes with many instances, perfect for Django models and data processing objects.</li>
+<li><strong>Generators are your friend for large datasets</strong>: Replace list comprehensions with generators when processing database results or large files to maintain constant memory usage.</li>
+<li><strong>Profile before and after optimization</strong>: Use tools like <code>tracemalloc</code> and <code>psutil</code> to measure actual memory improvements and identify bottlenecks.</li>
+<li><strong>Consider the trade-offs</strong>: Memory optimization often involves complexity trade-offs; ensure the benefits justify the added code complexity and maintenance overhead.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

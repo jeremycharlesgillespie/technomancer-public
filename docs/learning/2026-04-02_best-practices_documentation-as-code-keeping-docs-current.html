@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documentation as code: keeping docs current - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Documentation as code: keeping docs current</h1>
+            <p class="meta">best_practices &bull; April 02, 2026</p>
+        </header>
+        <main>
+<h1>Documentation as Code: Keeping Your Docs Current and Your Sanity Intact</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Documentation as code is the practice of treating your documentation with the same rigor, tools, and workflows as your application code. Instead of maintaining docs in separate wikis, Word documents, or knowledge bases that inevitably become outdated, you store documentation in version control alongside your codebase, write it in markup languages like Markdown, and automate its generation and deployment.</p>
+
+<p>Think of it this way: when you update your Django models, your database migrations run automatically. When you push code to AWS, your CI/CD pipeline deploys it automatically. Documentation as code applies this same philosophy to your docs – they live with your code, version with your code, and deploy with your code. This isn&#x27;t just about convenience; it&#x27;s about creating a sustainable system where documentation stays current because updating it becomes part of your normal development workflow, not an afterthought.</p>
+
+<p>Here&#x27;s a simple example of what this looks like in practice:</p>
+
+<pre><code class="language-python"># api/views.py
+from django.http import JsonResponse
+from rest_framework.decorators import api_view
+
+<p>@api_view([&#x27;GET&#x27;])<br>
+def user_stats(request):<br>
+    &quot;&quot;&quot;<br>
+    Get user statistics endpoint.<br>
+    <br>
+    Returns aggregated user data from PostgreSQL.<br>
+    Used by the dashboard and reporting services.<br>
+    <br>
+    Example response:<br>
+    {<br>
+        &quot;active_users&quot;: 1250,<br>
+        &quot;new_signups&quot;: 45,<br>
+        &quot;churn_rate&quot;: 0.03<br>
+    }<br>
+    &quot;&quot;&quot;<br>
+    # Your implementation here<br>
+    return JsonResponse({&quot;active_users&quot;: 1250, &quot;new_signups&quot;: 45, &quot;churn_rate&quot;: 0.03})<br>
+</code></pre></p>
+
+<p>When this docstring changes, your API documentation automatically updates. When you refactor the endpoint, you&#x27;re forced to update the docs in the same commit. That&#x27;s documentation as code in action.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>As a Django developer working with PostgreSQL/Oracle and AWS, you&#x27;re constantly juggling complex systems with multiple integration points. Documentation as code transforms you from someone who occasionally writes docs into someone who architects information systems. This shift in mindset makes you significantly more valuable to your organization and opens doors to senior and architect-level positions.</p>
+
+<p>In your current stack, this approach solves real problems you face daily. When you&#x27;re building Django REST APIs that integrate with multiple databases, having your API docs auto-generate from your serializers and views means stakeholders always see the current endpoint structure. When you&#x27;re deploying to AWS with complex infrastructure, having your architecture diagrams and deployment procedures live in code means your documentation evolves with your infrastructure. You become the developer who not only builds reliable systems but ensures others can understand, maintain, and extend them – a crucial skill for tech leads and senior positions.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a practical documentation-as-code system for a Django project. We&#x27;ll use MkDocs with automated API documentation and integrate it into your development workflow.</p>
+
+<p><strong>Step 1: Set up the foundation</strong></p>
+
+<p>First, install the necessary tools:</p>
+
+<pre><code class="language-bash">pip install mkdocs mkdocs-material mkdocstrings[python] mkdocs-gen-files
+</code></pre>
+
+<p>Create a <code>mkdocs.yml</code> configuration file in your project root:</p>
+
+<pre><code class="language-yaml">site_name: My Django API Documentation
+site_description: API and system documentation
+
+<p>theme:<br>
+  name: material<br>
+  features:<br>
+    - navigation.tabs<br>
+    - navigation.sections<br>
+    - toc.integrate</p>
+
+<p>plugins:<br>
+  - search<br>
+  - mkdocstrings:<br>
+      handlers:<br>
+        python:<br>
+          paths: [.]<br>
+          options:<br>
+            docstring_style: google<br>
+  - gen-files:<br>
+      scripts:<br>
+        - docs/generate_api_docs.py</p>
+
+<p>nav:<br>
+  - Home: index.md<br>
+  - API Reference: api/<br>
+  - Database Schema: database.md<br>
+  - Deployment: deployment.md<br>
+</code></pre></p>
+
+<p><strong>Step 2: Create automated API documentation</strong></p>
+
+<p>Create <code>docs/generate_api_docs.py</code> to automatically generate API docs from your Django views:</p>
+
+<pre><code class="language-python">&quot;&quot;&quot;Generate API documentation from Django views.&quot;&quot;&quot;
+import os
+from pathlib import Path
+import mkdocs_gen_files
+
+<p>def generate_api_docs():<br>
+    &quot;&quot;&quot;Generate API documentation from Django app views.&quot;&quot;&quot;<br>
+    <br>
+    # Define your Django apps<br>
+    django_apps = [&#x27;users&#x27;, &#x27;orders&#x27;, &#x27;analytics&#x27;]<br>
+    <br>
+    for app_name in django_apps:<br>
+        app_path = Path(app_name)<br>
+        if not app_path.exists():<br>
+            continue<br>
+            <br>
+        # Generate documentation for views<br>
+        views_file = app_path / &quot;views.py&quot;<br>
+        if views_file.exists():<br>
+            doc_path = f&quot;api/{app_name}/endpoints.md&quot;<br>
+            <br>
+            with mkdocs_gen_files.open(doc_path, &quot;w&quot;) as f:<br>
+                f.write(f&quot;# {app_name.title()} API Endpoints\n\n&quot;)<br>
+                f.write(f&quot;::: {app_name}.views\n&quot;)<br>
+                f.write(&quot;    options:\n&quot;)<br>
+                f.write(&quot;      members:\n&quot;)<br>
+                f.write(&quot;      - UserStatsView\n&quot;)<br>
+                f.write(&quot;      - OrderCreateView\n&quot;)<br>
+        <br>
+        # Generate model documentation<br>
+        models_file = app_path / &quot;models.py&quot;<br>
+        if models_file.exists():<br>
+            doc_path = f&quot;api/{app_name}/models.md&quot;<br>
+            <br>
+            with mkdocs_gen_files.open(doc_path, &quot;w&quot;) as f:<br>
+                f.write(f&quot;# {app_name.title()} Models\n\n&quot;)<br>
+                f.write(f&quot;::: {app_name}.models\n&quot;)</p>
+
+<p>if __name__ == &quot;__main__&quot;:<br>
+    generate_api_docs()<br>
+</code></pre></p>
+
+<p><strong>Step 3: Document your Django views properly</strong></p>
+
+<p>Update your Django views with comprehensive docstrings that will auto-generate beautiful API docs:</p>
+
+<pre><code class="language-python"># users/views.py
+from rest_framework.viewsets import ModelViewSet
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.db import connections
+
+<p>class UserViewSet(ModelViewSet):<br>
+    &quot;&quot;&quot;<br>
+    User management endpoints.<br>
+    <br>
+    Provides CRUD operations for user accounts with support for<br>
+    PostgreSQL and Oracle databases based on configuration.<br>
+    &quot;&quot;&quot;<br>
+    <br>
+    @action(detail=False, methods=[&#x27;get&#x27;])<br>
+    def analytics(self, request):<br>
+        &quot;&quot;&quot;<br>
+        Get user analytics data.<br>
+        <br>
+        Queries both PostgreSQL (primary) and Oracle (legacy) databases<br>
+        to provide comprehensive user metrics.<br>
+        <br>
+        Args:<br>
+            request: HTTP request object<br>
+            <br>
+        Returns:<br>
+            Response: JSON containing user analytics<br>
+            <br>
+        Example:<br>
+            </code></pre><br>
+            GET /api/users/analytics/<br>
+            <br>
+            Response:<br>
+            {<br>
+                &quot;total_users&quot;: 15000,<br>
+                &quot;active_users&quot;: 12000,<br>
+                &quot;database_sources&quot;: {<br>
+                    &quot;postgresql&quot;: 10000,<br>
+                    &quot;oracle_legacy&quot;: 5000<br>
+                }<br>
+            }<br>
+            <pre><code>            <br>
+        Database Queries:<br>
+            - PostgreSQL: Uses materialized views for performance<br>
+            - Oracle: Queries legacy user_stats table<br>
+        &quot;&quot;&quot;<br>
+        # Connect to PostgreSQL<br>
+        pg_cursor = connections[&#x27;default&#x27;].cursor()<br>
+        pg_cursor.execute(&quot;SELECT COUNT(*) FROM users_user WHERE is_active = true&quot;)<br>
+        active_users = pg_cursor.fetchone()[0]<br>
+        <br>
+        # Connect to Oracle for legacy data<br>
+        oracle_cursor = connections[&#x27;oracle&#x27;].cursor()<br>
+        oracle_cursor.execute(&quot;SELECT COUNT(*) FROM legacy_users&quot;)<br>
+        legacy_users = oracle_cursor.fetchone()[0]<br>
+        <br>
+        return Response({<br>
+            &quot;total_users&quot;: active_users + legacy_users,<br>
+            &quot;active_users&quot;: active_users,<br>
+            &quot;database_sources&quot;: {<br>
+                &quot;postgresql&quot;: active_users,<br>
+                &quot;oracle_legacy&quot;: legacy_users<br>
+            }<br>
+        })<br>
+</code></pre></p>
+
+<p><strong>Step 4: Integrate with your CI/CD pipeline</strong></p>
+
+<p>Add documentation building to your GitHub Actions workflow:</p>
+
+<pre><code class="language-yaml"># .github/workflows/docs.yml
+name: Build and Deploy Documentation
+
+<p>on:<br>
+  push:<br>
+    branches: [main, develop]<br>
+  pull_request:<br>
+    branches: [main]</p>
+
+<p>jobs:<br>
+  docs:<br>
+    runs-on: ubuntu-latest<br>
+    steps:<br>
+      - uses: actions/checkout@v3<br>
+      - uses: actions/setup-python@v4<br>
+        with:<br>
+          python-version: &#x27;3.11&#x27;<br>
+      <br>
+      - name: Install dependencies<br>
+        run: |<br>
+          pip install -r requirements.txt<br>
+          pip install mkdocs mkdocs-material mkdocstrings[python]<br>
+      <br>
+      - name: Build documentation<br>
+        run: mkdocs build --strict<br>
+      <br>
+      - name: Deploy to S3 (production only)<br>
+        if: github.ref == &#x27;refs/heads/main&#x27;<br>
+        run: |<br>
+          aws s3 sync site/ s3://your-docs-bucket/ --delete<br>
+        env:<br>
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}<br>
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>API documentation for Django REST Framework projects</strong>: Auto-generate endpoint docs from your serializers and views. Every time you add a field or change a response format, the docs update automatically.</li>
+</ul>
+<ul>
+<li><strong>Database schema documentation for PostgreSQL/Oracle migrations</strong>: Keep your ER diagrams and table documentation in sync with your actual migrations. When you add a new model or field, the schema docs reflect the change immediately.</li>
+</ul>
+<ul>
+<li><strong>AWS infrastructure documentation</strong>: Store your architecture diagrams, deployment procedures, and configuration details alongside your Terraform or CloudFormation templates. When infrastructure changes, docs change with it.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>User-facing help documentation that non-technical stakeholders need to edit frequently</strong>: Marketing folks and product managers shouldn&#x27;t need to know Git to update user guides.</li>
+</ul>
+<ul>
+<li><strong>Highly visual documentation requiring complex layouts</strong>: While Markdown is powerful, if you need complex visual layouts, dedicated documentation platforms might be better.</li>
+</ul>
+<strong>Common pitfalls to watch for:</strong>
+
+<ul>
+<li><strong>Over-documenting implementation details</strong>: Focus on what other developers need to know, not every line of code. Your docstrings should explain the &quot;why&quot; and &quot;what,&quot; not the &quot;how&quot; (that&#x27;s what clean code is for).</li>
+</ul>
+<ul>
+<li><strong>Ignoring the generated docs</strong>: Just because it&#x27;s automated doesn&#x27;t mean you can ignore it. Review the generated documentation regularly to ensure it makes sense to readers.</li>
+</ul>
+<ul>
+<li><strong>Making it too complex</strong>: Start simple with basic Markdown files and docstrings. Don&#x27;t try to build a complex documentation system on day one.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Documentation as code keeps your docs current by making them part of your development workflow, not an afterthought</strong> – when docs live with code, they get updated with code.</li>
+</ul>
+<ul>
+<li><strong>Use automated generation for API docs and schemas, but write architectural and process documentation manually</strong> – leverage the computer for what it does best (extracting information from code) and humans for what they do best (explaining complex concepts).</li>
+</ul>
+<ul>
+<li><strong>Integrate documentation building into your CI/CD pipeline</strong> – just like you wouldn&#x27;t deploy code without tests, don&#x27;t merge code without validating that documentation builds correctly.</li>
+</ul>
+<ul>
+<li><strong>Start with docstrings and gradually expand to full documentation systems</strong> – you can begin getting value immediately by improving your Python docstrings, then layer on automated generation and deployment later.</li>
+</ul>
+<ul>
+<li><strong>Documentation as code makes you more valuable as a developer</strong> – you become the person who not only builds systems but ensures they&#x27;re maintainable and understandable by others, a crucial skill for career advancement.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

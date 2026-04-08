@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Technical debt: identification and management - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Technical debt: identification and management</h1>
+            <p class="meta">best_practices &bull; March 27, 2026</p>
+        </header>
+        <main>
+<h1>Technical Debt: Identification and Management for Modern Python Developers</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Technical debt is like financial debt for your code—shortcuts and compromises you make during development that need to be &quot;paid back&quot; later through refactoring, bug fixes, or complete rewrites. Just as financial debt accumulates interest, technical debt compounds over time, making your codebase harder to maintain, slower to modify, and more prone to bugs. It&#x27;s not always bad debt; sometimes taking on technical debt is a strategic decision to meet deadlines or validate ideas quickly.</p>
+
+<p>The challenge isn&#x27;t avoiding technical debt entirely—that&#x27;s impossible in real-world development. Instead, it&#x27;s about making conscious decisions about when to incur debt and having a systematic approach to manage and reduce it. For developers working with Django applications backed by PostgreSQL or Oracle, deployed on AWS, and integrating AI features through Ollama or other LLM services, technical debt can manifest in various forms: from monolithic views and inefficient database queries to hardcoded configurations and tightly coupled AI integrations.</p>
+
+<p>Here&#x27;s a simple example of technical debt in Django:</p>
+
+<pre><code class="language-python"># Technical debt example - hardcoded, difficult to maintain
+def process_user_data(request):
+    if request.user.is_authenticated:
+        # Hardcoded database query - should be in a service layer
+        user_data = User.objects.raw(&quot;&quot;&quot;
+            SELECT u.*, p.bio, p.avatar 
+            FROM auth_user u 
+            LEFT JOIN user_profile p ON u.id = p.user_id 
+            WHERE u.id = %s
+        &quot;&quot;&quot;, [request.user.id])
+        
+        # Hardcoded AI API call - should be configurable
+        ollama_response = requests.post(&#x27;http://localhost:11434/api/generate&#x27;, {
+            &#x27;model&#x27;: &#x27;llama2&#x27;,  # Hardcoded model
+            &#x27;prompt&#x27;: f&#x27;Analyze user: {user_data[0].username}&#x27;
+        })
+        
+        return render(request, &#x27;dashboard.html&#x27;, {&#x27;data&#x27;: user_data})
+</code></pre>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering technical debt identification and management transforms you from a code writer into a strategic software architect. When you can spot inefficient Django ORM queries hitting your PostgreSQL database repeatedly, or identify when your AWS Lambda functions are becoming monolithic and expensive to run, you demonstrate senior-level thinking that employers value highly. This skill is particularly crucial in AI-driven applications where rapid prototyping with Ollama and LLM integrations often leads to experimental code making it into production.</p>
+
+<p>Understanding technical debt management opens doors to technical leadership roles, system architecture positions, and consulting opportunities. Companies desperately need developers who can assess existing systems, prioritize improvements, and balance feature delivery with code quality. In the AWS ecosystem, this knowledge helps you optimize costs—identifying when serverless functions should be containerized, when RDS instances are over-provisioned, or when your Django application would benefit from moving to ECS or EKS. For Discord bot development and RPA automation projects, managing technical debt ensures your solutions remain maintainable as requirements evolve and scale.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a practical technical debt management system for a Django application. Start by creating a debt tracking decorator and model:</p>
+
+<pre><code class="language-python"># models.py
+from django.db import models
+from django.contrib.auth.models import User
+
+<p>class TechnicalDebt(models.Model):<br>
+    DEBT_TYPES = [<br>
+        (&#x27;query&#x27;, &#x27;Database Query Optimization&#x27;),<br>
+        (&#x27;arch&#x27;, &#x27;Architecture Improvement&#x27;),<br>
+        (&#x27;config&#x27;, &#x27;Configuration Hardcoding&#x27;),<br>
+        (&#x27;ai&#x27;, &#x27;AI Integration Coupling&#x27;),<br>
+        (&#x27;security&#x27;, &#x27;Security Enhancement&#x27;),<br>
+    ]<br>
+    <br>
+    PRIORITY_LEVELS = [<br>
+        (&#x27;low&#x27;, &#x27;Low - Cosmetic&#x27;),<br>
+        (&#x27;medium&#x27;, &#x27;Medium - Performance Impact&#x27;),<br>
+        (&#x27;high&#x27;, &#x27;High - Blocks Development&#x27;),<br>
+        (&#x27;critical&#x27;, &#x27;Critical - Production Risk&#x27;),<br>
+    ]<br>
+    <br>
+    title = models.CharField(max_length=200)<br>
+    description = models.TextField()<br>
+    debt_type = models.CharField(max_length=20, choices=DEBT_TYPES)<br>
+    priority = models.CharField(max_length=10, choices=PRIORITY_LEVELS)<br>
+    file_path = models.CharField(max_length=500)<br>
+    line_number = models.IntegerField(null=True, blank=True)<br>
+    estimated_hours = models.DecimalField(max_digits=5, decimal_places=2)<br>
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE)<br>
+    created_at = models.DateTimeField(auto_now_add=True)<br>
+    resolved_at = models.DateTimeField(null=True, blank=True)<br>
+    <br>
+    class Meta:<br>
+        ordering = [&#x27;-priority&#x27;, &#x27;-created_at&#x27;]</p>
+
+<h1>utils/debt_tracker.py</h1>
+import functools
+import logging
+from django.conf import settings
+
+<p>logger = logging.getLogger(__name__)</p>
+
+<p>def track_debt(debt_type, description, priority=&#x27;medium&#x27;, estimated_hours=2):<br>
+    &quot;&quot;&quot;Decorator to mark and track technical debt in code&quot;&quot;&quot;<br>
+    def decorator(func):<br>
+        @functools.wraps(func)<br>
+        def wrapper(<em>args, </em>*kwargs):<br>
+            if settings.DEBUG:<br>
+                logger.warning(f&quot;TECHNICAL DEBT - {debt_type}: {description} in {func.__name__}&quot;)<br>
+            return func(<em>args, </em>*kwargs)<br>
+        <br>
+        # Store debt metadata for automated scanning<br>
+        wrapper._debt_info = {<br>
+            &#x27;type&#x27;: debt_type,<br>
+            &#x27;description&#x27;: description,<br>
+            &#x27;priority&#x27;: priority,<br>
+            &#x27;estimated_hours&#x27;: estimated_hours<br>
+        }<br>
+        return wrapper<br>
+    return decorator<br>
+</code></pre></p>
+
+<p>Now implement automated debt detection for common Django patterns:</p>
+
+<pre><code class="language-python"># management/commands/detect_debt.py
+import os
+import ast
+import re
+from django.core.management.base import BaseCommand
+from django.conf import settings
+from myapp.models import TechnicalDebt
+
+<p>class DebtDetector:<br>
+    def __init__(self):<br>
+        self.debt_patterns = {<br>
+            &#x27;hardcoded_urls&#x27;: {<br>
+                &#x27;pattern&#x27;: r&#x27;http://localhost|https://127\.0\.0\.1&#x27;,<br>
+                &#x27;type&#x27;: &#x27;config&#x27;,<br>
+                &#x27;priority&#x27;: &#x27;medium&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Hardcoded URLs should use Django settings&#x27;<br>
+            },<br>
+            &#x27;raw_sql&#x27;: {<br>
+                &#x27;pattern&#x27;: r&#x27;\.raw\(|\.execute\(&#x27;,<br>
+                &#x27;type&#x27;: &#x27;query&#x27;,<br>
+                &#x27;priority&#x27;: &#x27;high&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Raw SQL queries bypass ORM protections&#x27;<br>
+            },<br>
+            &#x27;broad_exceptions&#x27;: {<br>
+                &#x27;pattern&#x27;: r&#x27;except\s*:&#x27;,<br>
+                &#x27;type&#x27;: &#x27;security&#x27;,<br>
+                &#x27;priority&#x27;: &#x27;high&#x27;,<br>
+                &#x27;description&#x27;: &#x27;Broad exception handling masks errors&#x27;<br>
+            }<br>
+        }<br>
+    <br>
+    def scan_file(self, file_path):<br>
+        &quot;&quot;&quot;Scan a Python file for technical debt patterns&quot;&quot;&quot;<br>
+        debts = []<br>
+        try:<br>
+            with open(file_path, &#x27;r&#x27;, encoding=&#x27;utf-8&#x27;) as f:<br>
+                content = f.read()<br>
+                lines = content.split(&#x27;\n&#x27;)<br>
+                <br>
+                for pattern_name, pattern_info in self.debt_patterns.items():<br>
+                    matches = re.finditer(pattern_info[&#x27;pattern&#x27;], content, re.MULTILINE)<br>
+                    for match in matches:<br>
+                        line_num = content[:match.start()].count(&#x27;\n&#x27;) + 1<br>
+                        debts.append({<br>
+                            &#x27;file_path&#x27;: file_path,<br>
+                            &#x27;line_number&#x27;: line_num,<br>
+                            &#x27;line_content&#x27;: lines[line_num - 1].strip(),<br>
+                            &#x27;pattern&#x27;: pattern_name,<br>
+                            **pattern_info<br>
+                        })<br>
+        except Exception as e:<br>
+            print(f&quot;Error scanning {file_path}: {e}&quot;)<br>
+        <br>
+        return debts<br>
+    <br>
+    def scan_directory(self, directory):<br>
+        &quot;&quot;&quot;Recursively scan directory for Python files&quot;&quot;&quot;<br>
+        all_debts = []<br>
+        for root, dirs, files in os.walk(directory):<br>
+            # Skip virtual environments and migrations<br>
+            dirs[:] = [d for d in dirs if d not in [&#x27;venv&#x27;, &#x27;env&#x27;, &#x27;__pycache__&#x27;, &#x27;migrations&#x27;]]<br>
+            <br>
+            for file in files:<br>
+                if file.endswith(&#x27;.py&#x27;):<br>
+                    file_path = os.path.join(root, file)<br>
+                    debts = self.scan_file(file_path)<br>
+                    all_debts.extend(debts)<br>
+        <br>
+        return all_debts</p>
+
+<p>class Command(BaseCommand):<br>
+    help = &#x27;Detect technical debt in the codebase&#x27;<br>
+    <br>
+    def handle(self, <em>args, </em>*options):<br>
+        detector = DebtDetector()<br>
+        project_root = settings.BASE_DIR<br>
+        <br>
+        debts = detector.scan_directory(project_root)<br>
+        <br>
+        self.stdout.write(f&quot;Found {len(debts)} potential technical debt items:&quot;)<br>
+        <br>
+        for debt in debts:<br>
+            self.stdout.write(<br>
+                f&quot;  {debt[&#x27;priority&#x27;].upper()}: {debt[&#x27;description&#x27;]}\n&quot;<br>
+                f&quot;    File: {debt[&#x27;file_path&#x27;]}:{debt[&#x27;line_number&#x27;]}\n&quot;<br>
+                f&quot;    Code: {debt[&#x27;line_content&#x27;]}\n&quot;<br>
+            )<br>
+</code></pre></p>
+
+<p>Create a management command to track database query performance:</p>
+
+<pre><code class="language-python"># utils/query_analyzer.py
+from django.db import connection
+from django.conf import settings
+import time
+
+<p>class QueryAnalyzer:<br>
+    def __init__(self):<br>
+        self.slow_queries = []<br>
+        self.duplicate_queries = {}<br>
+    <br>
+    def analyze_queries(self):<br>
+        &quot;&quot;&quot;Analyze executed queries for performance issues&quot;&quot;&quot;<br>
+        if not settings.DEBUG:<br>
+            return &quot;Query analysis requires DEBUG=True&quot;<br>
+        <br>
+        queries = connection.queries<br>
+        for query in queries:<br>
+            time_taken = float(query[&#x27;time&#x27;])<br>
+            sql = query[&#x27;sql&#x27;]<br>
+            <br>
+            # Flag slow queries (&gt;100ms)<br>
+            if time_taken &gt; 0.1:<br>
+                self.slow_queries.append({<br>
+                    &#x27;sql&#x27;: sql[:100] + &#x27;...&#x27; if len(sql) &gt; 100 else sql,<br>
+                    &#x27;time&#x27;: time_taken,<br>
+                    &#x27;type&#x27;: &#x27;query&#x27;,<br>
+                    &#x27;priority&#x27;: &#x27;high&#x27; if time_taken &gt; 0.5 else &#x27;medium&#x27;,<br>
+                    &#x27;description&#x27;: f&#x27;Slow query taking {time_taken:.3f}s&#x27;<br>
+                })<br>
+            <br>
+            # Track duplicate queries<br>
+            if sql in self.duplicate_queries:<br>
+                self.duplicate_queries[sql][&#x27;count&#x27;] += 1<br>
+            else:<br>
+                self.duplicate_queries[sql] = {&#x27;count&#x27;: 1, &#x27;time&#x27;: time_taken}<br>
+        <br>
+        return {<br>
+            &#x27;slow_queries&#x27;: self.slow_queries,<br>
+            &#x27;duplicate_queries&#x27;: {k: v for k, v in self.duplicate_queries.items() if v[&#x27;count&#x27;] &gt; 1}<br>
+        }<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Legacy Django applications</strong> where you&#x27;re inheriting codebases with years of accumulated shortcuts, especially those with complex PostgreSQL queries that bypass the ORM or Oracle integrations with raw SQL scattered throughout views.</li>
+</ul>
+<ul>
+<li><strong>AI-powered applications</strong> that started as prototypes with hardcoded Ollama endpoints, model names, and prompt templates that now need systematic refactoring as they scale to production environments.</li>
+</ul>
+<ul>
+<li><strong>AWS-deployed applications</strong> where initial deployments used default configurations, oversized instances, or manual deployment processes that now require infrastructure-as-code and cost optimization.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Early-stage prototypes or MVPs</strong> where the primary goal is validating product-market fit—premature optimization of technical debt can slow down crucial learning cycles.</li>
+</ul>
+<ul>
+<li><strong>One-off scripts or automation tools</strong> like Discord bots or RPA solutions that have narrow, stable requirements and won&#x27;t evolve significantly over time.</li>
+</ul>
+Common pitfalls include treating all technical debt as equally urgent (prioritize by business impact), over-engineering debt tracking systems (start simple with comments and issues), and stopping feature development to address debt (allocate 15-20% of sprint capacity consistently). Watch for the trap of creating new debt while fixing old debt—always write tests before refactoring, and resist the urge to &quot;improve&quot; code that&#x27;s working well just because it doesn&#x27;t follow current best practices.
+
+<p>Another critical mistake is ignoring deployment and infrastructure debt in favor of only focusing on code. Your Django application might be perfectly crafted, but if it&#x27;s deployed on manually configured EC2 instances without proper monitoring, auto-scaling, or backup strategies, you&#x27;re accumulating operational debt that will bite you during emergencies.</p>
+
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Make debt visible through systematic tracking</strong>—use decorators, automated scanning, and dedicated models to catalog technical shortcuts before they compound into project-killing problems.</li>
+</ul>
+<ul>
+<li><strong>Prioritize ruthlessly based on business impact</strong>—a slow PostgreSQL query affecting user login deserves immediate attention over perfectly organizing import statements.</li>
+</ul>
+<ul>
+<li><strong>Allocate consistent effort rather than sporadic cleanups</strong>—reserve 15-20% of each sprint for debt reduction instead of waiting for dedicated &quot;tech debt sprints&quot; that never come.</li>
+</ul>
+<ul>
+<li><strong>Integrate debt detection into your CI/CD pipeline</strong>—automated scanning catches patterns like hardcoded configurations and raw SQL queries before they reach production on AWS.</li>
+</ul>
+<ul>
+<li><strong>Focus on architectural debt first</strong>—fixing tightly coupled AI integrations and monolithic Django views provides more value than cosmetic code improvements.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

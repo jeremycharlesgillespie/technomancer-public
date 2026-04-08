@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event sourcing: storing state as events - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Event sourcing: storing state as events</h1>
+            <p class="meta">system_design &bull; April 04, 2026</p>
+        </header>
+        <main>
+<h1>Event Sourcing: Why Smart Developers Store State as Events</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Instead of storing the current state of your data, event sourcing stores every change that happened to that data as a sequence of events. Think of it like a bank statement - rather than just showing your current balance, it shows every deposit, withdrawal, and transfer that led to that balance. You can reconstruct the current state by &quot;replaying&quot; all the events from the beginning.</p>
+
+<p>This approach fundamentally changes how you think about data persistence. Traditional systems overwrite the previous state when something changes. Event sourcing never loses information - it appends new events to an immutable log. When you need the current state, you fold (reduce) all events to compute it. This might sound inefficient, but it unlocks powerful capabilities like perfect audit trails, time travel debugging, and the ability to project your data into multiple read models optimized for different use cases.</p>
+
+<p>Here&#x27;s a simple example in Python:</p>
+
+<pre><code class="language-python">from dataclasses import dataclass
+from datetime import datetime
+from typing import List
+from enum import Enum
+
+<p>class EventType(Enum):<br>
+    USER_REGISTERED = &quot;user_registered&quot;<br>
+    USER_ACTIVATED = &quot;user_activated&quot;<br>
+    EMAIL_CHANGED = &quot;email_changed&quot;</p>
+
+<p>@dataclass<br>
+class Event:<br>
+    aggregate_id: str<br>
+    event_type: EventType<br>
+    data: dict<br>
+    timestamp: datetime<br>
+    version: int</p>
+
+<p>class UserAggregate:<br>
+    def __init__(self):<br>
+        self.id = None<br>
+        self.email = None<br>
+        self.is_active = False<br>
+        self.version = 0<br>
+    <br>
+    def apply_event(self, event: Event):<br>
+        if event.event_type == EventType.USER_REGISTERED:<br>
+            self.id = event.data[&#x27;user_id&#x27;]<br>
+            self.email = event.data[&#x27;email&#x27;]<br>
+        elif event.event_type == EventType.USER_ACTIVATED:<br>
+            self.is_active = True<br>
+        elif event.event_type == EventType.EMAIL_CHANGED:<br>
+            self.email = event.data[&#x27;new_email&#x27;]<br>
+        self.version = event.version<br>
+    <br>
+    def from_events(self, events: List[Event]):<br>
+        for event in sorted(events, key=lambda e: e.version):<br>
+            self.apply_event(event)<br>
+        return self<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering event sourcing positions you as a senior developer who understands advanced architectural patterns. In your Python/Django stack, this knowledge transforms you from someone who just builds CRUD applications to someone who can design systems that scale and evolve gracefully. Companies building complex systems - financial platforms, IoT applications, collaborative tools - actively seek developers who understand event-driven architectures.</p>
+
+<p>The PostgreSQL and Oracle experience you have becomes incredibly valuable when implementing event sourcing, since you&#x27;ll understand how to design efficient event stores, handle concurrent writes, and optimize event replay performance. AWS services like EventBridge, DynamoDB Streams, and Kinesis suddenly make more sense because you understand the underlying patterns they implement. This combination of skills - relational databases, cloud services, and event sourcing - is rare and highly compensated. You&#x27;ll be able to solve problems that stump other developers: building systems that never lose data, creating comprehensive audit trails, and implementing complex business workflows that can be modified without breaking existing functionality.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s build a practical event sourcing implementation using Django and PostgreSQL. We&#x27;ll create an order management system that tracks every change as events.</p>
+
+<p>First, create the event store model:</p>
+
+<pre><code class="language-python"># models.py
+from django.db import models
+from django.contrib.postgres.fields import JSONField
+import uuid
+
+<p>class EventStore(models.Model):<br>
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4)<br>
+    aggregate_id = models.CharField(max_length=255, db_index=True)<br>
+    aggregate_type = models.CharField(max_length=100)<br>
+    event_type = models.CharField(max_length=100)<br>
+    event_data = JSONField()<br>
+    version = models.IntegerField()<br>
+    created_at = models.DateTimeField(auto_now_add=True)<br>
+    <br>
+    class Meta:<br>
+        unique_together = (&#x27;aggregate_id&#x27;, &#x27;version&#x27;)<br>
+        ordering = [&#x27;version&#x27;]<br>
+        indexes = [<br>
+            models.Index(fields=[&#x27;aggregate_id&#x27;, &#x27;version&#x27;]),<br>
+        ]</p>
+
+<p>class EventStoreRepository:<br>
+    def save_events(self, aggregate_id: str, aggregate_type: str, <br>
+                   events: List[dict], expected_version: int):<br>
+        &quot;&quot;&quot;Save events atomically with optimistic concurrency control&quot;&quot;&quot;<br>
+        with transaction.atomic():<br>
+            # Check current version<br>
+            current_version = EventStore.objects.filter(<br>
+                aggregate_id=aggregate_id<br>
+            ).aggregate(<br>
+                max_version=models.Max(&#x27;version&#x27;)<br>
+            )[&#x27;max_version&#x27;] or 0<br>
+            <br>
+            if current_version != expected_version:<br>
+                raise ConcurrencyError(<br>
+                    f&quot;Expected version {expected_version}, got {current_version}&quot;<br>
+                )<br>
+            <br>
+            # Save new events<br>
+            event_objects = []<br>
+            for i, event in enumerate(events):<br>
+                event_objects.append(EventStore(<br>
+                    aggregate_id=aggregate_id,<br>
+                    aggregate_type=aggregate_type,<br>
+                    event_type=event[&#x27;type&#x27;],<br>
+                    event_data=event[&#x27;data&#x27;],<br>
+                    version=expected_version + i + 1<br>
+                ))<br>
+            <br>
+            EventStore.objects.bulk_create(event_objects)<br>
+            return expected_version + len(events)<br>
+    <br>
+    def get_events(self, aggregate_id: str) -&gt; List[EventStore]:<br>
+        return EventStore.objects.filter(<br>
+            aggregate_id=aggregate_id<br>
+        ).order_by(&#x27;version&#x27;)<br>
+</code></pre></p>
+
+<p>Now implement the order aggregate:</p>
+
+<pre><code class="language-python"># aggregates.py
+from decimal import Decimal
+from enum import Enum
+from typing import List, Optional
+
+<p>class OrderStatus(Enum):<br>
+    PENDING = &quot;pending&quot;<br>
+    CONFIRMED = &quot;confirmed&quot;<br>
+    SHIPPED = &quot;shipped&quot;<br>
+    DELIVERED = &quot;delivered&quot;<br>
+    CANCELLED = &quot;cancelled&quot;</p>
+
+<p>class OrderAggregate:<br>
+    def __init__(self, order_id: str = None):<br>
+        self.id = order_id<br>
+        self.customer_id = None<br>
+        self.items = []<br>
+        self.status = None<br>
+        self.total_amount = Decimal(&#x27;0&#x27;)<br>
+        self.version = 0<br>
+        self._uncommitted_events = []<br>
+    <br>
+    def create_order(self, customer_id: str, items: List[dict]):<br>
+        &quot;&quot;&quot;Business logic for creating an order&quot;&quot;&quot;<br>
+        if self.id is not None:<br>
+            raise ValueError(&quot;Order already exists&quot;)<br>
+        <br>
+        total = sum(Decimal(item[&#x27;price&#x27;]) * item[&#x27;quantity&#x27;] for item in items)<br>
+        <br>
+        event = {<br>
+            &#x27;type&#x27;: &#x27;OrderCreated&#x27;,<br>
+            &#x27;data&#x27;: {<br>
+                &#x27;order_id&#x27;: self.id,<br>
+                &#x27;customer_id&#x27;: customer_id,<br>
+                &#x27;items&#x27;: items,<br>
+                &#x27;total_amount&#x27;: str(total)<br>
+            }<br>
+        }<br>
+        self._apply_event(event)<br>
+        self._uncommitted_events.append(event)<br>
+    <br>
+    def confirm_order(self):<br>
+        if self.status != OrderStatus.PENDING:<br>
+            raise ValueError(&quot;Can only confirm pending orders&quot;)<br>
+        <br>
+        event = {<br>
+            &#x27;type&#x27;: &#x27;OrderConfirmed&#x27;,<br>
+            &#x27;data&#x27;: {&#x27;confirmed_at&#x27;: datetime.now().isoformat()}<br>
+        }<br>
+        self._apply_event(event)<br>
+        self._uncommitted_events.append(event)<br>
+    <br>
+    def ship_order(self, tracking_number: str):<br>
+        if self.status != OrderStatus.CONFIRMED:<br>
+            raise ValueError(&quot;Can only ship confirmed orders&quot;)<br>
+        <br>
+        event = {<br>
+            &#x27;type&#x27;: &#x27;OrderShipped&#x27;,<br>
+            &#x27;data&#x27;: {&#x27;tracking_number&#x27;: tracking_number}<br>
+        }<br>
+        self._apply_event(event)<br>
+        self._uncommitted_events.append(event)<br>
+    <br>
+    def _apply_event(self, event: dict):<br>
+        &quot;&quot;&quot;Apply event to change aggregate state&quot;&quot;&quot;<br>
+        if event[&#x27;type&#x27;] == &#x27;OrderCreated&#x27;:<br>
+            data = event[&#x27;data&#x27;]<br>
+            self.id = data[&#x27;order_id&#x27;]<br>
+            self.customer_id = data[&#x27;customer_id&#x27;]<br>
+            self.items = data[&#x27;items&#x27;]<br>
+            self.total_amount = Decimal(data[&#x27;total_amount&#x27;])<br>
+            self.status = OrderStatus.PENDING<br>
+        elif event[&#x27;type&#x27;] == &#x27;OrderConfirmed&#x27;:<br>
+            self.status = OrderStatus.CONFIRMED<br>
+        elif event[&#x27;type&#x27;] == &#x27;OrderShipped&#x27;:<br>
+            self.status = OrderStatus.SHIPPED<br>
+        <br>
+        self.version += 1<br>
+    <br>
+    def load_from_history(self, events: List[EventStore]):<br>
+        &quot;&quot;&quot;Reconstruct aggregate from events&quot;&quot;&quot;<br>
+        for event in events:<br>
+            self._apply_event({<br>
+                &#x27;type&#x27;: event.event_type,<br>
+                &#x27;data&#x27;: event.event_data<br>
+            })<br>
+        self._uncommitted_events = []<br>
+        return self<br>
+    <br>
+    def get_uncommitted_events(self):<br>
+        return self._uncommitted_events.copy()<br>
+    <br>
+    def mark_events_as_committed(self):<br>
+        self._uncommitted_events = []</p>
+
+<h1>Service layer</h1>
+class OrderService:
+    def __init__(self, event_repository: EventStoreRepository):
+        self.event_repository = event_repository
+    
+    def create_order(self, order_id: str, customer_id: str, items: List[dict]):
+        order = OrderAggregate(order_id)
+        order.create_order(customer_id, items)
+        
+        events = order.get_uncommitted_events()
+        self.event_repository.save_events(
+            order_id, &#x27;Order&#x27;, events, 0
+        )
+        order.mark_events_as_committed()
+        return order
+    
+    def get_order(self, order_id: str) -&gt; OrderAggregate:
+        events = self.event_repository.get_events(order_id)
+        if not events:
+            raise OrderNotFound(f&quot;Order {order_id} not found&quot;)
+        
+        order = OrderAggregate()
+        return order.load_from_history(events)
+</code></pre>
+
+<p>For deployment on AWS, you can enhance this with EventBridge for publishing events:</p>
+
+<pre><code class="language-python">import boto3
+
+<p>class AWSEventPublisher:<br>
+    def __init__(self):<br>
+        self.eventbridge = boto3.client(&#x27;events&#x27;)<br>
+    <br>
+    def publish_events(self, events: List[dict]):<br>
+        entries = []<br>
+        for event in events:<br>
+            entries.append({<br>
+                &#x27;Source&#x27;: &#x27;order-service&#x27;,<br>
+                &#x27;DetailType&#x27;: event[&#x27;type&#x27;],<br>
+                &#x27;Detail&#x27;: json.dumps(event[&#x27;data&#x27;])<br>
+            })<br>
+        <br>
+        self.eventbridge.put_events(Entries=entries)<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Financial systems and audit-heavy applications</strong>: Banking, accounting, or any system where you need a complete audit trail and the ability to prove what happened when. Your PostgreSQL skills shine here with proper indexing strategies.</li><br>
+<li><strong>Collaborative systems with complex workflows</strong>: Document editing, project management, or any system where multiple users make changes and you need to track who did what. Perfect for building Discord bot automation that tracks server events.</li><br>
+<li><strong>Systems requiring temporal queries</strong>: &quot;Show me what the system looked like last Tuesday&quot; or &quot;What would happen if we replay this process with different rules?&quot; This is invaluable for debugging production issues and testing business rule changes.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Simple CRUD applications</strong>: If you&#x27;re just storing user profiles or basic product catalogs, the complexity isn&#x27;t worth it. Traditional Django models work perfectly fine.</li><br>
+<li><strong>Performance-critical read-heavy systems</strong>: If you need sub-millisecond response times for reads and don&#x27;t need the benefits of event sourcing, stick with optimized relational models or read replicas.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong><br>
+<ul><br>
+<li><strong>Event schema evolution</strong>: Events are immutable, so plan for schema changes. Always version your events and write migration logic.</li><br>
+<li><strong>Event store performance</strong>: Without proper indexing on <code>(aggregate_id, version)</code>, event replay becomes slow. In Oracle, consider partitioning large event tables.</li><br>
+<li><strong>Snapshot complexity</strong>: For aggregates with thousands of events, implement snapshotting carefully - bugs in snapshot logic can corrupt your entire aggregate state.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>Event sourcing transforms how you think about data</strong>: You&#x27;re storing the story of what happened, not just the current state - this mindset shift makes you a better system designer</li>
+<li><strong>Perfect for audit trails and compliance</strong>: Every change is recorded with full context, making it easier to build systems that meet regulatory requirements</li>
+<li><strong>Excellent debugging and testing capabilities</strong>: You can replay events to reproduce bugs and test different scenarios without affecting production data</li>
+<li><strong>Requires careful schema design</strong>: Events are immutable, so invest time in getting your event structure right from the start - use your PostgreSQL/Oracle skills for proper indexing and partitioning</li>
+<li><strong>Combines powerfully with CQRS and AWS services</strong>: Event sourcing pairs naturally with separate read/write models and cloud event streaming services like EventBridge and Kinesis</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

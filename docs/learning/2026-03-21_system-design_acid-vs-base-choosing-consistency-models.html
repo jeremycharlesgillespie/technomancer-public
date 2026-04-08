@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ACID vs BASE: choosing consistency models - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>ACID vs BASE: choosing consistency models</h1>
+            <p class="meta">system_design &bull; March 21, 2026</p>
+        </header>
+        <main>
+<h1>ACID vs BASE: Choosing the Right Consistency Model for Your Applications</h1>
+
+<h2>Quick Overview</h2>
+
+<p>When building modern applications, you&#x27;ll inevitably face a critical decision: how consistent should your data be? This is where ACID and BASE consistency models come into play. ACID (Atomicity, Consistency, Isolation, Durability) prioritizes strong consistency and data integrity above all else. Think of your PostgreSQL or Oracle databases – they guarantee that every transaction either completes fully or fails entirely, maintaining perfect data consistency. BASE (Basically Available, Soft state, Eventual consistency), on the other hand, trades some consistency for availability and partition tolerance, embracing the reality that in distributed systems, perfect consistency isn&#x27;t always feasible or necessary.</p>
+
+<p>The choice between these models fundamentally shapes your application&#x27;s behavior under load, failure scenarios, and scale. ACID systems will block operations to maintain consistency, while BASE systems remain available even when some nodes are temporarily inconsistent. This isn&#x27;t just theoretical – it directly impacts how you architect your Django applications, design your database schemas, and choose your AWS services.</p>
+
+<p>Here&#x27;s a simple example of how this plays out in practice:</p>
+
+<pre><code class="language-python"># ACID approach in Django
+from django.db import transaction
+
+<p>@transaction.atomic<br>
+def transfer_money(sender_id, receiver_id, amount):<br>
+    # Either both operations succeed or both fail<br>
+    sender = Account.objects.select_for_update().get(id=sender_id)<br>
+    receiver = Account.objects.select_for_update().get(id=receiver_id)<br>
+    <br>
+    if sender.balance &lt; amount:<br>
+        raise InsufficientFundsError()<br>
+    <br>
+    sender.balance -= amount<br>
+    receiver.balance += amount<br>
+    sender.save()<br>
+    receiver.save()<br>
+    # PostgreSQL ensures this is atomic - no partial updates possible<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Mastering consistency models elevates you from a developer who just writes code to one who architects resilient systems. In your Python and Django work, this knowledge directly translates to making informed decisions about when to use <code>transaction.atomic()</code>, how to handle race conditions, and whether to implement eventual consistency patterns. When working with PostgreSQL&#x27;s ACID guarantees versus designing microservices on AWS that might need BASE principles, you&#x27;ll understand the trade-offs and can communicate them effectively to stakeholders.</p>
+
+<p>This expertise becomes particularly valuable when building AI-powered applications with LLMs like Ollama, where you might need to store conversation state, embeddings, or training data. Should your Discord bot&#x27;s message history be strictly consistent, or can you tolerate eventual consistency for better availability? Understanding these models helps you design automation and RPA workflows that gracefully handle partial failures and distributed state. Companies increasingly need developers who can navigate the complexity of modern distributed systems, and consistency model expertise sets you apart in system design interviews and architectural discussions.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing both approaches in a practical Django application that manages AI chat conversations:</p>
+
+<p><strong>ACID Implementation with PostgreSQL:</strong></p>
+
+<pre><code class="language-python"># models.py
+from django.db import models, transaction
+from django.core.exceptions import ValidationError
+
+<p>class ChatSession(models.Model):<br>
+    user_id = models.CharField(max_length=100)<br>
+    created_at = models.DateTimeField(auto_now_add=True)<br>
+    total_messages = models.IntegerField(default=0)<br>
+    is_active = models.BooleanField(default=True)</p>
+
+<p>class Message(models.Model):<br>
+    session = models.ForeignKey(ChatSession, on_delete=models.CASCADE)<br>
+    content = models.TextField()<br>
+    role = models.CharField(max_length=20)  # &#x27;user&#x27; or &#x27;assistant&#x27;<br>
+    timestamp = models.DateTimeField(auto_now_add=True)<br>
+    token_count = models.IntegerField()</p>
+
+<h1>views.py - ACID approach</h1>
+@transaction.atomic
+def add_message_strict(session_id, content, role, token_count):
+    &quot;&quot;&quot;ACID: Ensures perfect consistency between message and session stats&quot;&quot;&quot;
+    try:
+        session = ChatSession.objects.select_for_update().get(
+            id=session_id, is_active=True
+        )
+        
+        # Strict validation - fails entire transaction if violated
+        if session.total_messages &gt;= 100:  # Rate limit
+            raise ValidationError(&quot;Session message limit exceeded&quot;)
+        
+        message = Message.objects.create(
+            session=session,
+            content=content,
+            role=role,
+            token_count=token_count
+        )
+        
+        session.total_messages += 1
+        session.save()
+        
+        return message
+    except Exception:
+        # Django automatically rolls back the transaction
+        raise
+</code></pre>
+
+<p><strong>BASE Implementation with Eventual Consistency:</strong></p>
+
+<pre><code class="language-python"># BASE approach using Django + Redis + Celery
+from celery import shared_task
+import redis
+import json
+from django.core.cache import cache
+
+<p>@shared_task<br>
+def update_session_stats(session_id, increment=1):<br>
+    &quot;&quot;&quot;Asynchronous stats update - eventual consistency&quot;&quot;&quot;<br>
+    try:<br>
+        session = ChatSession.objects.get(id=session_id)<br>
+        session.total_messages += increment<br>
+        session.save()<br>
+    except ChatSession.DoesNotExist:<br>
+        # Log error but don&#x27;t fail - BASE principle<br>
+        pass</p>
+
+<p>def add_message_eventually_consistent(session_id, content, role, token_count):<br>
+    &quot;&quot;&quot;BASE: Prioritizes availability over immediate consistency&quot;&quot;&quot;<br>
+    # Always succeed in creating the message<br>
+    message = Message.objects.create(<br>
+        session_id=session_id,<br>
+        content=content,<br>
+        role=role,<br>
+        token_count=token_count<br>
+    )<br>
+    <br>
+    # Update stats asynchronously - might temporarily be inconsistent<br>
+    update_session_stats.delay(session_id)<br>
+    <br>
+    # Cache for fast reads (soft state)<br>
+    cache_key = f&quot;session_stats:{session_id}&quot;<br>
+    cached_count = cache.get(cache_key, 0)<br>
+    cache.set(cache_key, cached_count + 1, timeout=300)<br>
+    <br>
+    return message</p>
+
+<h1>AWS Lambda function for processing (eventual consistency)</h1>
+import boto3
+
+<p>def lambda_process_messages(event, context):<br>
+    &quot;&quot;&quot;Process messages asynchronously without blocking user operations&quot;&quot;&quot;<br>
+    sqs = boto3.client(&#x27;sqs&#x27;)<br>
+    <br>
+    for record in event[&#x27;Records&#x27;]:<br>
+        try:<br>
+            message_data = json.loads(record[&#x27;body&#x27;])<br>
+            # Process AI response, update embeddings, etc.<br>
+            # Failures here don&#x27;t affect user experience<br>
+            process_with_ollama(message_data)<br>
+        except Exception as e:<br>
+            # Log error, possibly retry, but don&#x27;t propagate failure<br>
+            print(f&quot;Processing failed: {e}&quot;)<br>
+            # Send to DLQ for manual review<br>
+</code></pre></p>
+
+<p>For AWS deployment, configure your Django settings to handle both models:</p>
+
+<pre><code class="language-python"># settings.py
+DATABASES = {
+    &#x27;default&#x27;: {
+        &#x27;ENGINE&#x27;: &#x27;django.db.backends.postgresql&#x27;,
+        &#x27;OPTIONS&#x27;: {
+            &#x27;isolation_level&#x27;: psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED,
+        }
+    }
+}
+
+<h1>Redis for BASE operations</h1>
+CACHES = {
+    &#x27;default&#x27;: {
+        &#x27;BACKEND&#x27;: &#x27;django_redis.cache.RedisCache&#x27;,
+        &#x27;LOCATION&#x27;: &#x27;redis://your-elasticache-endpoint:6379/1&#x27;,
+    }
+}
+
+<h1>Celery for async processing</h1>
+CELERY_BROKER_URL = &#x27;sqs://your-sqs-queue&#x27;
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<p><strong>ACID when:</strong><br>
+<ul><br>
+<li><strong>Financial transactions and billing systems</strong> - Your Django app processing payments for AI API usage needs strict consistency. Money can&#x27;t be in two places at once.</li><br>
+<li><strong>User authentication and authorization</strong> - When managing Discord bot permissions or RPA workflow access controls, partial updates could create security vulnerabilities.</li><br>
+<li><strong>Critical configuration changes</strong> - Deploying AI model updates across your infrastructure where partial deployments could break the entire system.</li><br>
+</ul><br>
+<strong>BASE when:</strong><br>
+<ul><br>
+<li><strong>Social features and activity feeds</strong> - Your Discord bot&#x27;s message history or user activity logs can tolerate brief inconsistencies for better availability.</li><br>
+<li><strong>Analytics and logging</strong> - LLM conversation analytics, RPA execution metrics, or user behavior tracking where approximate real-time data is sufficient.</li><br>
+<li><strong>Content management</strong> - Blog posts, documentation, or AI-generated content where eventual consistency doesn&#x27;t impact core functionality.</li><br>
+</ul><br>
+<strong>Avoid when:</strong></p>
+
+<p><strong>Don&#x27;t use ACID when:</strong><br>
+<ul><br>
+<li><strong>High-volume logging or telemetry</strong> - Your Ollama model interactions or automation metrics don&#x27;t need strict consistency and blocking writes will hurt performance.</li><br>
+<li><strong>Geographically distributed reads</strong> - If users worldwide access your AI chat interface, forcing strong consistency will create unacceptable latency.</li><br>
+</ul><br>
+<strong>Don&#x27;t use BASE when:</strong><br>
+<ul><br>
+<li><strong>Inventory or resource allocation</strong> - If your RPA system manages server resources or API rate limits, eventual consistency could lead to over-allocation and system failures.</li><br>
+<li><strong>Sequential operations with dependencies</strong> - Multi-step AI workflows where step N+1 depends on step N&#x27;s exact state cannot tolerate eventual consistency.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong></p>
+
+<ol>
+<li><strong>Mixing consistency models carelessly</strong> - Don&#x27;t assume BASE operations have completed when making ACID decisions</li>
+<li><strong>Ignoring network partitions</strong> - Your AWS multi-AZ setup might partition, forcing you to choose between consistency and availability</li>
+<li><strong>Over-engineering simple CRUD operations</strong> - Not every Django model needs complex eventual consistency patterns</li>
+</ol>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>ACID guarantees perfect consistency but limits scalability</strong> - Use it for critical operations where partial failures are unacceptable, like financial transactions or security updates</li>
+<li><strong>BASE trades consistency for availability and partition tolerance</strong> - Perfect for high-volume, distributed operations like logging, analytics, and content management</li>
+<li><strong>Most real applications need both models</strong> - Use ACID for your core business logic and BASE for supporting features like metrics and social interactions</li>
+<li><strong>Django and PostgreSQL excel at ACID, while AWS services like SQS/Lambda enable BASE patterns</strong> - Leverage each technology&#x27;s strengths rather than forcing them into inappropriate patterns</li>
+<li><strong>The choice impacts your entire architecture</strong> - Consistency models aren&#x27;t just database decisions; they influence your caching strategy, API design, error handling, and monitoring approach</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kafka vs RabbitMQ: when to use each - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Kafka vs RabbitMQ: when to use each</h1>
+            <p class="meta">system_design &bull; April 02, 2026</p>
+        </header>
+        <main>
+<h1>Kafka vs RabbitMQ: Choosing the Right Message Broker for Your Architecture</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Apache Kafka and RabbitMQ are both message brokers, but they solve fundamentally different problems. Think of RabbitMQ as a sophisticated mail delivery service—it ensures your messages get to the right recipient reliably and quickly. Kafka, on the other hand, is more like a massive, distributed event log that multiple systems can read from at their own pace, replaying events as needed.</p>
+
+<p>RabbitMQ excels at traditional messaging patterns with rich routing capabilities, guaranteed delivery, and low latency. It&#x27;s perfect for request-response patterns, work queues, and complex routing scenarios. Kafka shines in high-throughput, event streaming scenarios where you need to process massive amounts of data in real-time, maintain event order, and allow multiple consumers to process the same stream independently.</p>
+
+<p>The key difference lies in their design philosophy: RabbitMQ is built around message queues (messages are consumed and deleted), while Kafka is built around event logs (events are retained and can be replayed). This fundamental distinction drives everything from their architecture to their use cases.</p>
+
+<pre><code class="language-python"># RabbitMQ approach - traditional message queue
+import pika
+
+<h1>Producer sends a task</h1>
+connection = pika.BlockingConnection(pika.ConnectionParameters(&#x27;localhost&#x27;))
+channel = connection.channel()
+channel.queue_declare(queue=&#x27;task_queue&#x27;, durable=True)
+
+<p>message = {&quot;user_id&quot;: 123, &quot;action&quot;: &quot;process_payment&quot;}<br>
+channel.basic_publish(<br>
+    exchange=&#x27;&#x27;,<br>
+    routing_key=&#x27;task_queue&#x27;,<br>
+    body=json.dumps(message),<br>
+    properties=pika.BasicProperties(delivery_mode=2)  # Make message persistent<br>
+)</p>
+
+<h1>Kafka approach - event streaming</h1>
+from kafka import KafkaProducer
+import json
+
+<h1>Producer publishes an event</h1>
+producer = KafkaProducer(
+    bootstrap_servers=[&#x27;localhost:9092&#x27;],
+    value_serializer=lambda x: json.dumps(x).encode(&#x27;utf-8&#x27;)
+)
+
+<p>event = {&quot;user_id&quot;: 123, &quot;event&quot;: &quot;payment_processed&quot;, &quot;timestamp&quot;: &quot;2024-01-15T10:30:00Z&quot;}<br>
+producer.send(&#x27;payment_events&#x27;, event)<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Understanding when to use Kafka versus RabbitMQ is crucial for building scalable systems, especially in your current tech stack. In Django applications connected to PostgreSQL or Oracle, you&#x27;ll often need to decouple heavy processing from web requests. RabbitMQ with Celery is the go-to solution for background tasks—think image processing, email sending, or report generation. This knowledge positions you as someone who understands distributed systems and can architect solutions that scale beyond monolithic applications.</p>
+
+<p>For AI and automation projects, particularly those involving LLMs like Ollama, Kafka becomes invaluable. Imagine building a Discord bot that processes user interactions through multiple AI models—Kafka lets you stream these events to different AI services simultaneously, maintain conversation history, and replay interactions for model training. On AWS, this translates directly to services like MSK (Managed Streaming for Kafka) and Amazon MQ (managed RabbitMQ), making you proficient in cloud-native architectures that companies desperately need. This expertise opens doors to senior backend roles, solutions architect positions, and specialized roles in companies building real-time data platforms or AI-powered applications.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s implement both solutions for a practical scenario: processing AI model requests in a Django application. We&#x27;ll start with RabbitMQ for traditional task processing, then show Kafka for event streaming.</p>
+
+<p><strong>RabbitMQ Implementation with Django:</strong></p>
+
+<p>First, set up RabbitMQ with Celery for background AI processing:</p>
+
+<pre><code class="language-python"># settings.py
+CELERY_BROKER_URL = &#x27;amqp://localhost:5672&#x27;
+CELERY_RESULT_BACKEND = &#x27;redis://localhost:6379&#x27;
+CELERY_ACCEPT_CONTENT = [&#x27;json&#x27;]
+CELERY_TASK_SERIALIZER = &#x27;json&#x27;
+
+<h1>tasks.py</h1>
+from celery import Celery
+import requests
+
+<p>app = Celery(&#x27;ai_processor&#x27;)<br>
+app.config_from_object(&#x27;django.conf:settings&#x27;, namespace=&#x27;CELERY&#x27;)</p>
+
+<p>@app.task(bind=True, retry_backoff=True, max_retries=3)<br>
+def process_with_ollama(self, prompt, model=&quot;llama2&quot;):<br>
+    try:<br>
+        response = requests.post(&#x27;http://localhost:11434/api/generate&#x27;, <br>
+            json={<br>
+                &quot;model&quot;: model,<br>
+                &quot;prompt&quot;: prompt,<br>
+                &quot;stream&quot;: False<br>
+            }<br>
+        )<br>
+        return response.json()<br>
+    except Exception as exc:<br>
+        # Retry with exponential backoff<br>
+        raise self.retry(exc=exc, countdown=60)</p>
+
+<h1>views.py</h1>
+from django.http import JsonResponse
+from .tasks import process_with_ollama
+
+<p>def submit_ai_request(request):<br>
+    prompt = request.POST.get(&#x27;prompt&#x27;)<br>
+    <br>
+    # Queue the task<br>
+    task = process_with_ollama.delay(prompt)<br>
+    <br>
+    return JsonResponse({<br>
+        &#x27;task_id&#x27;: task.id,<br>
+        &#x27;status&#x27;: &#x27;queued&#x27;<br>
+    })<br>
+</code></pre></p>
+
+<p><strong>Kafka Implementation for Event Streaming:</strong></p>
+
+<p>Now let&#x27;s implement Kafka for streaming AI events that multiple services can consume:</p>
+
+<pre><code class="language-python"># kafka_config.py
+from kafka import KafkaProducer, KafkaConsumer
+import json
+import logging
+
+<p>class AIEventStreamer:<br>
+    def __init__(self):<br>
+        self.producer = KafkaProducer(<br>
+            bootstrap_servers=[&#x27;localhost:9092&#x27;],<br>
+            value_serializer=lambda x: json.dumps(x).encode(&#x27;utf-8&#x27;),<br>
+            key_serializer=lambda x: x.encode(&#x27;utf-8&#x27;) if x else None,<br>
+            acks=&#x27;all&#x27;,  # Wait for all replicas<br>
+            retries=3,<br>
+            batch_size=16384<br>
+        )<br>
+    <br>
+    def publish_ai_interaction(self, user_id, interaction_data):<br>
+        event = {<br>
+            &#x27;user_id&#x27;: user_id,<br>
+            &#x27;timestamp&#x27;: datetime.utcnow().isoformat(),<br>
+            &#x27;interaction&#x27;: interaction_data,<br>
+            &#x27;event_type&#x27;: &#x27;ai_interaction&#x27;<br>
+        }<br>
+        <br>
+        # Use user_id as partition key for ordered processing<br>
+        self.producer.send(<br>
+            &#x27;ai_interactions&#x27;, <br>
+            key=str(user_id),<br>
+            value=event<br>
+        )</p>
+
+<h1>Consumer for real-time Discord bot responses</h1>
+class DiscordBotConsumer:
+    def __init__(self):
+        self.consumer = KafkaConsumer(
+            &#x27;ai_interactions&#x27;,
+            bootstrap_servers=[&#x27;localhost:9092&#x27;],
+            value_deserializer=lambda x: json.loads(x.decode(&#x27;utf-8&#x27;)),
+            group_id=&#x27;discord_bot_group&#x27;,
+            enable_auto_commit=True,
+            auto_offset_reset=&#x27;latest&#x27;
+        )
+    
+    def process_events(self):
+        for message in self.consumer:
+            event = message.value
+            if event[&#x27;interaction&#x27;][&#x27;type&#x27;] == &#x27;discord_message&#x27;:
+                self.send_to_discord(event)
+    
+    def send_to_discord(self, event):
+        # Process Discord-specific AI responses
+        pass
+
+<h1>Django integration</h1>
+<h1>views.py</h1>
+from .kafka_config import AIEventStreamer
+
+<p>def handle_user_interaction(request):<br>
+    streamer = AIEventStreamer()<br>
+    <br>
+    interaction_data = {<br>
+        &#x27;prompt&#x27;: request.POST.get(&#x27;prompt&#x27;),<br>
+        &#x27;model&#x27;: request.POST.get(&#x27;model&#x27;, &#x27;llama2&#x27;),<br>
+        &#x27;type&#x27;: &#x27;web_request&#x27;,<br>
+        &#x27;source_ip&#x27;: request.META.get(&#x27;REMOTE_ADDR&#x27;)<br>
+    }<br>
+    <br>
+    # Stream the event for multiple consumers<br>
+    streamer.publish_ai_interaction(<br>
+        user_id=request.user.id,<br>
+        interaction_data=interaction_data<br>
+    )<br>
+    <br>
+    return JsonResponse({&#x27;status&#x27;: &#x27;event_published&#x27;})<br>
+</code></pre></p>
+
+<p><strong>AWS Deployment Configuration:</strong></p>
+
+<p>For production deployment on AWS, here&#x27;s how to configure both:</p>
+
+<pre><code class="language-python"># AWS MSK (Kafka) configuration
+import boto3
+
+<h1>settings_aws.py</h1>
+KAFKA_CONFIG = {
+    &#x27;bootstrap_servers&#x27;: [&#x27;your-msk-cluster-endpoint:9092&#x27;],
+    &#x27;security_protocol&#x27;: &#x27;SSL&#x27;,
+    &#x27;ssl_ca_file&#x27;: &#x27;/path/to/ca-cert.pem&#x27;,
+    &#x27;api_version&#x27;: (2, 0, 2)
+}
+
+<h1>Amazon MQ (RabbitMQ) configuration</h1>
+CELERY_BROKER_URL = &#x27;amqps://username:password@your-amazonmq-endpoint:5671//&#x27;
+CELERY_BROKER_USE_SSL = {
+    &#x27;ca_certs&#x27;: &#x27;/path/to/ca_certificate.pem&#x27;,
+    &#x27;certfile&#x27;: &#x27;/path/to/client_certificate.pem&#x27;,
+    &#x27;keyfile&#x27;: &#x27;/path/to/client_key.pem&#x27;,
+}
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases for RabbitMQ:</strong><br>
+<ul><br>
+<li><strong>Background task processing in Django applications</strong>: Image resizing, email sending, report generation where you need guaranteed execution and don&#x27;t want to lose tasks</li><br>
+<li><strong>Request-response patterns with AI services</strong>: When you need to query Ollama models and wait for responses, especially with complex routing (send image requests to vision models, text to language models)</li><br>
+<li><strong>Workflow orchestration</strong>: Multi-step processes like user registration (validate email → create account → send welcome email) where each step must complete before the next</li><br>
+</ul><br>
+<strong>Good use cases for Kafka:</strong><br>
+<ul><br>
+<li><strong>Real-time analytics and monitoring</strong>: Streaming application logs, user behavior events, or system metrics for dashboards and alerting</li><br>
+<li><strong>Event sourcing with PostgreSQL/Oracle</strong>: Capturing all state changes as events, allowing you to rebuild application state and maintain audit trails</li><br>
+<li><strong>AI model training data pipelines</strong>: Streaming user interactions, model predictions, and feedback loops for continuous learning systems</li><br>
+</ul><br>
+<strong>Avoid RabbitMQ when:</strong><br>
+<ul><br>
+<li><strong>High-throughput streaming requirements</strong>: If you&#x27;re processing millions of events per second, RabbitMQ&#x27;s message-by-message processing becomes a bottleneck</li><br>
+<li><strong>Need for event replay</strong>: RabbitMQ deletes messages after consumption, so you can&#x27;t replay historical events for debugging or reprocessing</li><br>
+</ul><br>
+<strong>Avoid Kafka when:</strong><br>
+<ul><br>
+<li><strong>Simple request-response patterns</strong>: Kafka&#x27;s complexity isn&#x27;t justified for basic &quot;send task, get result&quot; scenarios that RabbitMQ handles elegantly</li><br>
+<li><strong>Small-scale applications</strong>: The operational overhead of running Kafka (multiple brokers, Zookeeper/KRaft) is overkill for applications with low message volumes</li><br>
+<li><strong>Need immediate consistency</strong>: Kafka&#x27;s eventual consistency model can cause issues if you need immediate confirmation that a message was processed</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for:</strong></p>
+
+<p>With RabbitMQ, avoid creating too many queues dynamically—it impacts performance. Also, don&#x27;t ignore dead letter queues; failed messages need handling strategies.</p>
+
+<p>With Kafka, the biggest mistake is not understanding partitioning. Poor partition key choices lead to uneven load distribution and ordering issues. Also, remember that Kafka consumers are pull-based—design your consumer logic to handle batches efficiently rather than processing one message at a time.</p>
+
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>Choose based on your data pattern</strong>: RabbitMQ for tasks that need guaranteed completion, Kafka for events that multiple systems need to process independently</li>
+<li><strong>RabbitMQ + Celery is the Django standard</strong> for background processing, especially when integrating with PostgreSQL/Oracle for transactional workloads</li>
+<li><strong>Kafka excels for AI/ML pipelines</strong> where you need to stream training data, model predictions, and user interactions to multiple consuming services</li>
+<li><strong>AWS offers managed versions of both</strong>: Amazon MQ for RabbitMQ and MSK for Kafka, reducing operational overhead while maintaining compatibility</li>
+<li><strong>Operational complexity matters</strong>: RabbitMQ is simpler to deploy and monitor, while Kafka requires more infrastructure expertise but offers superior scalability for high-throughput scenarios</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
