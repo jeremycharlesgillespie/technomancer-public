@@ -448,13 +448,6 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
             body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
         }});
 
-        // Try to open claude.ai/code in a new tab
-        // Note: popup blockers may prevent this — the toast tells user to paste manually
-        const win = window.open('https://claude.ai/code', '_blank');
-        if (!win) {{
-            showToast('Popup blocked — open claude.ai/code manually and paste.');
-        }}
-
         // Reset button after 5 seconds
         setTimeout(() => {{
             btn.textContent = 'Copy for Claude Code';

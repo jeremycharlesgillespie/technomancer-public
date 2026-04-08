@@ -82,6 +82,7 @@ from .dreaming import start_dreaming
 from .prometheus_metrics import start_metrics_server
 from .profiler import RequestProfile, RequestTimer, get_performance_summary
 from .memory_system import MemorySystem, get_full_profile, get_memory_tools, init_memory_system
+from .gap_reporter import start_gap_reporter
 from .news_digest import start_news_digest
 from .tools import get_all_tools
 from .web_search import get_web_tools
@@ -645,6 +646,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from idea_board.web import start_idea_board
     start_idea_board()
     log("Idea Board running on http://0.0.0.0:8322")
+
+    # Start weekly knowledge gap reporter (Sunday midnight)
+    start_gap_reporter(client, ALLOWED_CHANNEL)
+    log("Gap reporter started (weekly, Sunday midnight)")
 
     # Start hourly idea generation (isolated agent, runs 5min after each hour)
     from .idea_generator import start_idea_generator
