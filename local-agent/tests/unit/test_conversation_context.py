@@ -47,17 +47,17 @@ def sample_conversations():
     """Sample conversation data for testing."""
     return [
         {
-            "user": "gman386",
+            "user": "testuser",
             "message": "How do I set up Django REST framework with token auth?",
             "response": "You can use Django REST framework's TokenAuthentication...",
         },
         {
-            "user": "gman386",
+            "user": "testuser",
             "message": "Should I use class-based or function-based views?",
             "response": "Class-based views offer more reusability...",
         },
         {
-            "user": "gman386",
+            "user": "testuser",
             "message": "What's the best way to handle pagination?",
             "response": "DRF provides several pagination classes...",
         },
@@ -72,15 +72,15 @@ def summaries_file_with_content(patched_conversation_context):
     content = (
         "# Conversation Summaries\n\n"
         "Structured summaries of past conversations for long-term context.\n\n---\n"
-        "\n## 2026-04-01 10:30 - gman386\n"
+        "\n## 2026-04-01 10:30 - testuser\n"
         "**Topic:** Discussed Django REST framework setup with token authentication\n"
         "**Decisions:** Will use TokenAuthentication over SessionAuthentication\n"
         "**Preferences:** Prefers class-based views for API endpoints\n"
-        "\n## 2026-04-02 14:00 - gman386\n"
+        "\n## 2026-04-02 14:00 - testuser\n"
         "**Topic:** Explored Python asyncio patterns for background tasks\n"
         "**Decisions:** None\n"
         "**Preferences:** Prefers async/await over threading for I/O-bound tasks\n"
-        "\n## 2026-04-03 09:15 - gman386\n"
+        "\n## 2026-04-03 09:15 - testuser\n"
         "**Topic:** Asked about PostgreSQL indexing strategies\n"
         "**Decisions:** Will add composite index on orders table\n"
         "**Preferences:** None\n"
@@ -103,7 +103,7 @@ class TestBuildSummaryPrompt:
 
         assert "Django REST framework" in prompt
         assert "class-based or function-based" in prompt
-        assert "gman386" in prompt
+        assert "testuser" in prompt
 
     def test_includes_instructions(self, sample_conversations):
         """Prompt includes summary instructions."""
@@ -232,7 +232,7 @@ class TestSaveSummaries:
 
         summaries = [
             {
-                "user": "gman386",
+                "user": "testuser",
                 "topic": "Discussed Python decorators",
                 "decisions": "Will use functools.wraps",
                 "preferences": "Prefers decorator factories",
@@ -245,7 +245,7 @@ class TestSaveSummaries:
         content = cc_module.SUMMARIES_FILE.read_text(encoding="utf-8")
         assert "Python decorators" in content
         assert "functools.wraps" in content
-        assert "gman386" in content
+        assert "testuser" in content
 
     def test_creates_file_if_missing(self, patched_conversation_context):
         """Creates summaries file with header if it doesn't exist."""
