@@ -1,0 +1,297 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "LLM Call Rate (per minute)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "calls/min",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none" }
+          },
+          "unit": "cpm"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(llm_calls_total[5m]) * 60",
+          "legendFormat": "{{endpoint}} ({{model}}) - {{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "LLM Call Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "seconds",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none" }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(llm_call_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(llm_call_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(llm_call_duration_seconds_bucket[5m]))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "title": "Error Rate (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "%",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none" },
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 20 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(llm_call_errors_total[5m]) / rate(llm_calls_total[5m]) * 100",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Token Throughput (per minute)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "tokens/min",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(llm_input_tokens_total[5m]) * 60",
+          "legendFormat": "{{endpoint}} input",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(llm_output_tokens_total[5m]) * 60",
+          "legendFormat": "{{endpoint}} output",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Latency by Endpoint",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "seconds",
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "mode": "none" }
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "rate(llm_call_duration_seconds_sum[5m]) / rate(llm_call_duration_seconds_count[5m])",
+          "legendFormat": "{{endpoint}} ({{model}}) avg",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Total Calls",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(llm_calls_total)",
+          "legendFormat": "Total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Total Errors",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(llm_call_errors_total)",
+          "legendFormat": "Errors",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Total Tokens",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "purple", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "targets": [
+        {
+          "expr": "sum(llm_input_tokens_total) + sum(llm_output_tokens_total)",
+          "legendFormat": "Tokens",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Latency Heatmap",
+      "type": "heatmap",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "color": { "mode": "scheme", "scheme": "Oranges" },
+        "yAxis": { "unit": "s" }
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(llm_call_duration_seconds_bucket[5m])) by (le)",
+          "legendFormat": "{{le}}",
+          "refId": "A",
+          "format": "heatmap"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["llm", "technomancer", "performance"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "title": "Technomancer LLM Performance",
+  "uid": "technomancer-llm-perf"
+}

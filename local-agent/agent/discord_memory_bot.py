@@ -52,6 +52,7 @@ from .bot_commands import (
     handle_learning_history,
     handle_list_videos,
     handle_perf,
+    handle_publish,
     handle_reload_server,
     handle_search_videos,
     handle_show_commands,
@@ -765,6 +766,9 @@ async def on_message(message: discord.Message) -> None:
 
     if lower == "perf":
         await handle_perf(message, send_response)
+        return
+    if lower == "publish":
+        await handle_publish(message, user)
         return
     if lower == "metrics":
         await handle_metrics(message, send_response)

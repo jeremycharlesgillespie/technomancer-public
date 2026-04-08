@@ -219,6 +219,18 @@ State stored in `.safe_update_state` (git-ignored).
 
 ## Important Patterns
 
+### MANDATORY: All Code Must Be Publishable
+**This codebase is synced to a PUBLIC repo (technomancer-public). Every change you make will be visible to the public.**
+
+Before writing or committing code, ask yourself:
+- Does this contain any personal data (usernames, paths, API keys)?
+- Does this reference hardcoded values that should be in config/settings?
+- Would this look professional to someone reviewing the code on GitHub?
+
+Use `settings.bot_owner` instead of hardcoded usernames. Use `settings.vault_path` instead of hardcoded paths. Use `settings.github_pages_url` instead of hardcoded URLs.
+
+After every successful `safe_update.py continue`, run `python publish.py --push --force` to sync changes to the public repo. Or type `publish` in Discord.
+
 ### MANDATORY: Use safe_update.py for ALL Code Changes
 **NEVER edit code directly on main. ALWAYS use the safe_update workflow for ANY code change.**
 

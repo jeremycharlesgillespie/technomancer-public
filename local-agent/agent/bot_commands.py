@@ -42,6 +42,34 @@ from .youtube_tools import (
 )
 
 
+async def handle_publish(message: Any, user: str) -> None:
+    """Sync code to technomancer-public repo and push (owner only)."""
+    if user.lower() != settings.bot_owner.lower():
+        await message.reply("Sorry, only the bot owner can publish.")
+        return
+
+    await message.reply("Publishing to technomancer-public...")
+
+    async def _run_publish() -> None:
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, "publish.py", "--push", "--force"],
+                capture_output=True, text=True, timeout=120,
+                cwd=Path(__file__).parent.parent,
+            )
+            output = result.stdout.strip()
+            if result.returncode == 0:
+                await message.channel.send(f"Published successfully!\n```\n{output[-500:]}\n```")
+            else:
+                error = result.stderr.strip() or output
+                await message.channel.send(f"Publish failed:\n```\n{error[-500:]}\n```")
+        except Exception as e:
+            await message.channel.send(f"Publish error: {e}")
+
+    asyncio.create_task(_run_publish())
+
+
 async def handle_perf(message: Any, send_response: Any) -> None:
     """Show performance profiling data."""
     summary = get_performance_summary()

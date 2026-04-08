@@ -452,6 +452,28 @@ def continue_workflow():
         log("Step 8: Running post-deploy quality tests...")
         qa_ok = run_quality_tests()
 
+        # Step 9: Auto-publish to public repo
+        publish_ok = False
+        publish_script = Path(__file__).parent / "publish.py"
+        public_repo = Path(__file__).parent.parent.parent / "technomancer-public"
+        if publish_script.exists() and public_repo.exists():
+            log("Step 9: Publishing to technomancer-public...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(publish_script), "--push", "--force"],
+                    capture_output=True, text=True, timeout=120,
+                    cwd=Path(__file__).parent,
+                )
+                if result.returncode == 0:
+                    log("Published to technomancer-public")
+                    publish_ok = True
+                else:
+                    log(f"Publish failed: {result.stderr[:200] or result.stdout[:200]}")
+            except Exception as e:
+                log(f"Publish error: {e}")
+        else:
+            log("Step 9: Skipping publish (no public repo found)")
+
         # Done!
         print()
         print("=" * 60)
@@ -467,6 +489,10 @@ def continue_workflow():
             print("Pushed to origin/main")
         else:
             print("WARNING: Push to origin failed - push manually")
+        if publish_ok:
+            print("Published to technomancer-public")
+        elif public_repo.exists():
+            print("WARNING: Publish to technomancer-public failed")
         if qa_ok:
             print("Quality tests passed")
         else:
