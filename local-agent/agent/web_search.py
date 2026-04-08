@@ -168,6 +168,7 @@ def get_web_tools() -> list:
                 "required": ["query"],
             },
             web_search,
+            timeout=45,
         ),
         create_tool(
             "web_search_news",
@@ -187,6 +188,7 @@ def get_web_tools() -> list:
                 "required": ["query"],
             },
             web_search_news,
+            timeout=45,
         ),
         create_tool(
             "web_fetch",
@@ -207,5 +209,6 @@ def get_web_tools() -> list:
                 "required": ["url"],
             },
             web_fetch,
+            timeout=30,
         ),
     ]

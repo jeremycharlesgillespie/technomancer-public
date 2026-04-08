@@ -10,6 +10,7 @@ This agent can:
 
 import json
 import re
+import threading
 import time as _time
 import uuid
 from dataclasses import dataclass, field
@@ -200,6 +201,7 @@ class Tool:
     description: str
     parameters: dict  # JSON Schema
     function: Callable[..., Any]
+    timeout: int | None = None  # Per-tool timeout in seconds (None = no limit)
 
 
 @dataclass
@@ -297,11 +299,47 @@ If you need to perform multiple steps, do them one at a time."""
             for tool in self.tools.values()
         ]
 
+    def _run_with_timeout(self, func: Callable, args: dict, timeout: int) -> str:
+        """Run a tool function in a thread with a timeout.
+
+        Returns the result string, or a fallback message if the call
+        exceeds *timeout* seconds.  The worker thread is left as a daemon
+        so it won't block the process if it hangs.
+        """
+        result_box: list[str | None] = [None]
+        error_box: list[BaseException | None] = [None]
+
+        def _worker() -> None:
+            try:
+                r = func(**args)
+                result_box[0] = r if isinstance(r, str) else json.dumps(r, indent=2, default=str)
+            except Exception as exc:
+                error_box[0] = exc
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+
+        if thread.is_alive():
+            # Thread is still running — return a fallback
+            return (
+                f"⏱️ Tool timed out after {timeout}s. "
+                f"The external service may be slow or unreachable. "
+                f"Please try again in a moment."
+            )
+
+        if error_box[0] is not None:
+            raise error_box[0]
+
+        return result_box[0]  # type: ignore[return-value]
+
     def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a tool and return the result as a string.
 
         Large results are automatically truncated and stored to disk.
         The agent can retrieve full results via get_stored_result.
+        If the tool has a timeout set, the call is wrapped in a thread
+        with that deadline; a friendly fallback is returned on expiry.
         """
         if name not in self.tools:
             return f"Error: Unknown tool '{name}'"
@@ -309,9 +347,14 @@ If you need to perform multiple steps, do them one at a time."""
         tool = self.tools[name]
         start = _time.perf_counter()
         try:
-            result = tool.function(**arguments)
-            if not isinstance(result, str):
-                result = json.dumps(result, indent=2, default=str)
+            # Use timeout wrapper if tool has a timeout configured
+            if tool.timeout is not None:
+                result = self._run_with_timeout(tool.function, arguments, tool.timeout)
+            else:
+                result = tool.function(**arguments)
+                if not isinstance(result, str):
+                    result = json.dumps(result, indent=2, default=str)
+
             # Truncate large results (skip for get_stored_result to avoid recursion)
             truncated = False
             if name != "get_stored_result":
@@ -566,11 +609,24 @@ If you need to perform multiple steps, do them one at a time."""
         self.turn_count = 0
 
 
-def create_tool(name: str, description: str, parameters: dict, function: Callable) -> Tool:
-    """Helper to create a Tool instance from individual arguments."""
+def create_tool(
+    name: str,
+    description: str,
+    parameters: dict,
+    function: Callable,
+    timeout: int | None = None,
+) -> Tool:
+    """Helper to create a Tool instance from individual arguments.
+
+    Args:
+        timeout: Optional per-tool timeout in seconds.  If set, the agent
+                 will abort the call after this many seconds and return a
+                 graceful fallback message instead of hanging.
+    """
     return Tool(
         name=name,
         description=description,
         parameters=parameters,
         function=function,
+        timeout=timeout,
     )

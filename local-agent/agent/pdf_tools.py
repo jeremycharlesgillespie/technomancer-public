@@ -264,6 +264,7 @@ def get_pdf_tools() -> list[Tool]:
                 "required": [],
             },
             function=summarize_pdf,
+            timeout=60,
         ),
         create_tool(
             name="extract_pdf_text",
@@ -280,6 +281,7 @@ def get_pdf_tools() -> list[Tool]:
                 "required": [],
             },
             function=extract_text_from_pdf,
+            timeout=60,
         ),
         create_tool(
             name="get_pdf_info",
@@ -296,5 +298,6 @@ def get_pdf_tools() -> list[Tool]:
                 "required": [],
             },
             function=get_pdf_metadata,
+            timeout=30,
         ),
     ]

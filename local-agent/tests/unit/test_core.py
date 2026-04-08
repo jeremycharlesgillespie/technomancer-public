@@ -2,6 +2,8 @@
 Tests for agent/core.py - Agent class, Tool dataclass, and utilities.
 """
 
+import time
+
 from agent.core import (
     Agent,
     AgentConfig,
@@ -473,3 +475,97 @@ class TestAgentWithTruncation:
 
         result = agent._execute_tool("small_tool", {})
         assert result == "ok"
+
+
+# =============================================================================
+# TOOL TIMEOUT TESTS
+# =============================================================================
+
+
+class TestToolTimeout:
+    """Tests for per-tool timeout mechanism."""
+
+    def test_tool_timeout_field_default(self):
+        """Tool.timeout defaults to None (no limit)."""
+        tool = Tool(
+            name="t", description="d",
+            parameters={}, function=lambda: "ok",
+        )
+        assert tool.timeout is None
+
+    def test_create_tool_with_timeout(self):
+        """create_tool accepts optional timeout parameter."""
+        tool = create_tool("t", "d", {}, lambda: "ok", timeout=30)
+        assert tool.timeout == 30
+
+    def test_fast_tool_with_timeout_returns_normally(self, mock_ollama_client):
+        """A tool that finishes within its timeout returns the normal result."""
+        def fast_func(**kwargs):
+            return "fast result"
+
+        agent = Agent(AgentConfig(verbose=False))
+        tool = create_tool(
+            "fast", "Fast tool",
+            {"type": "object", "properties": {}, "required": []},
+            fast_func, timeout=5,
+        )
+        agent.register_tool(tool)
+
+        result = agent._execute_tool("fast", {})
+        assert result == "fast result"
+
+    def test_slow_tool_returns_timeout_fallback(self, mock_ollama_client):
+        """A tool that exceeds its timeout returns a fallback message."""
+        def slow_func(**kwargs):
+            time.sleep(10)
+            return "should not see this"
+
+        agent = Agent(AgentConfig(verbose=False))
+        tool = create_tool(
+            "slow", "Slow tool",
+            {"type": "object", "properties": {}, "required": []},
+            slow_func, timeout=1,
+        )
+        agent.register_tool(tool)
+
+        start = time.monotonic()
+        result = agent._execute_tool("slow", {})
+        elapsed = time.monotonic() - start
+
+        assert "timed out" in result
+        assert "1s" in result
+        # Should return in ~1s, not 10s
+        assert elapsed < 3
+
+    def test_tool_without_timeout_runs_normally(self, mock_ollama_client):
+        """A tool with no timeout set (None) runs without the thread wrapper."""
+        def normal_func(**kwargs):
+            return "normal result"
+
+        agent = Agent(AgentConfig(verbose=False))
+        tool = create_tool(
+            "normal", "Normal tool",
+            {"type": "object", "properties": {}, "required": []},
+            normal_func,
+        )
+        agent.register_tool(tool)
+
+        result = agent._execute_tool("normal", {})
+        assert result == "normal result"
+
+    def test_tool_timeout_exception_propagates(self, mock_ollama_client):
+        """A tool that raises within the timeout wrapper still reports the error."""
+        def error_func(**kwargs):
+            raise ValueError("broken")
+
+        agent = Agent(AgentConfig(verbose=False))
+        tool = create_tool(
+            "err", "Error tool",
+            {"type": "object", "properties": {}, "required": []},
+            error_func, timeout=5,
+        )
+        agent.register_tool(tool)
+
+        result = agent._execute_tool("err", {})
+        assert "Error" in result
+        assert "broken" in result
