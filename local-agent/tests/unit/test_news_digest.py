@@ -390,8 +390,8 @@ class TestFormatMemorySection:
 
     def test_formats_connections(self):
         connections = [
-            "- **04/07 10:00** (gman386): Asked about Python",
-            "- **04/07 11:00** (gman386): Discussed Django models",
+            "- **04/07 10:00** (testuser): Asked about Python",
+            "- **04/07 11:00** (testuser): Discussed Django models",
         ]
         result = format_memory_section(connections)
         assert "Related from your conversations" in result
@@ -399,7 +399,7 @@ class TestFormatMemorySection:
         assert "Discussed Django models" in result
 
     def test_single_connection(self):
-        connections = ["- **04/07 10:00** (gman386): Asked about AWS Lambda"]
+        connections = ["- **04/07 10:00** (testuser): Asked about AWS Lambda"]
         result = format_memory_section(connections)
         assert "Related from your conversations" in result
         assert "AWS Lambda" in result
