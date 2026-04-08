@@ -62,8 +62,8 @@ Discord (#llm_chat)          Discord (#claude-code)        Idea Board (port 8322
 
 ```bash
 # Clone the repo
-git clone https://github.com/jeremycharlesgillespie/technomancer.git
-cd technomancer/local-agent
+git clone https://github.com/jeremycharlesgillespie/technomancer-public.git
+cd technomancer-public/local-agent
 
 # Configure environment
 cp .env.example .env
@@ -172,8 +172,7 @@ I built this to scratch my own itch, but if it's useful to you too, that's aweso
 
 ## Learning Articles
 
-AI-generated developer learning articles:
-**[Browse Articles](https://jeremycharlesgillespie.github.io/technomancer/learning/)**
+The bot generates daily AI-powered developer learning articles and can deploy them to GitHub Pages. Set up your own GitHub Pages site by enabling it in your repo settings and configuring `GITHUB_PAGES_URL` in `.env`.
 
 ## License
 
