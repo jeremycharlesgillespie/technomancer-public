@@ -378,6 +378,12 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         <a href="/news">News Config</a>
     </div>
     <p class="stats" id="stats">{total} ideas total &bull; {proposed} pending review &bull; Last refresh: {now}</p>
+
+    <div id="evolve-panel" class="card" style="border-left-color: var(--accent); margin-bottom: 1.5rem;">
+        <div class="card-title">Evolve Status</div>
+        <div id="evolve-content" style="color: var(--muted);">Loading...</div>
+    </div>
+
     {sections_html if sections_html else '<p style="color:var(--muted)">No ideas yet. They will start appearing hourly.</p>'}
 
     <script>
@@ -629,6 +635,60 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
             }}
         }} catch(e) {{}}
     }}, 30000);
+
+    // Evolve status polling
+    async function updateEvolveStatus() {{
+        try {{
+            const resp = await fetch('/api/evolve/status');
+            const data = await resp.json();
+            const el = document.getElementById('evolve-content');
+            if (!el) return;
+
+            if (data.running) {{
+                const pct = data.tests_total > 0
+                    ? Math.round((data.tests_completed / data.tests_total) * 100) : 0;
+                const filled = Math.round(pct / 5);
+                const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(20 - filled);
+
+                let logHtml = '';
+                const recentLog = (data.log || []).slice(-8);
+                for (const line of recentLog) {{
+                    const color = line.includes('FAIL') ? 'var(--red)'
+                        : line.includes('PASS') ? 'var(--green)' : 'var(--muted)';
+                    logHtml += `<div style="color:${{color}};font-size:0.8rem;font-family:monospace">${{line}}</div>`;
+                }}
+
+                el.innerHTML = `
+                    <div style="margin-bottom:0.5rem">
+                        <span class="thinking">Running</span> &bull;
+                        Phase: <strong>${{data.phase}}</strong> &bull;
+                        ${{data.tests_completed}}/${{data.tests_total}} tests &bull;
+                        Avg: ${{data.avg_score || 0}}/10
+                    </div>
+                    <div style="font-family:monospace;font-size:0.9rem;margin-bottom:0.5rem;color:var(--accent)">
+                        ${{bar}} ${{pct}}%
+                    </div>
+                    ${{logHtml}}
+                `;
+                document.getElementById('evolve-panel').style.borderLeftColor = 'var(--orange)';
+            }} else if (data.phase === 'complete' || data.last_run) {{
+                const lastRun = data.last_run || data.started || 'unknown';
+                const ts = lastRun.includes('T') ? lastRun.split('T')[1]?.slice(0,5) || lastRun : lastRun;
+                el.innerHTML = `
+                    Last run: ${{ts}} &bull;
+                    ${{data.tests_total || '?'}} tests &bull;
+                    Avg: ${{data.avg_score || '?'}}/10 &bull;
+                    ${{data.tests_passed || '?'}} passed
+                `;
+                document.getElementById('evolve-panel').style.borderLeftColor = 'var(--green)';
+            }} else {{
+                el.textContent = 'Never run. Type "evolve" in Discord to start.';
+            }}
+        }} catch(e) {{}}
+    }}
+
+    updateEvolveStatus();
+    setInterval(updateEvolveStatus, 5000);
     </script>
 </body>
 </html>"""
@@ -838,6 +898,55 @@ def api_log(idea_id: str) -> tuple:
         })
 
     return jsonify({"idea_id": idea_id, "lines": [], "line_count": 0})
+
+
+@app.route("/api/evolve/status")
+def api_evolve_status() -> tuple:
+    """GET /api/evolve/status — get evolve cycle progress.
+
+    Reads .evolve_status.json for live progress, falls back to
+    .auto_improve_report.json for last-run summary.
+    """
+    import os
+    from pathlib import Path as _Path
+
+    status_file = _Path(__file__).parent.parent / ".evolve_status.json"
+    report_file = _Path(__file__).parent.parent / ".auto_improve_report.json"
+
+    # Check live status first
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+            # Verify PID is still alive if marked as running
+            if data.get("running") and data.get("pid"):
+                try:
+                    os.kill(data["pid"], 0)
+                except (OSError, ProcessLookupError):
+                    data["running"] = False
+                    data["phase"] = "crashed"
+                    data["progress"] = "Process died unexpectedly"
+            return jsonify(data)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Fall back to last report
+    if report_file.exists():
+        try:
+            report = json.loads(report_file.read_text(encoding="utf-8"))
+            scores = [r.get("score", 0) for r in report.get("results", []) if "score" in r]
+            return jsonify({
+                "running": False,
+                "phase": "complete",
+                "last_run": report.get("timestamp", "unknown"),
+                "tests_total": len(scores),
+                "tests_passed": sum(1 for s in scores if s >= 7),
+                "avg_score": round(sum(scores) / len(scores), 1) if scores else 0,
+                "log": [],
+            })
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    return jsonify({"running": False, "phase": "never_run", "log": []})
 
 
 # ============================================================================

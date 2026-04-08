@@ -24,8 +24,56 @@ import ollama
 from agent.config import settings
 from agent.notifications import discord_send
 
+import os
+
 SCRIPT_DIR = Path(__file__).parent
 REPORT_FILE = SCRIPT_DIR / ".auto_improve_report.json"
+EVOLVE_STATUS_FILE = SCRIPT_DIR / ".evolve_status.json"
+
+
+def _update_status(**kwargs) -> None:
+    """Write evolve status to a JSON file for the dashboard to poll.
+
+    Called at key points during the evolve cycle so the idea board
+    dashboard can show real-time progress.
+    """
+    existing = {}
+    if EVOLVE_STATUS_FILE.exists():
+        try:
+            existing = json.loads(EVOLVE_STATUS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    existing.update(kwargs)
+
+    # Keep log trimmed to last 50 entries
+    if "log" in existing and len(existing["log"]) > 50:
+        existing["log"] = existing["log"][-50:]
+
+    EVOLVE_STATUS_FILE.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _log_status(message: str) -> None:
+    """Append a timestamped message to the evolve status log."""
+    ts = datetime.now().strftime("%H:%M:%S")
+    entry = f"[{ts}] {message}"
+    print(entry)
+
+    existing = {}
+    if EVOLVE_STATUS_FILE.exists():
+        try:
+            existing = json.loads(EVOLVE_STATUS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    log = existing.get("log", [])
+    log.append(entry)
+    existing["log"] = log[-50:]
+    EVOLVE_STATUS_FILE.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 SYSTEM_PROMPT_FILE = SCRIPT_DIR / "agent" / "discord_memory_bot.py"
 
 # Comprehensive test battery covering all failure modes
@@ -687,8 +735,14 @@ def run_test_battery(extra_tests: list[dict] | None = None) -> list[dict]:
     print(f"AUTO-IMPROVE TEST BATTERY — {total} tests")
     print(f"{'='*60}\n")
 
+    _update_status(
+        phase="testing", tests_total=total, tests_completed=0,
+        tests_passed=0, avg_score=0,
+    )
+
     for i, test in enumerate(all_tests, 1):
         q = test["question"]
+        _update_status(progress=f"Test {i}/{total}: {q[:60]}")
         print(f"[{i}/{total}] {q[:50]}...")
 
         start = time.time()
@@ -703,7 +757,13 @@ def run_test_battery(extra_tests: list[dict] | None = None) -> list[dict]:
         results.append(grade)
 
         status = "PASS" if grade["pass"] else "FAIL"
-        print(f"    [{status}] {grade['score']}/10 — {grade['reason']}")
+        passed_so_far = sum(1 for r in results if r["pass"])
+        avg_so_far = sum(r["score"] for r in results) / len(results)
+        _log_status(f"[{status}] {grade['score']}/10 — {q[:50]}")
+        _update_status(
+            tests_completed=i, tests_passed=passed_so_far,
+            avg_score=round(avg_so_far, 1),
+        )
 
     return results
 
@@ -1004,10 +1064,22 @@ def main():
 
     test_only = "--test-only" in sys.argv
 
+    _update_status(
+        running=True, pid=os.getpid(),
+        started=datetime.now().isoformat(timespec="seconds"),
+        phase="researching", progress="Researching new test cases...",
+        tests_completed=0, tests_total=0, tests_passed=0, avg_score=0,
+        log=[],
+    )
+    _log_status("Evolve cycle started")
+
     # Step 0: Research new tests from real-world complaints
+    _log_status("Researching new tests from real-world AI failures...")
     research_tests = research_new_tests()
+    _log_status(f"Found {len(research_tests) if research_tests else 0} new test cases")
 
     # Step 1: Run tests (static battery + research-generated)
+    _log_status("Starting test battery...")
     results = run_test_battery(extra_tests=research_tests)
 
     passed = sum(1 for r in results if r["pass"])
@@ -1020,9 +1092,10 @@ def main():
     # Step 2: Diagnose failures
     failures = [r for r in results if not r["pass"]]
     if failures:
-        print(f"\n{len(failures)} failure(s) — asking Claude to diagnose...")
+        _update_status(phase="diagnosing", progress=f"Diagnosing {len(failures)} failure(s)...")
+        _log_status(f"{len(failures)} failure(s) — asking Claude to diagnose...")
         diagnosis = diagnose_failures(results)
-        print(f"\nDiagnosis: {diagnosis.get('overall_assessment', 'N/A')}")
+        _log_status(f"Diagnosis: {diagnosis.get('overall_assessment', 'N/A')[:100]}")
     else:
         diagnosis = {
             "patterns": [],
@@ -1043,17 +1116,23 @@ def main():
     deployed = False
     fixes = diagnosis.get("patterns", [])
     if fixes:
-        print(f"\n{len(fixes)} fix(es) to apply:")
+        _update_status(phase="deploying", progress=f"Applying {len(fixes)} fix(es)...")
+        _log_status(f"{len(fixes)} fix(es) to apply")
         applied = apply_fixes(diagnosis)
 
         if applied:
-            print("\nFixes applied to system prompt. Auto-deploying...")
+            _log_status("Fixes applied to system prompt. Auto-deploying...")
             auto_deploy(fixes)
             deployed = True
     else:
         print("\nNo systematic issues found. Model is performing well.")
 
     # Step 5: Post results to Discord
+    _log_status(f"Complete — {passed}/{total} passed, avg {avg:.1f}/10")
+    _update_status(
+        running=False, phase="complete",
+        progress=f"Done — {passed}/{total} passed, avg {avg:.1f}/10",
+    )
     post_to_discord(results, diagnosis, deployed=deployed)
 
 
