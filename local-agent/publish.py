@@ -20,6 +20,7 @@ The system:
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -86,24 +87,22 @@ SYNC_PATHS = [
 ]
 
 # Patterns that should NEVER appear in public code.
-# Generic patterns are hardcoded; personal patterns are loaded from
-# .publish_blocklist (gitignored) so they don't appear in the repo.
+# Generic patterns are hardcoded; personal patterns loaded from
+# PUBLISH_BLOCKLIST in .env (comma-separated).
 _GENERIC_PATTERNS = [
     r"sk-ant-api\w+",
     r"discord\.com/api/webhooks/\d+/\w+",
 ]
 
-_BLOCKLIST_FILE = Path(__file__).parent / ".publish_blocklist"
-
 
 def _load_secret_patterns() -> list[str]:
-    """Load secret scan patterns from generic list + personal blocklist file."""
+    """Load secret scan patterns from generic list + PUBLISH_BLOCKLIST env var."""
     patterns = list(_GENERIC_PATTERNS)
-    if _BLOCKLIST_FILE.exists():
-        for line in _BLOCKLIST_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                patterns.append(line)
+    blocklist = os.environ.get("PUBLISH_BLOCKLIST", "")
+    for item in blocklist.split(","):
+        item = item.strip()
+        if item:
+            patterns.append(item)
     return patterns
 
 
