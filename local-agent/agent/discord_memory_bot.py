@@ -94,6 +94,7 @@ from .web_search import get_web_tools
 from .youtube_tools import get_youtube_tools
 from .api_usage_anomaly import get_anomaly_tools
 from .fallback_orchestrator import get_fallback_tools
+from .skill_gap_analysis import get_skill_gap_tools
 
 # Config values from centralized settings (loaded from .env)
 VAULT_PATH = settings.vault_path
@@ -632,6 +633,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
     for tool in get_anomaly_tools():
         agent.register_tool(tool)
     for tool in get_fallback_tools():
+        agent.register_tool(tool)
+    for tool in get_skill_gap_tools():
         agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
