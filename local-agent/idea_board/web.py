@@ -247,6 +247,7 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
 .epic-children { margin-left: 1.5rem; border-left: 2px dashed #4a1a6b;
                  padding-left: 0.75rem; }
 .epic-children > .card.child-card { opacity: 0.95; font-size: 0.95em; }
+.btn-epic-copy { background: #7c3aed; color: white; font-weight: 600; }
 """
 
 
@@ -336,14 +337,16 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
     approve_btn = f'<button class="btn btn-approve" onclick="doVote(\'{eid}\',\'approve\')">Approve</button>'
     veto_btn = f'<button class="btn btn-veto" onclick="doVote(\'{eid}\',\'veto\')">Veto</button>'
     execute_btn = f'<button class="btn btn-execute" onclick="doExecute(\'{eid}\')">Copy for Claude Code</button>'
+    epic_btn = f'<button class="btn btn-epic-copy" onclick="doExecuteEpic(\'{eid}\')">Copy Epic for Claude Code</button>'
     done_btn = f'<button class="btn btn-done" onclick="doMarkDone(\'{eid}\')">Mark Done</button>'
     delete_btn = f'<button class="btn btn-delete" onclick="doDelete(\'{eid}\')">Delete</button>'
+    copy_btn = epic_btn if idea_type == "epic" else execute_btn
     if state in ("proposed", "refining"):
-        actions = f'<div class="actions">{approve_btn} {veto_btn} {execute_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{approve_btn} {veto_btn} {copy_btn} {delete_btn}</div>'
     elif state == "approved":
-        actions = f'<div class="actions">{execute_btn} {done_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{copy_btn} {done_btn} {delete_btn}</div>'
     elif state == "failed":
-        actions = f'<div class="actions">{execute_btn} {done_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{copy_btn} {done_btn} {delete_btn}</div>'
     elif state == "done":
         actions = f'<div class="actions">{delete_btn}</div>'
     elif state == "vetoed":
@@ -536,6 +539,62 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         // Reset button after 5 seconds
         setTimeout(() => {{
             btn.textContent = 'Copy for Claude Code';
+            btn.style.background = '';
+            btn.disabled = false;
+        }}, 5000);
+    }}
+
+    async function doExecuteEpic(id) {{
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = 'Copying epic...';
+
+        const resp = await fetch(`/api/ideas/${{id}}/epic_prompt`);
+        const data = await resp.json();
+        const prompt = data.prompt;
+
+        let copied = false;
+        try {{
+            await navigator.clipboard.writeText(prompt);
+            copied = true;
+        }} catch(e) {{
+            const ta = document.createElement('textarea');
+            ta.value = prompt;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            copied = document.execCommand('copy');
+            document.body.removeChild(ta);
+        }}
+
+        showToast(copied
+            ? 'Epic instructions copied! Paste into Claude Code to implement all stories.'
+            : 'Could not copy — try manually.');
+
+        btn.textContent = copied ? 'Epic copied!' : 'Copy failed';
+        btn.style.background = copied ? 'var(--green)' : 'var(--red)';
+
+        // Approve all child stories
+        const cards = document.querySelectorAll('[data-idea]');
+        for (const card of cards) {{
+            const parentLink = card.querySelector('a[onclick*="' + id + '"]');
+            if (parentLink) {{
+                const childId = card.dataset.idea;
+                await fetch(`/api/ideas/${{childId}}/vote`, {{
+                    method: 'POST', headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
+                }});
+            }}
+        }}
+        // Approve the epic itself
+        await fetch(`/api/ideas/${{id}}/vote`, {{
+            method: 'POST', headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
+        }});
+
+        setTimeout(() => {{
+            btn.textContent = 'Copy Epic for Claude Code';
             btn.style.background = '';
             btn.disabled = false;
         }}, 5000);
@@ -995,6 +1054,97 @@ def api_prompt(idea_id: str) -> tuple:
         f'```bash\ncurl -X POST http://localhost:8322/api/ideas/{idea.id}/comment '
         f'-H "Content-Type: application/json" '
         f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n```\n"
+    )
+
+    return jsonify({"idea_id": idea_id, "prompt": prompt})
+
+
+@app.route("/api/ideas/<idea_id>/epic_prompt")
+def api_epic_prompt(idea_id: str) -> tuple:
+    """GET /api/ideas/<id>/epic_prompt — build a prompt for implementing an entire epic.
+
+    Generates a master prompt that includes the epic context and every child
+    story in order, instructing Claude Code to implement them sequentially
+    with a full safe_update cycle for each.
+    """
+    epic = get_idea(idea_id)
+    if not epic:
+        return jsonify({"error": "Idea not found"}), 404
+
+    all_ideas = load_ideas()
+    stories = [i for i in all_ideas if i.parent_id == idea_id and i.state != "done"]
+    done_stories = [i for i in all_ideas if i.parent_id == idea_id and i.state == "done"]
+
+    if not stories and not done_stories:
+        # Not an epic or no children — fall back to single prompt
+        return api_prompt(idea_id)
+
+    # Build the story sections
+    story_sections = ""
+    for idx, story in enumerate(stories, 1):
+        discussion = ""
+        if story.comments:
+            discussion = "Discussion:\n"
+            for c in story.comments:
+                label = "Jeremy" if c.author == "jeremy" else "LLM"
+                discussion += f"  - {label}: {c.text}\n"
+
+        story_sections += (
+            f"\n{'=' * 70}\n"
+            f"## Story {idx}/{len(stories)}: {story.title}\n"
+            f"**ID:** {story.id}\n"
+            f"**Category:** {story.category}\n\n"
+            f"**Description:** {story.description}\n"
+            f"{discussion}\n"
+            f"**After completing this story**, run:\n"
+            f"```bash\n"
+            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/done\n"
+            f"```\n"
+            f"If this story fails, run:\n"
+            f"```bash\n"
+            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/comment "
+            f"-H \"Content-Type: application/json\" "
+            f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
+            f"```\n"
+            f"Then move to the next story.\n"
+        )
+
+    # Done stories context
+    done_context = ""
+    if done_stories:
+        done_context = "\n## Already Completed Stories\n"
+        for d in done_stories:
+            done_context += f"- {d.id}: {d.title} [DONE]\n"
+        done_context += "\nThese are already implemented. Build on them, don't duplicate them.\n"
+
+    prompt = (
+        f"# EPIC: {epic.title}\n\n"
+        f"You are implementing an entire epic for the Technomancer project.\n"
+        f"This epic has **{len(stories)} stories** to implement sequentially.\n\n"
+        f"## Epic Description\n"
+        f"{epic.description}\n"
+        f"{done_context}\n"
+        f"## Implementation Process\n\n"
+        f"For EACH story below, follow this exact cycle:\n"
+        f"1. Read CLAUDE.md for project conventions\n"
+        f"2. Run `python safe_update.py <short-name>` to create a branch\n"
+        f"3. Implement the story (code, tests)\n"
+        f"4. Run `python validate.py startup` before committing\n"
+        f"5. Commit and run `python safe_update.py continue` to test, merge, restart\n"
+        f"6. Verify `python bot_service.py status` shows Bot running: True\n"
+        f"7. Mark the story done with the curl command provided\n"
+        f"8. Move to the next story\n\n"
+        f"IMPORTANT:\n"
+        f"- Each story gets its OWN safe_update branch and commit\n"
+        f"- Do NOT batch multiple stories into one branch\n"
+        f"- If a story fails, log it and move to the next one\n"
+        f"- Each story should build on what the previous stories created\n"
+        f"- When ALL stories are complete, mark the epic done:\n"
+        f"```bash\n"
+        f"curl -X POST http://localhost:8322/api/ideas/{epic.id}/done\n"
+        f"```\n"
+        f"\n# Stories to Implement\n"
+        f"{story_sections}"
     )
 
     return jsonify({"idea_id": idea_id, "prompt": prompt})
