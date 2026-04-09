@@ -96,6 +96,7 @@ from .api_usage_anomaly import get_anomaly_tools
 from .fallback_orchestrator import get_fallback_tools
 from .skill_gap_analysis import get_skill_gap_tools
 from .knowledge_fallback import get_knowledge_fallback_tools
+from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .command_suggestions import (
     find_closest_command,
     format_context_suggestions,
@@ -645,6 +646,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_knowledge_fallback_tools():
         agent.register_tool(tool)
+    for tool in get_knowledge_enrichment_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -696,6 +699,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     # Start daily reference enrichment (4 AM — writes vault articles)
     start_ref_enrichment(client, ALLOWED_CHANNEL)
     log("Reference enrichment started (daily, 4 AM)")
+
+    # Start knowledge base enrichment (every 6 hours — auto-fills gaps)
+    start_knowledge_enrichment(client, ALLOWED_CHANNEL)
+    log("Knowledge enrichment started (every 6 hours)")
 
     # Start hourly idea generation (isolated agent, runs 5min after each hour)
     from .idea_generator import start_idea_generator
