@@ -66,11 +66,12 @@ class Idea:
         description: 2-3 sentence rationale with technical details
         source: What prompted this idea (conversation_analysis, news_analysis, etc.)
         category: Type of improvement (performance, feature, quality, security, ux)
+        idea_type: Hierarchy level — "epic", "story", or "task"
         created: ISO timestamp when the idea was created
         state: Current state (proposed, approved, vetoed, refining, executing, done, failed)
         votes: Dict of voter -> vote ("up", "down", "approve", "veto", or None)
         comments: Threaded discussion
-        parent_id: If this is a refinement, links to the original idea
+        parent_id: For stories/tasks, links to the parent epic or story
         execution_log: Output from Claude Code execution (populated when done/failed)
     """
 
@@ -79,6 +80,7 @@ class Idea:
     description: str
     source: str = "llm_analysis"
     category: str = "feature"
+    idea_type: str = "story"  # "epic", "story", or "task"
     created: str = ""
     state: str = "proposed"
     votes: dict[str, str | None] = field(default_factory=lambda: {"claude": None, "jeremy": None})
@@ -97,6 +99,7 @@ class Idea:
             "description": self.description,
             "source": self.source,
             "category": self.category,
+            "idea_type": self.idea_type,
             "created": self.created,
             "state": self.state,
             "votes": self.votes,
@@ -114,6 +117,7 @@ class Idea:
             description=data["description"],
             source=data.get("source", "llm_analysis"),
             category=data.get("category", "feature"),
+            idea_type=data.get("idea_type", "story"),
             created=data.get("created", ""),
             state=data.get("state", "proposed"),
             votes=data.get("votes", {"claude": None, "jeremy": None}),
@@ -280,6 +284,7 @@ def add_idea(
     description: str,
     source: str = "llm_analysis",
     category: str = "feature",
+    idea_type: str = "story",
     parent_id: str | None = None,
 ) -> Idea:
     """Add a new idea, deduplicating against existing ideas.
@@ -293,7 +298,8 @@ def add_idea(
         description: Technical rationale
         source: What prompted this idea
         category: Type (performance, feature, quality, security, ux)
-        parent_id: Link to parent idea if this is a refinement
+        idea_type: Hierarchy level — "epic", "story", or "task"
+        parent_id: For stories/tasks, the parent epic or story ID
 
     Returns:
         The created Idea (or existing one if duplicate detected)
@@ -314,6 +320,7 @@ def add_idea(
         description=description,
         source=source,
         category=category,
+        idea_type=idea_type,
         parent_id=parent_id,
     )
     ideas.append(idea)

@@ -47,19 +47,26 @@ framework with Ollama LLM, Claude API integration, memory system, news digest,
 and developer learning tools. The owner is the project owner (a Senior Software Engineer).
 
 Analyze the following inputs and suggest 1-3 concrete improvement ideas.
-Write each idea like a Jira Story — detailed enough that an engineer could
-pick it up and start working on it.
+Think in terms of FULL LIFECYCLE — don't just suggest adding a metric or a data
+collection layer.  Every idea should describe the complete value chain from data
+collection through to the behaviour change or user-visible outcome.
+
+Each idea can be an "epic" (a multi-part initiative) or a "story" (a standalone
+deliverable).  Epics should list the 2-4 stories needed to deliver end-to-end value.
 
 For each idea, output a JSON object with these fields:
 - "title": Short descriptive title (under 80 chars)
+- "idea_type": "epic" if it requires multiple stories to deliver value, "story" if standalone
 - "description": A structured description with each section on its OWN LINE separated by blank lines.
     Use EXACTLY this format with newlines between sections:
-    "WHAT: <what to build or change>\n\nWHY: <what problem it solves>\n\nHOW: <implementation approach — files, patterns, libraries>\n\nBENEFITS: <how it helps the project owner — saves time, improves quality, etc.>\n\nCOST: <resource impact — CPU/GPU/disk/API costs, or 'Minimal'>\n\nUNLOCKS: <what new capabilities become possible>"
-    CRITICAL: Each section (WHAT, WHY, HOW, BENEFITS, COST, UNLOCKS) MUST start on a new line. Do NOT put all sections on one line.
+    "WHAT: <what to build or change>\n\nWHY: <what problem it solves>\n\nHOW: <implementation approach — files, patterns, libraries>\n\nFULL LIFECYCLE: <describe the complete value chain: data collection → analysis → action → user-visible outcome. What consumes this data? What behaviour changes? How does the user see the improvement?>\n\nBENEFITS: <how it helps the project owner — saves time, improves quality, etc.>\n\nCOST: <resource impact — CPU/GPU/disk/API costs, or 'Minimal'>\n\nUNLOCKS: <what new capabilities become possible>"
+    CRITICAL: Each section MUST start on a new line. Do NOT put all sections on one line.
+- "stories": (only for epics) A JSON array of 2-4 story titles that together deliver the full lifecycle. Each story should be independently implementable and testable. Example: ["Collect engagement data", "Build ranking algorithm from engagement", "Auto-filter low-engagement sources"]
 - "category": One of: performance, feature, quality, security, ux
 - "source": Which input prompted this (news_analysis, conversation_analysis, error_analysis, performance_analysis)
 
 RULES:
+- THINK END-TO-END: Don't suggest "add tracking for X" without also describing what consumes that tracking data and what changes as a result.  Layer 1 (data collection) is useless without Layer 2 (analysis) and Layer 3 (action).
 - Be specific and actionable — not vague suggestions
 - Reference specific files, functions, or metrics when possible
 - Focus on things that would genuinely help Jeremy as a Sr. Software Engineer
@@ -322,13 +329,31 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
 
     created = []
     for idea_data in parsed:
+        idea_type = idea_data.get("idea_type", "story")
+        if idea_type not in ("epic", "story", "task"):
+            idea_type = "story"
+
         idea = add_idea(
             title=idea_data["title"],
             description=idea_data["description"],
             source=idea_data["source"],
             category=idea_data["category"],
+            idea_type=idea_type,
         )
         created.append(idea_data)
+
+        # If this is an epic with stories, create child story stubs
+        if idea_type == "epic" and idea_data.get("stories"):
+            for story_title in idea_data["stories"][:6]:
+                if isinstance(story_title, str) and story_title.strip():
+                    add_idea(
+                        title=story_title.strip(),
+                        description=f"Story under epic: {idea.title}",
+                        source=idea_data["source"],
+                        category=idea_data["category"],
+                        idea_type="story",
+                        parent_id=idea.id,
+                    )
 
     logger.info(f"[IdeaGen] Generated {len(created)} new ideas.")
     return created

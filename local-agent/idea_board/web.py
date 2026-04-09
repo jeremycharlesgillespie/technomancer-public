@@ -237,6 +237,16 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
 .btn-done { background: var(--green); color: white; }
 .btn-delete { background: transparent; color: var(--muted); border: 1px solid var(--border);
               font-size: 0.8rem; }
+.badge-type { font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge-epic { background: #4a1a6b; color: #c084fc; }
+.badge-story { background: #1a3a5c; color: var(--accent); }
+.badge-task { background: #333; color: var(--muted); }
+.epic-group { border: 2px solid #4a1a6b; border-radius: 10px; padding: 0.5rem;
+              margin-bottom: 1.2rem; background: rgba(74,26,107,0.08); }
+.epic-group > .card.epic-card { border-left-width: 6px; margin-bottom: 0.5rem; }
+.epic-children { margin-left: 1.5rem; border-left: 2px dashed #4a1a6b;
+                 padding-left: 0.75rem; }
+.epic-children > .card.child-card { opacity: 0.95; font-size: 0.95em; }
 """
 
 
@@ -292,7 +302,7 @@ def _format_description(raw: str) -> str:
     return "\n".join(parts)
 
 
-def _render_idea_card(idea: dict[str, Any]) -> str:
+def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
     """Render a single idea as an HTML card."""
     eid = html.escape(idea["id"])
     title = html.escape(idea["title"])
@@ -300,6 +310,8 @@ def _render_idea_card(idea: dict[str, Any]) -> str:
     state = idea["state"]
     category = html.escape(idea.get("category", ""))
     source = html.escape(idea.get("source", ""))
+    idea_type = idea.get("idea_type", "story")
+    parent_id = idea.get("parent_id", "")
     created = idea.get("created", "")[:10]
     claude_vote = idea.get("votes", {}).get("claude") or "—"
     jeremy_vote = idea.get("votes", {}).get("jeremy") or "—"
@@ -354,14 +366,24 @@ def _render_idea_card(idea: dict[str, Any]) -> str:
             <div class="exec-log">{log_text}</div>
         </details>"""
 
+    type_badge = f'<span class="badge badge-type badge-{idea_type}">{idea_type}</span>'
+    parent_link = ""
+    if parent_id:
+        safe_pid = html.escape(parent_id)
+        parent_link = f' &bull; <a href="#" onclick="document.querySelector(\'[data-idea=\\x27{safe_pid}\\x27]\')?.scrollIntoView({{behavior:\\x27smooth\\x27}});return false" style="color:var(--accent)">parent: {safe_pid}</a>'
+
+    child_class = " child-card" if is_child else ""
+    epic_class = " epic-card" if idea_type == "epic" else ""
+
     return f"""
-    <div class="card {state}" data-idea="{eid}">
+    <div class="card {state}{epic_class}{child_class}" data-idea="{eid}">
         <div class="card-title">{eid}: {title}</div>
         <div class="card-meta">
+            {type_badge}
             <span class="badge badge-state {state}">{state}</span>
             <span class="badge badge-cat">{category}</span>
             <span class="badge badge-src">{source}</span>
-            &bull; {created} &bull; Claude: {claude_vote} &bull; Jeremy: {jeremy_vote}
+            &bull; {created} &bull; Claude: {claude_vote} &bull; Jeremy: {jeremy_vote}{parent_link}
         </div>
         <div class="card-desc">{desc}</div>
         {actions}
@@ -378,9 +400,19 @@ def _render_idea_card(idea: dict[str, Any]) -> str:
 
 def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
     """Render the full HTML dashboard page."""
-    # Group by state
+    # Build lookup for parent→children
+    by_id: dict[str, dict] = {i["id"]: i for i in ideas}
+    children_of: dict[str, list[dict]] = {}
+    for idea in ideas:
+        pid = idea.get("parent_id")
+        if pid:
+            children_of.setdefault(pid, []).append(idea)
+
+    # Group top-level ideas by state (exclude children — they render under parents)
     groups: dict[str, list[dict]] = {}
     for idea in ideas:
+        if idea.get("parent_id") and idea["parent_id"] in by_id:
+            continue  # will be rendered under its parent
         state = idea["state"]
         groups.setdefault(state, []).append(idea)
 
@@ -391,7 +423,20 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         if items:
             sections_html += f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
             for idea in items:
-                sections_html += _render_idea_card(idea)
+                idea_type = idea.get("idea_type", "story")
+                kids = children_of.get(idea["id"], [])
+                if idea_type == "epic" or kids:
+                    # Render as epic group
+                    sections_html += f'<div class="epic-group">\n'
+                    sections_html += _render_idea_card(idea)
+                    if kids:
+                        sections_html += '<div class="epic-children">\n'
+                        for child in kids:
+                            sections_html += _render_idea_card(child, is_child=True)
+                        sections_html += '</div>\n'
+                    sections_html += '</div>\n'
+                else:
+                    sections_html += _render_idea_card(idea)
 
     total = len(ideas)
     proposed = len(groups.get("proposed", []))
@@ -837,6 +882,47 @@ def api_delete(idea_id: str) -> tuple:
     return jsonify({"error": "Idea not found"}), 404
 
 
+@app.route("/api/ideas/<idea_id>/type", methods=["POST"])
+def api_set_type(idea_id: str) -> tuple:
+    """POST /api/ideas/<id>/type — change an idea's type (epic/story/task)."""
+    data = request.get_json(silent=True) or {}
+    new_type = data.get("idea_type", "").strip().lower()
+    if new_type not in ("epic", "story", "task"):
+        return jsonify({"error": "idea_type must be epic, story, or task"}), 400
+
+    ideas = load_ideas()
+    for idea in ideas:
+        if idea.id == idea_id:
+            idea.idea_type = new_type
+            save_ideas(ideas)
+            return jsonify(idea.to_dict())
+    return jsonify({"error": "Idea not found"}), 404
+
+
+@app.route("/api/ideas/<idea_id>/add_story", methods=["POST"])
+def api_add_story(idea_id: str) -> tuple:
+    """POST /api/ideas/<id>/add_story — create a new story under an epic."""
+    parent = get_idea(idea_id)
+    if not parent:
+        return jsonify({"error": "Parent idea not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    title = data.get("title", "").strip()
+    description = data.get("description", "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+
+    idea = add_idea(
+        title=title,
+        description=description or f"Story under epic: {parent.title}",
+        source=parent.source,
+        category=parent.category,
+        idea_type="story",
+        parent_id=idea_id,
+    )
+    return jsonify(idea.to_dict())
+
+
 @app.route("/api/ideas/<idea_id>/prompt")
 def api_prompt(idea_id: str) -> tuple:
     """GET /api/ideas/<id>/prompt — build a ready-to-paste prompt for Claude Code.
@@ -857,11 +943,45 @@ def api_prompt(idea_id: str) -> tuple:
             label = "Jeremy (manager)" if c.author == "jeremy" else "LLM (engineer)"
             discussion += f"- {label}: {c.text}\n"
 
+    # Build epic context if this story belongs to an epic
+    epic_context = ""
+    if idea.parent_id:
+        parent = get_idea(idea.parent_id)
+        if parent:
+            sibling_ideas = load_ideas()
+            siblings = [i for i in sibling_ideas if i.parent_id == idea.parent_id and i.id != idea.id]
+            sibling_info = ""
+            for s in siblings:
+                done_marker = " [DONE]" if s.state == "done" else ""
+                sibling_info += f"  - {s.id}: {s.title}{done_marker}\n"
+            epic_context = (
+                f"\n## Parent Epic: {parent.title}\n"
+                f"**Epic Description:** {parent.description}\n"
+                f"**Other stories in this epic:**\n{sibling_info}\n"
+                f"This story is part of a larger initiative. Ensure your implementation "
+                f"integrates with the other stories and contributes to the epic's full lifecycle goal.\n"
+            )
+
+    # Build sibling context if this IS an epic
+    children_context = ""
+    if idea.idea_type == "epic":
+        all_ideas = load_ideas()
+        kids = [i for i in all_ideas if i.parent_id == idea.id]
+        if kids:
+            children_context = "\n**Stories in this epic:**\n"
+            for k in kids:
+                done_marker = " [DONE]" if k.state == "done" else ""
+                children_context += f"  - {k.id}: {k.title}{done_marker}\n"
+            children_context += "\n"
+
+    type_label = f"[{idea.idea_type.upper()}] " if idea.idea_type != "story" else ""
+
     prompt = (
         f"Implement this improvement for the Technomancer project.\n\n"
-        f"## Idea: {idea.title}\n\n"
+        f"## {type_label}Idea: {idea.title}\n\n"
         f"**Description:** {idea.description}\n"
         f"**Category:** {idea.category}\n"
+        f"{epic_context}{children_context}"
         f"{discussion}\n"
         f"## Requirements\n"
         f"- Follow the safe_update.py git workflow (branch, code, validate, commit, merge)\n"
