@@ -95,6 +95,7 @@ from .youtube_tools import get_youtube_tools
 from .api_usage_anomaly import get_anomaly_tools
 from .fallback_orchestrator import get_fallback_tools
 from .skill_gap_analysis import get_skill_gap_tools
+from .knowledge_fallback import get_knowledge_fallback_tools
 from .command_suggestions import (
     find_closest_command,
     format_context_suggestions,
@@ -641,6 +642,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
     for tool in get_fallback_tools():
         agent.register_tool(tool)
     for tool in get_skill_gap_tools():
+        agent.register_tool(tool)
+    for tool in get_knowledge_fallback_tools():
         agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
