@@ -60,10 +60,19 @@ class ClaudeBridge:
             self.client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def send(self, message: str, context: str = "", task_type: str = "general") -> str:
-        """Send a message to Claude and get a response."""
+        """Send a message to Claude and get a response.
+
+        Checks the fallback orchestrator first — if Claude API is degraded,
+        routes the request to the local Ollama model instead.
+        """
         prompt = self._build_prompt(message, context, task_type)
 
         if self.mode == "api" and self.client:
+            # Check fallback orchestrator before calling Claude
+            from .fallback_orchestrator import should_use_fallback
+
+            if should_use_fallback():
+                return self._send_ollama_fallback(message, context)
             return self._send_api(prompt)
         else:
             return self._send_cli(prompt)
@@ -116,6 +125,8 @@ Please provide a clear answer."""
 
     def _send_api(self, prompt: str) -> str:
         """Send via Anthropic API, optionally using vault context with caching."""
+        from .fallback_orchestrator import record_claude_result
+
         # Use vault session if enabled (provides cached context)
         # Note: vault session calls are already instrumented in claude_vault.py
         if self.use_vault_context:
@@ -123,7 +134,18 @@ Please provide a clear answer."""
                 from .claude_vault import get_vault_session
 
                 session = get_vault_session()
+                api_start = _time.perf_counter()
                 response = session.ask(prompt)
+                latency = _time.perf_counter() - api_start
+
+                is_error = response.startswith("Error:")
+                record_claude_result(
+                    success=not is_error, latency=latency,
+                    error=response[:200] if is_error else "",
+                )
+
+                if is_error:
+                    return self._maybe_ollama_fallback(prompt, response)
 
                 # Append cost info if enabled
                 if settings.claude_show_cost:
@@ -133,7 +155,7 @@ Please provide a clear answer."""
             except ImportError:
                 pass  # Fall back to direct API call
             except Exception as e:
-                # Log but continue with direct call
+                record_claude_result(success=False, error=str(e)[:200])
                 print(f"[ClaudeBridge] Vault session error, using direct API: {e}")
 
         # Direct API call (no vault context)
@@ -144,19 +166,23 @@ Please provide a clear answer."""
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
+            latency = _time.perf_counter() - api_start
             _record_perf(
-                "claude_api", _time.perf_counter() - api_start, success=True,
+                "claude_api", latency, success=True,
                 model=self.model,
                 input_tokens=getattr(response.usage, "input_tokens", 0),
                 output_tokens=getattr(response.usage, "output_tokens", 0),
             )
+            record_claude_result(success=True, latency=latency)
             return getattr(response.content[0], "text", str(response.content[0]))
         except Exception as e:
+            latency = _time.perf_counter() - api_start
             _record_perf(
-                "claude_api", _time.perf_counter() - api_start, success=False,
+                "claude_api", latency, success=False,
                 model=self.model, error=str(e),
             )
-            return f"Error: {e}"
+            record_claude_result(success=False, latency=latency, error=str(e)[:200])
+            return self._maybe_ollama_fallback(prompt, f"Error: {e}")
 
     def _send_cli(self, prompt: str) -> str:
         """Send via Claude CLI."""
@@ -193,6 +219,35 @@ Please provide a clear answer."""
             _record_perf("claude_cli", _time.perf_counter() - cli_start,
                          success=False, model="claude-cli", error=str(e))
             return f"Error: {e}"
+
+    def _send_ollama_fallback(self, message: str, context: str = "") -> str:
+        """Route a request to local Ollama model as fallback for Claude."""
+        from .core import Agent, AgentConfig
+
+        fallback_agent = Agent(
+            AgentConfig(
+                model=settings.ollama_model,
+                verbose=False,
+                system_prompt=(
+                    "You are acting as a fallback for Claude API which is currently "
+                    "unavailable. Answer the following request as helpfully as you can."
+                ),
+            )
+        )
+        try:
+            prompt = message if not context else f"{context}\n\n{message}"
+            result = fallback_agent.run(prompt)
+            return f"[Ollama fallback — Claude API unavailable]\n{result}"
+        except Exception as e:
+            return f"Error: Claude API unavailable and Ollama fallback failed: {e}"
+
+    def _maybe_ollama_fallback(self, prompt: str, error_response: str) -> str:
+        """After a Claude API error, check if fallback is now active and use Ollama."""
+        from .fallback_orchestrator import should_use_fallback
+
+        if should_use_fallback():
+            return self._send_ollama_fallback(prompt)
+        return error_response
 
     def escalate(self, task: str, context: str = "") -> str:
         return self.send(task, context, task_type="escalate")

@@ -82,6 +82,17 @@ class Settings(BaseSettings):
         default=1800, description="Seconds between repeat alerts per endpoint"
     )
 
+    # Fallback orchestrator settings
+    fallback_max_errors: int = Field(
+        default=5, description="Consecutive Claude API errors before fallback to Ollama"
+    )
+    fallback_latency_threshold: float = Field(
+        default=30.0, description="Avg Claude API latency (seconds) that triggers fallback"
+    )
+    fallback_recovery_cooldown: int = Field(
+        default=300, description="Seconds before probing Claude again after fallback activates"
+    )
+
     @property
     def llm_memory_path(self) -> Path:
         """Path to LLM Memory folder within vault."""
