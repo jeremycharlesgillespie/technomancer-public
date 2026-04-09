@@ -86,6 +86,7 @@ from .domain_coverage import start_domain_coverage
 from .gap_frequency import get_gap_frequency_tools, start_gap_frequency
 from .gap_reporter import start_gap_reporter
 from .gap_resolver import get_gap_resolver_tools, start_gap_resolver
+from .ref_enrichment import get_ref_enrichment_tools, start_ref_enrichment
 from .news_digest import start_news_digest
 from .tools import get_all_tools
 from .web_search import get_web_tools
@@ -612,6 +613,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_gap_resolver_tools():
         agent.register_tool(tool)
+    for tool in get_ref_enrichment_tools():
+        agent.register_tool(tool)
     for tool in get_facts_tools():
         agent.register_tool(tool)
     for tool in get_accountability_tools():
@@ -669,6 +672,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     # Start daily gap resolver (5 AM — fetches Wikipedia suggestions)
     start_gap_resolver(client, ALLOWED_CHANNEL)
     log("Gap resolver started (daily, 5 AM)")
+
+    # Start daily reference enrichment (4 AM — writes vault articles)
+    start_ref_enrichment(client, ALLOWED_CHANNEL)
+    log("Reference enrichment started (daily, 4 AM)")
 
     # Start hourly idea generation (isolated agent, runs 5min after each hour)
     from .idea_generator import start_idea_generator
