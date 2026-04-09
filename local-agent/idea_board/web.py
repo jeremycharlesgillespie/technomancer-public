@@ -248,6 +248,13 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
                  padding-left: 0.75rem; }
 .epic-children > .card.child-card { opacity: 0.95; font-size: 0.95em; }
 .btn-epic-copy { background: #7c3aed; color: white; font-weight: 600; }
+.archive-section { margin-top: 2rem; border-top: 2px solid var(--border); padding-top: 1rem; }
+.archive-toggle { cursor: pointer; color: var(--muted); font-size: 1.1rem; padding: 0.8rem 0;
+                  user-select: none; list-style: none; }
+.archive-toggle::-webkit-details-marker { display: none; }
+.archive-toggle::before { content: '\\25B6  '; font-size: 0.8rem; }
+details[open] > .archive-toggle::before { content: '\\25BC  '; }
+.archive-toggle:hover { color: var(--accent); }
 """
 
 
@@ -419,27 +426,51 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         state = idea["state"]
         groups.setdefault(state, []).append(idea)
 
-    # Render sections in priority order
+    # Render active sections (visible by default)
+    active_states = ["proposed", "refining", "approved", "executing"]
+    archived_states = ["done", "failed", "vetoed"]
+
+    def _render_state_section(state: str, items: list[dict]) -> str:
+        html = f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
+        for idea in items:
+            idea_type = idea.get("idea_type", "story")
+            kids = children_of.get(idea["id"], [])
+            if idea_type == "epic" or kids:
+                html += '<div class="epic-group">\n'
+                html += _render_idea_card(idea)
+                if kids:
+                    html += '<div class="epic-children">\n'
+                    for child in kids:
+                        html += _render_idea_card(child, is_child=True)
+                    html += '</div>\n'
+                html += '</div>\n'
+            else:
+                html += _render_idea_card(idea)
+        return html
+
     sections_html = ""
-    for state in ["proposed", "refining", "approved", "executing", "done", "failed", "vetoed"]:
+    for state in active_states:
         items = groups.get(state, [])
         if items:
-            sections_html += f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
-            for idea in items:
-                idea_type = idea.get("idea_type", "story")
-                kids = children_of.get(idea["id"], [])
-                if idea_type == "epic" or kids:
-                    # Render as epic group
-                    sections_html += f'<div class="epic-group">\n'
-                    sections_html += _render_idea_card(idea)
-                    if kids:
-                        sections_html += '<div class="epic-children">\n'
-                        for child in kids:
-                            sections_html += _render_idea_card(child, is_child=True)
-                        sections_html += '</div>\n'
-                    sections_html += '</div>\n'
-                else:
-                    sections_html += _render_idea_card(idea)
+            sections_html += _render_state_section(state, items)
+
+    # Render archived sections (collapsed by default)
+    archived_count = sum(len(groups.get(s, [])) for s in archived_states)
+    archived_html = ""
+    for state in archived_states:
+        items = groups.get(state, [])
+        if items:
+            archived_html += _render_state_section(state, items)
+
+    if archived_html:
+        sections_html += (
+            f'<details class="archive-section">'
+            f'<summary class="archive-toggle">'
+            f'Archived ({archived_count} completed/vetoed/failed)'
+            f'</summary>\n'
+            f'{archived_html}'
+            f'</details>\n'
+        )
 
     total = len(ideas)
     proposed = len(groups.get("proposed", []))
