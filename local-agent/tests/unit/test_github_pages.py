@@ -3,6 +3,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent import github_pages
 
 
@@ -43,6 +45,20 @@ class TestEnsureDocsStructure:
 class TestSaveArticleHtml:
     """Tests for save_article_html function."""
 
+    # 120-word test content that passes the quality gate
+    VALID_CONTENT = (
+        "# Python Decorators\n\n"
+        "Decorators are a powerful feature in Python that allow you to modify "
+        "the behavior of functions and classes. They provide a clean syntax for "
+        "wrapping functionality around existing code. In this article we will "
+        "explore the basics of decorators and how they work under the hood. "
+        "A decorator is simply a function that takes another function as an "
+        "argument and returns a new function. This pattern is commonly used "
+        "for logging, authentication, caching, and input validation. Python "
+        "makes this easy with the at-sign syntax which is syntactic sugar for "
+        "passing a function to the decorator and reassigning the result."
+    )
+
     def test_saves_html_file(self, tmp_path):
         """Test that HTML file is saved."""
         docs_path = tmp_path / "docs"
@@ -53,7 +69,7 @@ class TestSaveArticleHtml:
                 file_path, url = github_pages.save_article_html(
                     topic="Test Topic",
                     category="python",
-                    content="# Test\n\nSome content",
+                    content=self.VALID_CONTENT,
                     date=datetime(2026, 3, 15),
                 )
 
@@ -74,7 +90,7 @@ class TestSaveArticleHtml:
                     _, url = github_pages.save_article_html(
                         topic="Test Topic",
                         category="python",
-                        content="Content",
+                        content=self.VALID_CONTENT,
                         date=datetime(2026, 3, 15),
                     )
 
@@ -91,13 +107,27 @@ class TestSaveArticleHtml:
                 github_pages.save_article_html(
                     topic="Test Topic",
                     category="python",
-                    content="Content",
+                    content=self.VALID_CONTENT,
                 )
 
                 index_path = learning_path / "index.html"
                 assert index_path.exists()
-                content = index_path.read_text()
-                assert "Test Topic" in content
+                page_content = index_path.read_text()
+                assert "Test Topic" in page_content
+
+    def test_rejects_short_content(self, tmp_path):
+        """Test that articles under 100 words are rejected."""
+        docs_path = tmp_path / "docs"
+        learning_path = docs_path / "learning"
+
+        with patch.object(github_pages, "DOCS_PATH", docs_path):
+            with patch.object(github_pages, "LEARNING_PATH", learning_path):
+                with pytest.raises(ValueError, match="too short"):
+                    github_pages.save_article_html(
+                        topic="Bad Article",
+                        category="python",
+                        content="This is way too short.",
+                    )
 
 
 class TestListArticleFiles:

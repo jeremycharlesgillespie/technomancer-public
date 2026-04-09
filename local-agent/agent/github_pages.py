@@ -92,6 +92,17 @@ def save_article_html(
     if date is None:
         date = datetime.now()
 
+    # Quality gate: reject articles with fewer than 100 words of content
+    word_count = len(content.split())
+    if word_count < 100:
+        logger.warning(
+            f"Rejected article '{topic}': only {word_count} words (minimum 100)"
+        )
+        raise ValueError(
+            f"Article content too short ({word_count} words, minimum 100). "
+            f"Refusing to publish placeholder or error content."
+        )
+
     # Ensure directory structure exists
     ensure_docs_structure()
 

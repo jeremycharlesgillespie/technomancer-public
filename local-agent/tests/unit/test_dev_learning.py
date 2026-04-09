@@ -202,7 +202,19 @@ class TestCommandHandler:
         # Mock Claude
         mock_client = MagicMock()
         mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Generated content about neo4j")]
+        mock_response.content = [MagicMock(text=(
+            "Neo4j is a graph database management system that stores data as nodes "
+            "and relationships rather than tables and rows. This makes it ideal for "
+            "connected data problems like social networks, recommendation engines, "
+            "and fraud detection. Unlike relational databases, Neo4j uses the Cypher "
+            "query language which lets you express complex graph patterns intuitively. "
+            "Performance remains constant regardless of dataset size because queries "
+            "traverse only the relevant portion of the graph. Getting started is "
+            "straightforward with the Neo4j Desktop application. You can model your "
+            "domain as nodes with properties and connect them using typed relationships "
+            "that also carry properties. This article explores practical patterns for "
+            "building graph-powered applications with Python and the neo4j driver."
+        ))]
         mock_client.messages.create.return_value = mock_response
         mock_anthropic.Anthropic.return_value = mock_client
 
