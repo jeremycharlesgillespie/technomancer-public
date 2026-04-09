@@ -519,8 +519,8 @@ Include common pitfalls and mistakes to watch for.
             _record_perf(
                 "claude_api", duration, success=True,
                 model="claude-sonnet-4-20250514",
-                input_tokens=getattr(response.usage, "input_tokens", 0),
-                output_tokens=getattr(response.usage, "output_tokens", 0),
+                input_tokens=int(getattr(response.usage, "input_tokens", 0) or 0),
+                output_tokens=int(getattr(response.usage, "output_tokens", 0) or 0),
             )
             log(f"Content generated: {len(content)} chars")
             return content
