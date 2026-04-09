@@ -209,10 +209,21 @@ def _is_empty_message_error(exc: discord.HTTPException) -> bool:
 def _enrich_empty_content(attempt: int) -> str:
     """Build enriched fallback content for an empty message retry.
 
-    Uses contextual suggestions on the first retry to guide the user,
-    and falls back to a generic message on subsequent attempts.
+    Uses context-aware recovery on the first retry (what was the user
+    asking about?), then contextual command suggestions, then a generic
+    timestamp fallback.
     """
     if attempt == 1:
+        # Try context recovery from the message buffer first
+        try:
+            from .discord_errors import suggest_recovery_content, get_recent_context
+            # Only use context recovery if there are actually buffered messages
+            if get_recent_context(1):
+                recovery = suggest_recovery_content()
+                if recovery and len(recovery) > 20:
+                    return recovery
+        except Exception:
+            pass
         return get_contextual_suggestion()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return (

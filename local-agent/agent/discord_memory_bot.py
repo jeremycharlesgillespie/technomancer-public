@@ -98,6 +98,13 @@ from .skill_gap_analysis import get_skill_gap_tools
 from .knowledge_fallback import get_knowledge_fallback_tools
 from .news_engagement import get_news_engagement_tools, is_news_message, record_reaction, record_reply
 from .learning_newsletter import handle_newsletter_command, start_newsletter
+from .discord_errors import (
+    buffer_message,
+    get_discord_error_tools,
+    get_gateway_health,
+    handle_discord_error,
+    suggest_recovery_content,
+)
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .command_suggestions import (
     find_closest_command,
@@ -337,10 +344,18 @@ async def generate_summaries_from_recent() -> None:
 
 
 @client.event
+async def on_disconnect() -> None:
+    """Track gateway disconnections for health monitoring."""
+    get_gateway_health().record_disconnect()
+    log("[Gateway] Disconnected")
+
+
+@client.event
 async def on_ready() -> None:
     global agent, memory
     log(f"Connected as {client.user}")
     send_lifecycle_notification("online", f"Connected as {client.user}")
+    get_gateway_health().record_connect()
 
     # Initialize memory system (compaction started after agent is created below)
     memory = init_memory_system(VAULT_PATH)
@@ -652,6 +667,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_news_engagement_tools():
         agent.register_tool(tool)
+    for tool in get_discord_error_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -756,6 +773,9 @@ async def on_message(message: discord.Message) -> None:
 
     content = message.content.strip()
     user = str(message.author.name)
+
+    # Buffer message for error context recovery (50006 handling)
+    buffer_message(user, content, str(message.id))
 
     # ================================================================
     # CLAUDE-CODE CHANNEL: Everything here goes to Claude Code
@@ -1346,6 +1366,15 @@ Respond naturally and helpfully. Be conversational and friendly."""
 
         except Exception as e:
             log(f"ERR: {e}")
+
+            # Categorize Discord errors for incident tracking
+            import discord as _disc
+            if isinstance(e, _disc.HTTPException):
+                cat = handle_discord_error(e, context=content[:200])
+                log(f"[DiscordError] {cat.name}/{cat.severity}: {cat.recovery}")
+            else:
+                handle_discord_error(e, context=content[:200])
+
             # Write crash log for debugging (sys is imported at module level)
             exc_type, exc_value, exc_tb = sys.exc_info()
             _crash_file = write_crash_log(exc_type, exc_value, exc_tb)
@@ -1353,7 +1382,10 @@ Respond naturally and helpfully. Be conversational and friendly."""
             # Send detailed crash to Discord webhook
             crash_details = build_crash_message(exc_type, exc_value, exc_tb)
             send_lifecycle_notification("crash", crash_details)
-            await message.reply(f"Error: {e}\n(Crash log saved)")
+            try:
+                await message.reply(f"Error: {e}\n(Crash log saved)")
+            except Exception:
+                pass  # Can't reply if the error IS a send failure
 
 
 def write_crash_log(
