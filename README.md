@@ -38,6 +38,14 @@ Discord (#llm_chat)          Discord (#claude-code)        Idea Board (port 8322
 - **Hourly Idea Generation** — Analyzes news, conversations, errors, and performance data
 - **Auto-Improve** — Tests itself, diagnoses weaknesses, patches its own prompts
 
+### K.A.R.E.N. — Kinetic Aggression Routing Enhancement Network
+- **Complaint Pipeline** — Submit frustrations via Discord (`karen <complaint>`) or the web UI
+- **Instant Idea Generation** — Each complaint triggers 1-3 actionable improvement ideas via LLM
+- **Auto-Resolution** — When an idea born from a complaint gets approved, the complaint disappears
+- **Web Dashboard** — View, manage, and dismiss complaints at the KAREN page on the hub
+
+*Yes, KAREN wants to speak to the manager. And the manager listens.*
+
 ### Content & Learning
 - **Developer Learning** — Daily AI-generated educational articles via Claude API
 - **News Digest** — Hourly personalized tech news with relevance filtering (9am-9pm)
@@ -87,6 +95,7 @@ python bot_service.py status
 | `betterDev [topic]` | Generate a learning article |
 | `techNews` | Latest tech news with analysis |
 | `idea` | Generate improvement ideas on demand |
+| `karen <complaint>` | Submit a complaint to K.A.R.E.N. (generates ideas) |
 | `think` | Show what the bot knows about you |
 | `perf` | Show performance profiling stats |
 | `showCommands` | List all commands |
@@ -153,6 +162,7 @@ local-agent/
     web.py                  # Flask dashboard (port 8322)
     models.py               # Idea data model + Obsidian sync
     executor.py             # Claude Code execution manager
+    karen.py                # K.A.R.E.N. complaint-to-idea pipeline
   tests/                    # Test suite (600+ tests)
   validate.py               # Pre-commit validation script
   safe_update.py            # Branch-test-merge automation

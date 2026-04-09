@@ -105,6 +105,48 @@ async def handle_idea(message: Any, send_response: Any) -> None:
             await message.reply("No new ideas this cycle — everything looks good.")
 
 
+async def handle_karen(message: Any, content: str, user: str) -> None:
+    """Submit a complaint to KAREN and generate improvement ideas."""
+    parts = content.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "**K.A.R.E.N.** — Kinetic Aggression Routing Enhancement Network\n"
+            "Usage: `karen <your complaint>`\n"
+            "Example: `karen The news digest keeps sending me articles about crypto`"
+        )
+        return
+
+    complaint_text = parts[1].strip()
+    await message.reply("Complaint received. Generating improvement ideas from your frustration...")
+
+    async with message.channel.typing():
+        try:
+            from idea_board.karen import add_complaint, generate_ideas_from_complaint
+
+            complaint = add_complaint(text=complaint_text, author=user)
+            idea_ids = await asyncio.to_thread(generate_ideas_from_complaint, complaint)
+
+            if idea_ids:
+                from idea_board.models import load_ideas
+
+                ideas = load_ideas()
+                lines = [f"Generated {len(idea_ids)} idea(s) from your complaint:"]
+                for iid in idea_ids:
+                    idea = next((i for i in ideas if i.id == iid), None)
+                    if idea:
+                        lines.append(f"- **{idea.id}**: {idea.title}")
+                lines.append(f"\nView the board: http://localhost:8322/karen")
+                await message.reply("\n".join(lines))
+            else:
+                await message.reply(
+                    "Complaint logged but no new ideas could be generated. "
+                    "It might overlap with existing ideas."
+                )
+        except Exception as e:
+            log(f"[KAREN] Error: {e}")
+            await message.reply(f"Error processing complaint: {e}")
+
+
 async def handle_better_dev(
     message: Any, content: str, user: str, memory: Any, send_response: Any
 ) -> None:
@@ -221,6 +263,9 @@ async def handle_show_commands(message: Any) -> None:
 **Enhancements**
 `showEnhancements` - Show pending enhancement queue
 `addEnhancement <idea>` - Add a new enhancement to the queue
+
+**Feedback**
+`karen <complaint>` - Submit a complaint to K.A.R.E.N. (generates improvement ideas)
 
 **YouTube**
 `listVideos <url>` - List videos from a YouTube channel

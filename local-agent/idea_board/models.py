@@ -327,6 +327,10 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
     if voter == "jeremy":
         if vote_value == "approve":
             idea.state = "approved"
+            # Auto-resolve KAREN complaint when its idea is accepted
+            if idea.source == "karen":
+                from .karen import resolve_complaint_for_idea
+                resolve_complaint_for_idea(idea.id)
         elif vote_value == "veto":
             idea.state = "vetoed"
 
@@ -399,6 +403,10 @@ def mark_done(idea_id: str, execution_log: str) -> Idea | None:
     idea.execution_log = execution_log
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    # Auto-resolve KAREN complaint when its idea completes
+    if idea.source == "karen":
+        from .karen import resolve_complaint_for_idea
+        resolve_complaint_for_idea(idea.id)
     return idea
 
 

@@ -377,6 +377,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         <a href="/">Hub</a>
         <a href="/ideas" class="active">Ideas</a>
         <a href="/news">News Config</a>
+        <a href="/karen">KAREN</a>
     </div>
     <p class="stats" id="stats">{total} ideas total &bull; {proposed} pending review &bull; Last refresh: {now}</p>
 
@@ -1006,6 +1007,10 @@ def _render_hub() -> str:
             <h2>News Config</h2>
             <p>Manage RSS feeds, topic preferences, and digest schedule.</p>
         </a>
+        <a href="/karen" class="card" style="border-left: 4px solid #e94560;">
+            <h2>K.A.R.E.N.</h2>
+            <p>Submit complaints. They get turned into improvement ideas.</p>
+        </a>
         <a href="http://localhost:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>
             <p>Metrics and monitoring dashboard.</p>
@@ -1031,9 +1036,11 @@ def start_idea_board() -> None:
 
     Binds to 0.0.0.0 so it's accessible over Tailscale/LAN.
     """
-    # Register news config blueprint
+    # Register blueprints
+    from .karen import karen_bp
     from .news_config import news_bp
     app.register_blueprint(news_bp)
+    app.register_blueprint(karen_bp)
 
     def _run() -> None:
         app.run(host="0.0.0.0", port=BOARD_PORT, debug=False, use_reloader=False)

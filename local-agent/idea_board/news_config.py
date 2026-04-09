@@ -383,6 +383,7 @@ def render_news_config_page() -> str:
         <a href="/">Hub</a>
         <a href="/ideas">Ideas</a>
         <a href="/news" class="active">News Config</a>
+        <a href="/karen">KAREN</a>
     </div>
 
     <p style="color:var(--muted);margin-bottom:1rem">{feed_count}/{total_feeds} feeds active &bull; {len(config.likes)} likes &bull; {len(config.dislikes)} dislikes &bull; Schedule: {config.start_hour}:00-{config.end_hour}:00</p>

@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDN architecture and edge caching - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>CDN architecture and edge caching</h1>
+            <p class="meta">system_design &bull; April 09, 2026</p>
+        </header>
+        <main>
+<h1>CDN Architecture and Edge Caching: A Developer&#x27;s Guide to Global Performance</h1>
+
+<h2>Quick Overview</h2>
+
+<p>A Content Delivery Network (CDN) is essentially a distributed network of servers strategically placed around the globe that cache and deliver your content from locations closest to your users. Think of it as having multiple copies of your Django app&#x27;s static assets, API responses, and even HTML pages stored in data centers worldwide, so when someone in Tokyo requests your site hosted in Virginia, they get served from a nearby edge server in Japan instead of waiting for the trans-Pacific round trip.</p>
+
+<p>Edge caching is the heart of CDN functionality—it&#x27;s the intelligent storage and retrieval of content at these geographically distributed &quot;edge&quot; locations. When a user requests content, the CDN checks if it has a fresh copy cached at the nearest edge server. If yes, it serves immediately; if not, it fetches from your origin server (your Django app), caches it locally, and serves it. This dramatically reduces latency, server load, and bandwidth costs while improving user experience globally.</p>
+
+<p>Here&#x27;s a simple Python example of how you might implement cache headers in your Django views to work effectively with CDNs:</p>
+
+<pre><code class="language-python">from django.http import HttpResponse
+from django.views.decorators.cache import cache_control
+from django.utils.decorators import method_decorator
+from django.views.generic import TemplateView
+
+<p>@method_decorator(cache_control(max_age=3600, public=True), name=&#x27;dispatch&#x27;)<br>
+class APIDataView(TemplateView):<br>
+    def get(self, request, <em>args, </em>*kwargs):<br>
+        # Your data logic here<br>
+        data = self.get_api_data()<br>
+        response = JsonResponse(data)<br>
+        # Tell CDN this content can be cached for 1 hour<br>
+        response[&#x27;Cache-Control&#x27;] = &#x27;public, max-age=3600&#x27;<br>
+        response[&#x27;Vary&#x27;] = &#x27;Accept-Encoding&#x27;<br>
+        return response<br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Understanding CDN architecture elevates you from someone who just builds applications to someone who builds <em>scalable, globally-performant systems</em>. This knowledge directly complements your Python/Django/AWS stack in powerful ways. When you&#x27;re architecting Django applications, you&#x27;ll make smarter decisions about what to cache, how to structure your API responses, and how to leverage AWS CloudFront effectively with your RDS PostgreSQL or Oracle databases.</p>
+
+<p>This expertise opens doors to senior architect roles and positions you as someone who thinks beyond code to user experience and system performance. You&#x27;ll be the developer who can explain why your Django app feels slow for international users and propose concrete solutions. In the AI/automation space you&#x27;re interested in, CDNs become crucial for serving ML model predictions, distributing LLM responses through Ollama deployments, and ensuring your Discord bots respond quickly regardless of server location. Companies pay premium salaries for developers who can optimize global performance—it&#x27;s the difference between a functional app and one that scales to millions of users worldwide.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Let&#x27;s walk through implementing CDN-aware architecture for a Django application, focusing on practical AWS integration since that&#x27;s your stack.</p>
+
+<p><strong>Step 1: Configure Django for CDN-Friendly Static Assets</strong></p>
+
+<p>First, set up your Django settings to work seamlessly with CloudFront:</p>
+
+<pre><code class="language-python"># settings.py
+import os
+from pathlib import Path
+
+<h1>AWS S3 + CloudFront configuration</h1>
+AWS_ACCESS_KEY_ID = os.environ.get(&#x27;AWS_ACCESS_KEY_ID&#x27;)
+AWS_SECRET_ACCESS_KEY = os.environ.get(&#x27;AWS_SECRET_ACCESS_KEY&#x27;)
+AWS_STORAGE_BUCKET_NAME = &#x27;your-static-assets-bucket&#x27;
+AWS_S3_REGION_NAME = &#x27;us-east-1&#x27;
+AWS_S3_CUSTOM_DOMAIN = &#x27;your-cloudfront-distribution.cloudfront.net&#x27;
+
+<h1>CDN-optimized static files</h1>
+STATICFILES_STORAGE = &#x27;storages.backends.s3boto3.S3StaticStorage&#x27;
+STATIC_URL = f&#x27;https://{AWS_S3_CUSTOM_DOMAIN}/static/&#x27;
+
+<h1>Media files through CDN</h1>
+DEFAULT_FILE_STORAGE = &#x27;storages.backends.s3boto3.S3Boto3Storage&#x27;
+MEDIA_URL = f&#x27;https://{AWS_S3_CUSTOM_DOMAIN}/media/&#x27;
+
+<h1>Cache control for different file types</h1>
+AWS_S3_OBJECT_PARAMETERS = {
+    &#x27;CacheControl&#x27;: &#x27;max-age=86400&#x27;,  # 24 hours default
+}
+
+<h1>Optimize for CDN delivery</h1>
+AWS_S3_FILE_OVERWRITE = False
+AWS_DEFAULT_ACL = None
+AWS_S3_VERIFY = True
+</code></pre>
+
+<p><strong>Step 2: Implement Smart API Caching</strong></p>
+
+<p>Create a caching strategy for your Django APIs that works intelligently with CDNs:</p>
+
+<pre><code class="language-python"># utils/cdn_cache.py
+from functools import wraps
+from django.http import JsonResponse
+from django.core.cache import cache
+from django.views.decorators.vary import vary_on_headers
+import hashlib
+import json
+
+<p>def cdn_cacheable(cache_time=3600, vary_headers=None):<br>
+    &quot;&quot;&quot;<br>
+    Decorator for CDN-friendly API responses<br>
+    &quot;&quot;&quot;<br>
+    def decorator(view_func):<br>
+        @wraps(view_func)<br>
+        def wrapped_view(request, <em>args, </em>*kwargs):<br>
+            # Create cache key from request parameters<br>
+            cache_key_data = {<br>
+                &#x27;path&#x27;: request.path,<br>
+                &#x27;method&#x27;: request.method,<br>
+                &#x27;params&#x27;: dict(request.GET.items()),<br>
+                &#x27;args&#x27;: args,<br>
+                &#x27;kwargs&#x27;: kwargs<br>
+            }<br>
+            cache_key = hashlib.md5(<br>
+                json.dumps(cache_key_data, sort_keys=True).encode()<br>
+            ).hexdigest()<br>
+            <br>
+            # Check local cache first (Redis/ElastiCache)<br>
+            cached_response = cache.get(f&quot;api_cache:{cache_key}&quot;)<br>
+            <br>
+            if cached_response is None:<br>
+                # Generate fresh response<br>
+                response = view_func(request, <em>args, </em>*kwargs)<br>
+                <br>
+                # Cache locally for faster origin responses<br>
+                if hasattr(response, &#x27;content&#x27;):<br>
+                    cache.set(f&quot;api_cache:{cache_key}&quot;, {<br>
+                        &#x27;content&#x27;: response.content.decode(&#x27;utf-8&#x27;),<br>
+                        &#x27;status_code&#x27;: response.status_code,<br>
+                        &#x27;headers&#x27;: dict(response.items())<br>
+                    }, cache_time)<br>
+            else:<br>
+                # Serve from local cache<br>
+                response = JsonResponse(<br>
+                    json.loads(cached_response[&#x27;content&#x27;]), <br>
+                    status=cached_response[&#x27;status_code&#x27;]<br>
+                )<br>
+                for key, value in cached_response[&#x27;headers&#x27;].items():<br>
+                    response[key] = value<br>
+            <br>
+            # Set CDN cache headers<br>
+            response[&#x27;Cache-Control&#x27;] = f&#x27;public, max-age={cache_time}&#x27;<br>
+            response[&#x27;X-Cache-Strategy&#x27;] = &#x27;CDN-Optimized&#x27;<br>
+            <br>
+            # Handle vary headers for personalized content<br>
+            if vary_headers:<br>
+                response[&#x27;Vary&#x27;] = &#x27;, &#x27;.join(vary_headers)<br>
+            <br>
+            return response<br>
+        return wrapped_view<br>
+    return decorator</p>
+
+<h1>Example usage in views.py</h1>
+from .utils.cdn_cache import cdn_cacheable
+
+<p>class AIModelResultsView(APIView):<br>
+    @cdn_cacheable(cache_time=1800, vary_headers=[&#x27;Authorization&#x27;])<br>
+    def get(self, request, model_id):<br>
+        # Your Ollama/LLM logic here<br>
+        model_results = self.get_model_predictions(model_id)<br>
+        return JsonResponse({<br>
+            &#x27;model_id&#x27;: model_id,<br>
+            &#x27;predictions&#x27;: model_results,<br>
+            &#x27;timestamp&#x27;: timezone.now().isoformat()<br>
+        })<br>
+</code></pre></p>
+
+<p><strong>Step 3: Database Query Optimization for CDN Architecture</strong></p>
+
+<p>Since you work with PostgreSQL and Oracle, here&#x27;s how to structure database queries that work well with CDN caching:</p>
+
+<pre><code class="language-python"># models.py - CDN-friendly model design
+from django.db import models
+from django.core.cache import cache
+
+<p>class AIModelResult(models.Model):<br>
+    model_name = models.CharField(max_length=100)<br>
+    input_hash = models.CharField(max_length=64, db_index=True)<br>
+    result_data = models.JSONField()<br>
+    created_at = models.DateTimeField(auto_now_add=True)<br>
+    cache_until = models.DateTimeField()<br>
+    <br>
+    class Meta:<br>
+        db_table = &#x27;ai_model_results&#x27;<br>
+        indexes = [<br>
+            models.Index(fields=[&#x27;model_name&#x27;, &#x27;input_hash&#x27;]),<br>
+            models.Index(fields=[&#x27;cache_until&#x27;]),<br>
+        ]<br>
+    <br>
+    @classmethod<br>
+    def get_cached_result(cls, model_name, input_data):<br>
+        &quot;&quot;&quot;<br>
+        Get result with multi-level caching (CDN -&gt; Redis -&gt; DB)<br>
+        &quot;&quot;&quot;<br>
+        input_hash = hashlib.sha256(<br>
+            json.dumps(input_data, sort_keys=True).encode()<br>
+        ).hexdigest()<br>
+        <br>
+        # Check if we have a valid cached result<br>
+        result = cls.objects.filter(<br>
+            model_name=model_name,<br>
+            input_hash=input_hash,<br>
+            cache_until__gt=timezone.now()<br>
+        ).first()<br>
+        <br>
+        return result.result_data if result else None<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Static asset delivery for Django apps</strong>: CSS, JavaScript, images, and fonts benefit massively from CDN caching. Your users in Australia will load your React frontend components as fast as users in your home data center.</li><br>
+<li><strong>API responses with predictable data</strong>: If you&#x27;re building AI automation tools that serve the same model predictions or Discord bot responses repeatedly, CDN caching can reduce your Ollama server load by 80%+.</li><br>
+<li><strong>Database-heavy read operations</strong>: When your PostgreSQL/Oracle queries power public-facing data (user profiles, product catalogs, AI model results), CDN caching at the application layer prevents database hammering.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Highly personalized content</strong>: Don&#x27;t cache user-specific dashboard data or private Discord messages through CDNs—you&#x27;ll create privacy nightmares and serve wrong data to users.</li><br>
+<li><strong>Real-time data streams</strong>: If you&#x27;re building RPA tools that need live database updates or real-time AI model training data, CDN caching will make your data stale and unreliable.</li><br>
+</ul><br>
+<strong>Common pitfalls to watch for</strong>: Cache invalidation is notoriously difficult—always implement proper versioning strategies and avoid caching content that changes based on user authentication state without proper <code>Vary</code> headers. Also, don&#x27;t cache database connection strings or API keys in CDN responses (yes, developers have done this). Finally, be careful with time-sensitive data—caching stock prices for 24 hours might not end well.</p>
+
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>CDNs transform Django apps from local tools to global platforms</strong>—implementing proper cache headers and CDN architecture can reduce page load times by 60-80% for international users</li>
+<li><strong>Strategic caching reduces database load exponentially</strong>—your PostgreSQL and Oracle databases will thank you when CDNs handle repetitive queries, freeing up connections for real-time operations</li>
+<li><strong>AWS CloudFront integrates seamlessly with your existing stack</strong>—leverage S3 for static assets, ElastiCache for origin caching, and proper Django middleware for intelligent cache control</li>
+<li><strong>AI and automation workflows benefit massively from edge caching</strong>—cache Ollama model results, Discord bot responses, and RPA data at the edge to improve response times and reduce computational costs</li>
+<li><strong>Think in layers: CDN → Application Cache → Database</strong>—implement caching strategies at each level, with CDNs handling global distribution, Redis/ElastiCache handling application-level caching, and proper database indexing handling query optimization</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
