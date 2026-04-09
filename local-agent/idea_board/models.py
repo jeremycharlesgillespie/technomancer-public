@@ -258,6 +258,23 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> bool:
     return False
 
 
+def _normalize_description(desc: str) -> str:
+    """Ensure WHAT/WHY/HOW/BENEFITS/COST/UNLOCKS sections are on separate lines.
+
+    If the LLM produced all sections inline (on one line), insert newlines
+    before each section header so the dashboard renders them cleanly.
+    """
+    import re
+
+    headers = r"(?:WHAT|WHY|HOW|BENEFITS|COST|UNLOCKS):"
+    # Already well-formatted: headers on their own lines
+    if re.search(r"\n\s*(?:" + headers[4:], desc):
+        return desc
+    # Insert double newline before each header (except the first)
+    normalized = re.sub(r"\s+(" + headers + r")", r"\n\n\1", desc)
+    return normalized.strip()
+
+
 def add_idea(
     title: str,
     description: str,
@@ -281,6 +298,7 @@ def add_idea(
     Returns:
         The created Idea (or existing one if duplicate detected)
     """
+    description = _normalize_description(description)
     ideas = load_ideas()
 
     # Check against all active ideas (not vetoed/done/failed)

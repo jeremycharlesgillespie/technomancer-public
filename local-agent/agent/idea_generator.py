@@ -52,13 +52,10 @@ pick it up and start working on it.
 
 For each idea, output a JSON object with these fields:
 - "title": Short descriptive title (under 80 chars)
-- "description": A structured description using these exact section headers on separate lines:
-    "WHAT: <what to build or change>
-    WHY: <what problem it solves>
-    HOW: <implementation approach — files, patterns, libraries>
-    BENEFITS: <how it helps the project owner — saves time, improves quality, etc.>
-    COST: <resource impact — CPU/GPU/disk/API costs, or 'Minimal'>
-    UNLOCKS: <what new capabilities become possible>"
+- "description": A structured description with each section on its OWN LINE separated by blank lines.
+    Use EXACTLY this format with newlines between sections:
+    "WHAT: <what to build or change>\n\nWHY: <what problem it solves>\n\nHOW: <implementation approach — files, patterns, libraries>\n\nBENEFITS: <how it helps the project owner — saves time, improves quality, etc.>\n\nCOST: <resource impact — CPU/GPU/disk/API costs, or 'Minimal'>\n\nUNLOCKS: <what new capabilities become possible>"
+    CRITICAL: Each section (WHAT, WHY, HOW, BENEFITS, COST, UNLOCKS) MUST start on a new line. Do NOT put all sections on one line.
 - "category": One of: performance, feature, quality, security, ux
 - "source": Which input prompted this (news_analysis, conversation_analysis, error_analysis, performance_analysis)
 

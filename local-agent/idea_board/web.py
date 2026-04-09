@@ -205,9 +205,10 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
 def _format_description(raw: str) -> str:
     """Format a structured idea description into HTML sections.
 
-    Detects lines starting with WHAT:, WHY:, HOW:, BENEFITS:, COST:, UNLOCKS:
-    and renders each as a labeled section. Falls back to plain text for
-    descriptions without section headers.
+    Detects WHAT:, WHY:, HOW:, BENEFITS:, COST:, UNLOCKS: headers and renders
+    each as a labeled section.  Works whether headers are on separate lines or
+    inline (all on one line).  Falls back to plain text for descriptions
+    without any recognised section headers.
     """
     import re
 
@@ -220,18 +221,18 @@ def _format_description(raw: str) -> str:
         "UNLOCKS": "Unlocks",
     }
 
-    # Check if description has structured sections
-    has_sections = any(raw.strip().startswith(k + ":") or ("\n" + k + ":") in raw for k in section_labels)
+    # Check if description has structured sections (inline or newline-separated)
+    header_keys = "|".join(section_labels)
+    has_sections = bool(re.search(rf"(?:^|\b)(?:{header_keys}):", raw))
 
     if not has_sections:
         return html.escape(raw)
 
-    # Parse sections
-    parts = []
-    # Split on section headers
-    pattern = r"(?:^|\n)((?:WHAT|WHY|HOW|BENEFITS|COST|UNLOCKS):)"
+    # Split on section headers — works for both newline-separated and inline
+    pattern = rf"((?:{header_keys}):)"
     splits = re.split(pattern, raw.strip())
 
+    parts = []
     # First element might be text before any header
     if splits[0].strip():
         parts.append(f'<div class="desc-text">{html.escape(splits[0].strip())}</div>')
