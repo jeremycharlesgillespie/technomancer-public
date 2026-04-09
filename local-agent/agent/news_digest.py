@@ -465,8 +465,22 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
         if not validated:
             print(f"[NewsDigest] Skipping empty message for: {article['title'][:50]}")
             return
-        await channel.send(validated)
+        sent_msg = await channel.send(validated)
         print(f"[NewsDigest] Sent article: {article['title'][:50]}...")
+
+        # Track engagement for this article
+        try:
+            from .news_engagement import record_article_sent
+
+            record_article_sent(
+                message_id=str(sent_msg.id),
+                article_hash=article["hash"],
+                title=article["title"],
+                source=article["source"],
+                link=article.get("link", ""),
+            )
+        except Exception as eng_err:
+            print(f"[NewsDigest] Engagement tracking error: {eng_err}")
 
         # Mark as sent
         sent.add(article["hash"])

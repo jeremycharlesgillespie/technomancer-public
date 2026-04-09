@@ -96,6 +96,7 @@ from .api_usage_anomaly import get_anomaly_tools
 from .fallback_orchestrator import get_fallback_tools
 from .skill_gap_analysis import get_skill_gap_tools
 from .knowledge_fallback import get_knowledge_fallback_tools
+from .news_engagement import get_news_engagement_tools, is_news_message, record_reaction, record_reply
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .command_suggestions import (
     find_closest_command,
@@ -648,6 +649,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_knowledge_enrichment_tools():
         agent.register_tool(tool)
+    for tool in get_news_engagement_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -713,6 +716,23 @@ Keep responses concise for Discord but thorough when they need depth.""",
     ))
     start_idea_generator(idea_agent)
     log("Idea generator started (hourly, isolated agent)")
+
+
+@client.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
+    """Track reactions on news articles for engagement metrics."""
+    if payload.user_id == client.user.id:
+        return
+    try:
+        msg_id = str(payload.message_id)
+        if is_news_message(msg_id):
+            emoji = str(payload.emoji)
+            user_name = ""
+            if payload.member:
+                user_name = payload.member.display_name
+            record_reaction(msg_id, emoji, user_name)
+    except Exception:
+        pass  # best-effort, don't disrupt the bot
 
 
 @client.event
@@ -917,6 +937,11 @@ async def on_message(message: discord.Message) -> None:
             if referenced_msg:
                 reply_context = f'[Replying to {referenced_msg.author.name}: "{referenced_msg.content[:2000]}"]\n\n'
                 log(f"{user} replied to message from {referenced_msg.author.name}")
+
+                # Track engagement if replying to a news article
+                ref_id = str(message.reference.message_id)
+                if is_news_message(ref_id):
+                    record_reply(ref_id, user, content[:200])
         except Exception as e:
             log(f"Could not fetch referenced message: {e}")
 
