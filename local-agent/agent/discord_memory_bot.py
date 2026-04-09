@@ -98,6 +98,7 @@ from .skill_gap_analysis import get_skill_gap_tools
 from .knowledge_fallback import get_knowledge_fallback_tools
 from .news_engagement import get_news_engagement_tools, is_news_message, record_reaction, record_reply
 from .learning_newsletter import handle_newsletter_command, start_newsletter
+from .infra_monitor import get_infra_tools, start_infra_monitor
 from .discord_errors import (
     buffer_message,
     get_discord_error_tools,
@@ -674,6 +675,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_discord_error_tools():
         agent.register_tool(tool)
+    for tool in get_infra_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -729,6 +732,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     # Start knowledge base enrichment (every 6 hours — auto-fills gaps)
     start_knowledge_enrichment(client, ALLOWED_CHANNEL)
     log("Knowledge enrichment started (every 6 hours)")
+
+    # Start infrastructure monitor (every 30 min — GPU, vault, API keys)
+    start_infra_monitor(client, ALLOWED_CHANNEL)
+    log("Infrastructure monitor started (every 30 min)")
 
     # Start weekly learning newsletter (Sunday 9 AM)
     start_newsletter(client, ALLOWED_CHANNEL)
