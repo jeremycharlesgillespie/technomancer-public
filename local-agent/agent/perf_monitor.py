@@ -92,6 +92,11 @@ class PerfMonitor:
             error=error if not success else "",
         )
 
+        # Check for usage anomalies (rate spikes, unknown endpoints)
+        from .api_usage_anomaly import check_usage
+
+        check_usage(endpoint)
+
     @contextmanager
     def track(
         self,

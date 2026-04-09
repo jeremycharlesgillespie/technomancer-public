@@ -68,6 +68,20 @@ class Settings(BaseSettings):
         description="Base URL for GitHub Pages site",
     )
 
+    # API usage anomaly detection settings
+    anomaly_spike_multiplier: float = Field(
+        default=2.0, description="Alert when usage exceeds Nx the baseline"
+    )
+    anomaly_window_seconds: int = Field(
+        default=3600, description="Rolling window size in seconds for rate tracking"
+    )
+    anomaly_baseline_hours: int = Field(
+        default=24, description="Hours of history used to compute baselines"
+    )
+    anomaly_cooldown_seconds: int = Field(
+        default=1800, description="Seconds between repeat alerts per endpoint"
+    )
+
     @property
     def llm_memory_path(self) -> Path:
         """Path to LLM Memory folder within vault."""
