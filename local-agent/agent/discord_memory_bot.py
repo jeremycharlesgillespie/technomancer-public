@@ -95,6 +95,12 @@ from .youtube_tools import get_youtube_tools
 from .api_usage_anomaly import get_anomaly_tools
 from .fallback_orchestrator import get_fallback_tools
 from .skill_gap_analysis import get_skill_gap_tools
+from .command_suggestions import (
+    find_closest_command,
+    format_context_suggestions,
+    format_typo_suggestion,
+    suggest_commands_for_context,
+)
 
 # Config values from centralized settings (loaded from .env)
 VAULT_PATH = settings.vault_path
@@ -872,6 +878,26 @@ async def on_message(message: discord.Message) -> None:
     if lower == "think":
         await handle_think(message, content, user, memory, send_response)
         return
+    if lower in ("suggest", "suggestions", "?"):
+        # Context-aware command suggestions based on recent conversation
+        from .conversation_context import get_recent_summaries
+        recent = get_recent_summaries(count=5)
+        suggestions = suggest_commands_for_context(recent)
+        if suggestions:
+            await message.reply(format_context_suggestions(suggestions))
+        else:
+            await message.reply(
+                "No contextual suggestions right now. Use `commands` to see all available commands."
+            )
+        return
+
+    # Near-miss / typo detection — only for short messages that look like
+    # they might be a command (single word or two words, no question mark)
+    if len(lower.split()) <= 2 and "?" not in lower and len(lower) < 30:
+        closest = find_closest_command(lower)
+        if closest:
+            await message.reply(format_typo_suggestion(lower, closest))
+            return
 
     # Handle reply context - fetch the original message being replied to
     reply_context = ""

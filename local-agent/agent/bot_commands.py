@@ -285,6 +285,7 @@ async def handle_show_commands(message: Any) -> None:
 
 **Info**
 `showCommands` - Show this help message
+`suggest` - Get command suggestions based on recent conversation context
 
 **Other Features**
 - Upload PDF/DOCX/TXT files for analysis
