@@ -103,7 +103,10 @@ from .discord_errors import (
     get_discord_error_tools,
     get_gateway_health,
     handle_discord_error,
+    is_bot_response,
+    record_response_feedback,
     suggest_recovery_content,
+    track_bot_response,
 )
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .command_suggestions import (
@@ -230,7 +233,9 @@ async def send_response(message: Any, response: str) -> None:
 
     # If response is short enough, send directly
     if len(response) <= 1900:
-        await resilient_send(message.reply, response)
+        sent = await resilient_send(message.reply, response)
+        if sent and hasattr(sent, "id"):
+            track_bot_response(str(sent.id))
         return
 
     # Response is too long and no HTML file was created by the bot —
@@ -742,17 +747,21 @@ Keep responses concise for Discord but thorough when they need depth.""",
 
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
-    """Track reactions on news articles for engagement metrics."""
+    """Track reactions on news articles and bot responses."""
     if payload.user_id == client.user.id:
         return
     try:
         msg_id = str(payload.message_id)
+        emoji = str(payload.emoji)
+        user_name = payload.member.display_name if payload.member else ""
+
+        # Track news article engagement
         if is_news_message(msg_id):
-            emoji = str(payload.emoji)
-            user_name = ""
-            if payload.member:
-                user_name = payload.member.display_name
             record_reaction(msg_id, emoji, user_name)
+
+        # Track bot response feedback (thumbs up/down)
+        if is_bot_response(msg_id):
+            record_response_feedback(msg_id, emoji, user_name)
     except Exception:
         pass  # best-effort, don't disrupt the bot
 

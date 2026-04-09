@@ -391,12 +391,36 @@ def handle_discord_error(
     if cat.severity in ("critical", "high"):
         _notify_critical(cat, error_text)
 
+    # Correlate 50006 empty message errors with recent knowledge gaps —
+    # if the bot failed to send because the LLM produced nothing useful,
+    # the recent context may reveal what topic caused the gap
+    if cat.name == "empty_message":
+        _correlate_empty_with_gaps(context)
+
     log.warning(
         "Discord error [%s/%s]: %s — recovery: %s",
         cat.name, cat.severity, error_text[:100], cat.recovery,
     )
 
     return cat
+
+
+def _correlate_empty_with_gaps(context: str) -> None:
+    """When a 50006 error occurs, try to enrich whatever the user asked about."""
+    if not context or len(context) < 10:
+        return
+    try:
+        from .knowledge_gaps import auto_enrich_gap
+
+        auto_enrich_gap({
+            "query": context[:500],
+            "response_snippet": "Triggered by 50006 empty message error — response was empty",
+            "gap_type": "failure",
+            "was_escalated": False,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        })
+    except Exception:
+        pass
 
 
 def _notify_critical(cat: ErrorCategory, error_text: str) -> None:
@@ -490,3 +514,90 @@ def get_discord_error_tools() -> list:
             function=lambda hours=24: get_error_report(hours),
         ),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Response feedback tracking (thumbs up/down on bot responses)
+# ---------------------------------------------------------------------------
+
+_response_messages: deque[str] = deque(maxlen=200)
+_response_lock = threading.Lock()
+
+
+def _init_feedback_table() -> None:
+    """Create the feedback table if it doesn't exist."""
+    init_db()
+    conn = _get_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS response_feedback (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            message_id  TEXT NOT NULL,
+            emoji       TEXT NOT NULL,
+            user_name   TEXT NOT NULL DEFAULT '',
+            positive    INTEGER NOT NULL,
+            created_at  TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rf_msg ON response_feedback (message_id)"
+    )
+    conn.commit()
+
+
+def track_bot_response(message_id: str) -> None:
+    """Mark a message ID as a bot response so reactions on it are tracked."""
+    with _response_lock:
+        _response_messages.append(str(message_id))
+
+
+def is_bot_response(message_id: str) -> bool:
+    """Check if a message ID is a tracked bot response."""
+    with _response_lock:
+        return str(message_id) in _response_messages
+
+
+def record_response_feedback(message_id: str, emoji: str, user_name: str = "") -> None:
+    """Record a thumbs-up/down reaction on a bot response."""
+    positive = 1 if emoji in ("\U0001f44d", "\u2705", "\u2b50", "\U0001f525") else 0
+    _init_feedback_table()
+    conn = _get_conn()
+    conn.execute(
+        "INSERT INTO response_feedback (message_id, emoji, user_name, positive, created_at) VALUES (?, ?, ?, ?, ?)",
+        (str(message_id), emoji, user_name, positive, datetime.now().isoformat()),
+    )
+    conn.commit()
+
+    # If negative feedback, boost priority for knowledge gap enrichment
+    if not positive:
+        try:
+            from .knowledge_gaps import log_knowledge_gap
+
+            log_knowledge_gap({
+                "query": f"[user feedback: negative reaction on response {message_id}]",
+                "response_snippet": f"User {user_name} reacted with {emoji}",
+                "gap_type": "uncertainty",
+                "was_escalated": False,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
+        except Exception:
+            pass
+
+
+def get_feedback_summary(days: int = 30) -> dict[str, Any]:
+    """Get response feedback summary."""
+    _init_feedback_table()
+    conn = _get_conn()
+    since = (datetime.now() - timedelta(days=days)).isoformat()
+    total = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM response_feedback WHERE created_at >= ?", (since,)
+    ).fetchone()["cnt"]
+    positive = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM response_feedback WHERE created_at >= ? AND positive = 1", (since,)
+    ).fetchone()["cnt"]
+    negative = total - positive
+    return {
+        "total": total,
+        "positive": positive,
+        "negative": negative,
+        "satisfaction_rate": round(positive / total * 100, 1) if total else 0.0,
+    }

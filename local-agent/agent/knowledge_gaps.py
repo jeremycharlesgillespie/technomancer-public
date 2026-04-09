@@ -158,7 +158,70 @@ Review weekly to identify missing knowledge and update the facts database.
 
         GAPS_FILE.write_text(content, encoding="utf-8")
 
+    # Write a structured Obsidian note for the gap
+    _write_gap_note(gap)
+
     return f"Logged knowledge gap: {gap['gap_type']} — {gap['query'][:80]}"
+
+
+def _write_gap_note(gap: dict) -> None:
+    """Write a structured Obsidian note for a knowledge gap.
+
+    Creates a note in Permanent/Gaps/ with YAML frontmatter for Dataview
+    queries and structured fields for resolution tracking.
+    """
+    gaps_dir = VAULT_PATH / "Permanent" / "Gaps"
+    gaps_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize query for filename
+    query = gap.get("query", "unknown")[:60]
+    safe_name = re.sub(r'[<>:"/\\|?*]', "", query).strip().replace(" ", "_")[:50]
+    timestamp = gap.get("timestamp", "")[:10]
+    filename = f"{timestamp}_{safe_name}.md" if timestamp else f"{safe_name}.md"
+    filepath = gaps_dir / filename
+
+    if filepath.exists():
+        return  # Don't overwrite existing notes
+
+    gap_type = gap.get("gap_type", "unknown")
+    snippet = gap.get("response_snippet", "")
+    escalated = gap.get("was_escalated", False)
+
+    content = f"""---
+type: knowledge_gap
+gap_type: {gap_type}
+query: "{query}"
+status: open
+escalated: {str(escalated).lower()}
+created: {gap.get("timestamp", "")}
+resolved: ""
+resolution_source: ""
+---
+
+# Knowledge Gap: {query}
+
+## Query
+{gap.get("query", "")}
+
+## Response Snippet
+{snippet}
+
+## Gap Type
+**{gap_type.upper()}** {"(escalated to Claude)" if escalated else ""}
+
+## Resolution
+- [ ] Find authoritative source
+- [ ] Add to facts_db
+- [ ] Verify answer quality
+- [ ] Mark as resolved
+
+## Notes
+
+"""
+    try:
+        filepath.write_text(content, encoding="utf-8")
+    except Exception:
+        pass  # best-effort
 
 
 def _format_gap_entry(gap: dict) -> str:
