@@ -20,6 +20,7 @@ import json
 import logging
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, request
@@ -46,34 +47,37 @@ app = Flask(__name__)
 # Discord notifications for idea lifecycle events
 # ============================================================================
 
+_BRIDGE_TOKEN_FILE = Path(__file__).parent.parent / ".bridge_token"
+
+
+def _send_to_discord(message: str) -> None:
+    """Send a message to the llm_chat Discord channel via the bridge API."""
+    try:
+        import requests as _req
+
+        if not _BRIDGE_TOKEN_FILE.exists():
+            logger.debug("Bridge token file not found, skipping Discord notification")
+            return
+        token = _BRIDGE_TOKEN_FILE.read_text(encoding="utf-8").strip()
+        _req.post(
+            "http://127.0.0.1:8321/api/send",
+            headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
+            json={"message": message},
+            timeout=5,
+        )
+    except Exception:
+        logger.debug("Could not send Discord notification via bridge", exc_info=True)
+
 
 def _notify_idea_complete(idea_id: str, title: str) -> None:
     """Send a Discord notification when an idea is marked done."""
-    try:
-        from agent.notifications import discord_alert
-
-        discord_alert(
-            f"**{idea_id}**: {title}",
-            level="success",
-            title="Idea Completed",
-        )
-    except Exception:
-        logger.debug("Could not send idea-complete notification", exc_info=True)
+    _send_to_discord(f"✅ **Idea Completed** — **{idea_id}**: {title}")
 
 
 def _notify_idea_failed(idea_id: str, title: str, error_text: str) -> None:
     """Send a Discord notification when an idea execution fails."""
-    try:
-        from agent.notifications import discord_alert
-
-        snippet = error_text[:200] if len(error_text) > 200 else error_text
-        discord_alert(
-            f"**{idea_id}**: {title}\n{snippet}",
-            level="error",
-            title="Idea Failed",
-        )
-    except Exception:
-        logger.debug("Could not send idea-failed notification", exc_info=True)
+    snippet = error_text[:200] if len(error_text) > 200 else error_text
+    _send_to_discord(f"❌ **Idea Failed** — **{idea_id}**: {title}\n{snippet}")
 
 
 # ============================================================================
