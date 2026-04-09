@@ -99,6 +99,7 @@ from .knowledge_fallback import get_knowledge_fallback_tools
 from .news_engagement import get_news_engagement_tools, is_news_message, record_reaction, record_reply
 from .learning_newsletter import handle_newsletter_command, start_newsletter
 from .infra_monitor import get_infra_tools, start_infra_monitor
+from .llm_optimizer import get_llm_optimizer_tools, cache_lookup, cache_store
 from .discord_errors import (
     buffer_message,
     get_discord_error_tools,
@@ -676,6 +677,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
     for tool in get_discord_error_tools():
         agent.register_tool(tool)
     for tool in get_infra_tools():
+        agent.register_tool(tool)
+    for tool in get_llm_optimizer_tools():
         agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
