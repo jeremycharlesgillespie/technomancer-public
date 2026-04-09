@@ -253,6 +253,7 @@ async def handle_show_commands(message: Any) -> None:
 `betterDev best_practices` - Best practices topic
 `learningHistory` - List past learning articles
 `showLearning <#>` - View a saved article (e.g., `showLearning 1`)
+`newsletter` - Get this week's learning digest
 
 **News**
 `techNews` - Get latest tech news with analysis (3 articles)

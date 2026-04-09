@@ -97,6 +97,7 @@ from .fallback_orchestrator import get_fallback_tools
 from .skill_gap_analysis import get_skill_gap_tools
 from .knowledge_fallback import get_knowledge_fallback_tools
 from .news_engagement import get_news_engagement_tools, is_news_message, record_reaction, record_reply
+from .learning_newsletter import handle_newsletter_command, start_newsletter
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .command_suggestions import (
     find_closest_command,
@@ -707,6 +708,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     start_knowledge_enrichment(client, ALLOWED_CHANNEL)
     log("Knowledge enrichment started (every 6 hours)")
 
+    # Start weekly learning newsletter (Sunday 9 AM)
+    start_newsletter(client, ALLOWED_CHANNEL)
+    log("Learning newsletter started (weekly, Sunday 9 AM)")
+
     # Start hourly idea generation (isolated agent, runs 5min after each hour)
     from .idea_generator import start_idea_generator
     idea_agent = Agent(AgentConfig(
@@ -874,6 +879,10 @@ async def on_message(message: discord.Message) -> None:
         return
     if lower in ("learninghistory", "pastlearning", "learning history"):
         await handle_learning_history(message, send_response)
+        return
+    if lower in ("newsletter", "weeklylearning", "learning digest"):
+        newsletter = handle_newsletter_command()
+        await send_response(message, newsletter)
         return
     if lower.startswith("showlearning"):
         await handle_show_learning(message, content, send_response)

@@ -56,6 +56,13 @@ COMMANDS: tuple[CommandInfo, ...] = (
         ("article", "read", "show", "view", "learning"),
         "showLearning <number>",
     ),
+    CommandInfo(
+        "newsletter", ("weeklylearning", "learning digest"),
+        "Get this week's learning digest",
+        "learning",
+        ("newsletter", "digest", "weekly", "learning", "summary", "recap"),
+        "newsletter",
+    ),
     # News
     CommandInfo(
         "techNews", ("technews", "news"),
