@@ -43,6 +43,40 @@ app = Flask(__name__)
 
 
 # ============================================================================
+# Discord notifications for idea lifecycle events
+# ============================================================================
+
+
+def _notify_idea_complete(idea_id: str, title: str) -> None:
+    """Send a Discord notification when an idea is marked done."""
+    try:
+        from agent.notifications import discord_alert
+
+        discord_alert(
+            f"**{idea_id}**: {title}",
+            level="success",
+            title="Idea Completed",
+        )
+    except Exception:
+        logger.debug("Could not send idea-complete notification", exc_info=True)
+
+
+def _notify_idea_failed(idea_id: str, title: str, error_text: str) -> None:
+    """Send a Discord notification when an idea execution fails."""
+    try:
+        from agent.notifications import discord_alert
+
+        snippet = error_text[:200] if len(error_text) > 200 else error_text
+        discord_alert(
+            f"**{idea_id}**: {title}\n{snippet}",
+            level="error",
+            title="Idea Failed",
+        )
+    except Exception:
+        logger.debug("Could not send idea-failed notification", exc_info=True)
+
+
+# ============================================================================
 # LLM CONVERSATION FOR IDEAS
 # ============================================================================
 
@@ -759,6 +793,10 @@ def api_comment(idea_id: str) -> tuple:
     if not idea:
         return jsonify({"error": "Idea not found"}), 404
 
+    # Notify Discord when Claude reports a failure
+    if author == "claude" and "execution failed" in text.lower():
+        _notify_idea_failed(idea_id, idea.title, text)
+
     # If Jeremy posted, trigger an LLM reply in a background thread
     if author == "jeremy":
         import threading
@@ -782,6 +820,8 @@ def api_done(idea_id: str) -> tuple:
     idea = mark_done(idea_id, "Manually marked as done by Jeremy.")
     if not idea:
         return jsonify({"error": "Idea not found"}), 404
+
+    _notify_idea_complete(idea_id, idea.title)
     return jsonify(idea.to_dict())
 
 
