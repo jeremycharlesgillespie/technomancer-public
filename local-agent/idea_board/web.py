@@ -1022,6 +1022,13 @@ h1 { margin-bottom: 0.5rem; color: var(--accent); }
 .card .badge { font-size: 0.7rem; background: #333; padding: 2px 8px;
                border-radius: 4px; color: var(--muted); margin-top: 0.5rem;
                display: inline-block; }
+.evolve-panel { background: var(--surface); border-radius: 8px; padding: 1.5rem;
+                border-left: 4px solid var(--muted); margin-top: 1.5rem; }
+.evolve-panel h2 { font-size: 1.1rem; margin-bottom: 0.6rem; color: var(--accent); }
+.evolve-panel .status-line { font-size: 0.9rem; color: var(--muted); }
+.evolve-panel .log-line { font-size: 0.8rem; font-family: monospace; margin-top: 2px; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.thinking { animation: pulse 1.5s infinite; color: var(--orange); font-weight: bold; }
 """
 
 
@@ -1072,6 +1079,60 @@ def _render_hub() -> str:
             <span class="badge">:8321</span>
         </a>
     </div>
+
+    <div class="evolve-panel" id="evolve-panel">
+        <h2>Evolve Status</h2>
+        <div id="evolve-content" class="status-line">Loading...</div>
+    </div>
+
+    <script>
+    async function updateEvolveStatus() {{
+        try {{
+            const resp = await fetch('/api/evolve/status');
+            const data = await resp.json();
+            const el = document.getElementById('evolve-content');
+            const panel = document.getElementById('evolve-panel');
+            if (!el) return;
+
+            if (data.running) {{
+                const pct = data.tests_total > 0
+                    ? Math.round((data.tests_completed / data.tests_total) * 100) : 0;
+                const filled = Math.round(pct / 5);
+                const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(20 - filled);
+
+                let logHtml = '';
+                for (const line of (data.log || []).slice(-6)) {{
+                    const color = line.includes('FAIL') ? 'var(--red)'
+                        : line.includes('PASS') ? 'var(--green)' : 'var(--muted)';
+                    logHtml += '<div class="log-line" style="color:' + color + '">' + line + '</div>';
+                }}
+
+                el.innerHTML = '<div style="margin-bottom:0.5rem">'
+                    + '<span class="thinking">Running</span> &bull; '
+                    + 'Phase: <strong>' + data.phase + '</strong> &bull; '
+                    + (data.tests_completed || 0) + '/' + (data.tests_total || 0) + ' tests &bull; '
+                    + 'Avg: ' + (data.avg_score || 0) + '/10'
+                    + '</div>'
+                    + '<div style="font-family:monospace;font-size:0.9rem;margin-bottom:0.5rem;color:var(--accent)">'
+                    + bar + ' ' + pct + '%</div>'
+                    + logHtml;
+                panel.style.borderLeftColor = 'var(--orange)';
+            }} else if (data.phase === 'complete' || data.last_run) {{
+                const lastRun = data.last_run || data.started || 'unknown';
+                const ts = lastRun.includes('T') ? lastRun.split('T')[1]?.slice(0,5) || lastRun : lastRun;
+                el.innerHTML = 'Last run: ' + ts + ' &bull; '
+                    + (data.tests_total || '?') + ' tests &bull; '
+                    + 'Avg: ' + (data.avg_score || '?') + '/10 &bull; '
+                    + (data.tests_passed || '?') + ' passed';
+                panel.style.borderLeftColor = 'var(--green)';
+            }} else {{
+                el.textContent = 'Never run. Type "evolve" in Discord to start.';
+            }}
+        }} catch(e) {{}}
+    }}
+    updateEvolveStatus();
+    setInterval(updateEvolveStatus, 5000);
+    </script>
 </body>
 </html>"""
 
