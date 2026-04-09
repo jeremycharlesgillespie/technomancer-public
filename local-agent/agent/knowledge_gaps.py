@@ -303,6 +303,41 @@ def get_gap_summary() -> str:
     )
 
 
+def auto_enrich_gap(gap: dict) -> str | None:
+    """Attempt to immediately fill a knowledge gap from external sources.
+
+    Runs Wikipedia → web search on the gap query and caches the result in
+    facts_db.  Also writes a vault reference article.  Returns a short
+    summary if the gap was filled, or None if no source was found.
+
+    This is designed to be called right after ``log_knowledge_gap`` so
+    that the very next time the same question is asked, facts_db will
+    have an answer.
+    """
+    query = gap.get("query", "").strip()
+    if not query or len(query) < 5:
+        return None
+
+    try:
+        from .knowledge_enrichment import _try_enrich_query
+
+        result = _try_enrich_query(query, domain="")
+        if result.get("status") == "enriched":
+            resolve_gap(
+                query[:50],
+                resolution=f"Auto-enriched from {result.get('source', 'external')}",
+            )
+            return (
+                f"Auto-enriched **{result.get('title', query)}** from "
+                f"{result.get('source', 'external')} "
+                f"(category: {result.get('category', '?')})"
+            )
+    except Exception:
+        pass  # best-effort — don't break the main flow
+
+    return None
+
+
 def get_knowledge_gap_tools() -> list:
     """Get knowledge gap tools for the agent."""
     from .core import create_tool

@@ -47,10 +47,16 @@ def init_db() -> None:
             key         TEXT    NOT NULL,
             value       TEXT    NOT NULL,
             source      TEXT    NOT NULL DEFAULT 'seed',
+            confidence  REAL    NOT NULL DEFAULT 1.0,
             created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
             UNIQUE(category, key)
         )
     """)
+    # Migrate existing databases that lack the confidence column
+    try:
+        conn.execute("SELECT confidence FROM facts LIMIT 1")
+    except Exception:
+        conn.execute("ALTER TABLE facts ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0")
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_facts_category
         ON facts (category)
@@ -205,29 +211,35 @@ def lookup_fact(query: str, category: str | None = None) -> list[dict[str, Any]]
     # 1. Exact key match (case-insensitive)
     if category:
         rows = conn.execute(
-            "SELECT category, key, value, source FROM facts WHERE LOWER(key) = LOWER(?) AND category = ?",
+            "SELECT category, key, value, source, confidence FROM facts WHERE LOWER(key) = LOWER(?) AND category = ?",
             (query, category),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT category, key, value, source FROM facts WHERE LOWER(key) = LOWER(?)",
+            "SELECT category, key, value, source, confidence FROM facts WHERE LOWER(key) = LOWER(?)",
             (query,),
         ).fetchall()
 
     if rows:
         return [dict(r) for r in rows]
 
-    # 2. FTS search
+    # 2. FTS search (join back to facts table for confidence + source)
     fts_query = query.replace('"', '""')
     try:
         if category:
             rows = conn.execute(
-                'SELECT key, value, category FROM facts_fts WHERE facts_fts MATCH ? AND category = ? LIMIT 10',
+                """SELECT f.category, f.key, f.value, f.source, f.confidence
+                   FROM facts_fts fts
+                   JOIN facts f ON f.rowid = fts.rowid
+                   WHERE fts.facts_fts MATCH ? AND fts.category = ? LIMIT 10""",
                 (f'"{fts_query}"', category),
             ).fetchall()
         else:
             rows = conn.execute(
-                'SELECT key, value, category FROM facts_fts WHERE facts_fts MATCH ? LIMIT 10',
+                """SELECT f.category, f.key, f.value, f.source, f.confidence
+                   FROM facts_fts fts
+                   JOIN facts f ON f.rowid = fts.rowid
+                   WHERE fts.facts_fts MATCH ? LIMIT 10""",
                 (f'"{fts_query}"',),
             ).fetchall()
         if rows:
@@ -239,28 +251,51 @@ def lookup_fact(query: str, category: str | None = None) -> list[dict[str, Any]]
     like_pattern = f"%{query}%"
     if category:
         rows = conn.execute(
-            "SELECT category, key, value, source FROM facts WHERE (LOWER(key) LIKE LOWER(?) OR LOWER(value) LIKE LOWER(?)) AND category = ? LIMIT 10",
+            "SELECT category, key, value, source, confidence FROM facts WHERE (LOWER(key) LIKE LOWER(?) OR LOWER(value) LIKE LOWER(?)) AND category = ? LIMIT 10",
             (like_pattern, like_pattern, category),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT category, key, value, source FROM facts WHERE LOWER(key) LIKE LOWER(?) OR LOWER(value) LIKE LOWER(?) LIMIT 10",
+            "SELECT category, key, value, source, confidence FROM facts WHERE LOWER(key) LIKE LOWER(?) OR LOWER(value) LIKE LOWER(?) LIMIT 10",
             (like_pattern, like_pattern),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def add_fact(category: str, key: str, value: str, source: str = "user") -> str:
-    """Add or update a fact in the database."""
+def source_confidence(source: str) -> float:
+    """Return a default confidence score for a given source type."""
+    scores = {
+        "seed": 1.0,
+        "user": 0.95,
+        "wikipedia": 0.9,
+        "auto_enrichment": 0.8,
+        "web_search": 0.6,
+    }
+    return scores.get(source, 0.7)
+
+
+def add_fact(
+    category: str,
+    key: str,
+    value: str,
+    source: str = "user",
+    confidence: float | None = None,
+) -> str:
+    """Add or update a fact in the database.
+
+    If ``confidence`` is not provided, a default is assigned based on the
+    source type (seed=1.0, wikipedia=0.9, web_search=0.6, etc.).
+    """
     conn = _get_conn()
     init_db()
+    conf = confidence if confidence is not None else source_confidence(source)
     conn.execute(
-        "INSERT OR REPLACE INTO facts (category, key, value, source) VALUES (?, ?, ?, ?)",
-        (category, key, value, source),
+        "INSERT OR REPLACE INTO facts (category, key, value, source, confidence) VALUES (?, ?, ?, ?, ?)",
+        (category, key, value, source, round(conf, 2)),
     )
     conn.commit()
     _sync_fts(conn)
-    return f"Saved fact: [{category}] {key}"
+    return f"Saved fact: [{category}] {key} (confidence: {conf:.0%})"
 
 
 def get_categories() -> list[str]:

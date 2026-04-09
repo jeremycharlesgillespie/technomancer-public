@@ -64,7 +64,7 @@ from .bot_commands import (
 )
 from .enhancements import get_enhancement_tools
 from .facts_db import get_facts_tools, init_db as init_facts_db, seed_db as seed_facts_db
-from .knowledge_gaps import detect_knowledge_gap, get_knowledge_gap_tools, log_knowledge_gap
+from .knowledge_gaps import auto_enrich_gap, detect_knowledge_gap, get_knowledge_gap_tools, log_knowledge_gap
 from .image_identification import analyze_with_vision_model, ask_claude_with_image
 from .reflection import auto_search_for_factual, classify_question, is_factual_question, reflect
 from .user_commands import handle_itinerary
@@ -1289,6 +1289,10 @@ Respond naturally and helpfully. Be conversational and friendly."""
                 try:
                     log_knowledge_gap(gap)
                     log(f"[KnowledgeGap] Logged {gap['gap_type']}: {content[:80]}")
+                    # Immediately try to fill the gap for next time
+                    enriched = auto_enrich_gap(gap)
+                    if enriched:
+                        log(f"[KnowledgeGap] {enriched}")
                 except Exception as gap_err:
                     log(f"[KnowledgeGap] Failed to log: {gap_err}")
 
