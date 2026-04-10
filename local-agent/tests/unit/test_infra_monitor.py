@@ -155,7 +155,7 @@ class TestApiKeyCheck:
 
         keys = check_api_keys()
         assert keys["discord_bot_token"] == "missing"
-        assert keys["anthropic_api_key"] == "missing"
+        assert keys["anthropic_api_key"] == "not_configured"
 
 
 class TestSecurityNewsScan:

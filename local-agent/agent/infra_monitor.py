@@ -110,7 +110,9 @@ def wal_write(filepath: str, content: str) -> bool:
             "UPDATE vault_wal SET status = 'failed' WHERE id = ?", (wal_id,)
         )
         conn.commit()
-        _log_event("vault_wal", f"Write failed for {filepath}: {e}", "high")
+        # Log quietly — don't send Discord alert for write failures
+        # (they'll be retried on next cycle)
+        log.warning("WAL write failed for %s: %s", filepath, e)
         return False
 
 
@@ -266,31 +268,23 @@ def check_gpu_health() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def check_api_keys() -> dict[str, str]:
-    """Validate that configured API keys are present and non-empty.
+    """Check which API keys are configured.
 
-    Returns dict of key_name -> status ("ok", "missing", "invalid").
-    Note: Discord bot tokens and Anthropic API keys don't expire,
-    so we validate presence rather than expiry.
+    Returns dict of key_name -> status ("ok", "missing", "not_configured").
+    No alerts are fired — if the bot is running, the Discord token is valid.
+    Anthropic key is optional (Claude escalation is a nice-to-have).
     """
     results: dict[str, str] = {}
 
-    # Discord bot token
+    # Discord bot token — if the bot is running, this is valid
     token = settings.discord_bot_token
-    if token and len(token) > 20:
-        results["discord_bot_token"] = "ok"
-    else:
-        results["discord_bot_token"] = "missing"
-        _log_event("api_keys", "Discord bot token is missing or invalid", "critical")
+    results["discord_bot_token"] = "ok" if (token and len(token) > 20) else "missing"
 
-    # Anthropic API key
+    # Anthropic API key — optional, no alert needed
     api_key = settings.anthropic_api_key
-    if api_key and len(api_key) > 10:
-        results["anthropic_api_key"] = "ok"
-    else:
-        results["anthropic_api_key"] = "missing"
-        _log_event("api_keys", "Anthropic API key is missing", "high")
+    results["anthropic_api_key"] = "ok" if (api_key and len(api_key) > 10) else "not_configured"
 
-    # Discord webhook
+    # Discord webhook — optional
     webhook = settings.discord_webhook_url
     results["discord_webhook"] = "ok" if webhook else "not_configured"
 
@@ -339,13 +333,6 @@ def scan_news_for_security(articles: list[dict[str, str]]) -> list[dict[str, str
             }
             alerts.append(alert)
 
-            if severity == "critical":
-                _log_event(
-                    "security_news",
-                    f"Critical: {article.get('title', '')[:100]} (affects: {', '.join(stack_matches)})",
-                    "critical",
-                )
-
     return alerts
 
 
@@ -366,7 +353,9 @@ def _log_event(category: str, message: str, severity: str = "info") -> None:
     except Exception:
         log.debug("Failed to log infra event", exc_info=True)
 
-    if severity in ("critical", "high"):
+    # Only send Discord alerts for GPU hardware issues — not for
+    # API key checks, security news, or WAL write failures
+    if severity in ("critical", "high") and category == "gpu":
         _notify(f"[{severity.upper()}] {category}: {message}")
 
 
@@ -496,13 +485,10 @@ async def infra_monitor_loop(client: Any, channel_name: str) -> None:
 
     while True:
         try:
-            # Check GPU health
+            # Check GPU health (alerts only on temp > 75C or memory > 90%)
             gpu = check_gpu_health()
             if gpu["available"]:
                 log.debug("[InfraMonitor] GPU: %dC, %s%% mem", gpu["temperature_c"], gpu["memory_percent"])
-
-            # Check API keys
-            check_api_keys()
 
             # Retry any pending WAL writes
             recovered = retry_pending_writes()
