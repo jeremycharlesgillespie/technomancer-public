@@ -1217,6 +1217,86 @@ React like a friend would - you're genuinely interested. Talk about what stands 
         timer = RequestTimer(profile)
 
         try:
+            # Include reply context if this is a reply to another message
+            full_content = reply_context + content if reply_context else content
+
+            # ============================================================
+            # FAST PATH — Simple questions skip the full agent pipeline.
+            # Direct Ollama call: no tools, no context injection, no reflection.
+            # Saves 3-8 seconds on questions like "what time is it?"
+            # ============================================================
+            from .llm_optimizer import score_query_complexity
+            with timer.phase("smart_routing"):
+                complexity = score_query_complexity(full_content)
+                profile.question_type = complexity["complexity"]
+
+            if complexity["complexity"] == "simple" and not message.attachments:
+                log(f"[FastPath] Simple query ({complexity['reasoning']}) — direct Ollama call")
+                from .core import _ollama_client
+                _fast_start = time.monotonic()
+                try:
+                    now_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
+                    fast_resp = await asyncio.to_thread(
+                        _ollama_client.chat,
+                        model=settings.ollama_model,
+                        messages=[
+                            {"role": "system", "content": f"Current date/time: {now_str}\nYou are a helpful, concise assistant. Answer in 1-2 sentences."},
+                            {"role": "user", "content": full_content},
+                        ],
+                        options={"temperature": 0.3, "num_predict": 200},
+                    )
+                    response = fast_resp.get("message", {}).get("content", "").strip()
+                    _fast_duration = time.monotonic() - _fast_start
+
+                    from .perf_monitor import record_llm_call
+                    record_llm_call(
+                        endpoint="ollama",
+                        duration=round(_fast_duration, 3),
+                        success=bool(response),
+                        model=settings.ollama_model,
+                        output_tokens=len(response) // 4,
+                    )
+                    log(f"[FastPath] Response in {_fast_duration:.1f}s ({len(response)} chars)")
+                except Exception as fast_err:
+                    log(f"[FastPath] Failed ({fast_err}), falling back to full pipeline")
+                    response = None
+
+                if response:
+                    # Still do all post-response work (memory, engagement, send)
+                    memory.log_conversation(user, content, response)
+                    buffer_conversation(user, content, response)
+                    buffer_for_summary(user, content, response)
+
+                    with timer.phase("discord_send"):
+                        _send_start = time.monotonic()
+                        _send_success = True
+                        _send_error = ""
+                        try:
+                            await send_response(message, response)
+                        except Exception as send_err:
+                            _send_success = False
+                            _send_error = str(send_err)[:200]
+                            raise
+                        finally:
+                            _send_duration = time.monotonic() - _send_start
+                            record_llm_call(
+                                endpoint="discord_send",
+                                duration=round(_send_duration, 3),
+                                success=_send_success,
+                                output_tokens=len(response),
+                                error=_send_error,
+                            )
+
+                    timer.save()
+                    log(f"[Profile] {profile.total:.1f}s total | FastPath | type={complexity['complexity']}")
+                    asyncio.create_task(extract_facts_from_recent())
+                    asyncio.create_task(generate_summaries_from_recent())
+                    return  # Done — skip the full pipeline
+
+            # ============================================================
+            # STANDARD PATH — Full agent pipeline with tools and context
+            # ============================================================
+
             # Smart context injection — tiered by message complexity
             with timer.phase("context_build"):
                 ctx_parts = []
@@ -1255,9 +1335,6 @@ React like a friend would - you're genuinely interested. Talk about what stands 
                 context = "\n".join(ctx_parts)
                 profile.context_tier = context_tier
                 profile.context_injected_chars = len(context)
-
-            # Include reply context if this is a reply to another message
-            full_content = reply_context + content if reply_context else content
 
             # Pre-classify to detect factual questions BEFORE the agent answers
             with timer.phase("pre_classification"):
