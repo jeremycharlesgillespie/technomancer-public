@@ -713,6 +713,17 @@ def get_error_report(hours: int = 24) -> str:
         lines.append(f"  Avg Latency: {health['avg_latency_ms']}ms")
     lines.append(f"  Health Score: {health['health_score']}/100 ({health['prediction']})")
 
+    # Outbound rate limiter stats
+    try:
+        from .discord_rate_limit import get_outbound_limiter
+        rl = get_outbound_limiter().get_stats()
+        if rl["total_sends"] > 0:
+            lines.append("")
+            lines.append("**Outbound Rate Limiter:**")
+            lines.append(f"  Sends: {rl['total_sends']} | Throttled: {rl['throttled_sends']} ({rl['throttle_rate']}%)")
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

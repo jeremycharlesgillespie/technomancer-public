@@ -261,6 +261,10 @@ async def resilient_send(
 
     for attempt in range(MAX_EMPTY_RETRIES + 1):
         try:
+            # Smooth outbound bursts to stay under Discord rate limits.
+            from .discord_rate_limit import get_outbound_limiter
+            await get_outbound_limiter().acquire()
+
             # Wrap the actual send in rate limit retry so 429s are
             # handled transparently with backoff + jitter.
             return await async_retry_on_rate_limit(send_func, content, **kwargs)

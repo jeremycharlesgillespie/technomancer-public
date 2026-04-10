@@ -1,9 +1,11 @@
 """
-Discord rate limit handling with exponential backoff and jitter.
+Discord rate limit handling with exponential backoff, jitter, and
+outbound message buffering.
 
-Provides retry wrappers for both synchronous (requests library) and
-asynchronous (discord.py) Discord API calls. Parses rate limit headers
-from 429 responses to calculate precise wait times before retrying.
+Provides:
+1. Retry wrappers for synchronous (requests) and async (discord.py) calls
+2. Outbound rate limiter that smooths message bursts to stay under Discord limits
+3. Header parsing for Retry-After and X-RateLimit-Reset
 """
 
 from __future__ import annotations
@@ -230,3 +232,68 @@ async def async_retry_on_rate_limit(
     # Satisfy type checker — should not reach here
     if last_exc is not None:
         raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Outbound rate limiter — smooth message bursts
+# ---------------------------------------------------------------------------
+
+class OutboundRateLimiter:
+    """Token-bucket rate limiter for outbound Discord messages.
+
+    Discord allows ~5 messages per 5 seconds per channel. This limiter
+    enforces a minimum gap between sends so bursts of LLM output (long
+    responses split into chunks, multi-part replies) don't trigger 429s.
+
+    Usage::
+
+        limiter = get_outbound_limiter()
+        await limiter.acquire()  # waits if sending too fast
+        await message.reply(text)
+    """
+
+    def __init__(self, sends_per_window: int = 5, window_seconds: float = 5.0) -> None:
+        self._sends_per_window = sends_per_window
+        self._window_seconds = window_seconds
+        self._min_gap = window_seconds / sends_per_window  # 1.0s at defaults
+        self._lock = asyncio.Lock()
+        self._last_send: float = 0.0
+        self._send_count: int = 0
+        self._wait_count: int = 0
+
+    async def acquire(self) -> None:
+        """Wait if necessary to stay under the rate limit."""
+        async with self._lock:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - self._last_send
+            if elapsed < self._min_gap:
+                wait = self._min_gap - elapsed
+                self._wait_count += 1
+                logger.debug("Outbound rate limiter: waiting %.2fs", wait)
+                await asyncio.sleep(wait)
+            self._last_send = asyncio.get_event_loop().time()
+            self._send_count += 1
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get rate limiter statistics."""
+        return {
+            "total_sends": self._send_count,
+            "throttled_sends": self._wait_count,
+            "min_gap_seconds": self._min_gap,
+            "throttle_rate": (
+                round(self._wait_count / self._send_count * 100, 1)
+                if self._send_count > 0
+                else 0.0
+            ),
+        }
+
+
+_outbound_limiter: OutboundRateLimiter | None = None
+
+
+def get_outbound_limiter() -> OutboundRateLimiter:
+    """Get the global outbound rate limiter (created on first use)."""
+    global _outbound_limiter
+    if _outbound_limiter is None:
+        _outbound_limiter = OutboundRateLimiter()
+    return _outbound_limiter
