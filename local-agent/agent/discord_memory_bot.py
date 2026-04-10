@@ -356,6 +356,13 @@ async def on_disconnect() -> None:
 
 
 @client.event
+async def on_resumed() -> None:
+    """Track gateway resumes (reconnection without full re-identify)."""
+    get_gateway_health().record_resume()
+    log("[Gateway] Resumed")
+
+
+@client.event
 async def on_ready() -> None:
     global agent, memory
     log(f"Connected as {client.user}")
@@ -731,6 +738,20 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from .slash_commands import setup_slash_commands
     await setup_slash_commands(client)
     log("Slash commands synced with Discord")
+
+    # Start heartbeat latency sampling (every 60 seconds)
+    async def _sample_heartbeat_latency() -> None:
+        import asyncio
+        while True:
+            await asyncio.sleep(60)
+            try:
+                latency = client.latency
+                if latency and latency > 0:
+                    get_gateway_health().record_latency(round(latency * 1000, 1))
+            except Exception:
+                pass
+    asyncio.create_task(_sample_heartbeat_latency())
+    log("Gateway health monitor started (heartbeat latency sampling)")
 
 
 @client.event

@@ -197,12 +197,15 @@ class TestErrorCatalog:
 
 
 class TestGetTools:
-    def test_returns_tool(self):
+    def test_returns_tools(self):
         tools = get_discord_error_tools()
-        assert len(tools) == 1
-        assert tools[0].name == "discord_error_report"
+        assert len(tools) == 2
+        names = [t.name for t in tools]
+        assert "discord_error_report" in names
+        assert "gateway_health" in names
 
     def test_tool_runs(self):
         tools = get_discord_error_tools()
-        result = tools[0].function()
-        assert isinstance(result, str)
+        for tool in tools:
+            result = tool.function()
+            assert isinstance(result, str)

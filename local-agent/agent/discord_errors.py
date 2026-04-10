@@ -198,46 +198,180 @@ def suggest_recovery_content() -> str:
 
 @dataclass
 class GatewayHealth:
-    """Tracks Discord gateway connection health."""
+    """Tracks Discord gateway connection health with predictive monitoring.
+
+    Records connect/disconnect/resume events, heartbeat latency, and error
+    codes. Persists events to SQLite for trend analysis. Detects degradation
+    patterns (frequent disconnects, rising latency) and fires proactive alerts.
+    """
 
     connected: bool = False
     last_connect: float = 0.0
     last_disconnect: float = 0.0
     disconnect_count: int = 0
+    resume_count: int = 0
     error_count: int = 0
     last_error: str = ""
     last_error_time: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    # Rolling windows for trend detection (last 60 minutes)
+    _disconnect_times: deque = field(default_factory=lambda: deque(maxlen=100), repr=False)
+    _latency_samples: deque = field(default_factory=lambda: deque(maxlen=300), repr=False)
+    _error_codes: deque = field(default_factory=lambda: deque(maxlen=100), repr=False)
+
+    # Alert cooldown (don't spam alerts)
+    _last_alert_time: float = 0.0
+    ALERT_COOLDOWN: float = 600.0  # 10 minutes between alerts
+
     def record_connect(self) -> None:
         with self._lock:
             self.connected = True
             self.last_connect = time.monotonic()
+        _log_gateway_event("connect")
 
     def record_disconnect(self) -> None:
+        now = time.monotonic()
         with self._lock:
             self.connected = False
-            self.last_disconnect = time.monotonic()
+            self.last_disconnect = now
             self.disconnect_count += 1
+            self._disconnect_times.append(now)
+        _log_gateway_event("disconnect")
+        self._check_health()
 
-    def record_error(self, error: str) -> None:
+    def record_resume(self) -> None:
+        """Record a gateway resume (reconnection without full re-identify)."""
+        with self._lock:
+            self.connected = True
+            self.resume_count += 1
+        _log_gateway_event("resume")
+
+    def record_latency(self, latency_ms: float) -> None:
+        """Record a heartbeat latency measurement."""
+        with self._lock:
+            self._latency_samples.append((time.monotonic(), latency_ms))
+        _log_gateway_event("heartbeat", latency_ms=latency_ms)
+
+    def record_error(self, error: str, code: int | None = None) -> None:
         with self._lock:
             self.error_count += 1
             self.last_error = error[:200]
             self.last_error_time = time.monotonic()
+            if code is not None:
+                self._error_codes.append((time.monotonic(), code))
+        _log_gateway_event("error", error_code=code, detail=error[:200])
+        self._check_health()
 
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             uptime = 0.0
             if self.connected and self.last_connect:
                 uptime = time.monotonic() - self.last_connect
+            avg_latency = self._avg_latency()
             return {
                 "connected": self.connected,
                 "uptime_seconds": round(uptime),
                 "disconnect_count": self.disconnect_count,
+                "resume_count": self.resume_count,
                 "error_count": self.error_count,
                 "last_error": self.last_error,
+                "avg_latency_ms": avg_latency,
+                "health_score": self._compute_health_score(),
+                "prediction": self._predict(),
             }
+
+    def _avg_latency(self) -> float:
+        """Average heartbeat latency over recent samples."""
+        if not self._latency_samples:
+            return 0.0
+        cutoff = time.monotonic() - 3600  # last hour
+        recent = [ms for t, ms in self._latency_samples if t > cutoff]
+        return round(sum(recent) / len(recent), 1) if recent else 0.0
+
+    def _recent_disconnect_rate(self) -> float:
+        """Disconnects per hour over the last 30 minutes."""
+        now = time.monotonic()
+        cutoff = now - 1800  # 30 min
+        recent = sum(1 for t in self._disconnect_times if t > cutoff)
+        return recent * 2  # extrapolate to per-hour
+
+    def _compute_health_score(self) -> int:
+        """Compute a 0-100 health score based on recent metrics.
+
+        100 = perfect health, 0 = critical degradation.
+        """
+        score = 100
+
+        # Penalty for disconnects (up to -40)
+        dc_rate = self._recent_disconnect_rate()
+        if dc_rate >= 6:
+            score -= 40
+        elif dc_rate >= 3:
+            score -= 25
+        elif dc_rate >= 1:
+            score -= 10
+
+        # Penalty for high latency (up to -30)
+        avg_lat = self._avg_latency()
+        if avg_lat > 500:
+            score -= 30
+        elif avg_lat > 250:
+            score -= 15
+        elif avg_lat > 100:
+            score -= 5
+
+        # Penalty for recent errors (up to -30)
+        now = time.monotonic()
+        recent_errors = sum(1 for t, _ in self._error_codes if now - t < 1800)
+        if recent_errors >= 5:
+            score -= 30
+        elif recent_errors >= 2:
+            score -= 15
+        elif recent_errors >= 1:
+            score -= 5
+
+        return max(0, score)
+
+    def _predict(self) -> str:
+        """Predict connection health trajectory."""
+        score = self._compute_health_score()
+        dc_rate = self._recent_disconnect_rate()
+
+        if score >= 90:
+            return "stable"
+        if score >= 70:
+            return "minor_degradation"
+        if score >= 40:
+            if dc_rate >= 3:
+                return "disconnect_pattern_detected"
+            return "degraded"
+        return "critical"
+
+    def _check_health(self) -> None:
+        """Check health and fire an alert if degraded."""
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_alert_time < self.ALERT_COOLDOWN:
+                return
+            score = self._compute_health_score()
+            prediction = self._predict()
+
+        if score < 70:
+            with self._lock:
+                self._last_alert_time = now
+            try:
+                from .alerts import send_alert
+                send_alert(
+                    f"Health score: **{score}/100** — {prediction}\n"
+                    f"Disconnects (30min): {self._recent_disconnect_rate():.0f}/hr\n"
+                    f"Avg latency: {self._avg_latency():.0f}ms\n"
+                    f"Recent errors: {sum(1 for t, _ in self._error_codes if now - t < 1800)}",
+                    title="Gateway Health Warning",
+                    level="warning" if score >= 40 else "error",
+                )
+            except Exception:
+                pass  # alerts are best-effort
 
 
 _gateway_health = GatewayHealth()
@@ -245,6 +379,95 @@ _gateway_health = GatewayHealth()
 
 def get_gateway_health() -> GatewayHealth:
     return _gateway_health
+
+
+def _log_gateway_event(
+    event: str,
+    latency_ms: float | None = None,
+    error_code: int | None = None,
+    detail: str = "",
+) -> None:
+    """Persist a gateway event to SQLite for historical trend analysis."""
+    try:
+        init_db()
+        conn = _get_conn()
+        conn.execute(
+            """INSERT INTO gateway_events (timestamp, event, latency_ms, error_code, detail)
+               VALUES (?, ?, ?, ?, ?)""",
+            (datetime.now().isoformat(), event, latency_ms, error_code, detail[:200]),
+        )
+        conn.commit()
+    except Exception:
+        pass  # best-effort persistence
+
+
+def get_gateway_trend(hours: int = 24) -> dict[str, Any]:
+    """Analyze gateway health trends over the given time window.
+
+    Returns disconnect frequency, latency percentiles, error code
+    distribution, and hourly breakdown.
+    """
+    init_db()
+    conn = _get_conn()
+    since = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+    # Disconnect count
+    dc_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM gateway_events WHERE event='disconnect' AND timestamp >= ?",
+        (since,),
+    ).fetchone()["cnt"]
+
+    # Resume count
+    resume_count = conn.execute(
+        "SELECT COUNT(*) AS cnt FROM gateway_events WHERE event='resume' AND timestamp >= ?",
+        (since,),
+    ).fetchone()["cnt"]
+
+    # Latency stats
+    latency_rows = conn.execute(
+        "SELECT latency_ms FROM gateway_events WHERE event='heartbeat' AND latency_ms IS NOT NULL AND timestamp >= ?",
+        (since,),
+    ).fetchall()
+    latencies = sorted(row["latency_ms"] for row in latency_rows)
+
+    latency_stats: dict[str, float] = {}
+    if latencies:
+        latency_stats = {
+            "avg": round(sum(latencies) / len(latencies), 1),
+            "p50": round(latencies[len(latencies) // 2], 1),
+            "p95": round(latencies[int(len(latencies) * 0.95)], 1),
+            "max": round(latencies[-1], 1),
+            "samples": len(latencies),
+        }
+
+    # Error code distribution
+    error_rows = conn.execute(
+        "SELECT error_code, COUNT(*) AS cnt FROM gateway_events WHERE event='error' AND error_code IS NOT NULL AND timestamp >= ? GROUP BY error_code ORDER BY cnt DESC",
+        (since,),
+    ).fetchall()
+    error_dist = {str(row["error_code"]): row["cnt"] for row in error_rows}
+
+    # Hourly disconnect rate
+    hourly = conn.execute(
+        """SELECT strftime('%Y-%m-%d %H:00', timestamp) AS hour, COUNT(*) AS cnt
+           FROM gateway_events WHERE event='disconnect' AND timestamp >= ?
+           GROUP BY hour ORDER BY hour""",
+        (since,),
+    ).fetchall()
+    hourly_disconnects = {row["hour"]: row["cnt"] for row in hourly}
+
+    # Current health
+    health = _gateway_health.get_status()
+
+    return {
+        "hours": hours,
+        "disconnects": dc_count,
+        "resumes": resume_count,
+        "latency": latency_stats,
+        "error_codes": error_dist,
+        "hourly_disconnects": hourly_disconnects,
+        "current_health": health,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +503,17 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_di_ts ON discord_incidents (timestamp);
         CREATE INDEX IF NOT EXISTS idx_di_cat ON discord_incidents (category);
+
+        CREATE TABLE IF NOT EXISTS gateway_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp   TEXT NOT NULL,
+            event       TEXT NOT NULL,
+            latency_ms  REAL,
+            error_code  INTEGER,
+            detail      TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_ge_ts ON gateway_events (timestamp);
+        CREATE INDEX IF NOT EXISTS idx_ge_event ON gateway_events (event, timestamp);
     """)
     conn.commit()
 
@@ -473,8 +707,11 @@ def get_error_report(hours: int = 24) -> str:
     if health["uptime_seconds"] > 0:
         hours_up = health["uptime_seconds"] / 3600
         lines.append(f"  Uptime: {hours_up:.1f}h")
-    lines.append(f"  Disconnects: {health['disconnect_count']}")
+    lines.append(f"  Disconnects: {health['disconnect_count']} | Resumes: {health['resume_count']}")
     lines.append(f"  Errors: {health['error_count']}")
+    if health["avg_latency_ms"] > 0:
+        lines.append(f"  Avg Latency: {health['avg_latency_ms']}ms")
+    lines.append(f"  Health Score: {health['health_score']}/100 ({health['prediction']})")
 
     return "\n".join(lines)
 
@@ -486,6 +723,26 @@ def get_error_report(hours: int = 24) -> str:
 def get_discord_error_tools() -> list:
     """Get Discord error resilience tools for the agent."""
     from .core import create_tool
+
+    def _gateway_health_report(hours: int = 24) -> str:
+        trend = get_gateway_trend(hours)
+        h = trend["current_health"]
+        lines = [
+            f"**Gateway Health Report** (last {hours}h)",
+            f"Status: {'Connected' if h['connected'] else 'Disconnected'} | Score: {h['health_score']}/100 ({h['prediction']})",
+            f"Disconnects: {trend['disconnects']} | Resumes: {trend['resumes']}",
+        ]
+        if trend["latency"]:
+            lat = trend["latency"]
+            lines.append(f"Latency: avg {lat['avg']}ms, p50 {lat['p50']}ms, p95 {lat['p95']}ms, max {lat['max']}ms ({lat['samples']} samples)")
+        if trend["error_codes"]:
+            codes = ", ".join(f"{k}: {v}" for k, v in trend["error_codes"].items())
+            lines.append(f"Error codes: {codes}")
+        if trend["hourly_disconnects"]:
+            lines.append("Hourly disconnects:")
+            for hour, cnt in list(trend["hourly_disconnects"].items())[-6:]:
+                lines.append(f"  {hour}: {cnt}")
+        return "\n".join(lines)
 
     return [
         create_tool(
@@ -502,6 +759,21 @@ def get_discord_error_tools() -> list:
                 "required": [],
             },
             function=lambda hours=24: get_error_report(hours),
+        ),
+        create_tool(
+            "gateway_health",
+            "Show gateway connection health: score, prediction, latency, disconnect trends",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "hours": {
+                        "type": "integer",
+                        "description": "Hours of history to analyze (default 24)",
+                    },
+                },
+                "required": [],
+            },
+            function=lambda hours=24: _gateway_health_report(hours),
         ),
     ]
 
