@@ -7,7 +7,7 @@ Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-10 03:36
+> via `safe_update.py`. Last updated: 2026-04-10 03:43
 
 ## Highlights
 
@@ -108,14 +108,41 @@ python safe_update.py my-feature       # create branch
 python safe_update.py continue          # test, merge, restart, publish
 ```
 
-### Testing
+### Testing & Quality Gates
+
+Every code change passes through multiple quality gates before deployment:
 
 ```bash
 pytest                        # Run all 1330 tests
 pytest --cov=agent            # With coverage report
 pytest tests/unit/            # Unit tests only
-python validate.py startup    # Full pre-commit validation (syntax + import + startup)
+python validate.py startup    # Full pre-commit validation (5 levels)
 ```
+
+#### validate.py — 5-Level Validation Pipeline
+
+| Level | Check | What It Catches |
+|-------|-------|-----------------|
+| 1 | **Syntax** (`ast.parse`) | SyntaxError, unterminated strings, bad indentation |
+| 2 | **Lint** (`ruff check`) | Undefined names in f-strings (F821), redefined variables (F811) |
+| 3 | **Import** (actual module import) | Missing dependencies, circular imports, NameError at module level |
+| 4 | **Startup** (10-second live test) | Config errors, Discord auth failures, runtime crashes |
+| 5 | **Integration** (real Ollama calls) | API changes, response format mismatches, tool calling issues |
+
+`validate.py startup` (levels 1-4) is **mandatory before every commit**. Level 5 runs via `validate.py full`.
+
+#### safe_update.py — Deployment Pipeline
+
+Every change follows the same branch → test → merge → restart flow:
+
+```
+safe_update.py <name>      →  Create isolated branch
+validate.py startup        →  5-level validation (mandatory before commit)
+git commit                 →  Pre-commit hooks (black, ruff, trailing whitespace)
+safe_update.py continue    →  pytest (all 1330 tests) → mypy → merge → restart bot → quality tests → publish
+```
+
+No code reaches `main` without passing **all** of: pre-commit hooks, 5-level validation, the full test suite, type checking, and post-deploy quality tests.
 
 ## Discord Commands
 
@@ -144,8 +171,16 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 
 - **safe_update.py** — Every code change goes through branch → test → merge → restart.
   No exceptions, even for "small" fixes.
-- **validate.py** — Three-level validation (syntax → import → startup) catches what
-  unit tests miss.
+- **validate.py** — Five-level validation (syntax → lint → import → startup → integration)
+  catches what unit tests miss — including undefined names in f-strings, missing imports,
+  and runtime crashes.
+- **Pre-commit hooks** — black (formatting), ruff (linting), trailing whitespace cleanup,
+  and private key detection run automatically on every commit.
+- **Post-deploy quality tests** — After every deployment, the bot answers 3 live questions
+  scored by an LLM judge. Failures are flagged immediately.
+- **Crash notification cooldown** — If the bot hits a repeating error, only the first crash
+  report is sent to Discord. Subsequent crashes are suppressed for 5 minutes to prevent
+  channel spam, with a count of suppressed errors included in the next notification.
 - **Local-first fallback** — If Claude API is down, the bot switches to Ollama
   automatically and recovers when Claude comes back.
 - **Write-ahead logging** — Vault writes go through SQLite WAL first, so failed
