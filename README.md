@@ -1,192 +1,165 @@
 # Technomancer
 
-An autonomous AI agent framework powered by Ollama, with a Discord bot interface, Obsidian vault memory, Claude API escalation, and a self-improving idea board system.
+![tests](https://img.shields.io/badge/tests-1087-brightgreen) ![coverage](https://img.shields.io/badge/coverage-54.2%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-58-blue) ![lines](https://img.shields.io/badge/lines-23k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+
+An Ollama-powered autonomous agent framework with Discord bot interface,
+Obsidian vault integration, Claude API escalation, and a self-improving
+knowledge base. Built for a Senior Software Engineer's daily workflow.
+
+> **Auto-generated** — This README is updated automatically on every deployment
+> via `safe_update.py`. Last updated: 2026-04-09 19:17
+
+## Highlights
+
+- **1087 automated tests** with 54.2% code coverage
+- **58 Python modules** across 23,450 lines of code
+- **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
+- **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
+- **Local-first** — Ollama for primary inference, Claude API for escalation only
+- **Discord-native** — all interaction through Discord with reaction tracking
 
 ## Architecture
 
 ```
-Discord (#llm_chat)          Discord (#claude-code)        Idea Board (port 8322)
-       |                            |                            |
-       v                            v                            v
-  Local LLM (Ollama)         Claude Code (Pro)            LLM Idea Generator
-  qwen3.5:9b on GPU         claude.ai/code remote         Hourly analysis
-       |                            |                            |
-       +------- Obsidian Vault (persistent memory) -------------+
-       |                            |                            |
-       +------- GitHub Pages (HTML content delivery) -----------+
-       |                            |                            |
-       +------- Bridge API (port 8321, bidirectional) ----------+
+Discord Bot (discord_memory_bot.py)
+    |
+    +-- Ollama LLM (local, tool-calling loop)
+    |       |-- 50+ registered tools
+    |       |-- Factual auto-search before answering
+    |       |-- Knowledge gap detection + auto-enrichment
+    |
+    +-- Claude API (escalation for complex tasks)
+    |       |-- Vault context with prompt caching (84% token savings)
+    |       |-- Fallback orchestrator (auto-switches to Ollama on failure)
+    |
+    +-- Obsidian Vault (persistent memory)
+    |       |-- Conversation context + summaries
+    |       |-- Knowledge gap notes
+    |       |-- Reference articles
+    |       |-- Write-ahead logging for data safety
+    |
+    +-- Idea Board (Flask, port 8322)
+    |       |-- Epic/Story/Task hierarchy
+    |       |-- LLM-powered discussion threads
+    |       |-- Copy Epic for Claude Code (sequential implementation)
+    |
+    +-- Background Tasks
+            |-- News digest (hourly, 9am-9pm)
+            |-- Developer learning articles (daily, 8am)
+            |-- Knowledge enrichment (every 6 hours)
+            |-- Gap frequency analysis (weekly)
+            |-- Infrastructure monitoring (every 30 min)
+            |-- Idea generation (hourly)
+            |-- Learning newsletter (weekly, Sunday 9am)
 ```
 
-## Features
+## Modules
 
-### Core Bot
-- **Discord Chat** — Conversational AI with 40+ registered tools
-- **Obsidian Memory** — Persistent memory with hourly/daily/weekly LLM-powered compaction
-- **Auto Memory Extraction** — Builds an identity database from conversations
-- **Smart Context Injection** — Tiered context based on message complexity
-- **Tool Result Truncation** — Large results stored and retrieved on demand
-
-### Claude Integration
-- **Claude API Escalation** — Auto-escalates to Claude when the local model is uncertain
-- **Claude Code Remote** — Full Claude Code sessions via `claude.ai/code` from your phone
-- **Discord Bridge API** — REST API (port 8321) for bidirectional Discord communication
-
-### Self-Improvement
-- **Idea Board** — Web dashboard (port 8322) where the LLM suggests improvements
-- **LLM Discussion** — Chat with the LLM about ideas before implementing
-- **Hourly Idea Generation** — Analyzes news, conversations, errors, and performance data
-- **Auto-Improve** — Tests itself, diagnoses weaknesses, patches its own prompts
-
-### K.A.R.E.N. — Kinetic Aggression Routing Enhancement Network
-- **Complaint Pipeline** — Submit frustrations via Discord (`karen <complaint>`) or the web UI
-- **Instant Idea Generation** — Each complaint triggers 1-3 actionable improvement ideas via LLM
-- **Auto-Resolution** — When an idea born from a complaint gets approved, the complaint disappears
-- **Web Dashboard** — View, manage, and dismiss complaints at the KAREN page on the hub
-
-*Yes, KAREN wants to speak to the manager. And the manager listens.*
-
-### Content & Learning
-- **Developer Learning** — Daily AI-generated educational articles via Claude API
-- **News Digest** — Hourly personalized tech news with relevance filtering (9am-9pm)
-- **GitHub Pages** — Auto-deploys HTML content for mobile viewing
-- **HTML Normalization** — Consistent styling across all generated pages
-
-### Monitoring
-- **Request Profiling** — Per-message timing breakdown (JSONL format)
-- **Prometheus Metrics** — LLM call latency, token counts, error rates
-- **Grafana Dashboard** — Visual performance monitoring
-- **Dreaming** — Background memory consolidation (midnight-6am)
-
-## Prerequisites
-
-- **Python 3.12+**
-- **Ollama** running at `http://127.0.0.1:11434` with `qwen3.5:9b` model
-- **Discord Bot Token** (from Discord Developer Portal)
-- **Anthropic API Key** (optional, for Claude escalation)
-- **GPU** recommended (NVIDIA with 8GB+ VRAM for qwen3.5:9b)
+| Category | Modules |
+|----------|---------|
+| Core | `core`, `config`, `tools` |
+| Discord Bot | `discord_memory_bot`, `bot_commands`, `bot_utils`, `discord_bridge`, `discord_rate_limit`, `discord_errors`, `message_validators`, `fallback_responses`, `command_suggestions` |
+| LLM Integration | `claude_bridge`, `claude_vault`, `ask_claude`, `fallback_orchestrator`, `reflection` |
+| Memory & Knowledge | `memory_system`, `conversation_context`, `auto_memory`, `facts_db`, `knowledge_gaps`, `knowledge_fallback`, `knowledge_enrichment`, `skill_gap_analysis` |
+| News & Learning | `news_digest`, `news_engagement`, `dev_learning`, `learning_newsletter` |
+| Monitoring & Performance | `perf_monitor`, `metrics_db`, `prometheus_metrics`, `profiler`, `api_usage_anomaly`, `llm_optimizer`, `infra_monitor` |
+| Content & Publishing | `github_pages`, `html_generator`, `pdf_tools`, `enhancements`, `ref_enrichment` |
+| Idea Board | `idea_board/web.py`, `idea_board/models.py`, `idea_board/executor.py` |
 
 ## Quick Start
 
+### Prerequisites
+
+- Python 3.10+
+- [Ollama](https://ollama.ai/) running locally with `qwen3.5:27b` (or configure via `.env`)
+- Discord bot token
+- (Optional) Anthropic API key for Claude escalation
+
+### Installation
+
 ```bash
-# Clone the repo
-git clone https://github.com/jeremycharlesgillespie/technomancer-public.git
-cd technomancer-public/local-agent
+cd local-agent
+pip install -e ".[all]"    # All dependencies
+pip install -e ".[dev]"    # Dev tools (pytest, coverage, linting)
+```
 
-# Configure environment
-cp .env.example .env
-# Edit .env with your Discord bot token and other settings
+### Configuration
 
-# Install dependencies
-pip install -e ".[all]"
+Copy `.env.example` to `.env` and fill in:
+```
+DISCORD_BOT_TOKEN=your_token
+ANTHROPIC_API_KEY=sk-ant-...
+VAULT_PATH=C:\Users\you\Documents\ObsidianVault
+OLLAMA_MODEL=qwen3.5:27b
+```
 
-# Start the bot
+### Running
+
+```bash
+# Start Discord bot
+python -m agent.discord_memory_bot
+
+# Or via bot service (with crash recovery)
 python bot_service.py start
 
-# Check status
-python bot_service.py status
+# Safe deployment workflow
+python safe_update.py my-feature       # create branch
+# ... make changes ...
+python safe_update.py continue          # test, merge, restart, publish
+```
+
+### Testing
+
+```bash
+pytest                        # Run all 1087 tests
+pytest --cov=agent            # With coverage report
+pytest tests/unit/            # Unit tests only
+python validate.py startup    # Full pre-commit validation (syntax + import + startup)
 ```
 
 ## Discord Commands
 
-### Chat (`#llm_chat` channel)
 | Command | Description |
-|---|---|
+|---------|-------------|
 | `betterDev [topic]` | Generate a learning article |
 | `techNews` | Latest tech news with analysis |
-| `idea` | Generate improvement ideas on demand |
-| `karen <complaint>` | Submit a complaint to K.A.R.E.N. (generates ideas) |
 | `think` | Show what the bot knows about you |
-| `perf` | Show performance profiling stats |
-| `showCommands` | List all commands |
+| `suggest` | Context-aware command suggestions |
+| `newsletter` | Weekly learning digest |
+| `perf` | Session profiling data |
+| `metrics` | Persistent LLM latency trends |
+| `karen <complaint>` | Submit feedback (generates improvement ideas) |
+| `commands` | Full command list |
 
-### Claude Code (`#claude-code` channel)
-Everything typed in this channel runs as a Claude Code session on your machine. Type `end` to close the session.
+## Idea Board
 
-### Admin
-| Command | Description |
-|---|---|
-| `reloadServer` | Restart the bot (owner only) |
-| `evolve` | Run self-improvement cycle (owner only) |
+Access at `http://localhost:8322` — a web dashboard for managing improvement ideas:
 
-## Configuration
+- **Epics** group related stories into full value chains
+- **Copy Epic for Claude Code** implements all stories sequentially
+- **LLM discussion threads** on each idea
+- **Archived view** hides completed work while keeping it for deduplication
 
-All configuration is in `.env`. See `.env.example` for all available options.
+## Key Design Decisions
 
-Key settings:
-- `DISCORD_BOT_TOKEN` — Required. Your Discord bot token
-- `ANTHROPIC_API_KEY` — Optional. For Claude API features
-- `VAULT_PATH` — Path to your Obsidian vault
-- `OLLAMA_MODEL` — LLM model name (default: `qwen3.5:9b`)
+- **safe_update.py** — Every code change goes through branch → test → merge → restart.
+  No exceptions, even for "small" fixes.
+- **validate.py** — Three-level validation (syntax → import → startup) catches what
+  unit tests miss.
+- **Local-first fallback** — If Claude API is down, the bot switches to Ollama
+  automatically and recovers when Claude comes back.
+- **Write-ahead logging** — Vault writes go through SQLite WAL first, so failed
+  writes can be recovered.
 
-## Development
+## Project Stats
 
-```bash
-# Run tests
-pytest
-
-# Run with verbose output
-pytest -v
-
-# Validate before committing (syntax + imports + bot startup)
-python validate.py startup
-
-# Safe update workflow (branch, test, merge, restart)
-python safe_update.py <branch-name>
-# ... make changes ...
-python safe_update.py continue
-```
-
-## Project Structure
-
-```
-local-agent/
-  agent/                    # Core bot modules
-    discord_memory_bot.py   # Main Discord bot + message dispatcher
-    bot_commands.py         # Discord command handlers
-    bot_utils.py            # Utility functions
-    core.py                 # Agent class with Ollama tool-calling loop
-    memory_system.py        # Obsidian-backed conversation memory
-    auto_memory.py          # Identity extraction from conversations
-    dreaming.py             # Background memory consolidation
-    news_digest.py          # Hourly tech news with relevance filtering
-    dev_learning.py         # Daily developer learning articles
-    discord_bridge.py       # REST API for Claude Code <-> Discord
-    claude_code_runner.py   # Headless Claude Code execution
-    idea_generator.py       # Hourly improvement idea generation
-    itinerary.py            # Travel itinerary via Claude API
-    profiler.py             # Request timing profiler
-    html_generator.py       # Markdown -> HTML with dark mode
-    config.py               # Centralized Pydantic settings
-  idea_board/               # Self-improvement idea system
-    web.py                  # Flask dashboard (port 8322)
-    models.py               # Idea data model + Obsidian sync
-    executor.py             # Claude Code execution manager
-    karen.py                # K.A.R.E.N. complaint-to-idea pipeline
-  tests/                    # Test suite (600+ tests)
-  validate.py               # Pre-commit validation script
-  safe_update.py            # Branch-test-merge automation
-  bot_service.py            # Bot process manager
-```
-
-## Contributing
-
-This is a personal project that I actively develop and use daily. Updates come from my private dev environment and get synced here regularly — so you'll see frequent commits from me rather than a traditional PR workflow.
-
-That said, I'm totally open to ideas, suggestions, and feedback! If you:
-- **Have an idea** — open an issue and let's talk about it
-- **Found a bug** — open an issue with what happened
-- **Want to contribute code** — PRs are welcome, just know I may not review them immediately since this is a solo project
-
-I built this to scratch my own itch, but if it's useful to you too, that's awesome. Don't be shy about reaching out.
-
-## Learning Articles
-
-AI-generated developer learning articles, created daily by the bot:
-
-**[Browse Learning Articles](https://jeremycharlesgillespie.github.io/technomancer-public/learning/)**
-
-Topics include Python, system design, databases, and best practices. New articles are generated and deployed automatically.
+| Metric | Value |
+|--------|-------|
+| Test count | 1087 |
+| Code coverage | 54.2% |
+| Python modules | 58 |
+| Lines of code | 23,450 |
+| Test files | 41 |
 
 ## License
 

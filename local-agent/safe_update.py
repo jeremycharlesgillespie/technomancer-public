@@ -463,8 +463,15 @@ def continue_workflow():
                     cwd=Path(__file__).parent,
                 )
                 if result.returncode == 0:
-                    # Commit the updated README
+                    # Commit the updated READMEs (local-agent + repo root)
                     run_git(["add", "README.md"], check=False)
+                    root_readme = Path(__file__).parent.parent / "README.md"
+                    if root_readme.exists():
+                        subprocess.run(
+                            ["git", "add", str(root_readme)],
+                            capture_output=True, text=True, timeout=10,
+                            cwd=Path(__file__).parent.parent,
+                        )
                     try:
                         run_git(["commit", "-m", "Update README with latest stats [auto]"])
                         run_git(["push", "origin", MAIN_BRANCH], check=False)

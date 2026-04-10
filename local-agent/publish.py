@@ -80,6 +80,7 @@ SYNC_PATHS = [
     "local-agent/auto_improve.py",
     "local-agent/start_service.bat",
     "local-agent/README.md",
+    "local-agent/generate_readme.py",
     "README.md",
     "CLAUDE.md",
     ".pre-commit-config.yaml",
