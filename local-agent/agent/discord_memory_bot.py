@@ -374,6 +374,16 @@ async def on_ready() -> None:
     memory = init_memory_system(VAULT_PATH)
     log("Memory system ready - recording all conversations")
 
+    # Load previous session state for conversation continuity
+    from .session_state import get_previous_session
+    prev_session = get_previous_session()
+    if prev_session["was_crash"]:
+        log(f"[Session] Recovered from crash — {len(prev_session['exchanges'])} exchanges restored")
+    elif prev_session["exchanges"]:
+        log(f"[Session] Previous session loaded — {len(prev_session['exchanges'])} exchanges")
+    else:
+        log("[Session] Fresh session (no previous state)")
+
     # Initialize Claude vault session for efficient API calls with caching
     try:
         from .claude_vault import init_vault_session
@@ -1264,6 +1274,8 @@ React like a friend would - you're genuinely interested. Talk about what stands 
                 if response:
                     # Still do all post-response work (memory, engagement, send)
                     memory.log_conversation(user, content, response)
+                    from .session_state import save_exchange as _save_ex
+                    _save_ex(user, content, response)
                     buffer_conversation(user, content, response)
                     buffer_for_summary(user, content, response)
 
@@ -1312,6 +1324,13 @@ React like a friend would - you're genuinely interested. Talk about what stands 
                 recent = memory.get_context("hour")
                 if "No conversations" not in recent:
                     ctx_parts.append(f"Recent conversations:\n{recent[:4000]}")
+                else:
+                    # No recent in-memory conversations — inject previous session
+                    # exchanges so the bot knows what was just discussed before restart
+                    from .session_state import get_previous_session, format_session_context
+                    session_ctx = format_session_context(get_previous_session())
+                    if session_ctx:
+                        ctx_parts.append(session_ctx)
 
                 # Tier 2b: Past conversation summaries for cross-session continuity
                 # Only inject summaries from last 48 hours to avoid stale context
@@ -1474,6 +1493,10 @@ Respond naturally and helpfully. Be conversational and friendly."""
             # Log conversation to Obsidian
             memory.log_conversation(user, content, response)
 
+            # Save exchange for cross-session continuity
+            from .session_state import save_exchange
+            save_exchange(user, content, response)
+
             # Buffer for auto memory extraction
             buffer_conversation(user, content, response)
 
@@ -1627,6 +1650,8 @@ def main() -> None:
         client.run(settings.discord_bot_token)
     except KeyboardInterrupt:
         log("Shutdown requested")
+        from .session_state import mark_clean_shutdown
+        mark_clean_shutdown()
         send_lifecycle_notification("offline", "Graceful shutdown")
     except Exception as e:
         log(f"FATAL ERROR: {e}")
