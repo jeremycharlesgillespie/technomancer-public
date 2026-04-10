@@ -374,7 +374,7 @@ VAULT_TOOLS = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Relative path within vault (e.g., 'Permanent/enhancements.md', 'Context/daily.md')",
+                    "description": "Relative path within vault (e.g., 'Permanent/memories.md', 'Context/daily.md')",
                 }
             },
             "required": ["path"],

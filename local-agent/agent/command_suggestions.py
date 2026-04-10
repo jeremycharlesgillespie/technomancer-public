@@ -79,20 +79,13 @@ COMMANDS: tuple[CommandInfo, ...] = (
         ("memory", "remember", "know", "profile", "about"),
         "think",
     ),
-    # Enhancements
+    # Idea Board
     CommandInfo(
-        "showEnhancements", ("showenhancements",),
-        "Show pending enhancement queue",
-        "enhancements",
-        ("enhancements", "features", "queue", "pending", "improvements"),
-        "showEnhancements",
-    ),
-    CommandInfo(
-        "addEnhancement", ("addenhancement",),
-        "Add a new enhancement idea",
-        "enhancements",
-        ("add", "enhancement", "feature", "idea", "suggest", "request"),
-        "addEnhancement <description>",
+        "ideas", ("ideas",),
+        "Show active ideas from the idea board",
+        "ideas",
+        ("ideas", "enhancements", "features", "queue", "pending", "improvements", "board", "stories"),
+        "ideas",
     ),
     # Feedback
     CommandInfo(

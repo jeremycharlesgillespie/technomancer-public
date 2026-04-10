@@ -40,7 +40,6 @@ from .config import settings
 from .core import Agent, AgentConfig
 from .dev_learning import start_dev_learning
 from .bot_commands import (
-    handle_add_enhancement,
     handle_better_dev,
     handle_dl_cover,
     handle_dl_covers,
@@ -57,12 +56,11 @@ from .bot_commands import (
     handle_reload_server,
     handle_search_videos,
     handle_show_commands,
-    handle_show_enhancements,
+    handle_show_ideas,
     handle_show_learning,
     handle_tech_news,
     handle_think,
 )
-from .enhancements import get_enhancement_tools
 from .facts_db import get_facts_tools, init_db as init_facts_db, seed_db as seed_facts_db
 from .knowledge_gaps import auto_enrich_gap, detect_knowledge_gap, get_knowledge_gap_tools, log_knowledge_gap
 from .image_identification import analyze_with_vision_model, ask_claude_with_image
@@ -527,42 +525,17 @@ Examples that should trigger search:
 ## Self-Improvement Capability
 You have 'request_capability' for when you lack tools to help. Try existing tools first, only use this when you genuinely can't fulfill a request.
 
-## Enhancement Queue - CRITICAL RULES
+## Idea Board
+Ideas and improvement stories live on the **Idea Board** (a web dashboard at http://localhost:8322/ideas).
 
-### THE ONLY SOURCE OF TRUTH FOR ENHANCEMENTS IS THE OBSIDIAN VAULT FILE
-Location: Obsidian vault at /LLM Memory/Permanent/enhancements.md
+**When the user asks about ideas, stories, enhancements, or the idea board:**
+1. ALWAYS call `list_ideas` first to get the current state
+2. For details on a specific idea, call `get_idea` with the idea ID
+3. NEVER guess or remember ideas from conversation history — the board is the only truth
 
-**ABSOLUTE RULES - NO EXCEPTIONS:**
-1. NEVER guess, infer, or remember enhancements from conversation history
-2. NEVER make up enhancement numbers or descriptions from memory
-3. NEVER say "I remember we had enhancement #X" - you DO NOT remember, you MUST READ
-4. The ONLY way to know what enhancements exist is to call get_enhancements
-5. If user asks about enhancements, ALWAYS call get_enhancements FIRST before responding
-6. Do NOT trust your memory - the vault file is the ONLY truth
-
-**When user mentions "enhancements" in ANY way:**
-- "what enhancements do we have?" → CALL get_enhancements, then respond
-- "show me the enhancements" → CALL get_enhancements, then respond
-- "what's in the queue?" → CALL get_enhancements, then respond
-- "enhancement #3" → CALL get_enhancements to verify it exists
-- "start on enhancements" → CALL get_enhancements, show the list
-
-**Adding new enhancements - detect phrases like:**
-- "it would be cool if..."
-- "we should add..."
-- "can you add an enhancement: ..."
-- "feature idea: ..."
-- "I wish the bot could..."
-
-When detected, use add_enhancement to save to the vault. Confirm you added it.
-
-**You CANNOT implement code.** When user says "start working on enhancements" or similar:
-1. Call get_enhancements
-2. List the pending items briefly
-3. Say: "Ask Claude Code in VSCode to implement these."
-4. STOP. Do not ask follow-up questions. Do not offer to brainstorm. Do not suggest next steps. Just list and direct to Claude Code.
-
-You collect ideas. Claude Code implements them.
+**You CANNOT implement code.** When user says "start working on ideas" or similar:
+1. Call `list_ideas` to show what's on the board
+2. Direct them to the Idea Board dashboard or Claude Code for implementation
 
 ## Accountability - VERIFY YOUR ACTIONS
 You have verification tools: verify_file_exists, verify_file_modified, verify_content, verify_memory_saved.
@@ -641,7 +614,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_web_tools():
         agent.register_tool(tool)
-    for tool in get_enhancement_tools():
+    from idea_board.models import get_idea_board_tools
+    for tool in get_idea_board_tools():
         agent.register_tool(tool)
     for tool in get_knowledge_gap_tools():
         agent.register_tool(tool)
@@ -928,11 +902,8 @@ async def on_message(message: discord.Message) -> None:
     if lower == "technews":
         await handle_tech_news(message, content, user, agent, memory, send_response)
         return
-    if lower == "showenhancements":
-        await handle_show_enhancements(message, send_response)
-        return
-    if lower.startswith("addenhancement"):
-        await handle_add_enhancement(message, content, user, memory)
+    if lower == "ideas":
+        await handle_show_ideas(message, send_response)
         return
     if lower.startswith("listvideos"):
         await handle_list_videos(message, content, user, send_response)

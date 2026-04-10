@@ -546,3 +546,121 @@ def sync_to_obsidian(idea: Idea) -> None:
 
     file_path = VAULT_IDEAS_DIR / f"{idea.id}.md"
     file_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ============================================================================
+# LLM TOOLS — Let the bot query the idea board directly
+# ============================================================================
+
+def _format_idea_summary(idea: Idea) -> str:
+    """Format a single idea as a concise text summary for the LLM."""
+    votes = idea.votes
+    comment_count = len(idea.comments)
+    return (
+        f"**{idea.id}**: {idea.title}\n"
+        f"  State: {idea.state} | Type: {idea.idea_type} | Category: {idea.category}\n"
+        f"  Votes — Claude: {votes.get('claude') or 'none'}, Owner: {votes.get('owner') or 'none'}\n"
+        f"  Comments: {comment_count} | Created: {idea.created[:10]}"
+    )
+
+
+def list_ideas_for_llm(state: str = "") -> str:
+    """List ideas from the idea board, optionally filtered by state.
+
+    Args:
+        state: Filter by state (proposed, approved, vetoed, refining, executing, done, failed).
+               Empty string returns all active ideas.
+
+    Returns:
+        Formatted text summary of matching ideas.
+    """
+    ideas = load_ideas()
+    if state:
+        ideas = [i for i in ideas if i.state == state]
+    else:
+        ideas = [i for i in ideas if i.state not in ("vetoed", "done", "failed")]
+
+    if not ideas:
+        label = f"in state '{state}'" if state else "active"
+        return f"No {label} ideas on the board."
+
+    lines = [f"**Idea Board** — {len(ideas)} idea(s):\n"]
+    for idea in ideas:
+        lines.append(_format_idea_summary(idea))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def get_idea_detail_for_llm(idea_id: str) -> str:
+    """Get full details of a specific idea including description and comments.
+
+    Args:
+        idea_id: The idea ID (e.g. "idea-042")
+
+    Returns:
+        Detailed text representation of the idea.
+    """
+    idea = get_idea(idea_id)
+    if not idea:
+        return f"Idea '{idea_id}' not found."
+
+    lines = [
+        f"# {idea.id}: {idea.title}",
+        f"State: {idea.state} | Type: {idea.idea_type} | Category: {idea.category}",
+        f"Source: {idea.source} | Created: {idea.created[:10]}",
+        "",
+        "## Description",
+        idea.description,
+    ]
+
+    if idea.parent_id:
+        lines.append(f"\nParent: {idea.parent_id}")
+
+    if idea.comments:
+        lines.append("\n## Discussion")
+        for c in idea.comments:
+            ts = c.timestamp[:16] if c.timestamp else ""
+            lines.append(f"- **{c.author}** ({ts}): {c.text}")
+
+    if idea.execution_log:
+        lines.append(f"\n## Execution Log\n{idea.execution_log[:1000]}")
+
+    return "\n".join(lines)
+
+
+def get_idea_board_tools() -> list:
+    """Return tools for the LLM to query the idea board."""
+    from agent.core import create_tool
+
+    return [
+        create_tool(
+            "list_ideas",
+            "List ideas from the idea board. Returns all active ideas by default, or filter by state.",
+            {
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Filter by state: proposed, approved, vetoed, refining, executing, done, failed. Leave empty for all active ideas.",
+                    },
+                },
+                "required": [],
+            },
+            lambda state="": list_ideas_for_llm(state),
+        ),
+        create_tool(
+            "get_idea",
+            "Get full details of a specific idea including description, votes, and discussion thread.",
+            {
+                "type": "object",
+                "properties": {
+                    "idea_id": {
+                        "type": "string",
+                        "description": "The idea ID, e.g. 'idea-042'",
+                    },
+                },
+                "required": ["idea_id"],
+            },
+            lambda idea_id: get_idea_detail_for_llm(idea_id),
+        ),
+    ]

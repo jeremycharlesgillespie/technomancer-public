@@ -27,7 +27,6 @@ from .dev_learning import (
     handle_learning_history_command,
     handle_show_learning_command,
 )
-from .enhancements import add_enhancement, get_pending_enhancements
 from .news_digest import handle_technews_command
 from .metrics_db import get_summary as get_metrics_summary
 from .perf_monitor import get_endpoint_summary
@@ -261,9 +260,8 @@ async def handle_show_commands(message: Any) -> None:
 **Memory**
 `think` - Show what I know about you (permanent memories)
 
-**Enhancements**
-`showEnhancements` - Show pending enhancement queue
-`addEnhancement <idea>` - Add a new enhancement to the queue
+**Idea Board**
+`ideas` - Show active ideas from the idea board (or visit http://localhost:8322/ideas)
 
 **Feedback**
 `karen <complaint>` - Submit a complaint to K.A.R.E.N. (generates improvement ideas)
@@ -324,29 +322,12 @@ async def handle_tech_news(
             memory.log_conversation(user, content, "[Generated tech news digest]")
 
 
-async def handle_show_enhancements(message: Any, send_response: Any) -> None:
-    """Show pending enhancements."""
-    response = get_pending_enhancements()
+async def handle_show_ideas(message: Any, send_response: Any) -> None:
+    """Show active ideas from the idea board."""
+    from idea_board.models import list_ideas_for_llm
+
+    response = list_ideas_for_llm()
     await send_response(message, response)
-
-
-async def handle_add_enhancement(
-    message: Any, content: str, user: str, memory: Any
-) -> None:
-    """Add a new enhancement."""
-    parts = content.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.reply(
-            "Usage: `addEnhancement <description>`\n"
-            "Example: `addEnhancement I want the bot to check stock prices`"
-        )
-        return
-
-    idea = parts[1].strip()
-    response = add_enhancement(idea)
-    await message.reply(response)
-    if memory:
-        memory.log_conversation(user, content, f"[Added enhancement: {idea[:50]}...]")
 
 
 async def handle_think(

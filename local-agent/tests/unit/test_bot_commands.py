@@ -9,11 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.bot_commands import (
-    handle_add_enhancement,
     handle_learning_history,
     handle_perf,
     handle_show_commands,
-    handle_show_enhancements,
+    handle_show_ideas,
     handle_show_learning,
 )
 from tests.conftest import MockDiscordMessage
@@ -100,24 +99,13 @@ class TestHandleShowLearning:
         assert "Invalid" in msg._last_response
 
 
-class TestHandleShowEnhancements:
-    @patch("agent.bot_commands.get_pending_enhancements",
-           return_value="## Pending\n- #1: Add dark mode")
-    def test_shows_enhancements(self, mock_get):
-        msg = _make_msg("showEnhancements")
-        _run(handle_show_enhancements(msg, _send_response))
-        assert "dark mode" in msg._last_response or "Pending" in msg._last_response
-
-
-class TestHandleAddEnhancement:
-    @patch("agent.bot_commands.add_enhancement",
-           return_value="Added enhancement #3: Better errors")
-    def test_adds_enhancement(self, mock_add):
-        msg = _make_msg("addEnhancement Better error messages")
-        memory = MagicMock()
-        _run(handle_add_enhancement(msg, msg.content, "TestUser", memory))
-        assert msg.replied_to is not None
-        assert "#3" in msg.replied_to or "Better" in msg.replied_to
+class TestHandleShowIdeas:
+    @patch("idea_board.models.list_ideas_for_llm",
+           return_value="**Idea Board** — 1 idea(s):\n\n**idea-001**: Test idea")
+    def test_shows_ideas(self, mock_list):
+        msg = _make_msg("ideas")
+        _run(handle_show_ideas(msg, _send_response))
+        assert "idea" in msg._last_response.lower() or "Idea Board" in msg._last_response
 
 
 class TestHandlePublish:
