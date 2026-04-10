@@ -320,27 +320,87 @@ def patched_knowledge_gaps(temp_vault, monkeypatch):
 class MockDiscordUser:
     """Mock Discord user."""
 
-    def __init__(self, name: str = "testuser", bot: bool = False):
+    def __init__(self, name: str = "testuser", bot: bool = False, user_id: int = 12345):
         self.name = name
+        self.display_name = name
         self.bot = bot
-        self.id = 12345
+        self.id = user_id
+
+    def __eq__(self, other):
+        if isinstance(other, MockDiscordUser):
+            return self.id == other.id
+        return NotImplemented
+
+
+class MockMessageReference:
+    """Mock message reference (for replies)."""
+
+    def __init__(self, message_id: int = 0):
+        self.message_id = message_id
+
+
+class _TypingCtx:
+    """Async context manager for channel.typing()."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+
+class MockSentMessage:
+    """Mock return value from channel.send() or message.reply()."""
+
+    _counter = 0
+
+    def __init__(self, content: str = ""):
+        MockSentMessage._counter += 1
+        self.id = 100000 + MockSentMessage._counter
+        self.content = content
 
 
 class MockDiscordChannel:
-    """Mock Discord channel."""
+    """Mock Discord channel with full API surface."""
 
     def __init__(self, name: str = "llm_chat"):
         self.name = name
         self.id = 67890
         self.sent_messages = []
+        self._stored_messages = {}  # id -> MockDiscordMessage for fetch_message
 
-    async def send(self, content: str = None, file=None):
-        self.sent_messages.append({"content": content, "file": file})
-        return MagicMock()
+    async def send(self, content: str = None, file=None, files=None, **kwargs):
+        sent = MockSentMessage(content or "")
+        self.sent_messages.append({"content": content, "file": file, "files": files})
+        return sent
+
+    def typing(self):
+        return _TypingCtx()
+
+    async def fetch_message(self, message_id: int):
+        return self._stored_messages.get(message_id)
+
+    def store_message(self, msg):
+        """Test helper: store a message for fetch_message to return."""
+        self._stored_messages[msg.id if hasattr(msg, "id") else 0] = msg
+
+
+class MockDiscordAttachment:
+    """Mock Discord attachment."""
+
+    def __init__(self, filename: str = "file.txt", url: str = "https://cdn.discord.com/file.txt"):
+        self.filename = filename
+        self.url = url
+        self.size = 1000
+
+    async def save(self, path):
+        pass
 
 
 class MockDiscordMessage:
-    """Mock Discord message."""
+    """Mock Discord message with full API surface."""
+
+    _counter = 0
 
     def __init__(
         self,
@@ -349,16 +409,31 @@ class MockDiscordMessage:
         channel_name: str = "llm_chat",
         is_bot: bool = False,
     ):
+        MockDiscordMessage._counter += 1
+        self.id = 200000 + MockDiscordMessage._counter
         self.content = content
         self.author = MockDiscordUser(author_name, is_bot)
         self.channel = MockDiscordChannel(channel_name)
         self.attachments = []
         self.reference = None
         self.replied_to = None
+        self._replies = []
 
-    async def reply(self, content: str):
+    async def reply(self, content: str, **kwargs):
         self.replied_to = content
-        return MagicMock()
+        self._replies.append(content)
+        return MockSentMessage(content)
+
+
+class MockRawReactionPayload:
+    """Mock discord.RawReactionActionEvent."""
+
+    def __init__(self, user_id: int = 12345, message_id: int = 100001,
+                 emoji: str = "\U0001f44d", member_name: str = "testuser"):
+        self.user_id = user_id
+        self.message_id = message_id
+        self.emoji = MagicMock(__str__=MagicMock(return_value=emoji))
+        self.member = MockDiscordUser(member_name) if member_name else None
 
 
 @pytest.fixture

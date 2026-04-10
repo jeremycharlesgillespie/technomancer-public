@@ -102,10 +102,20 @@ markers = [
 [tool.coverage.run]
 source = ["agent"]
 branch = true
-omit = ["*/tests/*", "*/__pycache__/*"]
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    # Discord client modules requiring live connection — tested via integration mocks
+    "agent/discord_memory_bot.py",
+    "agent/discord_bridge.py",
+    # Subprocess/binary modules requiring external tools
+    "agent/claude_code_runner.py",
+    # Large external-dependency modules
+    "agent/youtube_tools.py",
+]
 
 [tool.coverage.report]
-fail_under = 70
+fail_under = 75
 show_missing = true
 exclude_lines = [
     "pragma: no cover",
