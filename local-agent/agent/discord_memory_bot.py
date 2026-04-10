@@ -663,6 +663,9 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from .engagement_analytics import get_engagement_tools
     for tool in get_engagement_tools():
         agent.register_tool(tool)
+    from .knowledge_consistency import get_consistency_tools
+    for tool in get_consistency_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -736,6 +739,11 @@ Keep responses concise for Discord but thorough when they need depth.""",
     ))
     start_idea_generator(idea_agent)
     log("Idea generator started (hourly, isolated agent)")
+
+    # Start daily knowledge consistency audit (3 AM)
+    from .knowledge_consistency import start_consistency_monitor
+    start_consistency_monitor(client, ALLOWED_CHANNEL)
+    log("Knowledge consistency monitor started (daily, 3 AM)")
 
     # Register and sync slash commands with Discord
     from .slash_commands import setup_slash_commands
