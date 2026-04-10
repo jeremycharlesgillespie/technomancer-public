@@ -38,7 +38,8 @@ HOURLY_CONTEXT: Path = VAULT_PATH / "Context" / "hourly.md"
 PROFILING_FILE: Path = Path(__file__).parent.parent / "profiling" / "requests.jsonl"
 
 # Schedule
-GENERATION_INTERVAL_MINUTES: int = 60
+# Run once daily at 5 PM (not hourly — reduces noise)
+GENERATION_HOUR: int = 17  # 5 PM
 OFFSET_AFTER_NEWS_MINUTES: int = 5
 
 # Prompt for the LLM
@@ -398,31 +399,40 @@ async def _notify_discord(ideas: list[dict[str, str]]) -> None:
         logger.warning(f"[IdeaGen] Discord notification failed: {e}")
 
 
-async def idea_generation_loop(agent: Any) -> None:
-    """Background loop that generates ideas every hour.
+def _seconds_until_generation_hour() -> float:
+    """Calculate seconds until the next daily generation time."""
+    from datetime import timedelta
 
-    Runs 5 minutes after each hour (offset from the news digest which
-    runs on the hour). Uses a dedicated Agent instance.
+    now = datetime.now()
+    next_run = now.replace(hour=GENERATION_HOUR, minute=5, second=0, microsecond=0)
+    if now.hour >= GENERATION_HOUR:
+        next_run += timedelta(days=1)
+    return max((next_run - now).total_seconds(), 60)
+
+
+async def idea_generation_loop(agent: Any) -> None:
+    """Background loop that generates ideas once daily at 5 PM.
+
+    Uses a dedicated Agent instance.  Also triggerable on-demand
+    via the ``idea`` Discord command.
 
     Args:
         agent: An isolated Agent instance (NOT the main bot agent)
     """
-    logger.info(f"[IdeaGen] Started — will generate ideas every {GENERATION_INTERVAL_MINUTES} min")
-
-    # Wait 5 minutes on startup to let other services initialize
-    await asyncio.sleep(300)
+    logger.info(f"[IdeaGen] Started — daily at {GENERATION_HOUR}:00")
 
     while True:
         try:
-            now = datetime.now()
-            # Only run during waking hours (8am-11pm) to accumulate overnight
-            if 8 <= now.hour <= 23:
-                created = await generate_ideas(agent)
-                if created:
-                    await _notify_discord(created)
+            wait = _seconds_until_generation_hour()
+            logger.info(f"[IdeaGen] Next run in {wait / 3600:.1f} hours")
+            await asyncio.sleep(wait)
 
-            # Wait until next cycle
-            await asyncio.sleep(GENERATION_INTERVAL_MINUTES * 60)
+            created = await generate_ideas(agent)
+            if created:
+                await _notify_discord(created)
+
+            # Sleep past the trigger window
+            await asyncio.sleep(60)
 
         except Exception as e:
             logger.error(f"[IdeaGen] Loop error: {e}")
