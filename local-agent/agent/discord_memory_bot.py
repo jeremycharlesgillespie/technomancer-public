@@ -727,6 +727,11 @@ Keep responses concise for Discord but thorough when they need depth.""",
     start_idea_generator(idea_agent)
     log("Idea generator started (hourly, isolated agent)")
 
+    # Register and sync slash commands with Discord
+    from .slash_commands import setup_slash_commands
+    await setup_slash_commands(client)
+    log("Slash commands synced with Discord")
+
 
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
