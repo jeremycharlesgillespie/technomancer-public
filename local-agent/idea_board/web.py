@@ -504,6 +504,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         <a href="/ideas" class="active">Ideas</a>
         <a href="/news">News Config</a>
         <a href="/karen">KAREN</a>
+        <a href="/analytics">Analytics</a>
     </div>
     <p class="stats" id="stats">{total} ideas total &bull; {proposed} pending review &bull; Last refresh: {now}</p>
 
@@ -881,6 +882,26 @@ def dashboard() -> str:
     """Serve the HTML idea board dashboard."""
     ideas = [i.to_dict() for i in load_ideas()]
     return _render_dashboard(ideas)
+
+
+@app.route("/analytics")
+def analytics() -> str:
+    """Serve the engagement analytics dashboard."""
+    return _render_analytics()
+
+
+@app.route("/api/analytics")
+def api_analytics() -> tuple:
+    """GET /api/analytics — engagement data as JSON."""
+    days = int(request.args.get("days", 7))
+    from agent.engagement_analytics import get_command_stats, get_daily_activity, get_top_users, get_underused_commands
+    return jsonify({
+        "days": days,
+        "commands": get_command_stats(days),
+        "daily_activity": get_daily_activity(days),
+        "top_users": get_top_users(days),
+        "underused": get_underused_commands(days),
+    })
 
 
 @app.route("/")
@@ -1342,6 +1363,146 @@ h1 { margin-bottom: 0.5rem; color: var(--accent); }
 """
 
 
+def _render_analytics() -> str:
+    """Render the engagement analytics dashboard."""
+    from agent.engagement_analytics import get_command_stats, get_daily_activity, get_top_users, get_underused_commands
+    from agent.discord_errors import get_gateway_trend, get_feedback_summary
+
+    days = 14
+    cmd_stats = get_command_stats(days)
+    daily = get_daily_activity(days)
+    top_users = get_top_users(days, limit=10)
+    underused = get_underused_commands(days)
+
+    total_cmds = sum(r["cnt"] for r in cmd_stats)
+    total_msgs = sum(d["messages"] for d in daily) if daily else 0
+
+    # Command usage table
+    cmd_rows = ""
+    for r in cmd_stats[:20]:
+        pct = round(r["cnt"] / total_cmds * 100, 1) if total_cmds else 0
+        bar_width = min(pct * 3, 100)
+        cmd_rows += f"""<tr>
+            <td><code>{html.escape(r['command'])}</code></td>
+            <td>{r['cnt']}</td>
+            <td>{r['unique_users']}</td>
+            <td><div style="background:var(--accent);height:8px;width:{bar_width}%;border-radius:4px"></div> {pct}%</td>
+        </tr>"""
+
+    # Daily activity for chart (simple text-based)
+    daily_rows = ""
+    max_msgs = max((d["messages"] for d in daily), default=1)
+    for d in daily[-14:]:
+        bar_width = min(d["messages"] / max_msgs * 100, 100) if max_msgs else 0
+        daily_rows += f"""<tr>
+            <td>{d['day']}</td>
+            <td>{d['messages']}</td>
+            <td>{d['commands']}</td>
+            <td>{d['users']}</td>
+            <td><div style="background:var(--green);height:8px;width:{bar_width}%;border-radius:4px"></div></td>
+        </tr>"""
+
+    # User leaderboard
+    user_rows = ""
+    for u in top_users:
+        user_rows += f"""<tr>
+            <td>{html.escape(u['user_name'])}</td>
+            <td>{u['messages']}</td>
+            <td>{u['commands']}</td>
+        </tr>"""
+
+    # Underused features
+    underused_html = ""
+    if underused:
+        underused_html = "<h2>Underused Features (0 invocations)</h2><p>" + ", ".join(
+            f"<code>{html.escape(c)}</code>" for c in underused
+        ) + "</p>"
+
+    # Gateway health
+    try:
+        gw = get_gateway_trend(24)
+        health = gw["current_health"]
+        gw_html = f"""<h2>Gateway Health</h2>
+        <p>Score: <strong>{health['health_score']}/100</strong> ({health['prediction']})
+        &bull; Disconnects (24h): {gw['disconnects']}
+        &bull; Resumes: {gw['resumes']}</p>"""
+        if gw["latency"]:
+            gw_html += f"<p>Latency: avg {gw['latency']['avg']}ms, p95 {gw['latency']['p95']}ms</p>"
+    except Exception:
+        gw_html = ""
+
+    # Feedback
+    try:
+        fb = get_feedback_summary(days)
+        fb_html = f"""<h2>Response Satisfaction</h2>
+        <p>Total feedback: {fb.get('total', 0)} &bull; Satisfaction: {fb.get('satisfaction_rate', 0)}%</p>"""
+    except Exception:
+        fb_html = ""
+
+    now = datetime.now().strftime("%I:%M %p")
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics - Technomancer Hub</title>
+    <style>{DASHBOARD_CSS}
+.nav {{ margin-bottom: 1.5rem; display: flex; gap: 12px; flex-wrap: wrap; }}
+.nav a {{ color: var(--accent); text-decoration: none; padding: 6px 14px;
+         border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; }}
+.nav a:hover, .nav a.active {{ background: var(--accent); color: #000; }}
+table {{ width: 100%; border-collapse: collapse; margin: 0.8rem 0; }}
+th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }}
+th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }}
+.stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 1rem 0; }}
+.stat-card {{ background: var(--surface); padding: 1rem; border-radius: 8px; text-align: center; }}
+.stat-card .number {{ font-size: 1.8rem; font-weight: 700; color: var(--accent); }}
+.stat-card .label {{ font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }}
+</style></head>
+<body>
+    <h1>Engagement Analytics</h1>
+    <div class="nav">
+        <a href="/">Hub</a>
+        <a href="/ideas">Ideas</a>
+        <a href="/news">News Config</a>
+        <a href="/karen">KAREN</a>
+        <a href="/analytics" class="active">Analytics</a>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card"><div class="number">{total_cmds}</div><div class="label">Commands ({days}d)</div></div>
+        <div class="stat-card"><div class="number">{total_msgs}</div><div class="label">Messages ({days}d)</div></div>
+        <div class="stat-card"><div class="number">{len(cmd_stats)}</div><div class="label">Unique Commands</div></div>
+        <div class="stat-card"><div class="number">{len(underused)}</div><div class="label">Unused Features</div></div>
+    </div>
+
+    <h2>Command Usage</h2>
+    <table>
+        <tr><th>Command</th><th>Count</th><th>Users</th><th>Share</th></tr>
+        {cmd_rows if cmd_rows else '<tr><td colspan="4" style="color:var(--muted)">No command usage data yet. Commands will be tracked as they are used.</td></tr>'}
+    </table>
+
+    {underused_html}
+
+    <h2>Daily Activity</h2>
+    <table>
+        <tr><th>Date</th><th>Messages</th><th>Commands</th><th>Users</th><th>Volume</th></tr>
+        {daily_rows if daily_rows else '<tr><td colspan="5" style="color:var(--muted)">No activity data yet.</td></tr>'}
+    </table>
+
+    <h2>Top Users</h2>
+    <table>
+        <tr><th>User</th><th>Messages</th><th>Commands</th></tr>
+        {user_rows if user_rows else '<tr><td colspan="3" style="color:var(--muted)">No user data yet.</td></tr>'}
+    </table>
+
+    {gw_html}
+    {fb_html}
+
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Last refresh: {now} &bull; Data period: {days} days</p>
+</body></html>"""
+
+
 def _render_hub() -> str:
     """Render the central hub page with links to all services."""
     ideas = load_ideas()
@@ -1372,6 +1533,10 @@ def _render_hub() -> str:
         <a href="/karen" class="card" style="border-left: 4px solid #e94560;">
             <h2>K.A.R.E.N.</h2>
             <p>Submit complaints. They get turned into improvement ideas.</p>
+        </a>
+        <a href="/analytics" class="card" style="border-left: 4px solid #5865F2;">
+            <h2>Analytics</h2>
+            <p>Command usage, engagement trends, and feature adoption.</p>
         </a>
         <a href="http://localhost:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>

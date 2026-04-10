@@ -660,6 +660,9 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_llm_optimizer_tools():
         agent.register_tool(tool)
+    from .engagement_analytics import get_engagement_tools
+    for tool in get_engagement_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -795,6 +798,10 @@ async def on_message(message: discord.Message) -> None:
     # Buffer message for error context recovery (50006 handling)
     buffer_message(user, content, str(message.id))
 
+    # Track message activity for engagement analytics
+    from .engagement_analytics import track_message
+    track_message(user, channel_name or "", has_attachment=bool(message.attachments))
+
     # ================================================================
     # CLAUDE-CODE CHANNEL: Everything here goes to Claude Code
     # ================================================================
@@ -885,71 +892,99 @@ async def on_message(message: discord.Message) -> None:
     # ================================================================
     lower = content.lower().strip()
 
+    # Track command usage for engagement analytics
+    def _track_cmd(cmd_name: str) -> None:
+        from .engagement_analytics import track_command
+        args = content[len(cmd_name):].strip() if len(content) > len(cmd_name) else ""
+        track_command(cmd_name, user=user, args=args[:100])
+
     if lower == "perf":
+        _track_cmd("perf")
         await handle_perf(message, send_response)
         return
     if lower == "publish":
+        _track_cmd("publish")
         await handle_publish(message, user)
         return
     if lower == "metrics":
+        _track_cmd("metrics")
         await handle_metrics(message, send_response)
         return
     if lower == "idea":
+        _track_cmd("idea")
         await handle_idea(message, send_response)
         return
     if lower.startswith("karen"):
+        _track_cmd("karen")
         await handle_karen(message, content, user)
         return
     if lower.startswith("itinerary"):
+        _track_cmd("itinerary")
         await handle_itinerary(message, content, user, memory, send_response)
         return
     if lower.startswith("betterdev"):
+        _track_cmd("betterdev")
         await handle_better_dev(message, content, user, memory, send_response)
         return
     if lower == "reloadserver":
+        _track_cmd("reloadserver")
         await handle_reload_server(message, user)
         return
     if lower == "evolve":
+        _track_cmd("evolve")
         await handle_evolve(message, user)
         return
     if lower in ("showcommands", "commands", "help"):
+        _track_cmd("commands")
         await handle_show_commands(message)
         return
     if lower in ("learninghistory", "pastlearning", "learning history"):
+        _track_cmd("learninghistory")
         await handle_learning_history(message, send_response)
         return
     if lower in ("newsletter", "weeklylearning", "learning digest"):
+        _track_cmd("newsletter")
         newsletter = handle_newsletter_command()
         await send_response(message, newsletter)
         return
     if lower.startswith("showlearning"):
+        _track_cmd("showlearning")
         await handle_show_learning(message, content, send_response)
         return
     if lower == "technews":
+        _track_cmd("technews")
         await handle_tech_news(message, content, user, agent, memory, send_response)
         return
     if lower == "ideas":
+        _track_cmd("ideas")
         await handle_show_ideas(message, send_response)
         return
     if lower.startswith("listvideos"):
+        _track_cmd("listvideos")
         await handle_list_videos(message, content, user, send_response)
         return
     if lower.startswith("searchvideos"):
+        _track_cmd("searchvideos")
         await handle_search_videos(message, content, send_response)
         return
     if lower.startswith("downloadvideo"):
+        _track_cmd("downloadvideo")
         await handle_download_video(message, content)
         return
     if lower.startswith("downloadchannel"):
+        _track_cmd("downloadchannel")
         await handle_download_channel(message, content, user)
         return
     if lower.startswith("dlcovers"):
+        _track_cmd("dlcovers")
         await handle_dl_covers(message, content, user)
         return
     if lower.startswith("dlcover"):
+        _track_cmd("dlcover")
         await handle_dl_cover(message, content)
         return
     if lower == "think":
+        _track_cmd("think")
         await handle_think(message, content, user, memory, send_response)
         return
     if lower in ("suggest", "suggestions", "?"):
