@@ -271,8 +271,7 @@ def check_api_keys() -> dict[str, str]:
     """Check which API keys are configured.
 
     Returns dict of key_name -> status ("ok", "missing", "not_configured").
-    No alerts are fired — if the bot is running, the Discord token is valid.
-    Anthropic key is optional (Claude escalation is a nice-to-have).
+    Alerts go to the dedicated alerts channel (not llm_chat).
     """
     results: dict[str, str] = {}
 
@@ -280,9 +279,13 @@ def check_api_keys() -> dict[str, str]:
     token = settings.discord_bot_token
     results["discord_bot_token"] = "ok" if (token and len(token) > 20) else "missing"
 
-    # Anthropic API key — optional, no alert needed
+    # Anthropic API key — optional
     api_key = settings.anthropic_api_key
-    results["anthropic_api_key"] = "ok" if (api_key and len(api_key) > 10) else "not_configured"
+    if api_key and len(api_key) > 10:
+        results["anthropic_api_key"] = "ok"
+    else:
+        results["anthropic_api_key"] = "not_configured"
+        _log_event("api_keys", "Anthropic API key not configured — Claude escalation disabled", "info")
 
     # Discord webhook — optional
     webhook = settings.discord_webhook_url
@@ -353,28 +356,15 @@ def _log_event(category: str, message: str, severity: str = "info") -> None:
     except Exception:
         log.debug("Failed to log infra event", exc_info=True)
 
-    # Only send Discord alerts for GPU hardware issues — not for
-    # API key checks, security news, or WAL write failures
-    if severity in ("critical", "high") and category == "gpu":
-        _notify(f"[{severity.upper()}] {category}: {message}")
+    # Send alerts to the dedicated alerts channel (not llm_chat)
+    if severity in ("critical", "high"):
+        try:
+            from .alerts import send_alert as _send_alert
+            _send_alert(message, title=f"Infra: {category}", level="error" if severity == "critical" else "warning")
+        except Exception:
+            pass
 
 
-def _notify(message: str) -> None:
-    """Send alert via bridge API."""
-    try:
-        import requests
-        token_file = Path(__file__).parent.parent / ".bridge_token"
-        if not token_file.exists():
-            return
-        token = token_file.read_text(encoding="utf-8").strip()
-        requests.post(
-            "http://127.0.0.1:8321/api/send",
-            headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
-            json={"message": f"**Infra Alert:** {message}"},
-            timeout=5,
-        )
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------

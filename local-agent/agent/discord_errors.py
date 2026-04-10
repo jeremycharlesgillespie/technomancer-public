@@ -424,25 +424,15 @@ def _correlate_empty_with_gaps(context: str) -> None:
 
 
 def _notify_critical(cat: ErrorCategory, error_text: str) -> None:
-    """Send Discord notification for critical errors via bridge API."""
+    """Send Discord notification for critical errors to the alerts channel."""
     try:
-        from pathlib import Path as _Path
-        token_file = _Path(__file__).parent.parent / ".bridge_token"
-        if not token_file.exists():
-            return
-        import requests
-        token = token_file.read_text(encoding="utf-8").strip()
+        from .alerts import send_alert
+
         msg = (
-            f"**Discord Error Alert** [{cat.severity.upper()}]\n"
             f"**{cat.name}**: {error_text[:200]}\n"
             f"**Recovery:** {cat.recovery}"
         )
-        requests.post(
-            "http://127.0.0.1:8321/api/send",
-            headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
-            json={"message": msg},
-            timeout=5,
-        )
+        send_alert(msg, title=f"Discord Error [{cat.severity.upper()}]", level="error")
     except Exception:
         pass
 

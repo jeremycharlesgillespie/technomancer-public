@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     discord_allowed_channel: str = Field(
         default="llm_chat", description="Discord channel name the bot responds in"
     )
+    discord_alerts_channel: str = Field(
+        default="bot_alerts", description="Discord channel for infrastructure and error alerts"
+    )
+    discord_alerts_webhook: str = Field(
+        default="", description="Discord webhook URL for the alerts channel"
+    )
     bot_owner: str = Field(
         default="", description="Discord username of the bot owner (for admin commands)"
     )
