@@ -15,7 +15,15 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+import threading
+
 import aiohttp
+
+# Crash notification cooldown — prevents spamming Discord with identical errors
+_crash_cooldown_lock = threading.Lock()
+_crash_cooldown_until: float = 0.0  # time.time() when cooldown expires
+_crash_suppressed_count: int = 0
+CRASH_COOLDOWN_SECONDS: int = 300  # 5 minutes between crash notifications
 
 
 def log(msg: str) -> None:
@@ -65,12 +73,39 @@ def build_crash_message(
 
 
 def send_lifecycle_notification(event: str, details: str = "") -> None:
-    """Send bot lifecycle event to Discord webhook."""
+    """Send bot lifecycle event to Discord webhook.
+
+    For crash events, enforces a cooldown to prevent spamming Discord
+    when the same error repeats on every incoming message. The first
+    crash is sent immediately; subsequent crashes within the cooldown
+    window are suppressed and counted. When the cooldown expires, the
+    next crash notification includes the suppressed count.
+    """
+    import time
+
     import requests
+
+    global _crash_cooldown_until, _crash_suppressed_count
 
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         return
+
+    # Crash-specific cooldown to prevent channel spam
+    if event == "crash":
+        with _crash_cooldown_lock:
+            now = time.time()
+            if now < _crash_cooldown_until:
+                _crash_suppressed_count += 1
+                log(f"Crash notification suppressed ({_crash_suppressed_count} suppressed)")
+                return
+            # Cooldown expired or first crash — send it
+            suppressed = _crash_suppressed_count
+            _crash_suppressed_count = 0
+            _crash_cooldown_until = now + CRASH_COOLDOWN_SECONDS
+
+        if suppressed > 0:
+            details = f"*({suppressed} additional crash(es) suppressed in the last {CRASH_COOLDOWN_SECONDS // 60} min)*\n{details}"
 
     icons = {
         "online": ":green_circle:",
