@@ -151,6 +151,9 @@ def extract_article_keywords(article: dict[str, str], max_keywords: int = 8) -> 
 def find_memory_connections(article: dict[str, str], max_results: int = 3) -> list[str]:
     """Search conversation memory for entries related to article topics.
 
+    Requires at least 2 keyword matches in the user's message (not the bot's
+    response) to avoid false positives from generic words.
+
     Returns a list of formatted memory match strings, or empty list if no matches
     or memory system is unavailable.
     """
@@ -159,31 +162,37 @@ def find_memory_connections(article: dict[str, str], max_results: int = 3) -> li
 
         mem = get_memory_system()
     except (ValueError, Exception):
-        # Memory system not initialized yet
         return []
 
     keywords = extract_article_keywords(article)
     if not keywords:
         return []
 
-    seen_messages: set[str] = set()
-    matches: list[str] = []
+    # Score each conversation by how many article keywords appear in the
+    # user's message (NOT the bot response — responses contain too many
+    # generic words that cause false matches).
+    scored: list[tuple[int, Any]] = []
+    seen: set[str] = set()
 
-    for keyword in keywords:
-        query_lower = keyword.lower()
-        for entry in mem.recent_conversations:
-            if entry.message in seen_messages:
-                continue
-            if query_lower in entry.message.lower() or query_lower in entry.response.lower():
-                seen_messages.add(entry.message)
-                date_str = entry.timestamp.strftime("%m/%d %H:%M")
-                matches.append(
-                    f"- **{date_str}** ({entry.user}): {entry.message[:80]}..."
-                    if len(entry.message) > 80
-                    else f"- **{date_str}** ({entry.user}): {entry.message}"
-                )
-                if len(matches) >= max_results:
-                    return matches
+    for entry in mem.recent_conversations:
+        if entry.message in seen:
+            continue
+        seen.add(entry.message)
+        msg_lower = entry.message.lower()
+        hits = sum(1 for kw in keywords if kw.lower() in msg_lower)
+        if hits >= 2:  # require at least 2 keyword matches
+            scored.append((hits, entry))
+
+    # Sort by number of keyword hits (best matches first)
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    matches: list[str] = []
+    for _hits, entry in scored[:max_results]:
+        date_str = entry.timestamp.strftime("%m/%d %H:%M")
+        msg_preview = entry.message[:80]
+        if len(entry.message) > 80:
+            msg_preview += "..."
+        matches.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
 
     return matches
 
