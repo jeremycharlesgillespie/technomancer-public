@@ -958,7 +958,6 @@ async def on_message(message: discord.Message) -> None:
         return
     if lower in ("suggest", "suggestions", "?"):
         # Context-aware command suggestions based on recent conversation
-        from .conversation_context import get_recent_summaries
         recent = get_recent_summaries(count=5)
         suggestions = suggest_commands_for_context(recent)
         if suggestions:
