@@ -348,7 +348,7 @@ class TestFindMemoryConnections:
         assert matches == []
 
     def test_deduplicates_matches(self, memory_system, monkeypatch):
-        """Should not return the same conversation entry twice."""
+        """Should not return the same conversation entry twice (keyword fallback)."""
         from datetime import datetime
 
         from agent.memory_system import ConversationEntry
@@ -366,6 +366,10 @@ class TestFindMemoryConnections:
         import agent.memory_system as mem_module
 
         monkeypatch.setattr(mem_module, "_memory_system", memory_system)
+
+        # Force keyword fallback by making embeddings unavailable
+        import agent.embeddings as embed_mod
+        monkeypatch.setattr(embed_mod, "embed_texts", lambda texts: [])
 
         article = {
             "title": "Python Django Framework Update",

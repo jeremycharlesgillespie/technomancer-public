@@ -149,13 +149,15 @@ def extract_article_keywords(article: dict[str, str], max_keywords: int = 8) -> 
 
 
 def find_memory_connections(article: dict[str, str], max_results: int = 3) -> list[str]:
-    """Search conversation memory for entries related to article topics.
+    """Search conversation memory for entries semantically related to an article.
 
-    Requires at least 2 keyword matches in the user's message (not the bot's
-    response) to avoid false positives from generic words.
+    Uses Ollama embeddings (nomic-embed-text) to compute cosine similarity
+    between the article's topic and recent conversation messages. Only returns
+    conversations above a similarity threshold of 0.50.
 
-    Returns a list of formatted memory match strings, or empty list if no matches
-    or memory system is unavailable.
+    Falls back to keyword matching if the embedding model is unavailable.
+
+    Returns a list of formatted memory match strings, or empty list if no matches.
     """
     try:
         from .memory_system import get_memory_system
@@ -164,36 +166,76 @@ def find_memory_connections(article: dict[str, str], max_results: int = 3) -> li
     except (ValueError, Exception):
         return []
 
+    conversations = list(mem.recent_conversations)
+    if not conversations:
+        return []
+
+    # Build article text for embedding
+    article_text = f"{article.get('title', '')} {article.get('summary', '')}"
+    if not article_text.strip():
+        return []
+
+    # Try semantic matching via embeddings
+    try:
+        from .embeddings import embed_texts, cosine_similarity, SIMILARITY_THRESHOLD
+
+        # Embed article + all conversation messages in one batch call
+        conv_texts = [e.message for e in conversations]
+        all_texts = [article_text] + conv_texts
+        embeddings = embed_texts(all_texts)
+
+        if embeddings and len(embeddings) == len(all_texts):
+            article_emb = embeddings[0]
+            scored: list[tuple[float, Any]] = []
+            seen: set[str] = set()
+
+            for i, entry in enumerate(conversations):
+                if entry.message in seen:
+                    continue
+                seen.add(entry.message)
+                sim = cosine_similarity(article_emb, embeddings[i + 1])
+                if sim >= SIMILARITY_THRESHOLD:
+                    scored.append((sim, entry))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            matches: list[str] = []
+            for sim, entry in scored[:max_results]:
+                date_str = entry.timestamp.strftime("%m/%d %H:%M")
+                msg_preview = entry.message[:80]
+                if len(entry.message) > 80:
+                    msg_preview += "..."
+                matches.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
+            return matches
+
+    except Exception:
+        pass  # Fall through to keyword matching
+
+    # Fallback: keyword matching (requires 2+ keyword hits in user message)
     keywords = extract_article_keywords(article)
     if not keywords:
         return []
 
-    # Score each conversation by how many article keywords appear in the
-    # user's message (NOT the bot response — responses contain too many
-    # generic words that cause false matches).
-    scored: list[tuple[int, Any]] = []
-    seen: set[str] = set()
-
-    for entry in mem.recent_conversations:
-        if entry.message in seen:
+    keyword_scored: list[tuple[int, Any]] = []
+    seen_fb: set[str] = set()
+    for entry in conversations:
+        if entry.message in seen_fb:
             continue
-        seen.add(entry.message)
+        seen_fb.add(entry.message)
         msg_lower = entry.message.lower()
         hits = sum(1 for kw in keywords if kw.lower() in msg_lower)
-        if hits >= 2:  # require at least 2 keyword matches
-            scored.append((hits, entry))
+        if hits >= 2:
+            keyword_scored.append((hits, entry))
 
-    # Sort by number of keyword hits (best matches first)
-    scored.sort(key=lambda x: x[0], reverse=True)
+    keyword_scored.sort(key=lambda x: x[0], reverse=True)
 
-    matches: list[str] = []
-    for _hits, entry in scored[:max_results]:
+    matches = []
+    for _hits, entry in keyword_scored[:max_results]:
         date_str = entry.timestamp.strftime("%m/%d %H:%M")
         msg_preview = entry.message[:80]
         if len(entry.message) > 80:
             msg_preview += "..."
         matches.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
-
     return matches
 
 
