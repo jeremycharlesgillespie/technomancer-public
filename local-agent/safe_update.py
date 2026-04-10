@@ -464,10 +464,10 @@ def continue_workflow():
                 )
                 if result.returncode == 0:
                     # Commit the updated README
-                    git("add", "README.md")
-                    git("add", "profiling/coverage.json")
+                    run_git(["add", "README.md"], check=False)
                     try:
-                        git("commit", "-m", "Update README with latest stats [auto]")
+                        run_git(["commit", "-m", "Update README with latest stats [auto]"])
+                        run_git(["push", "origin", MAIN_BRANCH], check=False)
                         log("README updated with latest stats")
                     except Exception:
                         log("README unchanged (no new stats)")
