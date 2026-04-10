@@ -182,8 +182,37 @@ async def extract_text_from_file(attachment: Any) -> str | None:
             text = "\n".join(p.text for p in doc.paragraphs)
             return text.strip() if text.strip() else None
 
-        elif filename.endswith((".txt", ".md", ".csv")):
+        elif filename.endswith((".txt", ".md", ".csv", ".log")):
             return data.decode("utf-8", errors="ignore").strip()
+
+        elif filename.endswith((".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".xml",
+                                ".yaml", ".yml", ".html", ".css", ".sql", ".sh", ".bat",
+                                ".toml", ".ini", ".cfg", ".env.example", ".gitignore",
+                                ".java", ".go", ".rs", ".c", ".cpp", ".h", ".rb")):
+            # Source code and config files — decode as UTF-8
+            text = data.decode("utf-8", errors="ignore").strip()
+            # Prefix with language hint for the LLM
+            ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
+            return f"```{ext}\n{text}\n```" if text else None
+
+        elif filename.endswith(".xlsx"):
+            try:
+                import io
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+                lines = []
+                for sheet in wb.sheetnames:
+                    ws = wb[sheet]
+                    lines.append(f"## Sheet: {sheet}")
+                    for row in ws.iter_rows(max_row=200, values_only=True):
+                        cells = [str(c) if c is not None else "" for c in row]
+                        lines.append(" | ".join(cells))
+                wb.close()
+                return "\n".join(lines).strip() if lines else None
+            except ImportError:
+                return None  # openpyxl not installed
+            except Exception:
+                return None
 
         else:
             return None

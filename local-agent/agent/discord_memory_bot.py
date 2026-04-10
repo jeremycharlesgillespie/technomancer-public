@@ -1135,53 +1135,88 @@ Be confident if you recognize them."""
                 if not documents:
                     return
 
-            # Handle documents (PDF, DOCX, TXT, etc.)
-            for attachment in documents:
-                log(f"{user} uploaded: {attachment.filename}")
+            # Handle documents (PDF, DOCX, TXT, code, spreadsheets, etc.)
+            if documents:
+                # Extract text from ALL documents in parallel
+                file_contents: list[tuple[str, str]] = []  # (filename, text)
+                failed_files: list[str] = []
 
-                text = await extract_text_from_file(attachment)
-                if not text:
-                    await message.reply("couldn't read that file type, try pdf/docx/txt")
-                    continue
+                for attachment in documents:
+                    log(f"{user} uploaded: {attachment.filename}")
+                    text = await extract_text_from_file(attachment)
+                    if text:
+                        file_contents.append((attachment.filename, text))
+                    else:
+                        failed_files.append(attachment.filename)
 
-                # Determine what kind of document it is and analyze
-                doc_type = content if content else "document"
-                analysis_prompt = f"""Your friend just shared their {doc_type} with you. Here it is:
-
----
-{text}
----
-
-React like a friend would - you're genuinely interested. Talk about what stands out, what's impressive, ask follow-up questions if something's interesting. Use "you" and "your" - this is their stuff."""
-
-                try:
-                    response = await asyncio.to_thread(agent.run, analysis_prompt)
-                    log(f"Analyzed {attachment.filename}: {len(response)} chars")
-
-                    # Store in permanent memory - include user message, analysis, AND raw content
-                    # Use replace_category=True so new uploads replace old ones
-                    user_context = f"### User's message:\n{content}\n\n" if content else ""
-                    memory.save_permanent_memory(
-                        f"## {user}'s {doc_type} ({attachment.filename})\n\n{user_context}### Analysis:\n{response}\n\n### Raw Content:\n{text}",
-                        f"documents/{user}",
-                        replace_category=True,
+                if failed_files:
+                    await message.reply(
+                        f"Couldn't read: {', '.join(failed_files)}. "
+                        f"Supported: pdf, docx, txt, md, csv, xlsx, py, js, ts, json, yaml, html, sql, and more."
                     )
 
-                    # Extract facts from user's message (like name mentions)
-                    if content:
-                        memory.save_permanent_memory(
-                            f"User said when uploading document: {content}", f"user_context/{user}"
-                        )
+                if not file_contents:
+                    # No readable documents
+                    pass
+                elif len(file_contents) == 1:
+                    # Single file — existing behavior
+                    fname, text = file_contents[0]
+                    doc_type = content if content else "document"
+                    analysis_prompt = f"""Your friend just shared their {doc_type} ({fname}) with you. Here it is:
 
-                    # Log the interaction
-                    memory.log_conversation(
-                        user, f"[Uploaded: {attachment.filename}] {content}", response
-                    )
+---
+{text[:15000]}
+---
 
-                    await message.reply(response[:1900])
-                except Exception as e:
-                    log(f"Analysis error: {e}")
-                    await message.reply(f"had trouble reading that: {e}")
+React like a friend would - you're genuinely interested. Talk about what stands out, what's impressive, ask follow-up questions if something's interesting."""
+
+                    try:
+                        response = await asyncio.to_thread(agent.run, analysis_prompt)
+                        log(f"Analyzed {fname}: {len(response)} chars")
+                        memory.log_conversation(user, f"[Uploaded: {fname}] {content}", response)
+                        from .session_state import save_exchange
+                        save_exchange(user, f"[Uploaded: {fname}] {content}", response)
+                        await message.reply(response[:1900])
+                    except Exception as e:
+                        log(f"Analysis error: {e}")
+                        await message.reply(f"had trouble reading that: {e}")
+                else:
+                    # MULTI-FILE — combine all files into one prompt for cross-file analysis
+                    file_sections = []
+                    total_chars = 0
+                    for fname, text in file_contents:
+                        # Budget ~5000 chars per file (max ~15000 total)
+                        budget = min(5000, max(2000, 15000 // len(file_contents)))
+                        section = f"### {fname}\n{text[:budget]}"
+                        file_sections.append(section)
+                        total_chars += len(section)
+
+                    combined = "\n\n".join(file_sections)
+                    file_list = ", ".join(f[0] for f in file_contents)
+                    user_request = content if content else "Analyze these files together"
+
+                    analysis_prompt = f"""Your friend shared {len(file_contents)} files: {file_list}
+
+Their message: "{user_request}"
+
+Here are the files:
+
+{combined}
+
+---
+
+Analyze ALL files together. If there are relationships between them (e.g., code that references other files, data that correlates), point those out. Give a unified analysis, not separate per-file summaries."""
+
+                    try:
+                        response = await asyncio.to_thread(agent.run, analysis_prompt)
+                        log(f"Multi-file analysis ({len(file_contents)} files, {total_chars} chars): {len(response)} chars")
+                        memory.log_conversation(user, f"[Uploaded {len(file_contents)} files: {file_list}] {content}", response)
+                        from .session_state import save_exchange
+                        save_exchange(user, f"[Uploaded {len(file_contents)} files: {file_list}] {content}", response)
+                        await send_response(message, response)
+                    except Exception as e:
+                        log(f"Multi-file analysis error: {e}")
+                        await message.reply(f"had trouble analyzing those files: {e}")
         return
 
     if not content:
