@@ -452,12 +452,36 @@ def continue_workflow():
         log("Step 8: Running post-deploy quality tests...")
         qa_ok = run_quality_tests()
 
-        # Step 9: Auto-publish to public repo
+        # Step 9: Update README with live stats
+        readme_script = Path(__file__).parent / "generate_readme.py"
+        if readme_script.exists():
+            log("Step 9: Updating README...")
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(readme_script)],
+                    capture_output=True, text=True, timeout=180,
+                    cwd=Path(__file__).parent,
+                )
+                if result.returncode == 0:
+                    # Commit the updated README
+                    git("add", "README.md")
+                    git("add", "profiling/coverage.json")
+                    try:
+                        git("commit", "-m", "Update README with latest stats [auto]")
+                        log("README updated with latest stats")
+                    except Exception:
+                        log("README unchanged (no new stats)")
+                else:
+                    log(f"README generation failed: {result.stderr[:200]}")
+            except Exception as e:
+                log(f"README update error: {e}")
+
+        # Step 10: Auto-publish to public repo
         publish_ok = False
         publish_script = Path(__file__).parent / "publish.py"
         public_repo = Path(__file__).parent.parent.parent / "technomancer-public"
         if publish_script.exists() and public_repo.exists():
-            log("Step 9: Publishing to technomancer-public...")
+            log("Step 10: Publishing to technomancer-public...")
             try:
                 result = subprocess.run(
                     [sys.executable, str(publish_script), "--push", "--force"],
@@ -472,7 +496,7 @@ def continue_workflow():
             except Exception as e:
                 log(f"Publish error: {e}")
         else:
-            log("Step 9: Skipping publish (no public repo found)")
+            log("Step 10: Skipping publish (no public repo found)")
 
         # Done!
         print()

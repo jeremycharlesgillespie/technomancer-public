@@ -1,145 +1,165 @@
-# Local Agent
+# Technomancer
 
-Ollama-powered autonomous agent with tools for file operations, memory, Obsidian integration, and Claude escalation.
+![tests](https://img.shields.io/badge/tests-1087-brightgreen) ![coverage](https://img.shields.io/badge/coverage-54.2%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-58-blue) ![lines](https://img.shields.io/badge/lines-23k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
-## Learning Articles
+An Ollama-powered autonomous agent framework with Discord bot interface,
+Obsidian vault integration, Claude API escalation, and a self-improving
+knowledge base. Built for a Senior Software Engineer's daily workflow.
 
-AI-generated developer learning articles, created daily by the bot via Claude API:
+> **Auto-generated** — This README is updated automatically on every deployment
+> via `safe_update.py`. Last updated: 2026-04-09 19:03
 
-**[Browse Learning Articles](<your-github-pages-url>/learning/)**
+## Highlights
 
-Topics include Python, Oracle, Neo4j, system design, and best practices. New articles are generated daily at 8:00 AM.
+- **1087 automated tests** with 54.2% code coverage
+- **58 Python modules** across 23,450 lines of code
+- **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
+- **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
+- **Local-first** — Ollama for primary inference, Claude API for escalation only
+- **Discord-native** — all interaction through Discord with reaction tracking
 
-## Installation
+## Architecture
 
-```bash
-# Basic install
-pip install -e .
-
-# With Claude API support
-pip install -e ".[claude]"
-
-# With embeddings for semantic search
-pip install -e ".[embeddings]"
-
-# Everything
-pip install -e ".[all]"
 ```
+Discord Bot (discord_memory_bot.py)
+    |
+    +-- Ollama LLM (local, tool-calling loop)
+    |       |-- 50+ registered tools
+    |       |-- Factual auto-search before answering
+    |       |-- Knowledge gap detection + auto-enrichment
+    |
+    +-- Claude API (escalation for complex tasks)
+    |       |-- Vault context with prompt caching (84% token savings)
+    |       |-- Fallback orchestrator (auto-switches to Ollama on failure)
+    |
+    +-- Obsidian Vault (persistent memory)
+    |       |-- Conversation context + summaries
+    |       |-- Knowledge gap notes
+    |       |-- Reference articles
+    |       |-- Write-ahead logging for data safety
+    |
+    +-- Idea Board (Flask, port 8322)
+    |       |-- Epic/Story/Task hierarchy
+    |       |-- LLM-powered discussion threads
+    |       |-- Copy Epic for Claude Code (sequential implementation)
+    |
+    +-- Background Tasks
+            |-- News digest (hourly, 9am-9pm)
+            |-- Developer learning articles (daily, 8am)
+            |-- Knowledge enrichment (every 6 hours)
+            |-- Gap frequency analysis (weekly)
+            |-- Infrastructure monitoring (every 30 min)
+            |-- Idea generation (hourly)
+            |-- Learning newsletter (weekly, Sunday 9am)
+```
+
+## Modules
+
+| Category | Modules |
+|----------|---------|
+| Core | `core`, `config`, `tools` |
+| Discord Bot | `discord_memory_bot`, `bot_commands`, `bot_utils`, `discord_bridge`, `discord_rate_limit`, `discord_errors`, `message_validators`, `fallback_responses`, `command_suggestions` |
+| LLM Integration | `claude_bridge`, `claude_vault`, `ask_claude`, `fallback_orchestrator`, `reflection` |
+| Memory & Knowledge | `memory_system`, `conversation_context`, `auto_memory`, `facts_db`, `knowledge_gaps`, `knowledge_fallback`, `knowledge_enrichment`, `skill_gap_analysis` |
+| News & Learning | `news_digest`, `news_engagement`, `dev_learning`, `learning_newsletter` |
+| Monitoring & Performance | `perf_monitor`, `metrics_db`, `prometheus_metrics`, `profiler`, `api_usage_anomaly`, `llm_optimizer`, `infra_monitor` |
+| Content & Publishing | `github_pages`, `html_generator`, `pdf_tools`, `enhancements`, `ref_enrichment` |
+| Idea Board | `idea_board/web.py`, `idea_board/models.py`, `idea_board/executor.py` |
 
 ## Quick Start
 
-### CLI
-
-```bash
-# Interactive mode
-local-agent
-
-# Single task
-local-agent "list all python files"
-
-# With different model
-local-agent --model mistral "read config.json"
-```
-
-### Obsidian Agent
-
-```bash
-# Interactive mode with your vault
-obsidian-agent --vault "C:\Users\razor\Documents\main"
-
-# Single task
-obsidian-agent "find notes about AI"
-```
-
-### Python
-
-```python
-from agent import Agent, AgentConfig, get_all_tools
-
-# Create agent
-agent = Agent(AgentConfig(model="llama3.1"))
-
-# Add tools
-for tool in get_all_tools():
-    agent.register_tool(tool)
-
-# Run tasks
-result = agent.run("What files are in the current directory?")
-print(result)
-```
-
-## Available Tools
-
-### File Operations
-- `read_file` - Read file contents
-- `write_file` - Write/create files
-- `append_file` - Append to files
-- `list_directory` - List directory contents
-- `search_files` - Search by filename/content
-
-### System
-- `run_command` - Execute shell commands
-- `get_system_info` - Get system information
-
-### Memory (Simple)
-- `observe` - Record an observation
-- `query_memory` - Search memories
-- `recent_memories` - Get recent memories
-- `forget` - Remove a memory
-
-### Knowledge Graph (SQLite + optional embeddings)
-- `kg_observe` - Record to knowledge graph
-- `kg_query` - Search knowledge graph
-- `kg_wander` - Random walk for serendipity
-- `kg_stats` - Graph statistics
-
-### Obsidian
-- `obs_read` - Read a note
-- `obs_write` - Create/update a note
-- `obs_append` - Append to a note
-- `obs_search` - Search notes
-- `obs_search_tag` - Find notes by tag
-- `obs_list` - List notes
-- `obs_links` - Get links/backlinks
-- `obs_tags` - Get all tags
-- `obs_daily` - Create daily note
-- `obs_recent` - Recent notes
-- `obs_stats` - Vault statistics
-
-### Claude Escalation
-- `escalate_to_claude` - Escalate complex tasks
-- `report_to_claude` - Send findings to Claude
-- `ask_claude` - Ask Claude a question
-
-## Custom Tools
-
-```python
-from agent import Agent, AgentConfig, create_tool
-
-def my_custom_tool(param: str) -> str:
-    return f"Did something with {param}"
-
-tool = create_tool(
-    name="my_tool",
-    description="Does something useful",
-    parameters={
-        "type": "object",
-        "properties": {
-            "param": {"type": "string", "description": "Input parameter"}
-        },
-        "required": ["param"]
-    },
-    function=my_custom_tool
-)
-
-agent = Agent(AgentConfig(model="llama3.1"))
-agent.register_tool(tool)
-```
-
-## Requirements
+### Prerequisites
 
 - Python 3.10+
-- Ollama running locally with a model (llama3.1, mistral, etc.)
+- [Ollama](https://ollama.ai/) running locally with `qwen3.5:27b` (or configure via `.env`)
+- Discord bot token
+- (Optional) Anthropic API key for Claude escalation
+
+### Installation
+
+```bash
+cd local-agent
+pip install -e ".[all]"    # All dependencies
+pip install -e ".[dev]"    # Dev tools (pytest, coverage, linting)
+```
+
+### Configuration
+
+Copy `.env.example` to `.env` and fill in:
+```
+DISCORD_BOT_TOKEN=your_token
+ANTHROPIC_API_KEY=sk-ant-...
+VAULT_PATH=C:\Users\you\Documents\ObsidianVault
+OLLAMA_MODEL=qwen3.5:27b
+```
+
+### Running
+
+```bash
+# Start Discord bot
+python -m agent.discord_memory_bot
+
+# Or via bot service (with crash recovery)
+python bot_service.py start
+
+# Safe deployment workflow
+python safe_update.py my-feature       # create branch
+# ... make changes ...
+python safe_update.py continue          # test, merge, restart, publish
+```
+
+### Testing
+
+```bash
+pytest                        # Run all 1087 tests
+pytest --cov=agent            # With coverage report
+pytest tests/unit/            # Unit tests only
+python validate.py startup    # Full pre-commit validation (syntax + import + startup)
+```
+
+## Discord Commands
+
+| Command | Description |
+|---------|-------------|
+| `betterDev [topic]` | Generate a learning article |
+| `techNews` | Latest tech news with analysis |
+| `think` | Show what the bot knows about you |
+| `suggest` | Context-aware command suggestions |
+| `newsletter` | Weekly learning digest |
+| `perf` | Session profiling data |
+| `metrics` | Persistent LLM latency trends |
+| `karen <complaint>` | Submit feedback (generates improvement ideas) |
+| `commands` | Full command list |
+
+## Idea Board
+
+Access at `http://localhost:8322` — a web dashboard for managing improvement ideas:
+
+- **Epics** group related stories into full value chains
+- **Copy Epic for Claude Code** implements all stories sequentially
+- **LLM discussion threads** on each idea
+- **Archived view** hides completed work while keeping it for deduplication
+
+## Key Design Decisions
+
+- **safe_update.py** — Every code change goes through branch → test → merge → restart.
+  No exceptions, even for "small" fixes.
+- **validate.py** — Three-level validation (syntax → import → startup) catches what
+  unit tests miss.
+- **Local-first fallback** — If Claude API is down, the bot switches to Ollama
+  automatically and recovers when Claude comes back.
+- **Write-ahead logging** — Vault writes go through SQLite WAL first, so failed
+  writes can be recovered.
+
+## Project Stats
+
+| Metric | Value |
+|--------|-------|
+| Test count | 1087 |
+| Code coverage | 54.2% |
+| Python modules | 58 |
+| Lines of code | 23,450 |
+| Test files | 41 |
 
 ## License
 
