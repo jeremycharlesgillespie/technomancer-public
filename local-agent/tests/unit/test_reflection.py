@@ -365,3 +365,70 @@ class TestReflectHistoryIsolation:
     def test_factual_passes_has_fact_check(self):
         names = [n for n, _ in FACTUAL_PASSES]
         assert "fact_check" in names
+
+
+class TestIsFactualQuestionExtended:
+    """Additional is_factual_question tests for coverage."""
+
+    def test_when_did(self):
+        assert is_factual_question("When did World War 2 end?") is True
+
+    def test_how_much_cost(self):
+        assert is_factual_question("How much does a Tesla Model 3 cost?") is True
+
+    def test_population_of(self):
+        assert is_factual_question("What is the population of Tokyo?") is True
+
+    def test_how_far_from(self):
+        assert is_factual_question("How far from New York to London?") is True
+
+    def test_who_discovered(self):
+        assert is_factual_question("Who discovered penicillin?") is True
+
+    def test_release_date(self):
+        assert is_factual_question("What is the release date of iPhone 17?") is True
+
+    def test_empty_string_not_factual(self):
+        assert is_factual_question("") is False
+
+    def test_howto_not_factual(self):
+        assert is_factual_question("How do I write a decorator?") is False
+
+
+class TestClassifyQuestionExtended:
+    """Additional classify_question tests for coverage."""
+
+    def test_cool_is_skip(self):
+        assert classify_question("cool", "Thanks!") == "skip"
+
+    def test_nice_is_skip(self):
+        assert classify_question("nice", "Glad you liked it!") == "skip"
+
+    def test_yep_is_skip(self):
+        assert classify_question("yep", "Ok!") == "skip"
+
+    def test_show_commands_is_skip(self):
+        assert classify_question("show my commands", "Here are...") == "skip"
+
+    def test_remind_me_is_skip(self):
+        assert classify_question("remind me to check later", "I'll remind...") == "skip"
+
+    def test_convert_is_factual(self):
+        long_resp = "One mile equals..." + "x" * 200
+        assert classify_question("Convert 5 miles to kilometers", long_resp) == "factual"
+
+    def test_define_is_factual(self):
+        long_resp = "Photosynthesis is..." + "x" * 200
+        assert classify_question("Define photosynthesis", long_resp) == "factual"
+
+    def test_troubleshoot_is_full(self):
+        long_resp = "Let me help debug..." + "x" * 200
+        assert classify_question("Troubleshoot my Docker setup that keeps crashing", long_resp) == "full"
+
+    def test_review_is_full(self):
+        long_resp = "Looking at this code..." + "x" * 200
+        assert classify_question("Review my API design", long_resp) == "full"
+
+    def test_strategy_is_full(self):
+        long_resp = "A good strategy would..." + "x" * 200
+        assert classify_question("What strategy should I use for scaling?", long_resp) == "full"
