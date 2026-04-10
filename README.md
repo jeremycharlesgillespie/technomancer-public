@@ -1,17 +1,17 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-1196-brightgreen) ![coverage](https://img.shields.io/badge/coverage-57.7%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-59-blue) ![lines](https://img.shields.io/badge/lines-23k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-1269-brightgreen) ![coverage](https://img.shields.io/badge/coverage-59.3%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-59-blue) ![lines](https://img.shields.io/badge/lines-23k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 An Ollama-powered autonomous agent framework with Discord bot interface,
 Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-09 19:58
+> via `safe_update.py`. Last updated: 2026-04-09 20:21
 
 ## Highlights
 
-- **1196 automated tests** with 57.7% code coverage
+- **1269 automated tests** with 59.3% code coverage
 - **59 Python modules** across 23,488 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
@@ -111,7 +111,7 @@ python safe_update.py continue          # test, merge, restart, publish
 ### Testing
 
 ```bash
-pytest                        # Run all 1196 tests
+pytest                        # Run all 1269 tests
 pytest --cov=agent            # With coverage report
 pytest tests/unit/            # Unit tests only
 python validate.py startup    # Full pre-commit validation (syntax + import + startup)
@@ -155,11 +155,11 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 
 | Metric | Value |
 |--------|-------|
-| Test count | 1196 |
-| Code coverage | 57.7% |
+| Test count | 1269 |
+| Code coverage | 59.3% |
 | Python modules | 59 |
 | Lines of code | 23,488 |
-| Test files | 47 |
+| Test files | 53 |
 
 ## License
 
