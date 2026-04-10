@@ -499,6 +499,39 @@ class MemorySystem:
             summary += "Recent topics:\n" + "\n".join(f"- {m[:60]}" for m in recent_messages)
         return summary
 
+    def purge_old_conversations(self, retention_days: int = 60) -> str:
+        """Delete conversation log files older than retention_days.
+
+        Conversation data has already been compacted into daily/weekly
+        summaries by the time it's this old, so the raw logs are redundant.
+
+        Args:
+            retention_days: Keep conversations newer than this (default 60 days).
+
+        Returns:
+            Summary of what was purged.
+        """
+        conv_dir = self.memory_root / "Conversations"
+        if not conv_dir.exists():
+            return "No conversations directory."
+
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        purged = 0
+        for log_file in sorted(conv_dir.glob("*.md")):
+            try:
+                # Files are named YYYY-MM-DD.md
+                file_date_str = log_file.stem  # e.g. "2026-03-12"
+                file_date = datetime.strptime(file_date_str, "%Y-%m-%d")
+                if file_date < cutoff:
+                    log_file.unlink()
+                    purged += 1
+            except (ValueError, OSError):
+                continue
+
+        if purged:
+            return f"Purged {purged} conversation log(s) older than {retention_days} days."
+        return "No conversation logs old enough to purge."
+
     def get_compaction_stats(self) -> list[dict]:
         """Read compaction stats log."""
         log_path = self.memory_root / "Context" / "compaction_stats.json"
@@ -538,6 +571,11 @@ class MemorySystem:
                     if hourly_count % 12 == 0:
                         result = self.compact_weekly(summarizer)
                         print(f"[Compaction] Weekly: {result}")
+
+                        # Purge old conversation logs (already summarized)
+                        purge_result = self.purge_old_conversations(retention_days=60)
+                        if "Purged" in purge_result:
+                            print(f"[Compaction] {purge_result}")
 
                 except Exception as e:
                     print(f"[Compaction] Error: {e}")

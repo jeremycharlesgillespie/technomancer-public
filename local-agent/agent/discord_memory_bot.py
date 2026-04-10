@@ -1233,7 +1233,8 @@ React like a friend would - you're genuinely interested. Talk about what stands 
                     ctx_parts.append(f"Recent conversations:\n{recent[:4000]}")
 
                 # Tier 2b: Past conversation summaries for cross-session continuity
-                past_summaries = get_recent_summaries(5)
+                # Only inject summaries from last 48 hours to avoid stale context
+                past_summaries = get_recent_summaries(5, max_age_hours=48)
                 if "No conversation summaries" not in past_summaries:
                     ctx_parts.append(f"Past conversation context:\n{past_summaries[:2000]}")
 
