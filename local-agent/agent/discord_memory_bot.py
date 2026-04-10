@@ -677,6 +677,9 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from .knowledge_consistency import get_consistency_tools
     for tool in get_consistency_tools():
         agent.register_tool(tool)
+    from .tool_analytics import get_tool_analytics_tools
+    for tool in get_tool_analytics_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 

@@ -367,11 +367,19 @@ If you need to perform multiple steps, do them one at a time."""
             if self._request_timer:
                 self._request_timer.record_tool(name, duration, len(result), truncated)
 
+            # Log to tool analytics
+            from .tool_analytics import record_tool_call
+            record_tool_call(name, success=True, duration_ms=round(duration * 1000, 1), result_size=len(result))
+
             return result
         except Exception as e:
             duration = _time.perf_counter() - start
             if self._request_timer:
                 self._request_timer.record_tool(name, duration, 0)
+
+            from .tool_analytics import record_tool_call
+            record_tool_call(name, success=False, duration_ms=round(duration * 1000, 1), error=str(e)[:200])
+
             return f"Error executing {name}: {e}"
 
     def _log(self, msg: str) -> None:
