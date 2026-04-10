@@ -164,7 +164,7 @@ class RequestTimer:
             self.name = name
             self.start = 0.0
 
-        def __enter__(self) -> "_Phase":
+        def __enter__(self) -> "_Phase":  # noqa: F821
             """Record the phase start time."""
             self.start = time.perf_counter()
             return self

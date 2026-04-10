@@ -28,13 +28,16 @@ from flask import Flask, jsonify, request
 from agent.config import settings
 
 from .models import (
+    Idea,
     add_comment,
+    add_idea,
     delete_idea,
     get_idea,
     load_ideas,
     mark_done,
     mark_executing,
     mark_failed,
+    save_ideas,
     vote,
 )
 
@@ -744,7 +747,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         const commentsDiv = e.target.closest('.comments');
         commentsDiv.insertAdjacentHTML('beforeend',
             `<div class="comment owner">` +
-            `<div class="comment-author owner">${ownerName}</div>` +
+            `<div class="comment-author owner">${{ownerName}}</div>` +
             `<div class="comment-text">${{text}}</div>` +
             `</div>`
         );

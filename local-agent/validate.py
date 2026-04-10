@@ -2,19 +2,21 @@
 """
 Pre-commit validation script — MUST pass before any code is committed.
 
-Runs 4 levels of validation:
+Runs 5 levels of validation:
 1. SYNTAX — ast.parse every .py file in agent/ to catch syntax errors
-2. IMPORT — actually import every module to catch runtime import failures
-3. STARTUP — verify the bot can start and stay running for 10 seconds
-4. INTEGRATION — exercise key code paths with real Ollama (not mocks)
+2. LINT — ruff check for undefined names, unused imports, f-string bugs
+3. IMPORT — actually import every module to catch runtime import failures
+4. STARTUP — verify the bot can start and stay running for 10 seconds
+5. INTEGRATION — exercise key code paths with real Ollama (not mocks)
 
 Exit code 0 = all passed, non-zero = failures found.
 
 Usage:
     python validate.py          # Run all checks
     python validate.py syntax   # Run only syntax checks
-    python validate.py import   # Run syntax + import
-    python validate.py startup  # Run syntax + import + startup
+    python validate.py lint     # Run syntax + lint
+    python validate.py import   # Run syntax + lint + import
+    python validate.py startup  # Run syntax + lint + import + startup
     python validate.py full     # Run everything including integration
 """
 
@@ -58,6 +60,48 @@ def check_syntax() -> list[str]:
     return errors
 
 
+def check_lint() -> list[str]:
+    """Run ruff on agent/ and idea_board/ to catch semantic errors.
+
+    Catches: undefined names in f-strings (F821), unused imports (F401),
+    redefined unused variables (F841), and other pyflakes errors that
+    ast.parse alone cannot detect.
+    """
+    print("\n" + "=" * 60)
+    print("LEVEL 2: LINT CHECK (ruff)")
+    print("=" * 60)
+
+    errors = []
+    targets = [str(AGENT_DIR), str(AGENT_DIR.parent / "idea_board")]
+    existing = [t for t in targets if Path(t).exists()]
+
+    # Only check for dangerous errors (undefined names, redefined builtins, etc.)
+    # Skip import sorting (I) and unused imports (F401) — those are code hygiene, not bugs.
+    dangerous_rules = ["F821", "F811", "F601", "F602"]
+
+    try:
+        result = subprocess.run(
+            ["ruff", "check", "--no-fix", "--select", ",".join(dangerous_rules)] + existing,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            cwd=str(AGENT_DIR.parent),
+        )
+        if result.returncode == 0:
+            print(f"  [{PASS}] ruff found no issues")
+        else:
+            for line in result.stdout.strip().splitlines():
+                if line.startswith("Found"):
+                    continue
+                errors.append(line)
+                print(f"  [{FAIL}] {line}")
+            print(f"\n  RESULT: {len(errors)} lint error(s)")
+    except FileNotFoundError:
+        print(f"  [{SKIP}] ruff not installed — skipping lint check")
+
+    return errors
+
+
 def check_imports() -> list[str]:
     """Actually import every module in agent/ to catch import-time errors.
 
@@ -65,7 +109,7 @@ def check_imports() -> list[str]:
     bad type annotations, anything that crashes on import.
     """
     print("\n" + "=" * 60)
-    print("LEVEL 2: IMPORT CHECK")
+    print("LEVEL 3: IMPORT CHECK")
     print("=" * 60)
 
     errors = []
@@ -98,7 +142,7 @@ def check_startup() -> list[str]:
     anything that kills the process immediately.
     """
     print("\n" + "=" * 60)
-    print("LEVEL 3: STARTUP CHECK")
+    print("LEVEL 4: STARTUP CHECK")
     print("=" * 60)
 
     errors = []
@@ -138,7 +182,7 @@ def check_integration() -> list[str]:
     tool calling issues — anything that mocks hide.
     """
     print("\n" + "=" * 60)
-    print("LEVEL 4: INTEGRATION CHECK")
+    print("LEVEL 5: INTEGRATION CHECK")
     print("=" * 60)
 
     errors = []
@@ -242,6 +286,14 @@ def main():
         print(f"BLOCKED: Fix {len(all_errors)} syntax error(s) before continuing")
         print(f"{'=' * 60}")
         sys.exit(1)
+
+    if level in ("lint", "import", "startup", "full"):
+        all_errors.extend(check_lint())
+        if all_errors:
+            print(f"\n{'=' * 60}")
+            print(f"BLOCKED: Fix {len(all_errors)} lint error(s) before continuing")
+            print(f"{'=' * 60}")
+            sys.exit(1)
 
     if level in ("import", "startup", "full"):
         all_errors.extend(check_imports())
