@@ -199,7 +199,7 @@ class PerfMonitor:
 
         endpoints = sorted(set(r.endpoint for r in all_records))
         lines = [
-            f"**LLM Endpoint Metrics** ({len(all_records)} total calls)",
+            f"**Endpoint Metrics** ({len(all_records)} total calls)",
             "",
         ]
 

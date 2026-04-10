@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -1419,7 +1420,25 @@ Respond naturally and helpfully. Be conversational and friendly."""
                     log(f"[KnowledgeGap] Failed to log: {gap_err}")
 
             with timer.phase("discord_send"):
-                await send_response(message, response)
+                _send_start = time.monotonic()
+                _send_success = True
+                _send_error = ""
+                try:
+                    await send_response(message, response)
+                except Exception as send_err:
+                    _send_success = False
+                    _send_error = str(send_err)[:200]
+                    raise
+                finally:
+                    _send_duration = time.monotonic() - _send_start
+                    from .perf_monitor import record_llm_call
+                    record_llm_call(
+                        endpoint="discord_send",
+                        duration=round(_send_duration, 3),
+                        success=_send_success,
+                        output_tokens=len(response) if response else 0,
+                        error=_send_error,
+                    )
 
             # Save profiling data
             timer.save()

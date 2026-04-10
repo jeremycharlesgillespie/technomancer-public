@@ -146,7 +146,7 @@ class TestPerfMonitor:
         mon.record("claude_api", 0.3, False, model="sonnet", error="Rate limit")
 
         summary = mon.get_summary()
-        assert "LLM Endpoint Metrics" in summary
+        assert "Endpoint Metrics" in summary
         assert "ollama" in summary
         assert "claude_api" in summary
         assert "3 total calls" in summary

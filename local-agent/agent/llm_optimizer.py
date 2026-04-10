@@ -288,7 +288,7 @@ def get_usage_dashboard(hours: int = 24) -> str:
             lines.append("")
 
         # Per-endpoint breakdown
-        for ep in ["ollama", "claude_api", "claude_cli", "ollama_vision"]:
+        for ep in ["ollama", "claude_api", "claude_cli", "ollama_vision", "discord_send"]:
             ep_stats = metrics_db.get_endpoint_stats(ep, hours)
             if ep_stats.get("calls", 0) > 0:
                 pcts = metrics_db.get_percentiles(ep, hours)
