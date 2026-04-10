@@ -202,3 +202,84 @@ class TestHandleBetterDev:
         msg = _make_msg("betterDev")
         memory = MagicMock()
         _run(handle_better_dev(msg, msg.content, "Jeremy", memory, _send_response))
+
+    @patch("agent.bot_commands.handle_better_dev_command", new_callable=AsyncMock)
+    def test_with_category(self, mock_cmd):
+        from agent.bot_commands import handle_better_dev
+        mock_cmd.return_value = ("Python article", None)
+        msg = _make_msg("betterDev python")
+        memory = MagicMock()
+        _run(handle_better_dev(msg, msg.content, "Jeremy", memory, _send_response))
+
+
+class TestHandleIdea:
+    def test_handler_exists(self):
+        from agent.bot_commands import handle_idea
+        assert callable(handle_idea)
+
+
+class TestHandleKarenFull:
+    def test_no_complaint_text(self):
+        from agent.bot_commands import handle_karen
+        msg = _make_msg("karen")
+        _run(handle_karen(msg, msg.content, "Jeremy"))
+        assert "Usage" in msg.replied_to or "K.A.R.E.N" in msg.replied_to
+
+
+class TestHandleSearchVideos:
+    def test_no_args(self):
+        from agent.bot_commands import handle_search_videos
+        msg = _make_msg("searchVideos")
+        _run(handle_search_videos(msg, msg.content, _send_response))
+        assert "Usage" in msg.replied_to
+
+    @patch("agent.bot_commands.search_channel_videos", return_value="Found 3 videos")
+    def test_with_args(self, mock_search):
+        from agent.bot_commands import handle_search_videos
+        msg = _make_msg("searchVideos https://youtube.com/@ch python")
+        _run(handle_search_videos(msg, msg.content, _send_response))
+
+
+class TestHandleDownloadVideo:
+    def test_no_url(self):
+        from agent.bot_commands import handle_download_video
+        msg = _make_msg("downloadVideo")
+        _run(handle_download_video(msg, msg.content))
+        assert "Usage" in msg.replied_to
+
+    @patch("agent.bot_commands.download_video", return_value="Downloaded video.mp4")
+    def test_with_url(self, mock_dl):
+        from agent.bot_commands import handle_download_video
+        msg = _make_msg("downloadVideo https://youtube.com/watch?v=abc")
+        _run(handle_download_video(msg, msg.content))
+        assert len(msg._replies) >= 2  # "Starting download" + result
+
+
+class TestHandleDownloadChannel:
+    def test_no_url(self):
+        from agent.bot_commands import handle_download_channel
+        msg = _make_msg("downloadChannel")
+        _run(handle_download_channel(msg, msg.content, "Jeremy"))
+        assert "Usage" in msg.replied_to
+
+
+class TestHandleDlCover:
+    def test_no_url(self):
+        from agent.bot_commands import handle_dl_cover
+        msg = _make_msg("dlcover")
+        _run(handle_dl_cover(msg, msg.content))
+        assert "Usage" in msg.replied_to
+
+    @patch("agent.bot_commands.download_thumbnail", return_value="Saved thumbnail.jpg")
+    def test_with_url(self, mock_dl):
+        from agent.bot_commands import handle_dl_cover
+        msg = _make_msg("dlcover https://youtube.com/watch?v=abc")
+        _run(handle_dl_cover(msg, msg.content))
+
+
+class TestHandleDlCovers:
+    def test_no_url(self):
+        from agent.bot_commands import handle_dl_covers
+        msg = _make_msg("dlcovers")
+        _run(handle_dl_covers(msg, msg.content, "Jeremy"))
+        assert "Usage" in msg.replied_to

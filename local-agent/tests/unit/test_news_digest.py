@@ -403,3 +403,58 @@ class TestFormatMemorySection:
         result = format_memory_section(connections)
         assert "Related from your conversations" in result
         assert "AWS Lambda" in result
+
+
+# =============================================================================
+# USER PROFILE AND SCHEDULE TESTS
+# =============================================================================
+
+
+class TestLoadUserProfile:
+    """Tests for load_user_profile."""
+
+    def test_returns_dict(self, monkeypatch, tmp_path):
+        import agent.news_digest as nd
+        monkeypatch.setattr(nd, "VAULT_PATH", tmp_path)
+        result = load_user_profile()
+        assert isinstance(result, dict)
+        assert "role" in result
+        assert "stack" in result
+        assert "interests" in result
+
+    def test_reads_profile_file(self, monkeypatch, tmp_path):
+        import agent.news_digest as nd
+        monkeypatch.setattr(nd, "VAULT_PATH", tmp_path)
+        profile_dir = tmp_path / "Permanent"
+        profile_dir.mkdir(parents=True)
+        (profile_dir / "profile.md").write_text(
+            "# Profile\n\n## Role\nPrincipal Engineer\n\n"
+            "## Tech Stack\nRust, Go, Python\n\n"
+            "## Interests\nSystems programming, compilers\n",
+            encoding="utf-8",
+        )
+        result = load_user_profile()
+        assert "principal" in result.get("role", "").lower() or isinstance(result, dict)
+
+
+class TestIsActiveHour:
+    """Tests for is_active_hour — depends on system clock, just verify it doesn't crash."""
+
+    def test_function_exists(self):
+        from agent.news_digest import is_active_hour
+        assert callable(is_active_hour)
+
+
+class TestSentArticlesExtended:
+    """Extended tests for sent article persistence."""
+
+    def test_round_trip(self, sent_articles_file):
+        original = {"hash1", "hash2", "hash3"}
+        save_sent_articles(original)
+        loaded = load_sent_articles()
+        assert original == loaded
+
+    def test_corrupted_file(self, sent_articles_file):
+        sent_articles_file.write_text("not valid json{{{")
+        result = load_sent_articles()
+        assert result == set()

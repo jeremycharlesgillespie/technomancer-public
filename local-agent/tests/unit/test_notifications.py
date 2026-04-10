@@ -134,6 +134,32 @@ class TestColorConstants:
             assert isinstance(color, int), f"{name} color should be int"
 
 
+class TestDiscordSendFile:
+    """Test file sending."""
+
+    @patch("agent.notifications.retry_request")
+    def test_sends_existing_file(self, mock_retry, tmp_path, monkeypatch):
+        from agent.notifications import discord_send_file
+        monkeypatch.setattr("agent.notifications.DISCORD_WEBHOOK_URL", "https://webhook.test")
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("hello")
+        mock_retry.return_value = MagicMock(status_code=200)
+
+        result = discord_send_file(str(test_file))
+        assert "Sent file" in result or "test.txt" in result
+
+    def test_file_not_found(self):
+        from agent.notifications import discord_send_file
+        result = discord_send_file("/nonexistent/path/file.txt", webhook_url="https://test")
+        assert "Error" in result or "not found" in result
+
+    def test_no_webhook(self, monkeypatch):
+        from agent.notifications import discord_send_file
+        monkeypatch.setattr("agent.notifications.DISCORD_WEBHOOK_URL", "")
+        result = discord_send_file("test.txt")
+        assert "No webhook" in result or "Error" in result
+
+
 class TestGetNotificationTools:
     """Test tool registration."""
 
@@ -143,3 +169,8 @@ class TestGetNotificationTools:
         names = {t.name for t in tools}
         assert "discord_send" in names
         assert "discord_alert" in names
+
+    def test_all_tools_callable(self):
+        tools = get_notification_tools()
+        for tool in tools:
+            assert callable(tool.function)
