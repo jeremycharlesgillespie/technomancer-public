@@ -166,7 +166,7 @@ Important information to always remember.
 ---
 
 ## 2026-03-15 14:30 - user_info/testuser
-Name: Jeremy Gillespie
+Name: Test User
 Works at: Acme Corp
 Role: Senior Software Engineer
 
@@ -185,7 +185,7 @@ Working on Technomancer Discord bot project
 
         # Should contain the actual content, not "No permanent memories"
         assert "No permanent memories" not in result
-        assert "Jeremy Gillespie" in result
+        assert "Test User" in result
         assert "Acme Corp" in result
         assert "Python programming" in result
         # Should be the full content for the think command to display

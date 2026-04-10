@@ -27,7 +27,7 @@ from agent.news_digest import (
 
 @pytest.fixture
 def sample_profile():
-    """User profile matching Jeremy's setup."""
+    """User profile matching the owner's setup."""
     return {
         "role": "software developer",
         "stack": ["Python", "PostgreSQL", "Oracle", "Django", "AWS"],

@@ -24,7 +24,7 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def _make_msg(content="test", user="Jeremy"):
+def _make_msg(content="test", user="TestUser"):
     return MockDiscordMessage(content=content, author_name=user, channel_name="llm_chat")
 
 
@@ -115,7 +115,7 @@ class TestHandleAddEnhancement:
     def test_adds_enhancement(self, mock_add):
         msg = _make_msg("addEnhancement Better error messages")
         memory = MagicMock()
-        _run(handle_add_enhancement(msg, msg.content, "Jeremy", memory))
+        _run(handle_add_enhancement(msg, msg.content, "TestUser", memory))
         assert msg.replied_to is not None
         assert "#3" in msg.replied_to or "Better" in msg.replied_to
 
@@ -125,16 +125,16 @@ class TestHandlePublish:
     def test_publish_owner_only(self, mock_run):
         from agent.bot_commands import handle_publish
         mock_run.return_value = MagicMock(returncode=0, stdout="Published", stderr="")
-        msg = _make_msg("publish", user="Jeremy")
-        with patch("agent.bot_commands.settings", MagicMock(bot_owner="Jeremy")):
-            _run(handle_publish(msg, "Jeremy"))
+        msg = _make_msg("publish", user="TestUser")
+        with patch("agent.bot_commands.settings", MagicMock(bot_owner="TestUser")):
+            _run(handle_publish(msg, "TestUser"))
         # Should have replied (either success or permission denied)
         assert msg.replied_to is not None or len(msg.channel.sent_messages) > 0
 
     def test_publish_non_owner_rejected(self):
         from agent.bot_commands import handle_publish
         msg = _make_msg("publish", user="Alice")
-        with patch("agent.bot_commands.settings", MagicMock(bot_owner="Jeremy")):
+        with patch("agent.bot_commands.settings", MagicMock(bot_owner="TestUser")):
             _run(handle_publish(msg, "Alice"))
         assert msg.replied_to is not None
         assert "owner" in msg.replied_to.lower()
@@ -144,7 +144,7 @@ class TestHandleReloadServer:
     def test_non_owner_rejected(self):
         from agent.bot_commands import handle_reload_server
         msg = _make_msg("reloadServer", user="Alice")
-        with patch("agent.bot_commands.settings", MagicMock(bot_owner="Jeremy")):
+        with patch("agent.bot_commands.settings", MagicMock(bot_owner="TestUser")):
             _run(handle_reload_server(msg, "Alice"))
         assert msg.replied_to is not None
 
@@ -153,7 +153,7 @@ class TestHandleEvolve:
     def test_non_owner_rejected(self):
         from agent.bot_commands import handle_evolve
         msg = _make_msg("evolve", user="Alice")
-        with patch("agent.bot_commands.settings", MagicMock(bot_owner="Jeremy")):
+        with patch("agent.bot_commands.settings", MagicMock(bot_owner="TestUser")):
             _run(handle_evolve(msg, "Alice"))
         assert msg.replied_to is not None
 
@@ -164,7 +164,7 @@ class TestHandleThink:
         from agent.bot_commands import handle_think
         msg = _make_msg("think")
         memory = MagicMock()
-        _run(handle_think(msg, "think", "Jeremy", memory, _send_response))
+        _run(handle_think(msg, "think", "TestUser", memory, _send_response))
         assert hasattr(msg, "_last_response") or msg.replied_to is not None
 
 
@@ -183,13 +183,13 @@ class TestHandleListVideos:
             {"title": "Video 2", "url": "https://youtube.com/2"},
         ]
         msg = _make_msg("listVideos https://youtube.com/@channel")
-        _run(handle_list_videos(msg, msg.content, "Jeremy", _send_response))
+        _run(handle_list_videos(msg, msg.content, "TestUser", _send_response))
 
     @patch("agent.bot_commands.extract_channel_videos")
     def test_no_url_provided(self, mock_extract):
         from agent.bot_commands import handle_list_videos
         msg = _make_msg("listVideos")
-        _run(handle_list_videos(msg, msg.content, "Jeremy", _send_response))
+        _run(handle_list_videos(msg, msg.content, "TestUser", _send_response))
         # Should reply with usage info
         assert msg.replied_to is not None or hasattr(msg, "_last_response")
 
@@ -201,7 +201,7 @@ class TestHandleBetterDev:
         mock_cmd.return_value = ("Article about Python decorators", "https://pages.github.io/article")
         msg = _make_msg("betterDev")
         memory = MagicMock()
-        _run(handle_better_dev(msg, msg.content, "Jeremy", memory, _send_response))
+        _run(handle_better_dev(msg, msg.content, "TestUser", memory, _send_response))
 
     @patch("agent.bot_commands.handle_better_dev_command", new_callable=AsyncMock)
     def test_with_category(self, mock_cmd):
@@ -209,7 +209,7 @@ class TestHandleBetterDev:
         mock_cmd.return_value = ("Python article", None)
         msg = _make_msg("betterDev python")
         memory = MagicMock()
-        _run(handle_better_dev(msg, msg.content, "Jeremy", memory, _send_response))
+        _run(handle_better_dev(msg, msg.content, "TestUser", memory, _send_response))
 
 
 class TestHandleIdea:
@@ -222,7 +222,7 @@ class TestHandleKarenFull:
     def test_no_complaint_text(self):
         from agent.bot_commands import handle_karen
         msg = _make_msg("karen")
-        _run(handle_karen(msg, msg.content, "Jeremy"))
+        _run(handle_karen(msg, msg.content, "TestUser"))
         assert "Usage" in msg.replied_to or "K.A.R.E.N" in msg.replied_to
 
 
@@ -259,7 +259,7 @@ class TestHandleDownloadChannel:
     def test_no_url(self):
         from agent.bot_commands import handle_download_channel
         msg = _make_msg("downloadChannel")
-        _run(handle_download_channel(msg, msg.content, "Jeremy"))
+        _run(handle_download_channel(msg, msg.content, "TestUser"))
         assert "Usage" in msg.replied_to
 
 
@@ -281,5 +281,5 @@ class TestHandleDlCovers:
     def test_no_url(self):
         from agent.bot_commands import handle_dl_covers
         msg = _make_msg("dlcovers")
-        _run(handle_dl_covers(msg, msg.content, "Jeremy"))
+        _run(handle_dl_covers(msg, msg.content, "TestUser"))
         assert "Usage" in msg.replied_to

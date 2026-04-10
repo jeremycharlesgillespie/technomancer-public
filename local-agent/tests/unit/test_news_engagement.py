@@ -71,19 +71,19 @@ class TestIsNewsMessage:
 class TestRecordReaction:
     def test_records_reaction(self):
         record_article_sent("100", "h1", "Title", "Source")
-        record_reaction("100", "👍", "Jeremy")
+        record_reaction("100", "👍", "TestUser")
         # Verify via stats
         stats = get_source_stats(days=1)
         assert stats[0]["reactions"] == 1
 
     def test_ignores_unknown_message(self):
         # Should not raise
-        record_reaction("nonexistent", "👍", "Jeremy")
+        record_reaction("nonexistent", "👍", "TestUser")
 
     def test_multiple_reactions(self):
         record_article_sent("200", "h2", "Title", "Source")
-        record_reaction("200", "👍", "Jeremy")
-        record_reaction("200", "🔥", "Jeremy")
+        record_reaction("200", "👍", "TestUser")
+        record_reaction("200", "🔥", "TestUser")
         record_reaction("200", "👀", "Alice")
         stats = get_source_stats(days=1)
         assert stats[0]["reactions"] == 3
@@ -92,16 +92,16 @@ class TestRecordReaction:
 class TestRecordReply:
     def test_records_reply(self):
         record_article_sent("300", "h3", "Title", "Source")
-        record_reply("300", "Jeremy", "Interesting article!")
+        record_reply("300", "TestUser", "Interesting article!")
         stats = get_source_stats(days=1)
         assert stats[0]["replies"] == 1
 
     def test_ignores_unknown_message(self):
-        record_reply("nonexistent", "Jeremy", "text")
+        record_reply("nonexistent", "TestUser", "text")
 
     def test_truncates_long_snippets(self):
         record_article_sent("400", "h4", "Title", "Source")
-        record_reply("400", "Jeremy", "x" * 500)
+        record_reply("400", "TestUser", "x" * 500)
         # Should not raise, snippet truncated to 200
 
 
@@ -113,9 +113,9 @@ class TestGetSourceStats:
     def test_multiple_sources(self):
         record_article_sent("500", "h5", "Title A", "TechCrunch")
         record_article_sent("501", "h6", "Title B", "Hacker News")
-        record_reaction("500", "👍", "Jeremy")
-        record_reaction("500", "🔥", "Jeremy")
-        record_reply("501", "Jeremy", "Cool")
+        record_reaction("500", "👍", "TestUser")
+        record_reaction("500", "🔥", "TestUser")
+        record_reply("501", "TestUser", "Cool")
 
         stats = get_source_stats(days=30)
         assert len(stats) == 2
@@ -132,9 +132,9 @@ class TestGetTopArticles:
     def test_ranks_by_engagement(self):
         record_article_sent("600", "h7", "Popular Article", "Source")
         record_article_sent("601", "h8", "Boring Article", "Source")
-        record_reaction("600", "👍", "Jeremy")
-        record_reaction("600", "🔥", "Jeremy")
-        record_reply("600", "Jeremy", "Great!")
+        record_reaction("600", "👍", "TestUser")
+        record_reaction("600", "🔥", "TestUser")
+        record_reply("600", "TestUser", "Great!")
 
         top = get_top_articles(days=30, limit=5)
         assert len(top) == 1  # Only "Popular" has engagement
@@ -149,7 +149,7 @@ class TestGetEngagementReport:
 
     def test_report_with_data(self):
         record_article_sent("700", "h9", "Test Article", "TechCrunch")
-        record_reaction("700", "👍", "Jeremy")
+        record_reaction("700", "👍", "TestUser")
         report = get_engagement_report(days=30)
         assert "News Engagement Report" in report
         assert "TechCrunch" in report

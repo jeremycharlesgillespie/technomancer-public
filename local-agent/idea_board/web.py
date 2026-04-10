@@ -25,6 +25,8 @@ from typing import Any
 
 from flask import Flask, jsonify, request
 
+from agent.config import settings
+
 from .models import (
     add_comment,
     delete_idea,
@@ -85,7 +87,7 @@ def _notify_idea_failed(idea_id: str, title: str, error_text: str) -> None:
 # ============================================================================
 
 IDEA_DISCUSSION_PROMPT = """You are an eager, thoughtful software engineer discussing an improvement idea
-with your manager (Jeremy). You originally proposed this idea. Now Jeremy is
+with your manager ({owner_name}). You originally proposed this idea. Now {owner_name} is
 giving you feedback and asking questions about it.
 
 YOUR IDEA:
@@ -97,11 +99,11 @@ CONVERSATION SO FAR:
 {conversation}
 
 RULES:
-- Be direct, specific, and technical — Jeremy is a senior software engineer
-- If he asks you to explain, give concrete technical details
-- If he pushes back, consider his point honestly — maybe the idea needs refinement
-- If he's interested, suggest next steps or implementation approach
-- If you realize the idea is bad based on his feedback, say so honestly
+- Be direct, specific, and technical — {owner_name} is a senior software engineer
+- If they ask you to explain, give concrete technical details
+- If they push back, consider their point honestly — maybe the idea needs refinement
+- If they're interested, suggest next steps or implementation approach
+- If you realize the idea is bad based on their feedback, say so honestly
 - Keep responses concise (2-4 sentences) — this is a chat, not an essay
 - Reference specific files, functions, or patterns from the Technomancer codebase when relevant
 - You're enthusiastic but not pushy — respect your manager's judgment"""
@@ -122,11 +124,12 @@ def _generate_idea_reply(idea: "Idea") -> str | None:
     # Build conversation history
     conv_lines = []
     for c in idea.comments:
-        role = "Jeremy (manager)" if c.author == "jeremy" else "You (engineer)"
+        role = f"{settings.owner_name} (manager)" if c.author == "owner" else "You (engineer)"
         conv_lines.append(f"{role}: {c.text}")
     conversation = "\n".join(conv_lines)
 
     prompt = IDEA_DISCUSSION_PROMPT.format(
+        owner_name=settings.owner_name,
         title=idea.title,
         description=idea.description,
         category=idea.category,
@@ -208,10 +211,10 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
             max-height: 400px; overflow-y: auto; }
 .comment { font-size: 0.9rem; margin-bottom: 0.6rem; padding: 8px 12px;
            border-radius: 6px; max-width: 85%; }
-.comment.jeremy { background: #1a3a5c; margin-left: auto; }
+.comment.owner { background: #1a3a5c; margin-left: auto; }
 .comment.llm { background: #2d2d2d; }
 .comment-author { font-weight: 600; font-size: 0.75rem; margin-bottom: 2px; }
-.comment-author.jeremy { color: var(--accent); }
+.comment-author.owner { color: var(--accent); }
 .comment-author.llm { color: var(--green); }
 .comment-text { line-height: 1.5; }
 .comment-time { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
@@ -322,7 +325,8 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
     parent_id = idea.get("parent_id", "")
     created = idea.get("created", "")[:10]
     claude_vote = idea.get("votes", {}).get("claude") or "—"
-    jeremy_vote = idea.get("votes", {}).get("jeremy") or "—"
+    owner_vote = idea.get("votes", {}).get("owner") or "—"
+    owner_display = html.escape(settings.owner_name)
 
     # Comments section — chat-style conversation
     comments_html = ""
@@ -330,7 +334,7 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
         author = html.escape(c["author"])
         text = html.escape(c["text"])
         ts = c.get("timestamp", "")[:16]
-        label = "Owner" if author == "jeremy" else "LLM"
+        label = owner_display if author == "owner" else "LLM"
         comments_html += (
             f'<div class="comment {author}">'
             f'<div class="comment-author {author}">{label}</div>'
@@ -393,7 +397,7 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
             <span class="badge badge-state {state}">{state}</span>
             <span class="badge badge-cat">{category}</span>
             <span class="badge badge-src">{source}</span>
-            &bull; {created} &bull; Claude: {claude_vote} &bull; Jeremy: {jeremy_vote}{parent_link}
+            &bull; {created} &bull; Claude: {claude_vote} &bull; {owner_display}: {owner_vote}{parent_link}
         </div>
         <div class="card-desc">{desc}</div>
         {actions}
@@ -410,6 +414,7 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
 
 def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
     """Render the full HTML dashboard page."""
+    owner_name_js = html.escape(settings.owner_name, quote=True)
     # Build lookup for parent→children
     by_id: dict[str, dict] = {i["id"]: i for i in ideas}
     children_of: dict[str, list[dict]] = {}
@@ -507,6 +512,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
     {sections_html if sections_html else '<p style="color:var(--muted)">No ideas yet. They will start appearing hourly.</p>'}
 
     <script>
+    const ownerName = '{owner_name_js}';
     async function doVote(id, v) {{
         const card = document.querySelector(`[data-idea="${{id}}"]`) || event.target.closest('.card');
         const btn = event.target;
@@ -514,7 +520,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         btn.textContent = '...';
         await fetch(`/api/ideas/${{id}}/vote`, {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'jeremy', vote: v}})
+            body: JSON.stringify({{voter: 'owner', vote: v}})
         }});
         // Update card state visually
         if (card) {{
@@ -564,7 +570,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         // Mark as approved
         await fetch(`/api/ideas/${{id}}/vote`, {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
+            body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
         }});
 
         // Reset button after 5 seconds
@@ -614,14 +620,14 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
                 const childId = card.dataset.idea;
                 await fetch(`/api/ideas/${{childId}}/vote`, {{
                     method: 'POST', headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
+                    body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
                 }});
             }}
         }}
         // Approve the epic itself
         await fetch(`/api/ideas/${{id}}/vote`, {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'jeremy', vote: 'approve'}})
+            body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
         }});
 
         setTimeout(() => {{
@@ -737,8 +743,8 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         // Show the message immediately
         const commentsDiv = e.target.closest('.comments');
         commentsDiv.insertAdjacentHTML('beforeend',
-            `<div class="comment jeremy">` +
-            `<div class="comment-author jeremy">Jeremy</div>` +
+            `<div class="comment owner">` +
+            `<div class="comment-author owner">${ownerName}</div>` +
             `<div class="comment-text">${{text}}</div>` +
             `</div>`
         );
@@ -751,7 +757,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         // Send to API (LLM reply happens in background)
         await fetch(`/api/ideas/${{id}}/comment`, {{
             method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{author: 'jeremy', text: text}})
+            body: JSON.stringify({{author: 'owner', text: text}})
         }});
 
         // Poll for the LLM reply (check every 2 seconds for up to 60 seconds)
@@ -905,8 +911,8 @@ def api_vote(idea_id: str) -> tuple:
     data = request.get_json(silent=True) or {}
     voter = data.get("voter", "")
     vote_value = data.get("vote", "")
-    if voter not in ("jeremy", "claude") or not vote_value:
-        return jsonify({"error": "Need voter (jeremy|claude) and vote"}), 400
+    if voter not in ("owner", "claude") or not vote_value:
+        return jsonify({"error": "Need voter (owner|claude) and vote"}), 400
 
     idea = vote(idea_id, voter, vote_value)
     if not idea:
@@ -918,12 +924,12 @@ def api_vote(idea_id: str) -> tuple:
 def api_comment(idea_id: str) -> tuple:
     """POST /api/ideas/<id>/comment — add a comment and get LLM reply.
 
-    When Jeremy posts a comment, the LLM reads the full idea context
+    When the owner posts a comment, the LLM reads the full idea context
     and conversation history, then replies as an eager employee
     discussing the idea with their manager.
     """
     data = request.get_json(silent=True) or {}
-    author = data.get("author", "jeremy")
+    author = data.get("author", "owner")
     text = data.get("text", "").strip()
     if not text:
         return jsonify({"error": "Need text"}), 400
@@ -936,8 +942,8 @@ def api_comment(idea_id: str) -> tuple:
     if author == "claude" and "execution failed" in text.lower():
         _notify_idea_failed(idea_id, idea.title, text)
 
-    # If Jeremy posted, trigger an LLM reply in a background thread
-    if author == "jeremy":
+    # If the owner posted, trigger an LLM reply in a background thread
+    if author == "owner":
         import threading
 
         def _llm_reply() -> None:
@@ -956,7 +962,7 @@ def api_comment(idea_id: str) -> tuple:
 @app.route("/api/ideas/<idea_id>/done", methods=["POST"])
 def api_done(idea_id: str) -> tuple:
     """POST /api/ideas/<id>/done — manually mark an idea as implemented."""
-    idea = mark_done(idea_id, "Manually marked as done by Jeremy.")
+    idea = mark_done(idea_id, f"Manually marked as done by {settings.owner_name}.")
     if not idea:
         return jsonify({"error": "Idea not found"}), 404
 
@@ -1030,7 +1036,7 @@ def api_prompt(idea_id: str) -> tuple:
     if idea.comments:
         discussion = "\n\nDiscussion (what was decided):\n"
         for c in idea.comments:
-            label = "Jeremy (manager)" if c.author == "jeremy" else "LLM (engineer)"
+            label = f"{settings.owner_name} (manager)" if c.author == "owner" else "LLM (engineer)"
             discussion += f"- {label}: {c.text}\n"
 
     # Build epic context if this story belongs to an epic
@@ -1117,7 +1123,7 @@ def api_epic_prompt(idea_id: str) -> tuple:
         if story.comments:
             discussion = "Discussion:\n"
             for c in story.comments:
-                label = "Jeremy" if c.author == "jeremy" else "LLM"
+                label = settings.owner_name if c.author == "owner" else "LLM"
                 discussion += f"  - {label}: {c.text}\n"
 
         story_sections += (

@@ -52,7 +52,7 @@ software developer
 ---
 
 ## 2026-03-14 10:00 - user_info
-Name: Jeremy Gillespie
+Name: Test User
 Discord: testuser
 
 ---
@@ -265,7 +265,7 @@ class TestBuildCachedPrefix:
 
         # Check that memories content is in one of the blocks
         full_text = "".join(b.get("text", "") for b in blocks)
-        assert "Jeremy Gillespie" in full_text or "Permanent" in full_text
+        assert "Test User" in full_text or "Permanent" in full_text
 
 
 # =============================================================================

@@ -35,7 +35,7 @@ class Comment:
     """A single comment in an idea's discussion thread.
 
     Attributes:
-        author: Who wrote this — "jeremy", "llm", or "claude"
+        author: Who wrote this — "owner", "llm", or "claude"
         text: The comment content
         timestamp: ISO format timestamp
     """
@@ -53,7 +53,10 @@ class Comment:
 
     @classmethod
     def from_dict(cls, data: dict[str, str]) -> Comment:
-        return cls(author=data["author"], text=data["text"], timestamp=data.get("timestamp", ""))
+        author = data["author"]
+        if author == "jeremy":
+            author = "owner"
+        return cls(author=author, text=data["text"], timestamp=data.get("timestamp", ""))
 
 
 @dataclass
@@ -83,7 +86,7 @@ class Idea:
     idea_type: str = "story"  # "epic", "story", or "task"
     created: str = ""
     state: str = "proposed"
-    votes: dict[str, str | None] = field(default_factory=lambda: {"claude": None, "jeremy": None})
+    votes: dict[str, str | None] = field(default_factory=lambda: {"claude": None, "owner": None})
     comments: list[Comment] = field(default_factory=list)
     parent_id: str | None = None
     execution_log: str | None = None
@@ -111,6 +114,9 @@ class Idea:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Idea:
         comments = [Comment.from_dict(c) for c in data.get("comments", [])]
+        raw_votes = data.get("votes", {"claude": None, "owner": None})
+        if "jeremy" in raw_votes and "owner" not in raw_votes:
+            raw_votes["owner"] = raw_votes.pop("jeremy")
         return cls(
             id=data["id"],
             title=data["title"],
@@ -120,7 +126,7 @@ class Idea:
             idea_type=data.get("idea_type", "story"),
             created=data.get("created", ""),
             state=data.get("state", "proposed"),
-            votes=data.get("votes", {"claude": None, "jeremy": None}),
+            votes=raw_votes,
             comments=comments,
             parent_id=data.get("parent_id"),
             execution_log=data.get("execution_log"),
@@ -335,7 +341,7 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
 
     Args:
         idea_id: The idea to vote on
-        voter: "jeremy" or "claude"
+        voter: "owner" or "claude"
         vote_value: "approve", "veto", "up", or "down"
 
     Returns:
@@ -348,8 +354,8 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
 
     idea.votes[voter] = vote_value
 
-    # State transitions based on Jeremy's vote (final say)
-    if voter == "jeremy":
+    # State transitions based on owner's vote (final say)
+    if voter == "owner":
         if vote_value == "approve":
             idea.state = "approved"
             # Auto-resolve KAREN complaint when its idea is accepted
@@ -369,7 +375,7 @@ def add_comment(idea_id: str, author: str, text: str) -> Idea | None:
 
     Args:
         idea_id: The idea to comment on
-        author: "jeremy", "llm", or "claude"
+        author: "owner", "llm", or "claude"
         text: Comment content
 
     Returns:
@@ -382,8 +388,8 @@ def add_comment(idea_id: str, author: str, text: str) -> Idea | None:
 
     idea.comments.append(Comment(author=author, text=text))
 
-    # If Jeremy comments on a proposed idea, mark it as refining
-    if author == "jeremy" and idea.state == "proposed":
+    # If the owner comments on a proposed idea, mark it as refining
+    if author == "owner" and idea.state == "proposed":
         idea.state = "refining"
 
     save_ideas(ideas)

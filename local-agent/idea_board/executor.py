@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent.config import settings
 from .models import add_comment, get_idea, mark_done, mark_executing, mark_failed
 
 logger = logging.getLogger(__name__)
@@ -152,7 +153,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
     if idea.comments:
         discussion = "\n\nDiscussion (context from the team):\n"
         for c in idea.comments:
-            label = "Owner" if c.author == "jeremy" else "Engineer (LLM)"
+            label = settings.owner_name if c.author == "owner" else "Engineer (LLM)"
             discussion += f"- {label}: {c.text}\n"
 
     prompt = (

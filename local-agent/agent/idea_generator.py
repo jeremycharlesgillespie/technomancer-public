@@ -70,7 +70,7 @@ RULES:
 - THINK END-TO-END: Don't suggest "add tracking for X" without also describing what consumes that tracking data and what changes as a result.  Layer 1 (data collection) is useless without Layer 2 (analysis) and Layer 3 (action).
 - Be specific and actionable — not vague suggestions
 - Reference specific files, functions, or metrics when possible
-- Focus on things that would genuinely help Jeremy as a Sr. Software Engineer
+- Focus on things that would genuinely help {owner_name} as a Sr. Software Engineer
 - Consider the tech stack: Python, Discord.py, Ollama, Claude API, Obsidian
 - Consider the hardware: nvidia 5080 GPU, 96GB RAM, Windows 11
 - Don't suggest things already in the EXISTING IDEAS list
@@ -305,6 +305,7 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
 
     # Build prompt
     prompt = IDEA_PROMPT.format(
+        owner_name=settings.owner_name,
         codebase=codebase,
         news=news,
         conversations=conversations,

@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     bot_owner: str = Field(
         default="", description="Discord username of the bot owner (for admin commands)"
     )
+    owner_name: str = Field(
+        default="Owner",
+        description="Display name of the bot owner (used in idea board UI and prompts)",
+    )
 
     # Anthropic/Claude settings
     anthropic_api_key: Optional[str] = Field(

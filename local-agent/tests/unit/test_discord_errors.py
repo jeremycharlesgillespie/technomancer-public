@@ -79,10 +79,10 @@ class TestCategorizeError:
 
 class TestMessageBuffer:
     def test_buffer_and_retrieve(self):
-        buffer_message("Jeremy", "What is spaghetti?", "msg123")
+        buffer_message("TestUser", "What is spaghetti?", "msg123")
         recent = get_recent_context(5)
         assert len(recent) == 1
-        assert recent[0]["user"] == "Jeremy"
+        assert recent[0]["user"] == "TestUser"
         assert "spaghetti" in recent[0]["content"]
 
     def test_buffer_limit(self):
@@ -92,9 +92,9 @@ class TestMessageBuffer:
         assert len(recent) == 20  # maxlen=20
 
     def test_suggest_recovery_with_context(self):
-        buffer_message("Jeremy", "Tell me about Python decorators")
+        buffer_message("TestUser", "Tell me about Python decorators")
         suggestion = suggest_recovery_content()
-        assert "Jeremy" in suggestion
+        assert "TestUser" in suggestion
         assert "decorator" in suggestion.lower()
 
     def test_suggest_recovery_empty_buffer(self):

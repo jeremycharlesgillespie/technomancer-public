@@ -41,14 +41,14 @@ class TestMemorySystemInit:
 
 class TestLogConversation:
     def test_logs_conversation(self, mem_sys):
-        mem_sys.log_conversation("Jeremy", "Hello", "Hi there!")
+        mem_sys.log_conversation("TestUser", "Hello", "Hi there!")
         # Should have logged to today's conversation file
         conversations_dir = Path(mem_sys.vault_path) / "LLM Memory" / "Conversations"
         today = datetime.now().strftime("%Y-%m-%d")
         log_file = conversations_dir / f"{today}.md"
         assert log_file.exists()
         content = log_file.read_text(encoding="utf-8")
-        assert "Jeremy" in content
+        assert "TestUser" in content
         assert "Hello" in content
 
     def test_appends_multiple(self, mem_sys):
@@ -67,19 +67,19 @@ class TestGetContext:
         assert isinstance(result, str)
 
     def test_returns_recent_conversations(self, mem_sys):
-        mem_sys.log_conversation("Jeremy", "What is Python?", "A programming language.")
+        mem_sys.log_conversation("TestUser", "What is Python?", "A programming language.")
         result = mem_sys.get_context("hour")
         assert "Python" in result or isinstance(result, str)
 
     def test_day_context(self, mem_sys):
-        mem_sys.log_conversation("Jeremy", "Test", "Response")
+        mem_sys.log_conversation("TestUser", "Test", "Response")
         result = mem_sys.get_context("day")
         assert isinstance(result, str)
 
 
 class TestSavePermanentMemory:
     def test_saves_memory(self, mem_sys):
-        result = mem_sys.save_permanent_memory("Jeremy likes Python", category="preferences")
+        result = mem_sys.save_permanent_memory("TestUser likes Python", category="preferences")
         assert "Saved" in result or "saved" in result
 
         memories_file = Path(mem_sys.vault_path) / "LLM Memory" / "Permanent" / "memories.md"
@@ -103,9 +103,9 @@ class TestCompactHourly:
         assert isinstance(result, str)
 
     def test_compact_with_data(self, mem_sys):
-        mem_sys.log_conversation("Jeremy", "Q1", "A1")
-        mem_sys.log_conversation("Jeremy", "Q2", "A2")
-        mem_sys.log_conversation("Jeremy", "Q3", "A3")
+        mem_sys.log_conversation("TestUser", "Q1", "A1")
+        mem_sys.log_conversation("TestUser", "Q2", "A2")
+        mem_sys.log_conversation("TestUser", "Q3", "A3")
         result = mem_sys.compact_hourly()
         assert isinstance(result, str)
 

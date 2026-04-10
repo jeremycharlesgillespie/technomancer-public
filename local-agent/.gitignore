@@ -6,3 +6,4 @@ profiling/
 data/
 sent_articles.json
 .publish_blocklist
+.claude_bridge_prompt.txt
