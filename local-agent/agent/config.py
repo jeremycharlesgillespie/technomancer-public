@@ -92,6 +92,14 @@ class Settings(BaseSettings):
         default=1800, description="Seconds between repeat alerts per endpoint"
     )
 
+    # Daily briefing settings
+    briefing_hour: int = Field(
+        default=7, description="Hour (0-23) to send daily briefing"
+    )
+    briefing_enabled: bool = Field(
+        default=True, description="Enable/disable the daily briefing"
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"

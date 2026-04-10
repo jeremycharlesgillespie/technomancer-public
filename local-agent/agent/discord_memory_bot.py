@@ -87,6 +87,7 @@ from .gap_frequency import get_gap_frequency_tools, start_gap_frequency
 from .gap_reporter import start_gap_reporter
 from .gap_resolver import get_gap_resolver_tools, start_gap_resolver
 from .ref_enrichment import get_ref_enrichment_tools, start_ref_enrichment
+from .daily_briefing import start_daily_briefing
 from .news_digest import start_news_digest
 from .tools import get_all_tools
 from .web_search import get_web_tools
@@ -753,6 +754,16 @@ Keep responses concise for Discord but thorough when they need depth.""",
     ))
     start_idea_generator(idea_agent)
     log("Idea generator started (hourly, isolated agent)")
+
+    # Start daily morning briefing (7 AM — synthesized digest from all subsystems)
+    if settings.briefing_enabled:
+        briefing_agent = Agent(AgentConfig(
+            model=settings.ollama_model,
+            verbose=False,
+            system_prompt="You are a concise briefing synthesizer. Produce actionable daily digests.",
+        ))
+        start_daily_briefing(client, ALLOWED_CHANNEL, briefing_agent)
+        log("Daily briefing started (daily, 7 AM)")
 
     # Start daily knowledge consistency audit (3 AM)
     from .knowledge_consistency import start_consistency_monitor
