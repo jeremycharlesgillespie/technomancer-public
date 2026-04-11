@@ -40,6 +40,41 @@ EXPLORATION_TIMEOUT: int = 180
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
 
+# Category-specific implementation guidance
+CATEGORY_GUIDANCE: dict[str, str] = {
+    "performance": (
+        "- Measure baseline metrics BEFORE making changes (use profiler.py or time commands)\n"
+        "- Profile with agent/profiler.py to identify bottlenecks\n"
+        "- Include before/after numbers in the commit message\n"
+        "- Avoid premature optimization — measure first, optimize what matters"
+    ),
+    "feature": (
+        "- Add unit tests in tests/unit/test_<module>.py\n"
+        "- Follow existing test patterns from tests/conftest.py fixtures "
+        "(mock_ollama_client, temp_vault, etc.)\n"
+        "- Register new tools in discord_memory_bot.py on_ready() if applicable\n"
+        "- Use create_tool() from agent/core.py for new tools"
+    ),
+    "quality": (
+        "- Focus on readability and maintainability\n"
+        "- Keep files under 1000 lines — extract utilities if needed\n"
+        "- Run the FULL test suite, not just new tests\n"
+        "- Don't add features — stick to the quality improvement scope"
+    ),
+    "security": (
+        "- Check OWASP top 10 vulnerabilities\n"
+        "- Validate all external input at system boundaries\n"
+        "- Never hardcode secrets — use settings from agent/config.py\n"
+        "- Check for command injection in any shell/subprocess calls"
+    ),
+    "ux": (
+        "- Test the change from the Discord user's perspective\n"
+        "- Ensure error messages are helpful and actionable\n"
+        "- Keep Discord messages under 2000 chars\n"
+        "- Use validate_discord_message() from message_validators.py"
+    ),
+}
+
 # Bridge token file for Discord notifications
 BRIDGE_TOKEN_FILE: Path = Path(__file__).parent.parent / ".bridge_token"
 
@@ -230,6 +265,14 @@ def _load_codebase_summary() -> str:
     return "\n".join(lines)
 
 
+def _get_category_guidance(category: str) -> str:
+    """Get category-specific implementation guidance."""
+    guidance = CATEGORY_GUIDANCE.get(category, "")
+    if not guidance:
+        return ""
+    return f"\n## Category Guidance ({category})\n{guidance}"
+
+
 def _load_similar_execution_logs(idea: Any) -> str:
     """Find completed ideas in the same category and include their execution logs."""
     try:
@@ -343,6 +386,7 @@ def _build_story_prompt(idea: Any) -> str:
         _load_git_history(),
         _load_recent_errors(),
         _load_similar_execution_logs(idea),
+        _get_category_guidance(idea.category),
         _build_workflow_section(idea),
     ]
     return "\n".join(s for s in sections if s)
