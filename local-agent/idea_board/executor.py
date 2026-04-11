@@ -265,6 +265,74 @@ def _load_codebase_summary() -> str:
     return "\n".join(lines)
 
 
+def _find_relevant_test_file(idea: Any) -> str:
+    """Detect which module the idea targets and include its test file as reference.
+
+    Scans the idea description for module names (e.g. "agent/foo.py", "foo.py",
+    or bare names matching files in agent/). If a corresponding test file exists,
+    includes its first 80 lines. Falls back to conftest.py fixtures if no match.
+    """
+    import re
+
+    tests_dir = Path(__file__).parent.parent / "tests" / "unit"
+    agent_dir = Path(__file__).parent.parent / "agent"
+    conftest = Path(__file__).parent.parent / "tests" / "conftest.py"
+
+    description = f"{idea.title} {idea.description}"
+
+    # Strategy 1: Look for explicit file references like "agent/foo.py" or "foo.py"
+    file_refs = re.findall(r"(?:agent/)?(\w+)\.py", description)
+
+    # Strategy 2: Look for module-like words that match actual agent/*.py files
+    agent_modules = {f.stem for f in agent_dir.glob("*.py") if not f.name.startswith("_")}
+
+    # Score candidates by how likely they are the target module
+    candidates: list[str] = []
+    for ref in file_refs:
+        if ref in agent_modules and ref not in ("__init__", "config", "core"):
+            candidates.append(ref)
+
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+
+    # Try to find a matching test file
+    for module_name in unique[:3]:
+        test_file = tests_dir / f"test_{module_name}.py"
+        if test_file.exists():
+            try:
+                lines = test_file.read_text(encoding="utf-8", errors="replace").split("\n")
+                snippet = "\n".join(lines[:80])
+                if len(snippet) > 2000:
+                    snippet = snippet[:2000] + "\n... (truncated)"
+                return (
+                    f"\n## Test Pattern Reference (from test_{module_name}.py)\n"
+                    f"```python\n{snippet}\n```"
+                )
+            except OSError:
+                continue
+
+    # Fallback: show conftest.py fixtures
+    if conftest.exists():
+        try:
+            lines = conftest.read_text(encoding="utf-8", errors="replace").split("\n")
+            snippet = "\n".join(lines[:50])
+            if len(snippet) > 2000:
+                snippet = snippet[:2000] + "\n... (truncated)"
+            return (
+                f"\n## Test Pattern Reference (from conftest.py — available fixtures)\n"
+                f"```python\n{snippet}\n```"
+            )
+        except OSError:
+            pass
+
+    return ""
+
+
 def _get_category_guidance(category: str) -> str:
     """Get category-specific implementation guidance."""
     guidance = CATEGORY_GUIDANCE.get(category, "")
@@ -387,6 +455,7 @@ def _build_story_prompt(idea: Any) -> str:
         _load_recent_errors(),
         _load_similar_execution_logs(idea),
         _get_category_guidance(idea.category),
+        _find_relevant_test_file(idea),
         _build_workflow_section(idea),
     ]
     return "\n".join(s for s in sections if s)
