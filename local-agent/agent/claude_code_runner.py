@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -331,3 +332,229 @@ async def run_claude_chat(
             session_id=session_id or "", duration=duration,
             cost_usd=0, is_new_session=is_new,
         )
+
+
+# ============================================================================
+# SHARED UTILITY: Simple claude -p prompt (Pro subscription, no API credits)
+# ============================================================================
+
+
+def run_claude_prompt(
+    prompt: str,
+    timeout: int = 60,
+    max_turns: int = 1,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Run a simple claude -p prompt synchronously using Pro subscription.
+
+    This is the shared utility for replacing Anthropic API calls with
+    claude -p subprocess calls. Uses --output-format json and strips
+    ANTHROPIC_API_KEY so Claude Code uses OAuth/Pro subscription.
+
+    Args:
+        prompt: The prompt text to send
+        timeout: Max seconds to wait (default 60)
+        max_turns: Max conversation turns (default 1 for simple queries)
+        cwd: Working directory (defaults to project root)
+
+    Returns:
+        Dict with keys: success (bool), result (str), cost_usd (float),
+        session_id (str), duration (float), error (str or None)
+    """
+    binary = _find_claude_binary()
+    if not binary:
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": 0,
+            "error": "Claude Code binary not found",
+        }
+
+    work_dir = cwd or str(PROJECT_ROOT)
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    start = time.time()
+
+    try:
+        result = subprocess.run(
+            [
+                str(binary),
+                "-p", prompt,
+                "--output-format", "json",
+                "--max-turns", str(max_turns),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=work_dir,
+            env=env,
+            timeout=timeout,
+        )
+
+        duration = time.time() - start
+        raw = result.stdout.strip()
+
+        if result.returncode != 0:
+            error_text = result.stderr.strip() or raw or f"Exit code {result.returncode}"
+            return {
+                "success": False,
+                "result": error_text,
+                "cost_usd": 0,
+                "session_id": "",
+                "duration": duration,
+                "error": error_text,
+            }
+
+        # Parse JSON result
+        try:
+            data = json.loads(raw)
+            return {
+                "success": True,
+                "result": data.get("result", raw),
+                "cost_usd": data.get("total_cost_usd", 0),
+                "session_id": data.get("session_id", ""),
+                "duration": duration,
+                "error": None,
+            }
+        except (json.JSONDecodeError, TypeError):
+            return {
+                "success": True,
+                "result": raw,
+                "cost_usd": 0,
+                "session_id": "",
+                "duration": duration,
+                "error": None,
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": time.time() - start,
+            "error": f"Timed out after {timeout}s",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": time.time() - start,
+            "error": str(e),
+        }
+
+
+async def run_claude_prompt_async(
+    prompt: str,
+    timeout: int = 60,
+    max_turns: int = 1,
+    cwd: str | None = None,
+) -> dict[str, Any]:
+    """Async version of run_claude_prompt for use in async contexts.
+
+    Same interface as run_claude_prompt but uses asyncio subprocess.
+
+    Args:
+        prompt: The prompt text to send
+        timeout: Max seconds to wait (default 60)
+        max_turns: Max conversation turns (default 1)
+        cwd: Working directory (defaults to project root)
+
+    Returns:
+        Same dict as run_claude_prompt.
+    """
+    binary = _find_claude_binary()
+    if not binary:
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": 0,
+            "error": "Claude Code binary not found",
+        }
+
+    work_dir = cwd or str(PROJECT_ROOT)
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    env.pop("ANTHROPIC_API_KEY", None)
+
+    start = time.time()
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            str(binary),
+            "-p", prompt,
+            "--output-format", "json",
+            "--max-turns", str(max_turns),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=work_dir,
+            env=env,
+        )
+
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout
+        )
+
+        duration = time.time() - start
+        raw = stdout.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            error_text = stderr.decode("utf-8", errors="replace").strip() or raw
+            return {
+                "success": False,
+                "result": error_text,
+                "cost_usd": 0,
+                "session_id": "",
+                "duration": duration,
+                "error": error_text,
+            }
+
+        try:
+            data = json.loads(raw)
+            return {
+                "success": True,
+                "result": data.get("result", raw),
+                "cost_usd": data.get("total_cost_usd", 0),
+                "session_id": data.get("session_id", ""),
+                "duration": duration,
+                "error": None,
+            }
+        except (json.JSONDecodeError, TypeError):
+            return {
+                "success": True,
+                "result": raw,
+                "cost_usd": 0,
+                "session_id": "",
+                "duration": duration,
+                "error": None,
+            }
+
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": time.time() - start,
+            "error": f"Timed out after {timeout}s",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "result": "",
+            "cost_usd": 0,
+            "session_id": "",
+            "duration": time.time() - start,
+            "error": str(e),
+        }
