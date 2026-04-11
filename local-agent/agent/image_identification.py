@@ -5,21 +5,12 @@ Image Identification - Cascading approach for identifying images.
 2. Claude API (fallback for complex cases)
 """
 
-import base64
 import time as _time
 from datetime import datetime
 
 import ollama
 
 from .perf_monitor import record_llm_call as _record_perf
-
-# Try to import anthropic
-try:
-    import anthropic
-
-    HAS_ANTHROPIC = True
-except ImportError:
-    HAS_ANTHROPIC = False
 
 # Create explicit ollama client (needed on Windows)
 _vision_client = ollama.Client(host="http://127.0.0.1:11434")
@@ -74,65 +65,70 @@ Be specific - if you recognize a character, name them confidently."""
 
 def ask_claude_with_image(image_bytes: bytes, question: str) -> str:
     """
-    Ask Claude to analyze an image using the Anthropic API directly.
-    This avoids conflicts with Claude Code CLI running in VSCode.
+    Ask Claude to analyze an image via claude -p (Pro subscription).
+
+    Saves image to a temp file, then prompts Claude Code to read and
+    analyze it. Uses Pro subscription instead of API credits.
+    Falls back to error message if claude -p fails.
     """
-    if not HAS_ANTHROPIC:
-        return "Error: anthropic library not installed"
+    import tempfile
+    from pathlib import Path
+
+    from .claude_code_runner import run_claude_prompt
+
+    # Save image to temp file so Claude Code can read it
+    suffix = ".png"
+    if image_bytes[:3] == b"\xff\xd8\xff":
+        suffix = ".jpg"
+    elif image_bytes[:4] == b"GIF8":
+        suffix = ".gif"
+    elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
+        suffix = ".webp"
 
     try:
-        # Initialize client (uses ANTHROPIC_API_KEY env var)
-        client = anthropic.Anthropic()
+        with tempfile.NamedTemporaryFile(
+            suffix=suffix, delete=False, prefix="technomancer_img_"
+        ) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
 
-        # Encode image as base64
-        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-        # Detect image type (default to png)
-        media_type = "image/png"
-        if image_bytes[:3] == b"\xff\xd8\xff":
-            media_type = "image/jpeg"
-        elif image_bytes[:4] == b"GIF8":
-            media_type = "image/gif"
-        elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
-            media_type = "image/webp"
-
-        # Call Claude API with vision (using Opus for better identification)
-        vision_start = _time.perf_counter()
-        response = client.messages.create(
-            model="claude-opus-4-20250514",
-            max_tokens=1024,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {  # type: ignore[list-item]
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_b64,
-                            },
-                        },
-                        {"type": "text", "text": question},
-                    ],
-                }
-            ],
+        # Build prompt that tells Claude Code to read and analyze the image
+        prompt = (
+            f"Read the image file at {tmp_path} and analyze it.\n\n"
+            f"The user's question about this image: {question}\n\n"
+            f"Provide a detailed, helpful analysis. Be specific about what "
+            f"you see in the image."
         )
+
+        vision_start = _time.perf_counter()
+        result = run_claude_prompt(prompt, timeout=60, max_turns=3)
         vision_duration = _time.perf_counter() - vision_start
 
-        # Extract text response
-        text = getattr(response.content[0], "text", str(response.content[0]))
-        _record_perf(
-            "claude_api", vision_duration, success=True,
-            model="claude-opus-4-20250514",
-            input_tokens=getattr(response.usage, "input_tokens", 0),
-            output_tokens=getattr(response.usage, "output_tokens", 0),
-        )
-        return text
+        if result["success"]:
+            _record_perf(
+                "claude_pro_sub", vision_duration, success=True,
+                model="claude-code-pro",
+            )
+            return result["result"]
+        else:
+            _record_perf(
+                "claude_pro_sub", vision_duration, success=False,
+                model="claude-code-pro",
+                error=str(result.get("error", ""))[:200],
+            )
+            log(f"claude -p image analysis failed: {result.get('error')}")
+            return f"Error analyzing image: {result.get('error')}"
 
     except Exception as e:
-        log(f"Claude API error: {e}")
-        return f"Error calling Claude: {e}"
+        log(f"Image analysis error: {e}")
+        return f"Error analyzing image: {e}"
+
+    finally:
+        # Clean up temp file
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def identify_image(image_bytes: bytes, user_question: str = "Who is this?") -> dict:
