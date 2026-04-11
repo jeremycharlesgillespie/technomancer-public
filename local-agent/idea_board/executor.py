@@ -230,6 +230,39 @@ def _load_codebase_summary() -> str:
     return "\n".join(lines)
 
 
+def _load_similar_execution_logs(idea: Any) -> str:
+    """Find completed ideas in the same category and include their execution logs."""
+    try:
+        all_ideas = load_ideas()
+        similar = [
+            i for i in all_ideas
+            if i.state == "done"
+            and i.category == idea.category
+            and i.id != idea.id
+            and i.execution_log
+            and len(i.execution_log.strip()) > 50
+        ]
+        if not similar:
+            return ""
+
+        # Sort by creation date (most recent first) and take top 2
+        similar.sort(key=lambda i: i.created, reverse=True)
+        refs = similar[:2]
+
+        lines = ["\n## Reference: How similar ideas were implemented"]
+        for ref in refs:
+            lines.append(f"\n**{ref.id}: {ref.title}**")
+            # Last 1000 chars of execution log (completion summary)
+            log_snippet = ref.execution_log[-1000:]
+            if len(ref.execution_log) > 1000:
+                log_snippet = "..." + log_snippet
+            lines.append(f"```\n{log_snippet}\n```")
+
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _load_git_history() -> str:
     """Load recent git commit messages for context."""
     try:
@@ -309,6 +342,7 @@ def _build_story_prompt(idea: Any) -> str:
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
         _load_git_history(),
         _load_recent_errors(),
+        _load_similar_execution_logs(idea),
         _build_workflow_section(idea),
     ]
     return "\n".join(s for s in sections if s)
