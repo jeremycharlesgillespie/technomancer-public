@@ -9,11 +9,18 @@ This allows the local Ollama agent to:
 Supports vault context integration for efficient token usage via prompt caching.
 """
 
+import logging
 import subprocess
 import sys
 import time as _time
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Module-level daily cost tracker
+_daily_cost_usd: float = 0.0
+_daily_cost_date: str = ""
 
 try:
     import anthropic
@@ -24,6 +31,72 @@ except ImportError:
 
 from .config import settings
 from .perf_monitor import record_llm_call as _record_perf
+
+# Approximate pricing per 1M tokens (Sonnet 4)
+_PRICE_INPUT = 3.00  # $/1M input tokens
+_PRICE_OUTPUT = 15.00  # $/1M output tokens
+_PRICE_CACHE_READ = 0.30  # $/1M cached input tokens
+_PRICE_CACHE_WRITE = 3.75  # $/1M cache creation tokens
+
+
+def _estimate_cost(
+    in_tokens: int, out_tokens: int,
+    cache_read: int = 0, cache_write: int = 0,
+) -> float:
+    """Estimate USD cost from token counts."""
+    return (
+        in_tokens * _PRICE_INPUT / 1_000_000
+        + out_tokens * _PRICE_OUTPUT / 1_000_000
+        + cache_read * _PRICE_CACHE_READ / 1_000_000
+        + cache_write * _PRICE_CACHE_WRITE / 1_000_000
+    )
+
+
+def _log_api_cost(
+    source: str, model: str,
+    in_tokens: int, out_tokens: int,
+    cache_read: int = 0, cache_write: int = 0,
+) -> None:
+    """Log API cost and check daily threshold."""
+    global _daily_cost_usd, _daily_cost_date
+
+    cost = _estimate_cost(in_tokens, out_tokens, cache_read, cache_write)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Reset daily counter on new day
+    if _daily_cost_date != today:
+        _daily_cost_usd = 0.0
+        _daily_cost_date = today
+
+    _daily_cost_usd += cost
+
+    logger.info(
+        f"[API Cost] {source} | model={model} | "
+        f"in={in_tokens} out={out_tokens} cache_r={cache_read} cache_w={cache_write} | "
+        f"est=${cost:.4f} | daily_total=${_daily_cost_usd:.4f}"
+    )
+
+    # Alert if daily spend exceeds threshold
+    if _daily_cost_usd >= settings.api_cost_alert_threshold:
+        try:
+            from .alerts import send_alert
+
+            send_alert(
+                f"Daily API spend ${_daily_cost_usd:.2f} exceeded "
+                f"${settings.api_cost_alert_threshold:.2f} threshold",
+                title="API Cost Alert",
+                level="warning",
+            )
+        except Exception:
+            pass
+
+
+def get_daily_api_cost() -> float:
+    """Return the current daily API cost estimate."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _daily_cost_date != today:
+        return 0.0
+    return _daily_cost_usd
 
 
 class ClaudeBridge:
@@ -167,13 +240,16 @@ Please provide a clear answer."""
                 messages=[{"role": "user", "content": prompt}],
             )
             latency = _time.perf_counter() - api_start
+            in_tokens = getattr(response.usage, "input_tokens", 0)
+            out_tokens = getattr(response.usage, "output_tokens", 0)
             _record_perf(
                 "claude_api", latency, success=True,
                 model=self.model,
-                input_tokens=getattr(response.usage, "input_tokens", 0),
-                output_tokens=getattr(response.usage, "output_tokens", 0),
+                input_tokens=in_tokens,
+                output_tokens=out_tokens,
             )
             record_claude_result(success=True, latency=latency)
+            _log_api_cost("ClaudeBridge", self.model, in_tokens, out_tokens)
             return getattr(response.content[0], "text", str(response.content[0]))
         except Exception as e:
             latency = _time.perf_counter() - api_start

@@ -95,6 +95,11 @@ class Settings(BaseSettings):
         default=1800, description="Seconds between repeat alerts per endpoint"
     )
 
+    # API cost alerting
+    api_cost_alert_threshold: float = Field(
+        default=1.0, description="Daily API spend ($) threshold for Discord alert"
+    )
+
     # Daily briefing settings
     briefing_hour: int = Field(
         default=7, description="Hour (0-23) to send daily briefing"

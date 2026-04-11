@@ -549,12 +549,16 @@ class ClaudeVaultSession:
             )
 
             self._track_usage(response.usage)
+            in_t = getattr(response.usage, "input_tokens", 0)
+            out_t = getattr(response.usage, "output_tokens", 0)
+            cache_r = getattr(response.usage, "cache_read_input_tokens", 0)
+            cache_w = getattr(response.usage, "cache_creation_input_tokens", 0)
             _record_perf(
                 "claude_api", _time.perf_counter() - api_start, success=True,
-                model=self.model,
-                input_tokens=getattr(response.usage, "input_tokens", 0),
-                output_tokens=getattr(response.usage, "output_tokens", 0),
+                model=self.model, input_tokens=in_t, output_tokens=out_t,
             )
+            from .claude_bridge import _log_api_cost
+            _log_api_cost("ClaudeVault.ask", self.model, in_t, out_t, cache_r, cache_w)
             return response.content[0].text
 
         except Exception as e:
@@ -604,11 +608,18 @@ class ClaudeVaultSession:
                 )
 
                 self._track_usage(response.usage)
+                in_t = getattr(response.usage, "input_tokens", 0)
+                out_t = getattr(response.usage, "output_tokens", 0)
+                cache_r = getattr(response.usage, "cache_read_input_tokens", 0)
+                cache_w = getattr(response.usage, "cache_creation_input_tokens", 0)
                 _record_perf(
                     "claude_api", _time.perf_counter() - api_start, success=True,
-                    model=self.model,
-                    input_tokens=getattr(response.usage, "input_tokens", 0),
-                    output_tokens=getattr(response.usage, "output_tokens", 0),
+                    model=self.model, input_tokens=in_t, output_tokens=out_t,
+                )
+                from .claude_bridge import _log_api_cost
+                _log_api_cost(
+                    f"ClaudeVault.tools[{turn}]", self.model,
+                    in_t, out_t, cache_r, cache_w,
                 )
 
                 # Process response
