@@ -18,7 +18,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 import ollama
 
 from agent.config import settings
@@ -697,14 +696,13 @@ def ask_ollama(question: str, max_retries: int = 2, per_call_timeout: int = 45) 
 
 
 def ask_claude(prompt: str, max_tokens: int = 500) -> str:
-    """Send a prompt to Claude API."""
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    result = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return result.content[0].text.strip()
+    """Send a prompt via claude -p (Pro subscription, no API credits)."""
+    from agent.claude_code_runner import run_claude_prompt
+
+    result = run_claude_prompt(prompt, timeout=60, max_turns=1)
+    if result["success"]:
+        return result["result"].strip()
+    return f"Error: {result.get('error', 'claude -p failed')}"
 
 
 def grade_response(question: str, response: str, criteria: str) -> dict:
@@ -1057,10 +1055,6 @@ def main():
     if "--report" in sys.argv:
         show_report()
         return
-
-    if not settings.anthropic_api_key:
-        print("ERROR: ANTHROPIC_API_KEY required for auto-improve.")
-        sys.exit(1)
 
     test_only = "--test-only" in sys.argv
 
