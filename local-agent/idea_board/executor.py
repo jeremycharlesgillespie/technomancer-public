@@ -230,6 +230,24 @@ def _load_codebase_summary() -> str:
     return "\n".join(lines)
 
 
+def _load_git_history() -> str:
+    """Load recent git commit messages for context."""
+    try:
+        project_root = Path(__file__).parent.parent.parent
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-15"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return f"\n## Recent Changes (git log)\n```\n{result.stdout.strip()}\n```"
+    except Exception:
+        pass
+    return ""
+
+
 def _load_recent_errors() -> str:
     """Load recent crash log entries for context."""
     crash_log = settings.llm_memory_path / "Permanent" / "crash_log.md"
@@ -289,6 +307,7 @@ def _build_story_prompt(idea: Any) -> str:
         _build_epic_context(idea),
         _build_discussion(idea),
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        _load_git_history(),
         _load_recent_errors(),
         _build_workflow_section(idea),
     ]
@@ -351,6 +370,7 @@ def _build_epic_prompt(idea: Any) -> str:
         f"## Epic Description\n{idea.description}",
         done_context,
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        _load_git_history(),
         _load_recent_errors(),
         f"\n## Implementation Process\n"
         f"For EACH story below, follow this exact cycle:\n"
