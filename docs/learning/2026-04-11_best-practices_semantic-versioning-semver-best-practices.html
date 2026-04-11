@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic versioning (SemVer) best practices - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Semantic versioning (SemVer) best practices</h1>
+            <p class="meta">best_practices &bull; April 11, 2026</p>
+        </header>
+        <main>
+<h1>Semantic Versioning (SemVer) Best Practices</h1>
+
+<h2>Quick Overview</h2>
+
+<p>Semantic Versioning â€” SemVer for short â€” is a versioning scheme that uses a three-part number format: <strong>MAJOR.MINOR.PATCH</strong>. Each segment communicates specific meaning. Bump the <strong>PATCH</strong> (e.g., 1.4.2 â†’ 1.4.3) for backward-compatible bug fixes. Bump the <strong>MINOR</strong> (e.g., 1.4.3 â†’ 1.5.0) when you add functionality that doesn&#x27;t break existing behavior. Bump the <strong>MAJOR</strong> (e.g., 1.5.0 â†’ 2.0.0) when you introduce breaking changes. The version number isn&#x27;t arbitrary â€” it&#x27;s a contract with everyone who depends on your code.</p>
+
+<p>Why does this matter? Because without a clear versioning strategy, upgrades become a gamble. If you maintain a Django library, an internal API package, or even a shared automation toolkit, your consumers need to know: &quot;Can I upgrade safely, or will this break my deployment?&quot; SemVer answers that question at a glance. It&#x27;s the difference between a teammate confidently running <code>pip install --upgrade your-package</code> and them pinning to a specific version forever because they don&#x27;t trust what &quot;new version&quot; means.</p>
+
+<p>Here&#x27;s what the version string looks like in practice:</p>
+
+<pre><code>1.4.2
+â”‚ â”‚ â”‚
+â”‚ â”‚ â””â”€â”€ PATCH: bug fix, no API changes
+â”‚ â””â”€â”€â”€â”€ MINOR: new feature, backward-compatible
+â””â”€â”€â”€â”€â”€â”€ MAJOR: breaking change, consumers must adapt
+</code></pre>
+
+<p>Optional pre-release and build metadata tags extend this further: <code>2.0.0-beta.1+build.4817</code>. The pre-release tag (<code>-beta.1</code>) signals instability, and the build metadata (<code>+build.4817</code>) is informational only â€” it doesn&#x27;t affect version precedence.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>If you&#x27;re working across Python packages, Django apps, PostgreSQL migration tooling, and AWS-deployed services, versioning isn&#x27;t academic â€” it&#x27;s operational. Consider a Django app that exposes a REST API consumed by multiple internal services. When you change a serializer field from optional to required, that&#x27;s a MAJOR bump. When you add a new endpoint, that&#x27;s MINOR. When you fix a query that was returning stale data from PostgreSQL, that&#x27;s PATCH. Getting this right means your CI/CD pipelines on AWS can make intelligent decisions: auto-deploy patch and minor updates to staging, but gate major bumps behind manual approval.</p>
+
+<p>This knowledge also directly impacts how you version your automation and RPA tooling. If you&#x27;re building Python packages that wrap Ollama inference calls or Discord bot frameworks, SemVer lets downstream users â€” including your future self â€” trust the upgrade path. It&#x27;s a skill that separates developers who &quot;ship code&quot; from developers who &quot;ship reliable software.&quot; Recruiters and teams notice when your PyPI packages, GitHub releases, and internal libraries follow disciplined versioning. It signals maturity.</p>
+
+<h2>How to Implement It</h2>
+
+<h3>Step 1: Define Your Version in One Place</h3>
+
+<p>For Python projects, use <code>pyproject.toml</code> as your single source of truth. Never scatter version strings across multiple files.</p>
+
+<pre><code class="language-toml"># pyproject.toml
+[project]
+name = &quot;my-django-toolkit&quot;
+version = &quot;1.3.0&quot;
+requires-python = &quot;&gt;=3.10&quot;
+
+<p>[project.optional-dependencies]<br>
+dev = [&quot;pytest&quot;, &quot;ruff&quot;, &quot;black&quot;]<br>
+</code></pre></p>
+
+<p>If you need to access the version at runtime (e.g., for a <code>/health</code> endpoint or Discord bot status), read it programmatically:</p>
+
+<pre><code class="language-python"># my_toolkit/__init__.py
+from importlib.metadata import version
+
+<p>__version__ = version(&quot;my-django-toolkit&quot;)<br>
+</code></pre></p>
+
+<p>This way, <code>pyproject.toml</code> remains the single source of truth, and your code reads from it rather than defining a competing string.</p>
+
+<h3>Step 2: Automate Version Bumping</h3>
+
+<p>Don&#x27;t manually edit version strings. Use a tool. <code>bump2version</code> (or its modern fork <code>bump-my-version</code>) integrates cleanly into Python workflows:</p>
+
+<pre><code class="language-bash">pip install bump-my-version
+</code></pre>
+
+<p>Configure it:</p>
+
+<pre><code class="language-toml"># pyproject.toml
+[tool.bumpversion]
+current_version = &quot;1.3.0&quot;
+commit = true
+tag = true
+
+<p>[[tool.bumpversion.files]]<br>
+filename = &quot;pyproject.toml&quot;<br>
+search = &#x27;version = &quot;{current_version}&quot;&#x27;<br>
+replace = &#x27;version = &quot;{new_version}&quot;&#x27;<br>
+</code></pre></p>
+
+<p>Now bumping is a single command:</p>
+
+<pre><code class="language-bash">bump-my-version bump patch   # 1.3.0 â†’ 1.3.1
+bump-my-version bump minor   # 1.3.0 â†’ 1.4.0
+bump-my-version bump major   # 1.3.0 â†’ 2.0.0
+</code></pre>
+
+<p>Each command updates the version, creates a git commit, and tags it. This pairs well with a safe-update workflow where you branch, test, and merge.</p>
+
+<h3>Step 3: Use Pre-release Versions for Unstable Work</h3>
+
+<p>When you&#x27;re building a new feature that isn&#x27;t ready for production â€” say, swapping an Ollama model backend or adding a new Discord command handler â€” use pre-release tags:</p>
+
+<pre><code class="language-bash">bump-my-version bump minor --new-version 1.4.0-beta.1
+</code></pre>
+
+<p>This produces <code>1.4.0-beta.1</code>, which pip treats as a pre-release. Users running <code>pip install your-package</code> won&#x27;t get it unless they explicitly opt in with <code>pip install --pre your-package</code>. This is invaluable when deploying to a staging environment on AWS while keeping production stable.</p>
+
+<h3>Step 4: Map Database Migrations to Versions</h3>
+
+<p>This is where SemVer intersects with your PostgreSQL and Oracle work. Tie your Django migration history to version numbers using a changelog or migration naming convention:</p>
+
+<pre><code class="language-python"># In your CHANGELOG.md or migration file
+&quot;&quot;&quot;
+Migration: 0042_add_audit_log_table.py
+Introduced in: v1.4.0
+Reversible: Yes
+
+<p>Adds the audit_log table for tracking API mutations.<br>
+&quot;&quot;&quot;</p>
+
+<p>from django.db import migrations, models</p>
+
+<p>class Migration(migrations.Migration):<br>
+    dependencies = [<br>
+        (&quot;core&quot;, &quot;0041_previous_migration&quot;),<br>
+    ]</p>
+
+<p>operations = [<br>
+        migrations.CreateModel(<br>
+            name=&quot;AuditLog&quot;,<br>
+            fields=[<br>
+                (&quot;id&quot;, models.BigAutoField(primary_key=True)),<br>
+                (&quot;action&quot;, models.CharField(max_length=50)),<br>
+                (&quot;timestamp&quot;, models.DateTimeField(auto_now_add=True)),<br>
+                (&quot;payload&quot;, models.JSONField(default=dict)),<br>
+            ],<br>
+        ),<br>
+    ]<br>
+</code></pre></p>
+
+<p>This practice makes rollbacks sane. If <code>v1.4.0</code> causes issues, you know exactly which migrations to reverse. For Oracle databases where DDL changes are more sensitive, this traceability is critical.</p>
+
+<h3>Step 5: Integrate with CI/CD on AWS</h3>
+
+<p>In your deployment pipeline, use the version tag to drive behavior:</p>
+
+<pre><code class="language-python"># deploy_check.py â€” run in CI before deployment
+import re
+import subprocess
+
+<p>def get_current_version():<br>
+    result = subprocess.run(<br>
+        [&quot;git&quot;, &quot;describe&quot;, &quot;--tags&quot;, &quot;--abbrev=0&quot;],<br>
+        capture_output=True, text=True<br>
+    )<br>
+    return result.stdout.strip()</p>
+
+<p>def classify_bump(old: str, new: str) -&gt; str:<br>
+    old_parts = [int(x) for x in re.findall(r&quot;\d+&quot;, old)[:3]]<br>
+    new_parts = [int(x) for x in re.findall(r&quot;\d+&quot;, new)[:3]]</p>
+
+<p>if new_parts[0] &gt; old_parts[0]:<br>
+        return &quot;major&quot;<br>
+    elif new_parts[1] &gt; old_parts[1]:<br>
+        return &quot;minor&quot;<br>
+    return &quot;patch&quot;</p>
+
+<p>if __name__ == &quot;__main__&quot;:<br>
+    # Compare last deployed version vs current<br>
+    deployed = &quot;1.3.0&quot;  # read from SSM Parameter Store, etc.<br>
+    current = get_current_version()<br>
+    bump_type = classify_bump(deployed, current)</p>
+
+<p>if bump_type == &quot;major&quot;:<br>
+        print(f&quot;MAJOR bump ({deployed} â†’ {current}): manual approval required&quot;)<br>
+        exit(1)  # block auto-deploy<br>
+    else:<br>
+        print(f&quot;{bump_type} bump ({deployed} â†’ {current}): auto-deploy approved&quot;)<br>
+        exit(0)<br>
+</code></pre></p>
+
+<p>Store your deployed version in AWS SSM Parameter Store or a DynamoDB table, and let your pipeline compare it against the git tag to decide whether to auto-deploy or pause for review.</p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong></p>
+
+<ul>
+<li><strong>Shared Python packages</strong> â€” any library installed via pip by other projects or teams. SemVer is the language pip, Poetry, and uv all understand for dependency resolution.</li>
+<li><strong>Internal APIs and Django services</strong> â€” when multiple services consume your API, the version number communicates backward compatibility. Pair it with API URL versioning (<code>/api/v2/</code>) for external-facing endpoints.</li>
+<li><strong>Automation and bot frameworks</strong> â€” if you&#x27;re distributing a Discord bot toolkit or Ollama wrapper that others extend, SemVer tells plugin authors when they need to update their integration code.</li>
+</ul>
+<strong>Avoid when:</strong>
+
+<ul>
+<li><strong>Application deployments with no external consumers</strong> â€” if you&#x27;re deploying a monolithic Django app where no one imports your code as a library, SemVer adds ceremony without value. Use commit hashes, date-based tags (<code>2026.04.11</code>), or simple incrementing build numbers instead.</li>
+<li><strong>Rapidly iterating pre-1.0 projects</strong> â€” SemVer spec says anything under <code>0.x.y</code> can break at any time. If you&#x27;re prototyping and your API changes every day, don&#x27;t waste energy agonizing over minor vs. major. Stay at <code>0.x</code> and iterate. Adopt strict SemVer when you have real consumers.</li>
+</ul>
+<strong>Common pitfalls:</strong>
+
+<ul>
+<li><strong>Forgetting that dependency changes are breaking changes.</strong> If your package drops support for Python 3.10 or upgrades a PostgreSQL driver with different connection semantics, that&#x27;s a MAJOR bump â€” even if your code didn&#x27;t change.</li>
+<li><strong>Treating MINOR as &quot;small change.&quot;</strong> MINOR means <em>new functionality, backward-compatible</em>. A large new feature is still MINOR if it doesn&#x27;t break existing behavior. Size of change and type of change are different axes.</li>
+<li><strong>Never reaching 1.0.</strong> Some projects stay at <code>0.x</code> forever out of caution. If people depend on your code in production, you owe them the stability signal that <code>1.0+</code> provides. Ship it.</li>
+<li><strong>Bumping version without a changelog.</strong> A version number without context is just a number. Always pair bumps with release notes explaining <em>what changed and why</em>.</li>
+</ul>
+<h2>Key Takeaways</h2>
+
+<ul>
+<li><strong>MAJOR.MINOR.PATCH is a contract, not a counter.</strong> Each segment has specific meaning â€” breaking change, new feature, bug fix. Respect the semantics.</li>
+<li><strong>Single source of truth.</strong> Define your version in <code>pyproject.toml</code> and read it everywhere else. Never duplicate version strings.</li>
+<li><strong>Automate the bump.</strong> Use <code>bump-my-version</code> to update the version, commit, and tag in one command. Manual edits invite mistakes.</li>
+<li><strong>Tie migrations to versions.</strong> When working with PostgreSQL or Oracle, link database schema changes to version numbers so rollbacks are traceable.</li>
+<li><strong>Let your CI/CD pipeline read the version.</strong> On AWS, use version classification to auto-deploy patches and gate major bumps behind approval â€” turning your version string into an operational decision point.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
