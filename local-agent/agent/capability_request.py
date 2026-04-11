@@ -13,12 +13,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Tuple
 
-import anthropic
-
+from .config import settings
+from .core import Agent, AgentConfig
 from .perf_monitor import record_llm_call as _record_perf
-
-# Claude API key from environment
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Path to tools file for hot modification
 TOOLS_FILE = Path(__file__).parent / "tools.py"
@@ -60,12 +57,6 @@ def request_capability(
     Returns:
         Success message with the new capability, or explanation of why it can't be done.
     """
-    if not ANTHROPIC_API_KEY:
-        return (
-            "CANNOT IMPLEMENT: No Anthropic API key configured. "
-            "Set ANTHROPIC_API_KEY environment variable."
-        )
-
     # Read current tools for context
     current_tools = read_current_tools()
 
@@ -131,34 +122,30 @@ ALTERNATIVE: [any alternative approaches]
 """
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        cap_agent = Agent(AgentConfig(
+            model=settings.ollama_model,
+            verbose=False,
+            system_prompt="You evaluate capability requests for a software project.",
+        ))
 
         cap_start = _time.perf_counter()
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        ollama_response = cap_agent.run(prompt)
         cap_duration = _time.perf_counter() - cap_start
         _record_perf(
-            "claude_api", cap_duration, success=True,
-            model="claude-sonnet-4-20250514",
-            input_tokens=getattr(response.usage, "input_tokens", 0),
-            output_tokens=getattr(response.usage, "output_tokens", 0),
+            "ollama", cap_duration, success=True,
+            model=settings.ollama_model,
         )
 
-        claude_response = getattr(response.content[0], "text", str(response.content[0]))
-        log_request("CAPABILITY_REQUEST", capability_description, claude_response)
+        log_request("CAPABILITY_REQUEST", capability_description, ollama_response)
 
-        # Parse Claude's response
-        if "IMPLEMENT: YES" in claude_response:
-            return _implement_capability(claude_response, capability_description)
+        # Parse response
+        if "IMPLEMENT: YES" in ollama_response:
+            return _implement_capability(ollama_response, capability_description)
         else:
-            # Extract the reason
             reason_match = re.search(
-                r"REASON:\s*(.+?)(?=ALTERNATIVE:|$)", claude_response, re.DOTALL
+                r"REASON:\s*(.+?)(?=ALTERNATIVE:|$)", ollama_response, re.DOTALL
             )
-            alt_match = re.search(r"ALTERNATIVE:\s*(.+?)$", claude_response, re.DOTALL)
+            alt_match = re.search(r"ALTERNATIVE:\s*(.+?)$", ollama_response, re.DOTALL)
 
             reason = reason_match.group(1).strip() if reason_match else "Unknown reason"
             alternative = alt_match.group(1).strip() if alt_match else ""
@@ -169,13 +156,6 @@ ALTERNATIVE: [any alternative approaches]
 
             return result
 
-    except anthropic.APIError as e:
-        _record_perf(
-            "claude_api", _time.perf_counter() - cap_start, success=False,
-            model="claude-sonnet-4-20250514", error=str(e)[:200],
-        )
-        log_request("API_ERROR", capability_description, str(e))
-        return f"CANNOT IMPLEMENT: Claude API error: {e}"
     except Exception as e:
         log_request("ERROR", capability_description, traceback.format_exc())
         return f"CANNOT IMPLEMENT: Error during capability request: {e}"
