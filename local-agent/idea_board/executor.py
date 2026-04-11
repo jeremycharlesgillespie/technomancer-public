@@ -15,9 +15,11 @@ the dashboard can poll and display progress line by line.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 # Timeout for Claude Code execution (15 minutes)
 EXECUTION_TIMEOUT: int = 900
+
+# Timeout for exploration pass (3 minutes — read-only, should be fast)
+EXPLORATION_TIMEOUT: int = 180
 
 # Bridge token file for Discord notifications
 BRIDGE_TOKEN_FILE: Path = Path(__file__).parent.parent / ".bridge_token"
@@ -366,6 +371,123 @@ def _build_epic_prompt(idea: Any) -> str:
     return "\n".join(s for s in sections if s)
 
 
+def _build_exploration_prompt(idea: Any) -> str:
+    """Build a read-only exploration prompt for the first pass.
+
+    This prompt instructs Claude Code to explore the codebase and understand
+    the architecture without making any changes. The session context from
+    this pass carries forward into the implementation pass via --resume.
+    """
+    return (
+        f"You are about to implement: {idea.title}\n\n"
+        f"Description: {idea.description}\n\n"
+        f"Category: {idea.category}\n\n"
+        f"IMPORTANT: This is an EXPLORATION pass. Do NOT make any changes.\n"
+        f"Your job is to build understanding by:\n"
+        f"1. Read CLAUDE.md for project conventions and mandatory workflows\n"
+        f"2. Explore the codebase files most relevant to this task\n"
+        f"3. Read existing test files to understand test patterns and fixtures\n"
+        f"4. Identify which files you will need to create or modify\n"
+        f"5. Note any existing utilities or patterns you should reuse\n\n"
+        f"After exploring, summarize your findings:\n"
+        f"- Which files need to change\n"
+        f"- What patterns to follow\n"
+        f"- What test approach to use\n"
+        f"- Any potential issues to watch for\n\n"
+        f"Do NOT edit any files. Do NOT run any commands. Just read and plan."
+    )
+
+
+def _run_exploration_pass(
+    binary: Path,
+    idea: Any,
+    state: ExecutionState,
+    env: dict[str, str],
+    project_root: Path,
+) -> str | None:
+    """Run the exploration pass and return the session_id for --resume.
+
+    Args:
+        binary: Path to the Claude Code binary
+        idea: The idea being executed
+        state: ExecutionState for logging
+        env: Environment variables
+        project_root: Working directory
+
+    Returns:
+        session_id string if successful, None if exploration failed
+    """
+    explore_prompt = _build_exploration_prompt(idea)
+
+    state.log_lines.append("--- Phase 1: Exploration ---")
+    state.log_lines.append("Reading CLAUDE.md, exploring relevant files, understanding patterns...")
+    _notify_discord(f"[{idea.id}] Phase 1: Exploring codebase before implementation...")
+
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary), "-p", explore_prompt,
+                "--output-format", "json",
+                "--allowedTools", "Read,Glob,Grep",
+                "--max-turns", "15",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=str(project_root),
+            env=env,
+        )
+
+        start = time.time()
+        while proc.poll() is None:
+            time.sleep(2)
+            elapsed = time.time() - start
+
+            if state.cancelled:
+                proc.kill()
+                return None
+
+            if elapsed > EXPLORATION_TIMEOUT:
+                proc.kill()
+                state.log_lines.append(
+                    f"Exploration timed out after {EXPLORATION_TIMEOUT}s — "
+                    f"proceeding with single-pass execution"
+                )
+                return None
+
+        stdout_bytes = proc.stdout.read() if proc.stdout else b""
+        raw_output = stdout_bytes.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            state.log_lines.append("Exploration pass returned non-zero — falling back to single-pass")
+            return None
+
+        # Parse JSON to extract session_id
+        try:
+            result = json.loads(raw_output)
+            session_id = result.get("session_id", "")
+            if session_id:
+                elapsed = time.time() - start
+                state.log_lines.append(
+                    f"Exploration complete ({elapsed:.0f}s) — "
+                    f"session {session_id[:12]}... preserved for implementation"
+                )
+                _notify_discord(
+                    f"[{idea.id}] Exploration complete ({elapsed:.0f}s). "
+                    f"Starting implementation with full codebase context..."
+                )
+                return session_id
+            else:
+                state.log_lines.append("No session_id in exploration output — falling back")
+                return None
+        except (json.JSONDecodeError, TypeError):
+            state.log_lines.append("Could not parse exploration JSON — falling back")
+            return None
+
+    except Exception as e:
+        state.log_lines.append(f"Exploration error: {e} — falling back to single-pass")
+        return None
+
+
 def execute_idea(idea_id: str) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -399,9 +521,16 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
         prompt = _build_story_prompt(idea)
 
     def _run() -> None:
-        """Background thread: spawn claude.exe and stream stdout."""
-        import subprocess
+        """Background thread: two-pass Claude Code execution.
 
+        Pass 1 (exploration): Read-only exploration of the codebase to build
+        understanding of architecture, patterns, and test structure.
+
+        Pass 2 (implementation): Full implementation with --resume to carry
+        forward all context from the exploration pass.
+
+        Falls back to single-pass if exploration fails.
+        """
         binary = _find_claude_binary()
         if not binary:
             state.log_lines.append("ERROR: Claude Code binary not found")
@@ -416,12 +545,37 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
 
         try:
+            # --- Phase 1: Exploration ---
+            session_id = _run_exploration_pass(
+                binary, idea, state, env, project_root
+            )
+
+            if state.cancelled:
+                state.log_lines.append("CANCELLED by user")
+                mark_failed(idea_id, state.log_text)
+                _notify_discord(f"Execution of {idea_id} was cancelled.")
+                _active.pop(idea_id, None)
+                return
+
+            # --- Phase 2: Implementation ---
+            state.log_lines.append("")
+            state.log_lines.append("--- Phase 2: Implementation ---")
+
+            cmd = [
+                str(binary), "-p", prompt,
+                "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
+                "--max-turns", "50",
+            ]
+            if session_id:
+                cmd.extend(["--resume", session_id])
+                state.log_lines.append(
+                    f"Resuming session {session_id[:12]}... with full exploration context"
+                )
+            else:
+                state.log_lines.append("Running single-pass (no exploration context)")
+
             proc = subprocess.Popen(
-                [
-                    str(binary), "-p", prompt,
-                    "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
-                    "--max-turns", "50",
-                ],
+                cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(project_root),
@@ -430,12 +584,9 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.pid = proc.pid
             state.log_lines.append(f"Claude Code started (PID: {proc.pid})")
             state.log_lines.append(f"Working on: {idea.title}")
-            state.log_lines.append("Waiting for Claude Code to complete...")
             logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
 
-            # Monitor the process with periodic status updates.
-            # claude -p buffers all stdout until exit, so we poll process
-            # status instead of trying to read line-by-line.
+            # Monitor the process with periodic status updates
             last_update_time = time.time()
             while proc.poll() is None:
                 time.sleep(3)
