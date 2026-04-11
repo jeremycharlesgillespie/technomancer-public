@@ -209,6 +209,7 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
 .btn-approve { background: var(--green); color: white; }
 .btn-veto { background: var(--red); color: white; }
 .btn-execute { background: var(--orange); color: white; }
+.btn-run { background: #2196F3; color: white; font-weight: 600; }
 .btn:hover { opacity: 0.85; }
 .comments { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--border);
             max-height: 400px; overflow-y: auto; }
@@ -350,17 +351,18 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
     actions = ""
     approve_btn = f'<button class="btn btn-approve" onclick="doVote(\'{eid}\',\'approve\')">Approve</button>'
     veto_btn = f'<button class="btn btn-veto" onclick="doVote(\'{eid}\',\'veto\')">Veto</button>'
-    execute_btn = f'<button class="btn btn-execute" onclick="doExecute(\'{eid}\')">Copy for Claude Code</button>'
-    epic_btn = f'<button class="btn btn-epic-copy" onclick="doExecuteEpic(\'{eid}\')">Copy Epic for Claude Code</button>'
+    copy_btn = f'<button class="btn btn-execute" onclick="doExecute(\'{eid}\')">Copy for Claude Code</button>'
+    epic_copy_btn = f'<button class="btn btn-epic-copy" onclick="doExecuteEpic(\'{eid}\')">Copy Epic for Claude Code</button>'
+    run_btn = f'<button class="btn btn-run" onclick="doRunExecute(\'{eid}\')">Execute</button>'
     done_btn = f'<button class="btn btn-done" onclick="doMarkDone(\'{eid}\')">Mark Done</button>'
     delete_btn = f'<button class="btn btn-delete" onclick="doDelete(\'{eid}\')">Delete</button>'
-    copy_btn = epic_btn if idea_type == "epic" else execute_btn
+    clipboard_btn = epic_copy_btn if idea_type == "epic" else copy_btn
     if state in ("proposed", "refining"):
-        actions = f'<div class="actions">{approve_btn} {veto_btn} {copy_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{approve_btn} {veto_btn} {run_btn} {clipboard_btn} {delete_btn}</div>'
     elif state == "approved":
-        actions = f'<div class="actions">{copy_btn} {done_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{run_btn} {clipboard_btn} {done_btn} {delete_btn}</div>'
     elif state == "failed":
-        actions = f'<div class="actions">{copy_btn} {done_btn} {delete_btn}</div>'
+        actions = f'<div class="actions">{run_btn} {clipboard_btn} {done_btn} {delete_btn}</div>'
     elif state == "done":
         actions = f'<div class="actions">{delete_btn}</div>'
     elif state == "vetoed":
@@ -583,6 +585,33 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
             btn.style.background = '';
             btn.disabled = false;
         }}, 5000);
+    }}
+
+    async function doRunExecute(id) {{
+        if (!confirm('Run Claude Code autonomously on this idea? It will use safe_update workflow.')) return;
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+        try {{
+            const resp = await fetch(`/api/ideas/${{id}}/execute`, {{method: 'POST'}});
+            const data = await resp.json();
+            if (resp.ok) {{
+                showToast('Claude Code execution started! Watch the log below.');
+                btn.textContent = 'Running...';
+                btn.style.background = 'var(--green)';
+                setTimeout(() => location.reload(), 2000);
+            }} else {{
+                showToast(data.error || 'Failed to start execution');
+                btn.textContent = 'Execute';
+                btn.style.background = '';
+                btn.disabled = false;
+            }}
+        }} catch(e) {{
+            showToast('Error: ' + e.message);
+            btn.textContent = 'Execute';
+            btn.style.background = '';
+            btn.disabled = false;
+        }}
     }}
 
     async function doExecuteEpic(id) {{

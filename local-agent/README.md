@@ -1,17 +1,17 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-1369-brightgreen) ![coverage](https://img.shields.io/badge/coverage-70.4%25-yellow) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-66-blue) ![lines](https://img.shields.io/badge/lines-26k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-1369-brightgreen) ![coverage](https://img.shields.io/badge/coverage-70.5%25-yellow) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-66-blue) ![lines](https://img.shields.io/badge/lines-26k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 An Ollama-powered autonomous agent framework with Discord bot interface,
 Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-10 20:55
+> via `safe_update.py`. Last updated: 2026-04-10 21:16
 
 ## Highlights
 
-- **1369 automated tests** with 70.4% code coverage
+- **1369 automated tests** with 70.5% code coverage
 - **66 Python modules** across 26,150 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
@@ -191,7 +191,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Metric | Value |
 |--------|-------|
 | Test count | 1369 |
-| Code coverage | 70.4% |
+| Code coverage | 70.5% |
 | Python modules | 66 |
 | Lines of code | 26,150 |
 | Test files | 57 |
