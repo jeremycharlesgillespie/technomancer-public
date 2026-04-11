@@ -263,7 +263,21 @@ python safe_update.py continue
 # 6. VERIFY: Confirm bot is running (MANDATORY)
 python bot_service.py status
 # Must show "Bot running: True"
+
+# 7. PUBLISH: Push to both repos (MANDATORY)
+git push origin main
+python publish.py --push --force
 ```
+
+### MANDATORY: Publish to Both Repos After Every Deploy
+**After every successful `safe_update.py continue`, push to BOTH repositories:**
+
+```bash
+git push origin main                    # Private repo
+python publish.py --push --force        # Public repo (technomancer-public)
+```
+
+**Never tell the user a change is deployed without pushing to both repos.**
 
 ### MANDATORY: Run validate.py Before EVERY Commit
 **Claude MUST run `python validate.py startup` before EVERY git commit. NO EXCEPTIONS.**

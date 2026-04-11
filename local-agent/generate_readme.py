@@ -44,13 +44,13 @@ def collect_test_stats() -> dict:
             if m:
                 test_count = int(m.group(1))
 
-    # Run coverage (quick, just the summary)
+    # Run coverage (with longer timeout for Ollama-dependent tests)
     cov_result = _run([
         sys.executable, "-m", "pytest",
         "--cov=agent", "--cov-report=json:" + str(COVERAGE_JSON),
         "--cov-report=term-missing",
-        "-q", "--tb=no",
-    ])
+        "-q", "--tb=no", "-x",
+    ], timeout=600)
 
     coverage_pct = 0
     if COVERAGE_JSON.exists():
