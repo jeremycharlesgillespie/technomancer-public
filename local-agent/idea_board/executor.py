@@ -812,6 +812,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             cmd = [
                 str(binary), "-p", prompt,
                 "--output-format", "stream-json",
+                "--verbose",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
             ]
