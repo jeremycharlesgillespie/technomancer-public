@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.config import settings
-from .models import add_comment, get_idea, mark_done, mark_executing, mark_failed
+from .models import add_comment, get_idea, load_ideas, mark_done, mark_executing, mark_failed
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,237 @@ def _find_claude_binary() -> Path | None:
     return candidates[0] if candidates else None
 
 
+# ---------------------------------------------------------------------------
+# Prompt builders — assemble rich context for Claude Code
+# ---------------------------------------------------------------------------
+
+
+def _build_discussion(idea: Any) -> str:
+    """Format discussion thread from idea comments."""
+    if not idea.comments:
+        return ""
+    lines = ["\n## Discussion (what was decided)"]
+    for c in idea.comments:
+        label = f"{settings.owner_name} (manager)" if c.author == "owner" else "LLM (engineer)"
+        lines.append(f"- {label}: {c.text}")
+    return "\n".join(lines)
+
+
+def _build_epic_context(idea: Any) -> str:
+    """Build parent epic and sibling context for a story."""
+    if not idea.parent_id:
+        return ""
+    parent = get_idea(idea.parent_id)
+    if not parent:
+        return ""
+
+    all_ideas = load_ideas()
+    siblings = [i for i in all_ideas if i.parent_id == idea.parent_id]
+
+    lines = [
+        f"\n## Parent Epic: {parent.title}",
+        f"**Epic Description:** {parent.description}",
+        "",
+        "**Stories in this epic:**",
+    ]
+    for s in siblings:
+        if s.id == idea.id:
+            lines.append(f"  - **[THIS] {s.id}: {s.title}** <-- you are implementing this one")
+        elif s.state == "done":
+            lines.append(f"  - [DONE] {s.id}: {s.title}")
+        else:
+            lines.append(f"  - {s.id}: {s.title}")
+    lines.append(
+        "\nBuild on what the completed stories created. "
+        "Ensure your implementation integrates with the epic's full lifecycle goal."
+    )
+    return "\n".join(lines)
+
+
+def _build_children_context(idea: Any) -> str:
+    """Build child story list for an epic."""
+    all_ideas = load_ideas()
+    kids = [i for i in all_ideas if i.parent_id == idea.id]
+    if not kids:
+        return ""
+    lines = ["\n**Stories in this epic:**"]
+    for k in kids:
+        done_marker = " [DONE]" if k.state == "done" else ""
+        lines.append(f"  - {k.id}: {k.title}{done_marker}")
+    return "\n".join(lines)
+
+
+def _load_codebase_summary() -> str:
+    """List all Python files in agent/ and idea_board/ with their first docstring line."""
+    agent_dir = Path(__file__).parent.parent / "agent"
+    lines = []
+    for f in sorted(agent_dir.glob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        desc = ""
+        try:
+            content = f.read_text(encoding="utf-8", errors="replace")
+            if '"""' in content:
+                doc_start = content.index('"""') + 3
+                doc_end = content.index('"""', doc_start)
+                first_line = content[doc_start:doc_end].strip().split("\n")[0]
+                desc = f" — {first_line}"
+        except (ValueError, OSError):
+            pass
+        lines.append(f"- {f.name}{desc}")
+
+    board_dir = Path(__file__).parent
+    for f in sorted(board_dir.glob("*.py")):
+        if f.name.startswith("_"):
+            continue
+        lines.append(f"- idea_board/{f.name}")
+    return "\n".join(lines)
+
+
+def _load_recent_errors() -> str:
+    """Load recent crash log entries for context."""
+    crash_log = settings.llm_memory_path / "Permanent" / "crash_log.md"
+    if not crash_log.exists():
+        return ""
+    try:
+        content = crash_log.read_text(encoding="utf-8", errors="replace")
+        if not content.strip():
+            return ""
+        # Last 1500 chars (most recent errors)
+        snippet = content[-1500:] if len(content) > 1500 else content
+        return f"\n## Recent Errors (from crash log)\n```\n{snippet}\n```"
+    except OSError:
+        return ""
+
+
+def _build_workflow_section(idea: Any) -> str:
+    """Build the mandatory workflow and completion instructions."""
+    short_name = idea.id.replace("idea-", "")
+    return (
+        f"\n## MANDATORY WORKFLOW\n"
+        f"Follow these steps EXACTLY:\n"
+        f"1. Read CLAUDE.md for project conventions\n"
+        f"2. `cd local-agent`\n"
+        f"3. `python safe_update.py {short_name}`\n"
+        f"4. Make your code changes (with tests if adding new functionality)\n"
+        f"5. `python validate.py startup` — MUST show VALIDATION PASSED\n"
+        f"6. `git add <files>` && `git commit -m 'description'`\n"
+        f"7. `python safe_update.py continue` — runs tests, merges, restarts bot\n"
+        f"8. `python bot_service.py status` — MUST show Bot running: True\n"
+        f"\nDo NOT skip any steps. Do NOT commit without validate.py passing.\n"
+        f"\n## After Completion\n"
+        f"When DONE and verified (bot running), mark the idea as complete:\n"
+        f"```bash\n"
+        f"curl -X POST http://localhost:8322/api/ideas/{idea.id}/done\n"
+        f"```\n"
+        f"If you CANNOT complete this, log the failure:\n"
+        f"```bash\n"
+        f'curl -X POST http://localhost:8322/api/ideas/{idea.id}/comment '
+        f'-H "Content-Type: application/json" '
+        f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
+        f"```\n"
+    )
+
+
+def _build_story_prompt(idea: Any) -> str:
+    """Build a rich prompt for executing a single story/task."""
+    type_label = f"[{idea.idea_type.upper()}] " if idea.idea_type != "story" else ""
+
+    sections = [
+        f"# Task: Implement {idea.title}\n",
+        f"You are implementing a {idea.idea_type} for the Technomancer project.\n",
+        f"## {type_label}Idea Details",
+        f"- **ID:** {idea.id}",
+        f"- **Category:** {idea.category}",
+        f"- **Description:** {idea.description}",
+        _build_epic_context(idea),
+        _build_discussion(idea),
+        f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        _load_recent_errors(),
+        _build_workflow_section(idea),
+    ]
+    return "\n".join(s for s in sections if s)
+
+
+def _build_epic_prompt(idea: Any) -> str:
+    """Build a rich prompt for executing an entire epic sequentially."""
+    all_ideas = load_ideas()
+    stories = [i for i in all_ideas if i.parent_id == idea.id and i.state != "done"]
+    done_stories = [i for i in all_ideas if i.parent_id == idea.id and i.state == "done"]
+
+    if not stories and not done_stories:
+        return _build_story_prompt(idea)
+
+    # Done context
+    done_context = ""
+    if done_stories:
+        done_lines = ["\n## Already Completed Stories"]
+        for d in done_stories:
+            done_lines.append(f"- {d.id}: {d.title} [DONE]")
+        done_lines.append("\nThese are already implemented. Build on them, don't duplicate them.")
+        done_context = "\n".join(done_lines)
+
+    # Story sections
+    story_sections = ""
+    for idx, story in enumerate(stories, 1):
+        discussion = ""
+        if story.comments:
+            discussion = "**Discussion:**\n"
+            for c in story.comments:
+                label = settings.owner_name if c.author == "owner" else "LLM"
+                discussion += f"  - {label}: {c.text}\n"
+
+        short_name = story.id.replace("idea-", "")
+        story_sections += (
+            f"\n{'=' * 70}\n"
+            f"## Story {idx}/{len(stories)}: {story.title}\n"
+            f"**ID:** {story.id}\n"
+            f"**Category:** {story.category}\n\n"
+            f"**Description:** {story.description}\n\n"
+            f"{discussion}"
+            f"**After completing this story**, run:\n"
+            f"```bash\n"
+            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/done\n"
+            f"```\n"
+            f"If this story fails, run:\n"
+            f"```bash\n"
+            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/comment "
+            f'-H "Content-Type: application/json" '
+            f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
+            f"```\n"
+            f"Then move to the next story.\n"
+        )
+
+    sections = [
+        f"# EPIC: {idea.title}\n",
+        f"You are implementing an entire epic for the Technomancer project.",
+        f"This epic has **{len(stories)} stories** to implement sequentially.\n",
+        f"## Epic Description\n{idea.description}",
+        done_context,
+        f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        _load_recent_errors(),
+        f"\n## Implementation Process\n"
+        f"For EACH story below, follow this exact cycle:\n"
+        f"1. Read CLAUDE.md for project conventions\n"
+        f"2. Run `python safe_update.py <short-name>` to create a branch\n"
+        f"3. Implement the story (code, tests)\n"
+        f"4. Run `python validate.py startup` before committing\n"
+        f"5. Commit and run `python safe_update.py continue` to test, merge, restart\n"
+        f"6. Verify `python bot_service.py status` shows Bot running: True\n"
+        f"7. Mark the story done with the curl command provided\n"
+        f"8. Move to the next story\n\n"
+        f"IMPORTANT:\n"
+        f"- Each story gets its OWN safe_update branch and commit\n"
+        f"- Do NOT batch multiple stories into one branch\n"
+        f"- If a story fails, log it and move to the next one\n"
+        f"- Each story should build on what the previous stories created\n"
+        f"- When ALL stories are complete, mark the epic done:\n"
+        f"```bash\ncurl -X POST http://localhost:8322/api/ideas/{idea.id}/done\n```",
+        f"\n# Stories to Implement\n{story_sections}",
+    ]
+    return "\n".join(s for s in sections if s)
+
+
 def execute_idea(idea_id: str) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -161,29 +392,11 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
     state = ExecutionState(idea_id=idea_id)
     _active[idea_id] = state
 
-    # Build the discussion context
-    discussion = ""
-    if idea.comments:
-        discussion = "\n\nDiscussion (context from the team):\n"
-        for c in idea.comments:
-            label = settings.owner_name if c.author == "owner" else "Engineer (LLM)"
-            discussion += f"- {label}: {c.text}\n"
-
-    prompt = (
-        f"Implement this improvement for the Technomancer project.\n\n"
-        f"Title: {idea.title}\n"
-        f"Description: {idea.description}\n"
-        f"{discussion}\n"
-        f"MANDATORY WORKFLOW — follow these steps exactly:\n"
-        f"1. cd local-agent\n"
-        f"2. python safe_update.py {idea.id}\n"
-        f"3. Make your code changes\n"
-        f"4. python validate.py startup (MUST pass before committing)\n"
-        f"5. git add <files> && git commit -m 'description'\n"
-        f"6. python safe_update.py continue\n"
-        f"7. python bot_service.py status (MUST show Bot running: True)\n"
-        f"\nDo NOT skip any steps. Do NOT commit without validate.py passing."
-    )
+    # Build the rich prompt
+    if idea.idea_type == "epic":
+        prompt = _build_epic_prompt(idea)
+    else:
+        prompt = _build_story_prompt(idea)
 
     def _run() -> None:
         """Background thread: spawn claude.exe and stream stdout."""
