@@ -27,12 +27,6 @@ from .message_validators import validate_discord_message
 from .perf_monitor import record_llm_call as _record_perf
 from .web_search import web_search
 
-try:
-    import anthropic
-
-    HAS_ANTHROPIC = True
-except ImportError:
-    HAS_ANTHROPIC = False
 
 # State tracking file
 SENT_TOPICS_FILE = Path(__file__).parent.parent / "sent_topics.json"
@@ -431,9 +425,6 @@ async def generate_learning_content(topic: str, category: str) -> str:
     Returns:
         Generated article content as markdown
     """
-    if not HAS_ANTHROPIC:
-        return "Error: Anthropic API not available. Please install the anthropic package."
-
     log(f"Generating content for: {topic}")
 
     # Step 1: Web search for current resources
@@ -504,34 +495,29 @@ Include common pitfalls and mistakes to watch for.
 - Be practical and actionable
 - Include specific advice for someone using {stack}"""
 
-    # Run the blocking Claude API call in a thread to avoid blocking Discord
+    # Use claude -p (Pro subscription) instead of API credits
+    from .claude_code_runner import run_claude_prompt
+
     def _call_claude() -> str:
         start = _time.perf_counter()
-        try:
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=8000,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            duration = _time.perf_counter() - start
-            content = getattr(response.content[0], "text", str(response.content[0]))
+        result = run_claude_prompt(prompt, timeout=120, max_turns=1)
+        duration = _time.perf_counter() - start
+
+        if result["success"]:
+            content = result["result"]
             _record_perf(
-                "claude_api", duration, success=True,
-                model="claude-sonnet-4-20250514",
-                input_tokens=int(getattr(response.usage, "input_tokens", 0) or 0),
-                output_tokens=int(getattr(response.usage, "output_tokens", 0) or 0),
+                "claude_pro_sub", duration, success=True,
+                model="claude-code-pro",
             )
-            log(f"Content generated: {len(content)} chars")
+            log(f"Content generated: {len(content)} chars (Pro sub, ${result.get('cost_usd', 0):.4f})")
             return content
-        except Exception as e:
-            duration = _time.perf_counter() - start
+        else:
             _record_perf(
-                "claude_api", duration, success=False,
-                model="claude-sonnet-4-20250514", error=str(e)[:200],
+                "claude_pro_sub", duration, success=False,
+                model="claude-code-pro", error=str(result.get("error", ""))[:200],
             )
-            log(f"Claude API error: {e}")
-            return f"Error generating content: {e}"
+            log(f"claude -p failed: {result.get('error')} — falling back to Ollama")
+            return f"Error generating content: {result.get('error')}"
 
     return await asyncio.to_thread(_call_claude)
 
