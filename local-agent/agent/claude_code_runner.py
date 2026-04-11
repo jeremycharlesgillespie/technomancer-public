@@ -148,6 +148,7 @@ async def run_claude_code(
     # Build environment — remove CLAUDECODE to avoid "nested session" error
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
+    env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -255,6 +256,7 @@ async def run_claude_chat(
     # Build environment
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
+    env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
 
     # Build command args
     args = [

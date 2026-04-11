@@ -788,6 +788,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
+        env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
         project_root = Path(__file__).parent.parent.parent
 
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
