@@ -95,6 +95,12 @@ class Settings(BaseSettings):
         default=1800, description="Seconds between repeat alerts per endpoint"
     )
 
+    # Server host for user-facing URLs (set to Tailscale IP for remote access)
+    server_host: str = Field(
+        default="localhost",
+        description="Hostname/IP for service URLs in hub page and Discord messages",
+    )
+
     # API cost alerting
     api_cost_alert_threshold: float = Field(
         default=1.0, description="Daily API spend ($) threshold for Discord alert"

@@ -98,7 +98,7 @@ async def handle_idea(message: Any, send_response: Any) -> None:
             titles = "\n".join(f"- {c['title']}" for c in created)
             await message.reply(
                 f"Generated {len(created)} new idea(s):\n{titles}\n\n"
-                f"View the board: http://localhost:8322"
+                f"View the board: http://{settings.server_host}:8322"
             )
         else:
             await message.reply("No new ideas this cycle — everything looks good.")
@@ -134,7 +134,7 @@ async def handle_karen(message: Any, content: str, user: str) -> None:
                     idea = next((i for i in ideas if i.id == iid), None)
                     if idea:
                         lines.append(f"- **{idea.id}**: {idea.title}")
-                lines.append(f"\nView the board: http://localhost:8322/karen")
+                lines.append(f"\nView the board: http://{settings.server_host}:8322/karen")
                 await message.reply("\n".join(lines))
             else:
                 await message.reply(
@@ -261,7 +261,7 @@ async def handle_show_commands(message: Any) -> None:
 `think` - Show what I know about you (permanent memories)
 
 **Idea Board**
-`ideas` - Show active ideas from the idea board (or visit http://localhost:8322/ideas)
+`ideas` - Show active ideas from the idea board (or visit http://{settings.server_host}:8322/ideas)
 
 **Feedback**
 `karen <complaint>` - Submit a complaint to K.A.R.E.N. (generates improvement ideas)
@@ -292,7 +292,9 @@ async def handle_show_commands(message: Any) -> None:
 - Reply to news posts to ask questions about them
 - Just chat naturally - I'll remember important things!
 """
-    await message.reply(commands_list)
+    await message.reply(
+        commands_list.replace("{settings.server_host}", settings.server_host)
+    )
 
 
 async def handle_learning_history(message: Any, send_response: Any) -> None:

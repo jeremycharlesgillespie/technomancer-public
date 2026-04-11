@@ -1567,17 +1567,17 @@ def _render_hub() -> str:
             <h2>Analytics</h2>
             <p>Command usage, engagement trends, and feature adoption.</p>
         </a>
-        <a href="http://localhost:9090" target="_blank" class="card external">
+        <a href="http://{settings.server_host}:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>
             <p>Metrics and monitoring dashboard.</p>
             <span class="badge">:9090</span>
         </a>
-        <a href="http://localhost:3000" target="_blank" class="card external">
+        <a href="http://{settings.server_host}:3000" target="_blank" class="card external">
             <h2>Grafana</h2>
             <p>Visualization and alerting dashboards.</p>
             <span class="badge">:3000</span>
         </a>
-        <a href="http://localhost:8321" target="_blank" class="card external">
+        <a href="http://{settings.server_host}:8321" target="_blank" class="card external">
             <h2>Discord Bridge API</h2>
             <p>REST API for sending messages through the Discord bot.</p>
             <span class="badge">:8321</span>
