@@ -93,10 +93,23 @@ def get_execution(idea_id: str) -> ExecutionState | None:
 
 
 def _notify_discord(message: str) -> None:
-    """Send a notification to Discord via the bridge API. Non-blocking."""
+    """Send a notification to the #claude-code-updates channel via webhook.
+
+    Falls back to the bridge API (main chat channel) if no webhook is configured.
+    """
     try:
         import requests
 
+        webhook_url = settings.discord_claude_code_webhook
+        if webhook_url:
+            requests.post(
+                webhook_url,
+                json={"content": message},
+                timeout=5,
+            )
+            return
+
+        # Fallback: bridge API to main channel
         if not BRIDGE_TOKEN_FILE.exists():
             return
         token = BRIDGE_TOKEN_FILE.read_text(encoding="utf-8").strip()

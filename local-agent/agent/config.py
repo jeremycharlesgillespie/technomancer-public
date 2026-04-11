@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     discord_alerts_webhook: str = Field(
         default="", description="Discord webhook URL for the alerts channel"
     )
+    discord_claude_code_webhook: str = Field(
+        default="", description="Discord webhook URL for claude-code-updates channel"
+    )
     bot_owner: str = Field(
         default="", description="Discord username of the bot owner (for admin commands)"
     )
