@@ -106,16 +106,18 @@ omit = [
     "*/tests/*",
     "*/__pycache__/*",
     # Discord client modules — require live Discord connection
-    "agent/discord_memory_bot.py",
-    "agent/discord_bridge.py",
-    "agent/slash_commands.py",
-    "agent/user_commands.py",
+    "*discord_memory_bot*",
+    "*discord_bridge*",
+    "*slash_commands*",
+    "*user_commands*",
     # Thin wrappers around external CLIs/APIs — no meaningful logic to test
-    "agent/ask_claude.py",
-    "agent/claude_bridge.py",
-    "agent/youtube_tools.py",
+    "*ask_claude*",
+    "*claude_bridge*",
+    "*youtube_tools*",
     # Has test_pdf_tools_extended.py (different naming convention)
-    "agent/pdf_tools.py",
+    "*pdf_tools*",
+    # Scheduled audit task — runs against live vault/DB data
+    "*knowledge_consistency*",
 ]
 
 [tool.coverage.report]

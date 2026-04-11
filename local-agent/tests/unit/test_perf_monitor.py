@@ -260,17 +260,11 @@ class TestInstrumentationIntegration:
             assert "Ollama down" in kwargs["error"]
 
     def test_image_identification_claude_records_perf(self):
-        """ask_claude_with_image records to perf_monitor on success."""
-        mock_usage = MagicMock(input_tokens=500, output_tokens=200)
-        mock_content = MagicMock(text="This is Pikachu from Pokemon")
-        mock_response = MagicMock(content=[mock_content], usage=mock_usage)
-        mock_client_instance = MagicMock()
-        mock_client_instance.messages.create.return_value = mock_response
+        """ask_claude_with_image records to perf_monitor on success (via Pro sub)."""
+        fake_result = {"success": True, "result": "This is Pikachu from Pokemon", "cost_usd": 0}
 
-        with patch("agent.image_identification.anthropic") as mock_anthropic, \
-             patch("agent.image_identification.HAS_ANTHROPIC", True), \
+        with patch("agent.claude_code_runner.run_claude_prompt", return_value=fake_result), \
              patch("agent.image_identification._record_perf") as mock_perf:
-            mock_anthropic.Anthropic.return_value = mock_client_instance
 
             from agent.image_identification import ask_claude_with_image
 
@@ -279,24 +273,17 @@ class TestInstrumentationIntegration:
 
             mock_perf.assert_called_once()
             args, kwargs = mock_perf.call_args
-            assert args[0] == "claude_api"
+            assert args[0] == "claude_pro_sub"
             assert kwargs["success"] is True
-            assert kwargs["input_tokens"] == 500
-            assert kwargs["output_tokens"] == 200
 
-    def test_capability_request_records_perf(self):
-        """request_capability records to perf_monitor."""
-        mock_usage = MagicMock(input_tokens=1000, output_tokens=500)
-        mock_content = MagicMock(text="IMPLEMENT: NO\nREASON: Not feasible")
-        mock_response = MagicMock(content=[mock_content], usage=mock_usage)
-        mock_client_instance = MagicMock()
-        mock_client_instance.messages.create.return_value = mock_response
+    def test_capability_request_records_perf(self, mock_ollama_client):
+        """request_capability records to perf_monitor (via Ollama)."""
+        mock_ollama_client.set_responses([
+            {"message": {"content": "IMPLEMENT: NO\nREASON: Not feasible", "tool_calls": []}}
+        ])
 
-        with patch("agent.capability_request.anthropic") as mock_anthropic, \
-             patch("agent.capability_request.ANTHROPIC_API_KEY", "fake-key"), \
-             patch("agent.capability_request._record_perf") as mock_perf, \
+        with patch("agent.capability_request._record_perf") as mock_perf, \
              patch("agent.capability_request.log_request"):
-            mock_anthropic.Anthropic.return_value = mock_client_instance
 
             from agent.capability_request import request_capability
 
@@ -305,8 +292,7 @@ class TestInstrumentationIntegration:
 
             mock_perf.assert_called_once()
             args, kwargs = mock_perf.call_args
-            assert args[0] == "claude_api"
+            assert args[0] == "ollama"
             assert kwargs["success"] is True
-            assert kwargs["model"] == "claude-sonnet-4-20250514"
 
     # test_claude_coder_records_perf_per_turn removed — claude_coder.py was deleted as legacy code

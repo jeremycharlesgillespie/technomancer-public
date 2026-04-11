@@ -53,10 +53,12 @@ class TestGetSettings:
     """Test the cached settings accessor."""
 
     def test_returns_settings_instance(self):
+        get_settings.cache_clear()
         s = get_settings()
         assert isinstance(s, Settings)
 
     def test_cached_returns_same_instance(self):
+        get_settings.cache_clear()
         s1 = get_settings()
         s2 = get_settings()
         assert s1 is s2

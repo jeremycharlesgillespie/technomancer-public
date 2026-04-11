@@ -192,155 +192,102 @@ class TestTopicSelection:
 class TestCommandHandler:
     """Tests for the better_dev command handler."""
 
-    @patch("agent.dev_learning.anthropic")
+    @patch("agent.claude_code_runner.run_claude_prompt")
     @patch("agent.dev_learning.web_search")
-    def test_handle_custom_topic(self, mock_search, mock_anthropic, patched_dev_learning):
+    def test_handle_custom_topic(self, mock_search, mock_run, patched_dev_learning):
         """Custom topic (not a predefined category) generates content."""
-        # Mock web search
         mock_search.return_value = "Sample search results"
-
-        # Mock Claude
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text=(
-            "Neo4j is a graph database management system that stores data as nodes "
-            "and relationships rather than tables and rows. This makes it ideal for "
-            "connected data problems like social networks, recommendation engines, "
-            "and fraud detection. Unlike relational databases, Neo4j uses the Cypher "
-            "query language which lets you express complex graph patterns intuitively. "
-            "Performance remains constant regardless of dataset size because queries "
-            "traverse only the relevant portion of the graph. Getting started is "
-            "straightforward with the Neo4j Desktop application. You can model your "
-            "domain as nodes with properties and connect them using typed relationships "
-            "that also carry properties. This article explores practical patterns for "
-            "building graph-powered applications with Python and the neo4j driver."
-        ))]
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_run.return_value = {
+            "success": True, "cost_usd": 0,
+            "result": (
+                "## Quick Overview\n\n"
+                "Neo4j is a graph database management system that stores data as nodes "
+                "and relationships rather than tables and rows. This makes it ideal for "
+                "connected data problems like social networks, recommendation engines, "
+                "and fraud detection. Unlike relational databases, Neo4j uses the Cypher "
+                "query language which lets you express complex graph patterns intuitively. "
+                "Performance remains constant regardless of dataset size because queries "
+                "traverse only the relevant portion of the graph. Getting started is "
+                "straightforward with the Neo4j Desktop application. You can model your "
+                "domain as nodes with properties and connect them using typed relationships "
+                "that also carry properties. This article explores practical patterns for "
+                "building graph-powered applications with Python and the neo4j driver. "
+                "Here we cover installation, configuration, basic queries, and advanced "
+                "traversal patterns that will help you build production-ready applications."
+            ),
+        }
 
         from agent.dev_learning import handle_better_dev_command
 
-        response, html_url = asyncio.run(
-            handle_better_dev_command("neo4j")
-        )
-
-        # Custom topics use the input as both topic and category
+        response, html_url = asyncio.run(handle_better_dev_command("neo4j"))
         assert "neo4j" in response.lower()
-        assert html_url is not None  # Should generate a URL
+        assert html_url is not None
 
-    @patch("agent.dev_learning.anthropic")
+    @patch("agent.claude_code_runner.run_claude_prompt")
     @patch("agent.dev_learning.web_search")
-    def test_handle_valid_category_calls_claude(
-        self, mock_search, mock_anthropic, patched_dev_learning
-    ):
-        """Valid category generates content via Claude."""
-        # Mock web search
+    def test_handle_valid_category_calls_claude(self, mock_search, mock_run, patched_dev_learning):
+        """Valid category generates content via claude -p."""
         mock_search.return_value = "Sample search results"
-
-        # Mock Claude
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Generated learning content")]
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_run.return_value = {"success": True, "result": "Generated learning content", "cost_usd": 0}
 
         from agent.dev_learning import handle_better_dev_command
 
-        response, html_url = asyncio.run(
-            handle_better_dev_command("python")
-        )
-
-        # Response now contains just the link, not full content
+        response, html_url = asyncio.run(handle_better_dev_command("python"))
         assert "**Developer Learning:" in response
         assert "python" in response.lower()
-        mock_client.messages.create.assert_called_once()
+        mock_run.assert_called_once()
 
-    @patch("agent.dev_learning.anthropic")
+    @patch("agent.claude_code_runner.run_claude_prompt")
     @patch("agent.dev_learning.web_search")
-    def test_handle_marks_topic_as_sent(self, mock_search, mock_anthropic, patched_dev_learning):
+    def test_handle_marks_topic_as_sent(self, mock_search, mock_run, patched_dev_learning):
         """Command handler marks topic as sent."""
-        # Mock web search
         mock_search.return_value = "Sample search results"
-
-        # Mock Claude
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Content")]
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_run.return_value = {"success": True, "result": "Content", "cost_usd": 0}
 
         from agent.dev_learning import handle_better_dev_command, load_sent_topics
 
         initial_count = len(load_sent_topics())
-
         asyncio.run(handle_better_dev_command("python"))
-
         final_count = len(load_sent_topics())
         assert final_count == initial_count + 1
 
 
 class TestContentGeneration:
-    """Tests for content generation with Claude."""
+    """Tests for content generation via claude -p (Pro subscription)."""
 
-    @patch("agent.dev_learning.anthropic")
+    @patch("agent.claude_code_runner.run_claude_prompt")
     @patch("agent.dev_learning.web_search")
-    def test_generate_uses_web_search(self, mock_search, mock_anthropic, patched_dev_learning):
+    def test_generate_uses_web_search(self, mock_search, mock_run, patched_dev_learning):
         """Content generation calls web search first."""
         mock_search.return_value = "Web search results"
-
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Content")]
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_run.return_value = {"success": True, "result": "Generated content", "cost_usd": 0}
 
         from agent.dev_learning import generate_learning_content
 
-        asyncio.run(
-            generate_learning_content("Test topic", "python")
-        )
-
+        asyncio.run(generate_learning_content("Test topic", "python"))
         mock_search.assert_called_once()
 
-    @patch("agent.dev_learning.anthropic")
+    @patch("agent.claude_code_runner.run_claude_prompt")
     @patch("agent.dev_learning.web_search")
-    def test_generate_sends_structured_prompt(
-        self, mock_search, mock_anthropic, patched_dev_learning
-    ):
-        """Claude is called with structured prompt including all sections."""
+    def test_generate_returns_content(self, mock_search, mock_run, patched_dev_learning):
+        """Claude -p generates article content."""
         mock_search.return_value = "Web results"
-
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Content")]
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_run.return_value = {"success": True, "result": "## Quick Overview\nGreat article", "cost_usd": 0}
 
         from agent.dev_learning import generate_learning_content
 
-        asyncio.run(
-            generate_learning_content("Python decorators", "python")
-        )
+        result = asyncio.run(generate_learning_content("Python decorators", "python"))
+        assert isinstance(result, str)
+        assert len(result) > 0
 
-        # Check the prompt contains required sections
-        call_args = mock_client.messages.create.call_args
-        prompt = call_args[1]["messages"][0]["content"]
+    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.dev_learning.web_search")
+    def test_generate_handles_failure(self, mock_search, mock_run, patched_dev_learning):
+        """Handles claude -p failure gracefully."""
+        mock_search.return_value = "Web results"
+        mock_run.return_value = {"success": False, "result": "", "error": "binary not found", "cost_usd": 0}
 
-        assert "Quick Overview" in prompt
-        assert "How This Makes You a Better Developer" in prompt
-        assert "How to Implement It" in prompt
-        assert "Where to Use" in prompt
-        assert "Key Takeaways" in prompt
+        from agent.dev_learning import generate_learning_content
 
-    def test_generate_without_anthropic(self, patched_dev_learning, monkeypatch):
-        """Gracefully handles missing anthropic library."""
-        import agent.dev_learning as dl
-
-        monkeypatch.setattr(dl, "HAS_ANTHROPIC", False)
-
-        result = asyncio.run(
-            dl.generate_learning_content("Topic", "python")
-        )
-
-        assert "Error" in result
-        assert "Anthropic" in result
+        result = asyncio.run(generate_learning_content("Topic", "python"))
+        assert "Error" in result or "error" in result.lower()

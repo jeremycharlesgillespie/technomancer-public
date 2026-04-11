@@ -38,45 +38,36 @@ class TestReadCurrentTools:
 
 
 class TestRequestCapability:
-    @patch("agent.capability_request.ANTHROPIC_API_KEY", "fake-key")
-    @patch("agent.capability_request.anthropic")
     @patch("agent.capability_request.log_request")
-    def test_approved_capability(self, mock_log, mock_anthropic, tmp_path, monkeypatch):
+    def test_approved_capability(self, mock_log, mock_ollama_client, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.capability_request.LOG_FILE", tmp_path / "log.json")
-
-        mock_client = MagicMock()
-        mock_usage = MagicMock(input_tokens=100, output_tokens=50)
-        mock_content = MagicMock(text="IMPLEMENT: YES\nREASON: Good idea\n\ndef new_tool(): pass")
-        mock_response = MagicMock(content=[mock_content], usage=mock_usage)
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_ollama_client.set_responses([
+            {"message": {"content": "IMPLEMENT: YES\nREASON: Good idea\n\ndef new_tool(): pass", "tool_calls": []}}
+        ])
 
         with patch("agent.capability_request._record_perf"):
             result = request_capability("weather tool", "What's the weather?")
-        # Should contain implementation info or reason
         assert isinstance(result, str)
 
-    @patch("agent.capability_request.ANTHROPIC_API_KEY", "fake-key")
-    @patch("agent.capability_request.anthropic")
     @patch("agent.capability_request.log_request")
-    def test_rejected_capability(self, mock_log, mock_anthropic, tmp_path, monkeypatch):
+    def test_rejected_capability(self, mock_log, mock_ollama_client, tmp_path, monkeypatch):
         monkeypatch.setattr("agent.capability_request.LOG_FILE", tmp_path / "log.json")
-
-        mock_client = MagicMock()
-        mock_usage = MagicMock(input_tokens=100, output_tokens=50)
-        mock_content = MagicMock(text="IMPLEMENT: NO\nREASON: Not feasible")
-        mock_response = MagicMock(content=[mock_content], usage=mock_usage)
-        mock_client.messages.create.return_value = mock_response
-        mock_anthropic.Anthropic.return_value = mock_client
+        mock_ollama_client.set_responses([
+            {"message": {"content": "IMPLEMENT: NO\nREASON: Not feasible\nALTERNATIVE: Use existing tool", "tool_calls": []}}
+        ])
 
         with patch("agent.capability_request._record_perf"):
             result = request_capability("time travel", "Go back in time")
-        assert "CANNOT IMPLEMENT" in result or "NO" in result or isinstance(result, str)
+        assert "CANNOT IMPLEMENT" in result
 
-    def test_no_api_key(self, monkeypatch):
-        monkeypatch.setattr("agent.capability_request.ANTHROPIC_API_KEY", None)
-        result = request_capability("test", "test")
-        assert "cannot implement" in result.lower() or "not available" in result.lower() or "Error" in result
+    def test_handles_ollama_error(self, mock_ollama_client, tmp_path, monkeypatch):
+        monkeypatch.setattr("agent.capability_request.LOG_FILE", tmp_path / "log.json")
+        mock_ollama_client.set_responses([])  # Empty = will raise
+
+        with patch("agent.capability_request._record_perf"):
+            with patch("agent.capability_request.log_request"):
+                result = request_capability("test", "test")
+        assert "CANNOT IMPLEMENT" in result or "Error" in result
 
 
 class TestGetCapabilityTools:
