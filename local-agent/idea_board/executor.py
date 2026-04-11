@@ -31,11 +31,14 @@ from .models import add_comment, get_idea, load_ideas, mark_done, mark_executing
 
 logger = logging.getLogger(__name__)
 
-# Timeout for Claude Code execution (15 minutes)
-EXECUTION_TIMEOUT: int = 900
+# Timeout for Claude Code execution (30 minutes — includes safe_update workflow)
+EXECUTION_TIMEOUT: int = 1800
 
 # Timeout for exploration pass (3 minutes — read-only, should be fast)
 EXPLORATION_TIMEOUT: int = 180
+
+# Minimum seconds between Discord webhook sends (rate limiting)
+DISCORD_RATE_LIMIT: float = 10.0
 
 # Bridge token file for Discord notifications
 BRIDGE_TOKEN_FILE: Path = Path(__file__).parent.parent / ".bridge_token"
@@ -488,6 +491,55 @@ def _run_exploration_pass(
         return None
 
 
+def _parse_stream_event(line: str) -> tuple[str, str]:
+    """Parse a stream-json line into (event_type, display_text).
+
+    Claude Code --output-format stream-json emits one JSON object per line.
+    Key event types:
+      - {"type": "assistant", "message": {"content": [{"text": "..."}]}}
+      - {"type": "tool_use", "tool": {"name": "Edit"}, ...}
+      - {"type": "tool_result", ...}
+      - {"type": "result", "result": "...", "session_id": "..."}
+
+    Returns:
+        (event_type, display_text) — display_text is empty if not worth showing.
+    """
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, TypeError):
+        return ("unknown", "")
+
+    event_type = event.get("type", "")
+
+    if event_type == "assistant":
+        # Extract text from content blocks
+        message = event.get("message", {})
+        content = message.get("content", [])
+        texts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    texts.append(text)
+        return ("assistant", "\n".join(texts))
+
+    if event_type == "tool_use":
+        tool_name = event.get("tool", {}).get("name", event.get("name", "tool"))
+        return ("tool_use", f"Using tool: {tool_name}")
+
+    if event_type == "tool_result":
+        return ("tool_result", "")
+
+    if event_type == "result":
+        result_text = event.get("result", "")
+        session_id = event.get("session_id", "")
+        cost = event.get("total_cost_usd", 0)
+        meta = f"(cost: ${cost:.4f})" if cost else ""
+        return ("result", f"Final result {meta}")
+
+    return (event_type, "")
+
+
 def execute_idea(idea_id: str) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -557,12 +609,13 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 _active.pop(idea_id, None)
                 return
 
-            # --- Phase 2: Implementation ---
+            # --- Phase 2: Implementation (streaming) ---
             state.log_lines.append("")
             state.log_lines.append("--- Phase 2: Implementation ---")
 
             cmd = [
                 str(binary), "-p", prompt,
+                "--output-format", "stream-json",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
             ]
@@ -586,11 +639,12 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.log_lines.append(f"Working on: {idea.title}")
             logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
 
-            # Monitor the process with periodic status updates
-            last_update_time = time.time()
-            while proc.poll() is None:
-                time.sleep(3)
+            # Stream stdout line-by-line, parsing JSON events as they arrive
+            last_discord_time = 0.0
+            final_result = ""
 
+            while True:
+                # Check cancellation and timeout before blocking on readline
                 if state.cancelled:
                     proc.kill()
                     state.log_lines.append("CANCELLED by user")
@@ -603,32 +657,72 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     proc.kill()
                     state.log_lines.append(f"TIMEOUT after {EXECUTION_TIMEOUT}s")
                     mark_failed(idea_id, state.log_text)
-                    _notify_discord(f"Execution of {idea_id} timed out after {EXECUTION_TIMEOUT // 60} minutes.")
+                    _notify_discord(
+                        f"Execution of {idea_id} timed out after "
+                        f"{EXECUTION_TIMEOUT // 60} minutes."
+                    )
                     _active.pop(idea_id, None)
                     return
 
-                if time.time() - last_update_time > 30:
-                    state.log_lines.append(f"Still running... ({state.elapsed:.0f}s elapsed)")
-                    _notify_discord(f"[{idea_id}] Still working... ({state.elapsed:.0f}s)")
-                    last_update_time = time.time()
+                raw_line = proc.stdout.readline() if proc.stdout else b""
+                if not raw_line:
+                    if proc.poll() is not None:
+                        break  # Process exited and no more output
+                    continue
 
-            # Process finished — read all output
-            stdout_bytes = proc.stdout.read() if proc.stdout else b""
-            output = stdout_bytes.decode("utf-8", errors="replace").strip()
+                line_text = raw_line.decode("utf-8", errors="replace").rstrip()
+                if not line_text:
+                    continue
+
+                # Parse the stream-json event
+                event_type, display_text = _parse_stream_event(line_text)
+
+                if event_type == "result":
+                    # Capture final result metadata
+                    try:
+                        result_data = json.loads(line_text)
+                        final_result = result_data.get("result", "")
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                    if display_text:
+                        state.log_lines.append(display_text)
+                    continue
+
+                if display_text:
+                    # Log to dashboard
+                    state.log_lines.append(display_text)
+
+                    # Rate-limited Discord notification for meaningful events
+                    now = time.time()
+                    if event_type in ("assistant", "tool_use") and now - last_discord_time >= DISCORD_RATE_LIMIT:
+                        # Truncate for Discord (keep it concise)
+                        discord_msg = display_text[:300]
+                        if len(display_text) > 300:
+                            discord_msg += "..."
+                        _notify_discord(f"[{idea_id}] {discord_msg}")
+                        last_discord_time = now
+
+            # Process finished
             exit_code = proc.returncode
 
-            if output:
-                for line in output.split("\n"):
-                    state.log_lines.append(line)
-
             if exit_code == 0:
-                state.log_lines.append(f"Completed successfully (exit code 0, {state.elapsed:.0f}s)")
+                state.log_lines.append(
+                    f"Completed successfully (exit code 0, {state.elapsed:.0f}s)"
+                )
                 mark_done(idea_id, state.log_text[-5000:])
-                _notify_discord(f"Idea {idea_id} executed successfully ({state.elapsed:.0f}s): {idea.title}")
+                _notify_discord(
+                    f"Idea {idea_id} executed successfully "
+                    f"({state.elapsed:.0f}s): {idea.title}"
+                )
             else:
-                state.log_lines.append(f"Failed (exit code {exit_code}, {state.elapsed:.0f}s)")
+                state.log_lines.append(
+                    f"Failed (exit code {exit_code}, {state.elapsed:.0f}s)"
+                )
                 mark_failed(idea_id, state.log_text[-5000:])
-                _notify_discord(f"Idea {idea_id} execution failed (exit code {exit_code}): {idea.title}")
+                _notify_discord(
+                    f"Idea {idea_id} execution failed "
+                    f"(exit code {exit_code}): {idea.title}"
+                )
 
         except Exception as e:
             state.log_lines.append(f"ERROR: {e}")
