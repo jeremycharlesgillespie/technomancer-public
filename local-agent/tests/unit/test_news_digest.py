@@ -8,15 +8,19 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.news_digest import (
+    MEDIUM_MATCH_THRESHOLD,
+    STRONG_MATCH_THRESHOLD,
+    build_conversation_context,
     check_relevance,
     extract_article_keywords,
     filter_new_articles,
-    find_memory_connections,
     format_memory_section,
     get_article_hash,
     load_sent_articles,
     load_user_profile,
     save_sent_articles,
+    score_memory_connections,
+    split_memory_tiers,
 )
 
 
@@ -261,16 +265,15 @@ class TestExtractArticleKeywords:
 # =============================================================================
 
 
-class TestFindMemoryConnections:
-    """Tests for find_memory_connections."""
+class TestScoreMemoryConnections:
+    """Tests for score_memory_connections (returns scored tuples)."""
 
-    def test_finds_matching_conversations(self, memory_system, monkeypatch):
-        """Should find conversations that mention article topics."""
+    def test_returns_scored_tuples(self, memory_system, monkeypatch):
+        """Should return (score, entry) tuples sorted by score."""
         from datetime import datetime
 
         from agent.memory_system import ConversationEntry
 
-        # Add conversations about Python
         memory_system.recent_conversations.append(
             ConversationEntry(
                 timestamp=datetime.now(),
@@ -280,7 +283,6 @@ class TestFindMemoryConnections:
             )
         )
 
-        # Patch get_memory_system to return our test instance
         import agent.memory_system as mem_module
 
         monkeypatch.setattr(mem_module, "_memory_system", memory_system)
@@ -289,9 +291,11 @@ class TestFindMemoryConnections:
             "title": "New Python Lambda Features",
             "summary": "Python 3.13 introduces improved lambda performance.",
         }
-        matches = find_memory_connections(article)
-        assert len(matches) >= 1
-        assert "testuser" in matches[0]
+        scored = score_memory_connections(article)
+        # Each result is a (float, entry) tuple
+        for score, entry in scored:
+            assert isinstance(score, float)
+            assert score >= MEDIUM_MATCH_THRESHOLD
 
     def test_no_matches_returns_empty(self, memory_system, monkeypatch):
         """Should return empty list when no conversations match."""
@@ -303,8 +307,8 @@ class TestFindMemoryConnections:
             "title": "Quantum Computing Breakthrough",
             "summary": "A new quantum processor achieves supremacy milestone.",
         }
-        matches = find_memory_connections(article)
-        assert matches == []
+        scored = score_memory_connections(article)
+        assert scored == []
 
     def test_respects_max_results(self, memory_system, monkeypatch):
         """Should limit matches to max_results."""
@@ -312,7 +316,6 @@ class TestFindMemoryConnections:
 
         from agent.memory_system import ConversationEntry
 
-        # Add many Python-related conversations
         for i in range(10):
             memory_system.recent_conversations.append(
                 ConversationEntry(
@@ -331,8 +334,8 @@ class TestFindMemoryConnections:
             "title": "Python 3.14 Released",
             "summary": "Major Python update with new features.",
         }
-        matches = find_memory_connections(article, max_results=2)
-        assert len(matches) <= 2
+        scored = score_memory_connections(article, max_results=2)
+        assert len(scored) <= 2
 
     def test_handles_uninitialized_memory(self, monkeypatch):
         """Should return empty list when memory system is not initialized."""
@@ -344,8 +347,8 @@ class TestFindMemoryConnections:
             "title": "Tech News",
             "summary": "Something interesting happened.",
         }
-        matches = find_memory_connections(article)
-        assert matches == []
+        scored = score_memory_connections(article)
+        assert scored == []
 
     def test_deduplicates_matches(self, memory_system, monkeypatch):
         """Should not return the same conversation entry twice (keyword fallback)."""
@@ -353,7 +356,6 @@ class TestFindMemoryConnections:
 
         from agent.memory_system import ConversationEntry
 
-        # Add a conversation that matches multiple keywords
         memory_system.recent_conversations.append(
             ConversationEntry(
                 timestamp=datetime.now(),
@@ -369,15 +371,89 @@ class TestFindMemoryConnections:
 
         # Force keyword fallback by making embeddings unavailable
         import agent.embeddings as embed_mod
+
         monkeypatch.setattr(embed_mod, "embed_texts", lambda texts: [])
 
         article = {
             "title": "Python Django Framework Update",
             "summary": "New Python Django release with improved features.",
         }
-        matches = find_memory_connections(article)
-        # Should only appear once despite matching multiple keywords
-        assert len(matches) == 1
+        scored = score_memory_connections(article)
+        assert len(scored) == 1
+        score, entry = scored[0]
+        assert isinstance(score, float)
+
+
+# =============================================================================
+# TIERED MATCHING TESTS
+# =============================================================================
+
+
+class TestSplitMemoryTiers:
+    """Tests for split_memory_tiers."""
+
+    def test_separates_strong_and_medium(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
+
+        entry = ConversationEntry(
+            timestamp=datetime.now(), user="u", message="m", response="r"
+        )
+        scored = [(0.75, entry), (0.60, entry), (0.55, entry), (0.80, entry)]
+        strong, medium = split_memory_tiers(scored)
+        assert len(strong) == 2  # 0.75, 0.80
+        assert len(medium) == 2  # 0.60, 0.55
+
+    def test_empty_input(self):
+        strong, medium = split_memory_tiers([])
+        assert strong == []
+        assert medium == []
+
+    def test_all_strong(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
+
+        entry = ConversationEntry(
+            timestamp=datetime.now(), user="u", message="m", response="r"
+        )
+        scored = [(0.85, entry), (0.72, entry)]
+        strong, medium = split_memory_tiers(scored)
+        assert len(strong) == 2
+        assert len(medium) == 0
+
+    def test_all_medium(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
+
+        entry = ConversationEntry(
+            timestamp=datetime.now(), user="u", message="m", response="r"
+        )
+        scored = [(0.55, entry), (0.65, entry)]
+        strong, medium = split_memory_tiers(scored)
+        assert len(strong) == 0
+        assert len(medium) == 2
+
+
+class TestBuildConversationContext:
+    """Tests for build_conversation_context."""
+
+    def test_empty_returns_empty(self):
+        assert build_conversation_context([]) == ""
+
+    def test_builds_context_string(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
+
+        entry = ConversationEntry(
+            timestamp=datetime.now(),
+            user="testuser",
+            message="Working on Django REST API optimization",
+            response="Here are some tips...",
+        )
+        result = build_conversation_context([(0.62, entry)])
+        assert "tangentially related" in result
+        assert "Django REST API" in result
+        assert "62%" in result
 
 
 # =============================================================================
@@ -386,27 +462,49 @@ class TestFindMemoryConnections:
 
 
 class TestFormatMemorySection:
-    """Tests for format_memory_section."""
+    """Tests for format_memory_section (now takes scored tuples)."""
 
     def test_empty_connections(self):
         result = format_memory_section([])
         assert result == ""
 
-    def test_formats_connections(self):
-        connections = [
-            "- **04/07 10:00** (testuser): Asked about Python",
-            "- **04/07 11:00** (testuser): Discussed Django models",
-        ]
-        result = format_memory_section(connections)
-        assert "Related from your conversations" in result
-        assert "Asked about Python" in result
-        assert "Discussed Django models" in result
+    def test_formats_strong_matches(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
 
-    def test_single_connection(self):
-        connections = ["- **04/07 10:00** (testuser): Asked about AWS Lambda"]
-        result = format_memory_section(connections)
+        entries = [
+            (0.75, ConversationEntry(
+                timestamp=datetime(2026, 4, 7, 10, 0),
+                user="testuser",
+                message="Asked about Python performance tuning",
+                response="Here are tips...",
+            )),
+            (0.72, ConversationEntry(
+                timestamp=datetime(2026, 4, 7, 11, 0),
+                user="testuser",
+                message="Discussed Django models optimization",
+                response="You can use...",
+            )),
+        ]
+        result = format_memory_section(entries)
         assert "Related from your conversations" in result
-        assert "AWS Lambda" in result
+        assert "Python performance" in result
+        assert "Django models" in result
+
+    def test_limits_to_three(self):
+        from datetime import datetime
+        from agent.memory_system import ConversationEntry
+
+        entries = [
+            (0.8, ConversationEntry(
+                timestamp=datetime(2026, 4, 7, i, 0),
+                user="u", message=f"msg {i}", response="r",
+            ))
+            for i in range(5)
+        ]
+        result = format_memory_section(entries)
+        # Should only show 3 matches max
+        assert result.count("- **") == 3
 
 
 # =============================================================================

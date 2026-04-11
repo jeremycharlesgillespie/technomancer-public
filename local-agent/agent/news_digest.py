@@ -148,16 +148,23 @@ def extract_article_keywords(article: dict[str, str], max_keywords: int = 8) -> 
     return ranked[:max_keywords]
 
 
-def find_memory_connections(article: dict[str, str], max_results: int = 3) -> list[str]:
-    """Search conversation memory for entries semantically related to an article.
+# Tiered similarity thresholds for conversation-article matching.
+# Strong matches are shown explicitly; medium matches subtly steer the
+# LLM's "How it affects you" analysis without being displayed.
+STRONG_MATCH_THRESHOLD = 0.70
+MEDIUM_MATCH_THRESHOLD = 0.50
 
-    Uses Ollama embeddings (nomic-embed-text) to compute cosine similarity
-    between the article's topic and recent conversation messages. Only returns
-    conversations above a similarity threshold of 0.50.
 
-    Falls back to keyword matching if the embedding model is unavailable.
+def score_memory_connections(
+    article: dict[str, str], max_results: int = 5
+) -> list[tuple[float, Any]]:
+    """Score conversation memory entries by semantic similarity to an article.
 
-    Returns a list of formatted memory match strings, or empty list if no matches.
+    Uses Ollama embeddings (nomic-embed-text) to compute cosine similarity.
+    Falls back to keyword matching (scored as 0.60 per 2+ keyword hits).
+
+    Returns a list of (similarity_score, ConversationEntry) tuples sorted
+    by score descending.  Callers decide how to use each tier.
     """
     try:
         from .memory_system import get_memory_system
@@ -170,16 +177,14 @@ def find_memory_connections(article: dict[str, str], max_results: int = 3) -> li
     if not conversations:
         return []
 
-    # Build article text for embedding
     article_text = f"{article.get('title', '')} {article.get('summary', '')}"
     if not article_text.strip():
         return []
 
     # Try semantic matching via embeddings
     try:
-        from .embeddings import embed_texts, cosine_similarity, SIMILARITY_THRESHOLD
+        from .embeddings import embed_texts, cosine_similarity
 
-        # Embed article + all conversation messages in one batch call
         conv_texts = [e.message for e in conversations]
         all_texts = [article_text] + conv_texts
         embeddings = embed_texts(all_texts)
@@ -194,29 +199,21 @@ def find_memory_connections(article: dict[str, str], max_results: int = 3) -> li
                     continue
                 seen.add(entry.message)
                 sim = cosine_similarity(article_emb, embeddings[i + 1])
-                if sim >= SIMILARITY_THRESHOLD:
+                if sim >= MEDIUM_MATCH_THRESHOLD:
                     scored.append((sim, entry))
 
             scored.sort(key=lambda x: x[0], reverse=True)
-
-            matches: list[str] = []
-            for sim, entry in scored[:max_results]:
-                date_str = entry.timestamp.strftime("%m/%d %H:%M")
-                msg_preview = entry.message[:80]
-                if len(entry.message) > 80:
-                    msg_preview += "..."
-                matches.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
-            return matches
+            return scored[:max_results]
 
     except Exception:
         pass  # Fall through to keyword matching
 
-    # Fallback: keyword matching (requires 2+ keyword hits in user message)
+    # Fallback: keyword matching — assign 0.60 score for 2+ hits
     keywords = extract_article_keywords(article)
     if not keywords:
         return []
 
-    keyword_scored: list[tuple[int, Any]] = []
+    keyword_scored: list[tuple[float, Any]] = []
     seen_fb: set[str] = set()
     for entry in conversations:
         if entry.message in seen_fb:
@@ -225,26 +222,62 @@ def find_memory_connections(article: dict[str, str], max_results: int = 3) -> li
         msg_lower = entry.message.lower()
         hits = sum(1 for kw in keywords if kw.lower() in msg_lower)
         if hits >= 2:
-            keyword_scored.append((hits, entry))
+            # Scale keyword hits into a pseudo-similarity score (0.60-0.80)
+            score = min(0.60 + (hits - 2) * 0.05, 0.80)
+            keyword_scored.append((score, entry))
 
     keyword_scored.sort(key=lambda x: x[0], reverse=True)
+    return keyword_scored[:max_results]
 
-    matches = []
-    for _hits, entry in keyword_scored[:max_results]:
+
+def split_memory_tiers(
+    scored: list[tuple[float, Any]],
+) -> tuple[list[tuple[float, Any]], list[tuple[float, Any]]]:
+    """Split scored matches into strong and medium tiers.
+
+    Strong (>=0.70): displayed explicitly in the news message.
+    Medium (0.50-0.70): fed as context into the LLM opinion prompt.
+
+    Returns (strong, medium) tuple.
+    """
+    strong = [(s, e) for s, e in scored if s >= STRONG_MATCH_THRESHOLD]
+    medium = [(s, e) for s, e in scored if MEDIUM_MATCH_THRESHOLD <= s < STRONG_MATCH_THRESHOLD]
+    return strong, medium
+
+
+def format_memory_section(strong_matches: list[tuple[float, Any]]) -> str:
+    """Format strong memory matches into a Discord-friendly section."""
+    if not strong_matches:
+        return ""
+    lines = []
+    for _sim, entry in strong_matches[:3]:
         date_str = entry.timestamp.strftime("%m/%d %H:%M")
         msg_preview = entry.message[:80]
         if len(entry.message) > 80:
             msg_preview += "..."
-        matches.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
-    return matches
+        lines.append(f"- **{date_str}** ({entry.user}): {msg_preview}")
+    header = "\n**Related from your conversations:**"
+    return header + "\n" + "\n".join(lines)
 
 
-def format_memory_section(connections: list[str]) -> str:
-    """Format memory connections into a Discord-friendly section."""
-    if not connections:
+def build_conversation_context(
+    medium_matches: list[tuple[float, Any]],
+) -> str:
+    """Build a context string from medium-strength matches for LLM steering.
+
+    This text is injected into the opinion prompt so the LLM can subtly
+    reference related conversations without the matches being shown to the user.
+    """
+    if not medium_matches:
         return ""
-    header = "\n**🔗 Related from your conversations:**"
-    return header + "\n" + "\n".join(connections)
+    lines = []
+    for sim, entry in medium_matches[:5]:
+        preview = entry.message[:120]
+        lines.append(f"- (relevance {sim:.0%}) {preview}")
+    return (
+        "The user has recently discussed topics that may be tangentially related:\n"
+        + "\n".join(lines)
+    )
 
 
 # Default schedule: 9am to 9pm (overridden by news config if available)
@@ -405,15 +438,36 @@ Respond with ONLY one word: RELEVANT or IRRELEVANT"""
         return True
 
 
-async def get_llm_opinion(agent: Any, article: dict[str, str]) -> str:
-    """Have the LLM analyze an article and give its opinion."""
+async def get_llm_opinion(
+    agent: Any, article: dict[str, str], conversation_context: str = ""
+) -> str:
+    """Have the LLM analyze an article and give its opinion.
+
+    Args:
+        agent: The LLM agent to use for analysis.
+        article: Article dict with title, source, summary.
+        conversation_context: Optional context from medium-strength memory
+            matches. When provided, the LLM can subtly weave in connections
+            to what the user has been working on without explicitly listing them.
+    """
     profile = load_user_profile()
     stack = ", ".join(profile.get("stack", []))
     interests = ", ".join(profile.get("interests", []))
 
+    context_block = ""
+    if conversation_context:
+        context_block = f"""
+{conversation_context}
+
+If any of these topics connect naturally to the article, weave that into your
+"How it affects you" analysis. Do NOT list the conversations or mention them
+explicitly — just let them inform your perspective. If they're not relevant,
+ignore them entirely.
+"""
+
     prompt = f"""You're advising a {profile.get('role', 'developer')} who works with: {stack}
 Their interests: {interests}
-
+{context_block}
 Based on the article summary below, give a brief take in this format:
 
 **My take:** [1-2 sentences on whether this is interesting/important]
@@ -493,12 +547,16 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
 
     print(f"[NewsDigest] Analyzing: {article['title'][:50]}...")
 
-    # Get LLM opinion
-    opinion = await get_llm_opinion(agent, article)
+    # Score conversation memory — split into tiers before LLM call
+    scored = score_memory_connections(article)
+    strong, medium = split_memory_tiers(scored)
+    conv_context = build_conversation_context(medium)
 
-    # Cross-reference with conversation memory
-    memory_connections = find_memory_connections(article)
-    memory_section = format_memory_section(memory_connections)
+    # Get LLM opinion — medium-strength matches subtly steer the analysis
+    opinion = await get_llm_opinion(agent, article, conversation_context=conv_context)
+
+    # Only strong matches are shown explicitly
+    memory_section = format_memory_section(strong)
 
     # Format the message (opinion already includes "**My take:**" formatting)
     message = f"""**Tech News Alert**
@@ -639,15 +697,20 @@ async def handle_technews_command(agent: Any) -> str:
         article = new_articles[0]  # fallback
 
     print(f"[NewsDigest] Analyzing: {article['title'][:50]}...")
-    opinion = await get_llm_opinion(agent, article)
+
+    # Score conversation memory — split into tiers before LLM call
+    scored = score_memory_connections(article)
+    strong, medium = split_memory_tiers(scored)
+    conv_context = build_conversation_context(medium)
+
+    opinion = await get_llm_opinion(agent, article, conversation_context=conv_context)
 
     article_hash = article.get("hash", get_article_hash(article["title"], article["link"]))
     sent.add(article_hash)
     save_sent_articles(sent)
 
-    # Cross-reference with conversation memory
-    memory_connections = find_memory_connections(article)
-    memory_section = format_memory_section(memory_connections)
+    # Only strong matches shown explicitly
+    memory_section = format_memory_section(strong)
 
     return f"""**Tech News Alert**
 
