@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # Timeout for Claude Code execution (30 minutes — includes safe_update workflow)
 EXECUTION_TIMEOUT: int = 1800
 
-# Timeout for exploration pass (3 minutes — read-only, should be fast)
-EXPLORATION_TIMEOUT: int = 180
+# Timeout for exploration pass (5 minutes — CLAUDE.md is large)
+EXPLORATION_TIMEOUT: int = 300
 
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
@@ -437,9 +437,38 @@ def _build_workflow_section(idea: Any) -> str:
     )
 
 
+def _enrich_stub_description(idea: Any) -> str:
+    """If a story has only a stub description, pull the parent epic's full description.
+
+    Auto-generated stories from idea_generator get placeholder descriptions like
+    "Story under epic: <title>". These are useless for implementation. When detected,
+    we pull the parent epic's full WHAT/WHY/HOW description and prepend it.
+    """
+    desc = idea.description or ""
+    is_stub = (
+        desc.startswith("Story under epic:")
+        or len(desc.strip()) < 80
+    )
+    if not is_stub or not idea.parent_id:
+        return desc
+
+    parent = get_idea(idea.parent_id)
+    if not parent or not parent.description:
+        return desc
+
+    return (
+        f"**This story is part of:** {parent.title}\n\n"
+        f"**Epic context (use this to guide your implementation):**\n"
+        f"{parent.description}\n\n"
+        f"**Your specific task:** {idea.title}\n"
+        f"{desc}"
+    )
+
+
 def _build_story_prompt(idea: Any) -> str:
     """Build a rich prompt for executing a single story/task."""
     type_label = f"[{idea.idea_type.upper()}] " if idea.idea_type != "story" else ""
+    description = _enrich_stub_description(idea)
 
     sections = [
         f"# Task: Implement {idea.title}\n",
@@ -447,7 +476,7 @@ def _build_story_prompt(idea: Any) -> str:
         f"## {type_label}Idea Details",
         f"- **ID:** {idea.id}",
         f"- **Category:** {idea.category}",
-        f"- **Description:** {idea.description}",
+        f"- **Description:** {description}",
         _build_epic_context(idea),
         _build_discussion(idea),
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
