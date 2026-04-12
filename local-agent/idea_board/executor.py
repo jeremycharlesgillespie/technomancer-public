@@ -14,7 +14,6 @@ the dashboard can poll and display progress line by line.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
@@ -23,12 +22,14 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agent.config import settings
-from .models import add_comment, get_idea, load_ideas, mark_done, mark_executing, mark_failed
+
+from .models import get_idea, load_ideas, mark_done, mark_executing, mark_failed
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,9 @@ class ExecutionState:
 
     @property
     def is_alive(self) -> bool:
-        """Check if the Claude Code process is still running."""
+        """Check if the executor thread or Claude process is still running."""
+        if self.thread and self.thread.is_alive():
+            return True
         if self.pid is None:
             return False
         try:
@@ -509,7 +512,6 @@ def _build_epic_prompt(idea: Any) -> str:
                 label = settings.owner_name if c.author == "owner" else "LLM"
                 discussion += f"  - {label}: {c.text}\n"
 
-        short_name = story.id.replace("idea-", "")
         story_sections += (
             f"\n{'=' * 70}\n"
             f"## Story {idx}/{len(stories)}: {story.title}\n"
@@ -532,7 +534,7 @@ def _build_epic_prompt(idea: Any) -> str:
 
     sections = [
         f"# EPIC: {idea.title}\n",
-        f"You are implementing an entire epic for the Technomancer project.",
+        "You are implementing an entire epic for the Technomancer project.",
         f"This epic has **{len(stories)} stories** to implement sequentially.\n",
         f"## Epic Description\n{idea.description}",
         done_context,
@@ -675,6 +677,8 @@ def _run_exploration_pass(
 
     except Exception as e:
         state.log_lines.append(f"Exploration error: {e} — falling back to single-pass")
+        state.log_lines.append(traceback.format_exc())
+        logger.error(f"[Executor] Exploration error: {traceback.format_exc()}")
         return None
 
 
@@ -718,8 +722,6 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
         return ("tool_result", "")
 
     if event_type == "result":
-        result_text = event.get("result", "")
-        session_id = event.get("session_id", "")
         cost = event.get("total_cost_usd", 0)
         meta = f"(cost: ${cost:.4f})" if cost else ""
         return ("result", f"Final result {meta}")
@@ -949,8 +951,8 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     cwd=local_agent_dir,
                 )
                 test_summary = [
-                    l.strip() for l in test_result.stdout.split("\n")
-                    if "passed" in l or "failed" in l or "error" in l.lower()
+                    ln.strip() for ln in test_result.stdout.split("\n")
+                    if "passed" in ln or "failed" in ln or "error" in ln.lower()
                 ]
                 for line in test_summary:
                     state.log_lines.append(line)
@@ -1022,7 +1024,10 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 _notify_discord(f"Idea {idea_id} deploy error: {deploy_err}")
 
         except Exception as e:
+            tb = traceback.format_exc()
             state.log_lines.append(f"ERROR: {e}")
+            state.log_lines.append(tb)
+            logger.error(f"[Executor] {idea_id} error: {tb}")
             mark_failed(idea_id, state.log_text)
             _notify_discord(f"Idea {idea_id} execution error: {e}")
 
