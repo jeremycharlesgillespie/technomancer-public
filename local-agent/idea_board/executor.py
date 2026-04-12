@@ -931,53 +931,89 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             )
             _notify_discord(f"[{idea_id}] Code complete. Running tests and deploying...")
 
-            # --- Phase 3: Deploy (no Claude needed) ---
+            # --- Phase 3: Deploy (pytest + merge only, no bot restart) ---
+            # We can't run safe_update.py continue because it restarts the bot,
+            # which kills THIS process (the executor runs inside the bot).
+            # Instead, run pytest and merge directly.
             state.log_lines.append("")
             state.log_lines.append("--- Phase 3: Deploy ---")
+            local_agent_dir = str(Path(__file__).parent.parent)
 
             try:
-                deploy_result = subprocess.run(
-                    [sys.executable, "safe_update.py", "continue"],
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                    cwd=str(Path(__file__).parent.parent),
+                # Step 3a: Run pytest
+                state.log_lines.append("Running pytest...")
+                _notify_discord(f"[{idea_id}] Running tests...")
+                test_result = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", "--tb=short"],
+                    capture_output=True, text=True, timeout=120,
+                    cwd=local_agent_dir,
                 )
-                deploy_output = deploy_result.stdout + deploy_result.stderr
-                # Log key lines from deploy output
-                for line in deploy_output.split("\n"):
-                    line = line.strip()
-                    if any(kw in line for kw in [
-                        "passed", "failed", "PASS", "FAIL", "merged",
-                        "Bot", "Pushed", "Published", "WORKFLOW",
-                        "ERROR", "Step",
-                    ]):
-                        state.log_lines.append(line)
+                test_summary = [
+                    l.strip() for l in test_result.stdout.split("\n")
+                    if "passed" in l or "failed" in l or "error" in l.lower()
+                ]
+                for line in test_summary:
+                    state.log_lines.append(line)
 
-                if deploy_result.returncode == 0:
-                    state.log_lines.append(
-                        f"Deploy complete ({state.elapsed:.0f}s total)"
-                    )
-                    mark_done(idea_id, state.log_text[-5000:])
-                    _notify_discord(
-                        f"Idea {idea_id} deployed successfully "
-                        f"({state.elapsed:.0f}s): {idea.title}"
-                    )
-                    # Mark idea as done on the board
-                    try:
-                        mark_done(idea_id, state.log_text[-5000:])
-                    except Exception:
-                        pass
-                else:
-                    state.log_lines.append(
-                        f"Deploy failed (exit code {deploy_result.returncode})"
-                    )
+                if test_result.returncode != 0:
+                    state.log_lines.append("Tests FAILED — aborting deploy")
                     mark_failed(idea_id, state.log_text[-5000:])
-                    _notify_discord(
-                        f"Idea {idea_id} deploy failed: {idea.title}"
-                    )
+                    _notify_discord(f"Idea {idea_id} tests failed: {idea.title}")
+                    return
+
+                # Step 3b: Merge to main
+                state.log_lines.append("Merging to main...")
+                project_root = str(Path(__file__).parent.parent.parent)
+                branch = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, cwd=project_root,
+                ).stdout.strip()
+
+                subprocess.run(
+                    ["git", "checkout", "main"],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+                merge_result = subprocess.run(
+                    ["git", "merge", "--no-ff", branch,
+                     "-m", f"Merge branch '{branch}' - executor auto-deploy"],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+                if merge_result.returncode != 0:
+                    state.log_lines.append(f"Merge failed: {merge_result.stderr[:200]}")
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(f"Idea {idea_id} merge failed: {idea.title}")
+                    return
+
+                # Step 3c: Delete branch
+                subprocess.run(
+                    ["git", "branch", "-d", branch],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+
+                # Step 3d: Push to origin
+                state.log_lines.append("Pushing to origin...")
+                subprocess.run(
+                    ["git", "push", "origin", "main"],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=project_root,
+                )
+
+                # Step 3e: Clean up safe_update state
+                state_file = Path(local_agent_dir) / ".safe_update_state"
+                state_file.unlink(missing_ok=True)
+
+                state.log_lines.append(
+                    f"Deploy complete ({state.elapsed:.0f}s total). "
+                    f"Bot restart needed — run: python bot_service.py start"
+                )
+                mark_done(idea_id, state.log_text[-5000:])
+                _notify_discord(
+                    f"Idea {idea_id} deployed ({state.elapsed:.0f}s): "
+                    f"{idea.title}. Bot restart needed."
+                )
+
             except subprocess.TimeoutExpired:
-                state.log_lines.append("Deploy timed out after 600s")
+                state.log_lines.append("Deploy timed out")
                 mark_failed(idea_id, state.log_text[-5000:])
                 _notify_discord(f"Idea {idea_id} deploy timed out")
             except Exception as deploy_err:
