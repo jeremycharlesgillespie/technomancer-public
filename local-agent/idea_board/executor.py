@@ -20,6 +20,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -420,28 +421,10 @@ def _build_workflow_section(idea: Any) -> str:
         f"4. Make your code changes (with tests if adding new functionality)\n"
         f"5. `python validate.py startup` — MUST show VALIDATION PASSED\n"
         f"6. `git add <files>` && `git commit -m 'description'`\n"
-        f"7. `python safe_update.py continue` — runs tests, merges, restarts bot\n"
-        f"8. `python bot_service.py status` — MUST show Bot running: True\n"
         f"\nDo NOT skip any steps. Do NOT commit without validate.py passing.\n"
-        f"\n## CRITICAL: How to run safe_update.py continue\n"
-        f"The `safe_update.py continue` command takes 3-5 minutes to complete. "
-        f"It runs pytest (~40s), merges, restarts the bot, runs quality tests (~60s), "
-        f"generates README (~60s), and publishes. "
-        f"Run it as a SINGLE BLOCKING Bash command with a 600 second timeout. "
-        f"Do NOT run it in the background. Do NOT poll or check on it. "
-        f"Do NOT run it multiple times. Just run it once and wait for the output. "
-        f"If it fails, read the output to understand why.\n"
-        f"\n## After Completion\n"
-        f"When DONE and verified (bot running), mark the idea as complete:\n"
-        f"```bash\n"
-        f"curl -X POST http://localhost:8322/api/ideas/{idea.id}/done\n"
-        f"```\n"
-        f"If you CANNOT complete this, log the failure:\n"
-        f"```bash\n"
-        f'curl -X POST http://localhost:8322/api/ideas/{idea.id}/comment '
-        f'-H "Content-Type: application/json" '
-        f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
-        f"```\n"
+        f"\n**STOP HERE.** Do NOT run `safe_update.py continue` — the executor "
+        f"handles testing, merging, and deployment automatically after you finish. "
+        f"Your job is done after committing.\n"
     )
 
 
@@ -925,24 +908,75 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     proc.kill()
             exit_code = proc.returncode or 0
 
-            if exit_code == 0:
+            if exit_code != 0:
                 state.log_lines.append(
-                    f"Completed successfully (exit code 0, {state.elapsed:.0f}s)"
-                )
-                mark_done(idea_id, state.log_text[-5000:])
-                _notify_discord(
-                    f"Idea {idea_id} executed successfully "
-                    f"({state.elapsed:.0f}s): {idea.title}"
-                )
-            else:
-                state.log_lines.append(
-                    f"Failed (exit code {exit_code}, {state.elapsed:.0f}s)"
+                    f"Claude failed (exit code {exit_code}, {state.elapsed:.0f}s)"
                 )
                 mark_failed(idea_id, state.log_text[-5000:])
                 _notify_discord(
                     f"Idea {idea_id} execution failed "
                     f"(exit code {exit_code}): {idea.title}"
                 )
+                return
+
+            state.log_lines.append(
+                f"Claude finished ({state.elapsed:.0f}s). Running deploy pipeline..."
+            )
+            _notify_discord(f"[{idea_id}] Code complete. Running tests and deploying...")
+
+            # --- Phase 3: Deploy (no Claude needed) ---
+            state.log_lines.append("")
+            state.log_lines.append("--- Phase 3: Deploy ---")
+
+            try:
+                deploy_result = subprocess.run(
+                    [sys.executable, "safe_update.py", "continue"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    cwd=str(Path(__file__).parent.parent),
+                )
+                deploy_output = deploy_result.stdout + deploy_result.stderr
+                # Log key lines from deploy output
+                for line in deploy_output.split("\n"):
+                    line = line.strip()
+                    if any(kw in line for kw in [
+                        "passed", "failed", "PASS", "FAIL", "merged",
+                        "Bot", "Pushed", "Published", "WORKFLOW",
+                        "ERROR", "Step",
+                    ]):
+                        state.log_lines.append(line)
+
+                if deploy_result.returncode == 0:
+                    state.log_lines.append(
+                        f"Deploy complete ({state.elapsed:.0f}s total)"
+                    )
+                    mark_done(idea_id, state.log_text[-5000:])
+                    _notify_discord(
+                        f"Idea {idea_id} deployed successfully "
+                        f"({state.elapsed:.0f}s): {idea.title}"
+                    )
+                    # Mark idea as done on the board
+                    try:
+                        mark_done(idea_id, state.log_text[-5000:])
+                    except Exception:
+                        pass
+                else:
+                    state.log_lines.append(
+                        f"Deploy failed (exit code {deploy_result.returncode})"
+                    )
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(
+                        f"Idea {idea_id} deploy failed: {idea.title}"
+                    )
+            except subprocess.TimeoutExpired:
+                state.log_lines.append("Deploy timed out after 600s")
+                mark_failed(idea_id, state.log_text[-5000:])
+                _notify_discord(f"Idea {idea_id} deploy timed out")
+            except Exception as deploy_err:
+                state.log_lines.append(f"Deploy error: {deploy_err}")
+                mark_failed(idea_id, state.log_text[-5000:])
+                _notify_discord(f"Idea {idea_id} deploy error: {deploy_err}")
 
         except Exception as e:
             state.log_lines.append(f"ERROR: {e}")
