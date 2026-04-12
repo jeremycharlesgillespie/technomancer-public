@@ -892,7 +892,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 event_type, display_text = _parse_stream_event(line_text)
 
                 if event_type == "result":
-                    # Capture final result metadata
+                    # Capture final result metadata and exit the stream loop
                     try:
                         result_data = json.loads(line_text)
                         final_result = result_data.get("result", "")
@@ -900,7 +900,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         pass
                     if display_text:
                         state.log_lines.append(display_text)
-                    continue
+                    break  # Result event = Claude is done, stop reading
 
                 if display_text:
                     # Log to dashboard
@@ -916,8 +916,14 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         _notify_discord(f"[{idea_id}] {discord_msg}")
                         last_discord_time = now
 
-            # Process finished
-            exit_code = proc.returncode
+            # Process finished — ensure cleanup
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+            exit_code = proc.returncode or 0
 
             if exit_code == 0:
                 state.log_lines.append(
