@@ -7,6 +7,8 @@ import pytest
 
 from agent.claude_code_runner import (
     ChatSession,
+    ChatResult,
+    _find_claude_binary,
     end_session,
     get_active_session,
     run_claude_prompt,
@@ -128,3 +130,62 @@ class TestRunClaudePrompt:
                     call_env = mock_run.call_args.kwargs.get("env", {})
                     assert "ANTHROPIC_API_KEY" not in call_env
                     assert "CLAUDECODE" not in call_env
+
+
+class TestFindClaudeBinary:
+    def test_returns_none_when_no_extensions(self):
+        with patch("pathlib.Path.exists", return_value=False):
+            result = _find_claude_binary()
+            # Either None or a valid path (if actually installed)
+            assert result is None or result.exists()
+
+
+class TestChatResult:
+    def test_dataclass_fields(self):
+        r = ChatResult(
+            success=True, response="hello", session_id="abc",
+            duration=1.5, cost_usd=0.01, is_new_session=True,
+        )
+        assert r.success is True
+        assert r.response == "hello"
+        assert r.session_id == "abc"
+        assert r.cost_usd == 0.01
+
+    def test_failed_result(self):
+        r = ChatResult(
+            success=False, response="Error: timeout",
+            session_id="", duration=30.0, cost_usd=0, is_new_session=False,
+        )
+        assert r.success is False
+        assert "Error" in r.response
+
+
+class TestRunClaudePromptEdgeCases:
+    def test_empty_stdout(self):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = ""
+        mock_result.stderr = ""
+
+        with patch("agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")):
+            with patch("agent.claude_code_runner.subprocess.run", return_value=mock_result):
+                result = run_claude_prompt("test")
+                assert result["success"] is True
+                assert result["result"] == ""
+
+    def test_general_exception(self):
+        with patch("agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")):
+            with patch("agent.claude_code_runner.subprocess.run", side_effect=OSError("Permission denied")):
+                result = run_claude_prompt("test")
+                assert result["success"] is False
+                assert "Permission denied" in result["error"]
+
+    def test_result_dict_always_has_all_keys(self):
+        with patch("agent.claude_code_runner._find_claude_binary", return_value=None):
+            result = run_claude_prompt("test")
+            assert "success" in result
+            assert "result" in result
+            assert "cost_usd" in result
+            assert "session_id" in result
+            assert "duration" in result
+            assert "error" in result

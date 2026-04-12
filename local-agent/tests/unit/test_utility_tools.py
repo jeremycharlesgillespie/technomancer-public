@@ -75,6 +75,128 @@ class TestWikipediaSummary:
         assert "error" in result.lower() or "Error" in result
 
 
+class TestRunPython:
+    """Test safe Python execution."""
+
+    def test_basic_print(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("print(2 + 2)")
+        assert "4" in result
+
+    def test_math_operations(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("print(math.sqrt(16))")
+        assert "4" in result
+
+    def test_rejects_os_import(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("import os\nos.listdir('.')")
+        assert "Error" in result or "disallowed" in result
+
+    def test_rejects_subprocess(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("import subprocess\nsubprocess.run(['ls'])")
+        assert "Error" in result or "disallowed" in result
+
+    def test_rejects_open(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("f = open('/etc/passwd')\nprint(f.read())")
+        assert "Error" in result or "disallowed" in result
+
+    def test_no_output(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("x = 42")
+        assert "no output" in result.lower() or "executed" in result.lower()
+
+    def test_json_usage(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("print(json.dumps({'a': 1}))")
+        assert '"a"' in result
+
+    def test_exception_returns_error(self):
+        from agent.utility_tools import run_python
+
+        result = run_python("print(1/0)")
+        assert "Error" in result or "ZeroDivision" in result
+
+
+class TestCalculateInjection:
+    """Test that calculate rejects injection attempts."""
+
+    def test_rejects_import(self):
+        from agent.utility_tools import calculate
+
+        result = calculate("__import__('os').system('ls')")
+        assert "disallowed" in result.lower() or "Error" in result
+
+    def test_rejects_exec(self):
+        from agent.utility_tools import calculate
+
+        result = calculate("exec('print(1)')")
+        assert "disallowed" in result.lower() or "Error" in result
+
+    def test_rejects_dunder(self):
+        from agent.utility_tools import calculate
+
+        result = calculate("__builtins__")
+        assert "disallowed" in result.lower() or "Error" in result
+
+    def test_sqrt(self):
+        from agent.utility_tools import calculate
+
+        result = calculate("sqrt(144)")
+        assert "12" in result
+
+    def test_trig(self):
+        from agent.utility_tools import calculate
+
+        result = calculate("sin(0)")
+        assert "0" in result
+
+
+class TestWikipediaEdgeCases:
+    """Additional Wikipedia tests."""
+
+    @patch("requests.get")
+    def test_timeout(self, mock_get):
+        import requests as req
+        from agent.utility_tools import wikipedia_summary
+
+        mock_get.side_effect = req.Timeout("timed out")
+        result = wikipedia_summary("test")
+        assert "timed out" in result.lower()
+
+    @patch("requests.get")
+    def test_404_with_search_fallback(self, mock_get):
+        from agent.utility_tools import wikipedia_summary
+
+        # First call returns 404, second (search) returns a result, third gets the article
+        resp_404 = MagicMock()
+        resp_404.status_code = 404
+
+        resp_search = MagicMock()
+        resp_search.json.return_value = {"query": {"search": [{"title": "Python (programming language)"}]}}
+
+        resp_article = MagicMock()
+        resp_article.status_code = 200
+        resp_article.json.return_value = {
+            "title": "Python",
+            "extract": "Python is a programming language.",
+            "content_urls": {"desktop": {"page": "https://en.wikipedia.org/wiki/Python"}},
+        }
+
+        mock_get.side_effect = [resp_404, resp_search, resp_article]
+        result = wikipedia_summary("python programming")
+        assert "Python" in result
+
+
 class TestGetUtilityTools:
     """Test tool registration."""
 
@@ -83,3 +205,10 @@ class TestGetUtilityTools:
         assert len(tools) >= 1
         names = {t.name for t in tools}
         assert "calculate" in names
+
+    def test_all_tools_present(self):
+        tools = get_utility_tools()
+        names = {t.name for t in tools}
+        assert "calculate" in names
+        assert "wikipedia" in names
+        assert "run_python" in names

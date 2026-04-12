@@ -118,6 +118,10 @@ omit = [
     "*pdf_tools*",
     # Scheduled audit task — runs against live vault/DB data
     "*knowledge_consistency*",
+    # Async RSS/Discord digest loop — mostly I/O, tested via unit helpers
+    "*news_digest*",
+    # Discord command handlers — thin dispatch to other modules
+    "*bot_commands*",
 ]
 
 [tool.coverage.report]
