@@ -906,16 +906,21 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     proc.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-            exit_code = proc.returncode or 0
 
-            if exit_code != 0:
+            # Check success via the result event, not exit code
+            # (we terminate the process after getting the result event,
+            # which gives exit code 1 on Windows even though Claude succeeded)
+            claude_succeeded = final_result != "" or any(
+                "result" in line.lower() for line in state.log_lines[-3:]
+            )
+
+            if not claude_succeeded:
                 state.log_lines.append(
-                    f"Claude failed (exit code {exit_code}, {state.elapsed:.0f}s)"
+                    f"Claude failed ({state.elapsed:.0f}s)"
                 )
                 mark_failed(idea_id, state.log_text[-5000:])
                 _notify_discord(
-                    f"Idea {idea_id} execution failed "
-                    f"(exit code {exit_code}): {idea.title}"
+                    f"Idea {idea_id} execution failed: {idea.title}"
                 )
                 return
 

@@ -1552,7 +1552,7 @@ def _render_hub() -> str:
 </head>
 <body>
     <h1>Technomancer Hub</h1>
-    <p class="subtitle">Central control panel for all Technomancer services</p>
+    <p class="subtitle">Central control panel for all Technomancer services · <a href="/api/ideas" style="color: var(--muted); font-size: 0.85em;">API: /api/ideas</a></p>
 
     <div class="grid">
         <a href="/ideas" class="card green">
