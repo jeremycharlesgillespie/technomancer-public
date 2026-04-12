@@ -7,12 +7,12 @@ Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-11 19:33
+> via `safe_update.py`. Last updated: 2026-04-11 20:27
 
 ## Highlights
 
 - **1464 automated tests** with 78.2% code coverage
-- **66 Python modules** across 26,444 lines of code
+- **66 Python modules** across 26,447 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -193,7 +193,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Test count | 1464 |
 | Code coverage | 78.2% |
 | Python modules | 66 |
-| Lines of code | 26,444 |
+| Lines of code | 26,447 |
 | Test files | 64 |
 
 ## License

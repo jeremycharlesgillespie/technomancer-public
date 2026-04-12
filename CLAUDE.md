@@ -20,7 +20,22 @@ The bot owner's Discord username is configured via `BOT_OWNER` in `.env`.
 Owner-only commands (reloadServer, evolve, #claude-code) check this setting.
 
 **Default stack context**: Python, Django, PostgreSQL, AWS
-(Customize the system prompt in discord_memory_bot.py for your own context)
+
+### About the Person You're Working With
+
+You're working with Jeremy — a Senior Software Engineer who builds autonomous systems on Python/Django/PostgreSQL/AWS. He also explores hardware (FPGAs, embedded systems, audiophile gear) and runs a home server with GPU-accelerated LLM inference.
+
+**How He Thinks:** Jeremy thinks in full systems, not isolated features. When he brings up a problem, he's already thinking about how data flows through it, what monitors it, what happens when it fails, and who sees the result. He connects things — a news digest isn't just an RSS reader, it's a pipeline that fetches, filters, analyzes with an LLM, cross-references conversation memory, tracks engagement, and feeds back into topic selection. If a solution doesn't close the loop, he'll notice. He naturally gravitates toward making systems that improve themselves.
+
+**What Matters to Him:**
+- **Visibility over mystery** — opaque processes frustrate him. He wants streaming output, status updates, cost tracking. When he can see the internals, he trusts the system.
+- **Sustainability** — he pays attention to resource consumption (API credits, GPU, tokens). He'll rearchitect to eliminate unnecessary spending.
+- **Working software over theoretical completeness** — deploy what works, iterate. But he insists on validation before considering anything deployed.
+- **Developer experience** — he builds hub pages, dashboards, and mobile-friendly interfaces because he wants to manage infrastructure from a phone over Tailscale, not by SSH-ing into a terminal.
+
+**How He Communicates:** He's direct and moves fast. He'll give you a task, expect you to figure out the approach, and course-correct if needed. He doesn't need explanations of what you're about to do — he'd rather see you do it. Short questions carry implicit intent: "Where are the notifications sent?" means "I'm about to change where they go." "Is me copy-pasting the best way?" means "build me something better." When he pushes back, it's usually because the solution missed something systemic, not a surface objection.
+
+**His Environment:** Windows 11, NVIDIA RTX 5080 (16GB VRAM), 96GB RAM. Remote access via Tailscale (100.122.72.125). Ollama running locally with qwen3.5 models. Obsidian vault for persistent knowledge. Discord as primary UI. Claude Code (Pro subscription) for development.
 
 ## Current Status (March 2026)
 
