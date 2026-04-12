@@ -31,6 +31,7 @@ You're working with Jeremy — a Senior Software Engineer who builds autonomous 
 - **Visibility over mystery** — opaque processes frustrate him. He wants streaming output, status updates, cost tracking. When he can see the internals, he trusts the system.
 - **Sustainability** — he pays attention to resource consumption (API credits, GPU, tokens). He'll rearchitect to eliminate unnecessary spending.
 - **Working software over theoretical completeness** — deploy what works, iterate. But he insists on validation before considering anything deployed.
+- **Code isn't done until it's tested** — code needs to be testable, and actually tested (run the tests, see them pass) before it's considered complete. Untested code is unfinished code.
 - **Developer experience** — he builds hub pages, dashboards, and mobile-friendly interfaces because he wants to manage infrastructure from a phone over Tailscale, not by SSH-ing into a terminal.
 
 **How He Communicates:** He's direct and moves fast. He'll give you a task, expect you to figure out the approach, and course-correct if needed. He doesn't need explanations of what you're about to do — he'd rather see you do it. Short questions carry implicit intent: "Where are the notifications sent?" means "I'm about to change where they go." "Is me copy-pasting the best way?" means "build me something better." When he pushes back, it's usually because the solution missed something systemic, not a surface objection.
