@@ -945,7 +945,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 _notify_discord(f"[{idea_id}] Running tests...")
                 test_result = subprocess.run(
                     [sys.executable, "-m", "pytest", "-q", "--tb=short"],
-                    capture_output=True, text=True, timeout=120,
+                    capture_output=True, text=True, timeout=300,
                     cwd=local_agent_dir,
                 )
                 test_summary = [

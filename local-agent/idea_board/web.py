@@ -1554,6 +1554,11 @@ def _render_hub() -> str:
     except Exception:
         git_hash = "unknown"
 
+    # Codebase stats for footer
+    agent_dir = Path(__file__).resolve().parent.parent / "agent"
+    py_files = list(agent_dir.glob("*.py"))
+    total_lines = sum(f.read_text(encoding="utf-8", errors="ignore").count("\n") for f in py_files)
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1654,7 +1659,7 @@ def _render_hub() -> str:
     updateEvolveStatus();
     setInterval(updateEvolveStatus, 5000);
     </script>
-    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Page generated at {generated_at} &middot; v: {git_hash}</p>
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">{len(py_files)} modules &middot; {total_lines:,} lines of code &middot; Page generated at {generated_at} &middot; v: {git_hash}</p>
 </body>
 </html>"""
 
