@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle materialized views for query performance - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle materialized views for query performance</h1>
+            <p class="meta">oracle &bull; April 12, 2026</p>
+        </header>
+        <main>
+<h1>Oracle Materialized Views for Query Performance</h1>
+
+<h2>Quick Overview</h2>
+
+<p>A materialized view (MV) is a database object that stores the precomputed result of a query physically on disk. Unlike a regular view â€” which is just a saved SQL statement re-executed every time you reference it â€” a materialized view runs the query once, persists the result set, and serves subsequent reads directly from that snapshot. Think of it as a cached query result that the database manages for you.</p>
+
+<p>Why does this matter? Because expensive aggregations, multi-table joins, and analytical queries that hammer your OLTP system can be reduced from seconds (or minutes) to millisecond lookups. Oracle&#x27;s implementation is particularly mature: it supports automatic query rewrite (the optimizer silently redirects queries to use the MV instead of the base tables), incremental refresh via materialized view logs, and â€” as of Oracle 21c â€” fully automatic MV creation where the database itself identifies which views would help and manages their lifecycle.</p>
+
+<p>Here&#x27;s the simplest possible example:</p>
+
+<pre><code class="language-sql">-- Base table: 50M rows of order data
+-- This aggregation takes 12 seconds on the base table
+
+<p>CREATE MATERIALIZED VIEW mv_daily_revenue<br>
+BUILD IMMEDIATE<br>
+REFRESH FAST ON DEMAND<br>
+ENABLE QUERY REWRITE<br>
+AS<br>
+SELECT<br>
+    order_date,<br>
+    region,<br>
+    SUM(amount)    AS total_revenue,<br>
+    COUNT(*)       AS order_count<br>
+FROM orders<br>
+GROUP BY order_date, region;</p>
+
+<p>-- Now the same aggregation returns in &lt;10ms<br>
+SELECT order_date, region, total_revenue<br>
+FROM mv_daily_revenue<br>
+WHERE region = &#x27;US-EAST&#x27;;<br>
+</code></pre></p>
+
+<p>The <code>BUILD IMMEDIATE</code> populates it at creation time. <code>REFRESH FAST</code> means Oracle will apply only the deltas (not recompute everything) on the next refresh. <code>ENABLE QUERY REWRITE</code> lets the optimizer substitute the MV transparently â€” even for queries that don&#x27;t reference the MV by name.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>You already understand this pattern intuitively. If you&#x27;ve ever cached a Django QuerySet result in Redis, denormalized a PostgreSQL table for read performance, or built a summary table that a cron job refreshes â€” you&#x27;ve hand-rolled a materialized view. Oracle just bakes it into the database engine with transactional guarantees, automatic invalidation tracking, and optimizer integration that no application-layer cache can match.</p>
+
+<p>Knowing how Oracle MVs work makes you a stronger engineer even if your primary stack is PostgreSQL and Django. PostgreSQL has <code>CREATE MATERIALIZED VIEW</code> too, but it&#x27;s comparatively bare-bones: no fast refresh, no query rewrite, no MV logs. Understanding Oracle&#x27;s richer model gives you a blueprint for what to build at the application layer when Postgres doesn&#x27;t provide it natively. It also matters directly if you&#x27;re ever querying Oracle from Python via <code>cx_Oracle</code>/<code>oracledb</code> (common in enterprise data pipelines), or if your Django app needs to hit an Oracle-backed data warehouse alongside your primary Postgres database â€” Django supports Oracle as a database backend out of the box. And for your autonomous systems work, the concept of &quot;precompute expensive results, serve from cache, refresh incrementally&quot; is exactly the pattern you&#x27;d want for something like an LLM analytics dashboard that aggregates token usage, latency percentiles, and cost data across thousands of inference calls.</p>
+
+<h2>How to Implement It</h2>
+
+<h3>Step 1: Create Materialized View Logs (Required for Fast Refresh)</h3>
+
+<p>Fast refresh only works if Oracle can track what changed in the base tables. That&#x27;s what materialized view logs do â€” they&#x27;re change-capture tables.</p>
+
+<pre><code class="language-sql">-- Create MV logs on every base table the MV references
+CREATE MATERIALIZED VIEW LOG ON orders
+WITH ROWID, SEQUENCE (order_date, region, amount)
+INCLUDING NEW VALUES;
+
+<p>CREATE MATERIALIZED VIEW LOG ON customers<br>
+WITH ROWID, SEQUENCE (customer_id, segment)<br>
+INCLUDING NEW VALUES;<br>
+</code></pre></p>
+
+<p><code>INCLUDING NEW VALUES</code> is required for MVs that contain aggregations (<code>SUM</code>, <code>COUNT</code>, <code>AVG</code>). Without it, Oracle can&#x27;t compute the delta for aggregate updates.</p>
+
+<h3>Step 2: Create the Materialized View</h3>
+
+<pre><code class="language-sql">CREATE MATERIALIZED VIEW mv_segment_revenue
+BUILD IMMEDIATE
+REFRESH FAST ON DEMAND
+ENABLE QUERY REWRITE
+AS
+SELECT
+    c.segment,
+    o.order_date,
+    SUM(o.amount)       AS total_revenue,
+    COUNT(*)            AS order_count,
+    COUNT(o.amount)     AS amount_count  -- required for FAST refresh with SUM
+FROM orders o
+JOIN customers c ON o.customer_id = c.customer_id
+GROUP BY c.segment, o.order_date;
+</code></pre>
+
+<p>Note the <code>COUNT(o.amount)</code> column â€” Oracle requires this alongside <code>SUM</code> for fast refresh correctness. If you omit it, Oracle will silently fall back to complete refresh, and you won&#x27;t know until you check.</p>
+
+<h3>Step 3: Verify Fast Refresh Eligibility</h3>
+
+<p>This is where people get burned. Always validate:</p>
+
+<pre><code class="language-sql">-- Use DBMS_MVIEW.EXPLAIN_MVIEW to check refresh capabilities
+BEGIN
+    DBMS_MVIEW.EXPLAIN_MVIEW(&#x27;mv_segment_revenue&#x27;);
+END;
+/
+
+<p>-- Then query the explanation table<br>
+SELECT capability_name, possible, msgtxt<br>
+FROM mv_capabilities_table<br>
+WHERE capability_name LIKE &#x27;%REFRESH_FAST%&#x27;;<br>
+</code></pre></p>
+
+<p>If <code>possible = &#x27;N&#x27;</code>, the <code>msgtxt</code> column tells you exactly why. Common culprits: missing MV log columns, missing <code>COUNT(*)</code>, expressions Oracle can&#x27;t incrementally maintain (like <code>DISTINCT</code> in older versions).</p>
+
+<h3>Step 4: Refresh from Python</h3>
+
+<p>Here&#x27;s how you&#x27;d manage refreshes from a Python application â€” useful if you&#x27;re building a pipeline or a management interface:</p>
+
+<pre><code class="language-python">import oracledb
+
+<p>def refresh_materialized_view(<br>
+    dsn: str,<br>
+    mv_name: str,<br>
+    method: str = &quot;F&quot;,   # F=fast, C=complete, ?=force (try fast, fall back)<br>
+    parallelism: int = 4<br>
+):<br>
+    &quot;&quot;&quot;Refresh an Oracle materialized view.<br>
+    <br>
+    Args:<br>
+        dsn: Oracle connection string<br>
+        mv_name: Name of the materialized view<br>
+        method: F (fast), C (complete), ? (force - tries fast first)<br>
+        parallelism: Degree of parallel refresh<br>
+    &quot;&quot;&quot;<br>
+    with oracledb.connect(dsn=dsn) as conn:<br>
+        with conn.cursor() as cur:<br>
+            # Refresh the MV<br>
+            cur.callproc(&quot;DBMS_MVIEW.REFRESH&quot;, [mv_name, method, &quot;&quot;, True, False, parallelism])<br>
+            <br>
+            # Verify staleness after refresh<br>
+            cur.execute(&quot;&quot;&quot;<br>
+                SELECT mview_name, staleness, last_refresh_date, <br>
+                       last_refresh_type, stale_since<br>
+                FROM user_mviews<br>
+                WHERE mview_name = :name<br>
+            &quot;&quot;&quot;, {&quot;name&quot;: mv_name.upper()})<br>
+            <br>
+            row = cur.fetchone()<br>
+            print(f&quot;MV: {row[0]}, Status: {row[1]}, &quot;<br>
+                  f&quot;Last Refresh: {row[2]} ({row[3]})&quot;)<br>
+            <br>
+            return {<br>
+                &quot;name&quot;: row[0],<br>
+                &quot;staleness&quot;: row[1],<br>
+                &quot;last_refresh&quot;: row[2],<br>
+                &quot;refresh_type&quot;: row[3],<br>
+                &quot;stale_since&quot;: row[4],<br>
+            }</p>
+
+<h1>Usage â€” e.g., from a scheduled task or Django management command</h1>
+if __name__ == &quot;__main__&quot;:
+    DSN = &quot;user/pass@hostname:1521/service_name&quot;
+    
+    # Try fast refresh first, fall back to complete if needed
+    result = refresh_materialized_view(DSN, &quot;MV_SEGMENT_REVENUE&quot;, method=&quot;?&quot;)
+    
+    if result[&quot;staleness&quot;] != &quot;FRESH&quot;:
+        print(f&quot;WARNING: MV still stale since {result[&#x27;stale_since&#x27;]}&quot;)
+</code></pre>
+
+<h3>Step 5: Monitor Refresh Performance</h3>
+
+<pre><code class="language-sql">-- Check refresh history and duration
+SELECT mview_name, 
+       last_refresh_date,
+       last_refresh_type,
+       stale_since,
+       compile_state
+FROM user_mviews
+ORDER BY last_refresh_date DESC;
+
+<p>-- Check MV log size (large logs = slow fast refresh)<br>
+SELECT log_owner, master, log_table, <br>
+       rowids, primary_key, sequence, include_new_values<br>
+FROM user_mview_logs;</p>
+
+<p>-- Count pending changes in MV log<br>
+SELECT COUNT(*) FROM MLOG$_ORDERS;<br>
+</code></pre></p>
+
+<p>If your MV log tables are growing unbounded, your refreshes aren&#x27;t keeping up. Set up monitoring (this is where your Prometheus/Grafana instincts apply â€” expose these counts as metrics).</p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Dashboard and reporting queries</strong> â€” aggregations over millions of rows that users hit repeatedly. A revenue-by-region-by-day MV turns a 15-second warehouse query into a sub-second lookup.</li><br>
+<li><strong>Cross-system data integration</strong> â€” MVs can pull from remote databases via database links. If your Django app needs to join local PostgreSQL data with an Oracle data warehouse, an MV on the Oracle side can pre-materialize the expensive joins.</li><br>
+<li><strong>Replacing application-layer cache for analytical queries</strong> â€” instead of caching aggregated results in Redis with manual invalidation logic, let Oracle handle staleness tracking and incremental refresh. One fewer system to monitor and debug.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Data must be real-time consistent</strong> â€” MVs are eventually consistent by nature. If your use case can&#x27;t tolerate even a few minutes of staleness (e.g., account balances, inventory counts for checkout), use indexed views or query the base tables directly.</li><br>
+<li><strong>The base tables are highly volatile with small reads</strong> â€” if you&#x27;re doing millions of small INSERT/UPDATE/DELETEs per hour and the MV log grows faster than you can refresh, you&#x27;ll end up with a refresh bottleneck that&#x27;s worse than the original query cost. Profile before committing.</li><br>
+<li><strong>Simple queries on well-indexed tables</strong> â€” if the base query already returns in &lt;100ms with proper indexes, an MV adds complexity (refresh scheduling, storage, monitoring) for negligible gain. Don&#x27;t optimize what isn&#x27;t slow.</li><br>
+</ul><br>
+<strong>Common pitfalls:</strong><br>
+<ul><br>
+<li><strong>Forgetting <code>COUNT(*)</code> and <code>COUNT(column)</code> alongside aggregates</strong> â€” Oracle silently downgrades to complete refresh. Always check <code>EXPLAIN_MVIEW</code>.</li><br>
+<li><strong>Not purging MV logs</strong> â€” after refresh, Oracle marks log rows as consumed but doesn&#x27;t delete them immediately. Use <code>DBMS_MVIEW.PURGE_LOG</code> or set a retention policy.</li><br>
+<li><strong>Enabling QUERY REWRITE without testing</strong> â€” the optimizer may rewrite queries you didn&#x27;t expect, changing execution plans elsewhere. Test with <code>/<em>+ NOREWRITE </em>/</code> hints during rollout.</li><br>
+<li><strong>Ignoring refresh window scheduling</strong> â€” refreshing a large MV during peak OLTP hours will spike I/O and block writes on the MV log. Schedule refreshes during low-traffic windows.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>A materialized view is a managed, queryable cache inside the database</strong> â€” it stores precomputed query results on disk and can be refreshed incrementally.</li>
+<li><strong>Fast refresh requires setup</strong> â€” MV logs on every base table, <code>INCLUDING NEW VALUES</code> for aggregates, and companion columns like <code>COUNT(*)</code> alongside <code>SUM</code>. Skip any of these and Oracle silently falls back to expensive complete refresh.</li>
+<li><strong>Always validate with <code>DBMS_MVIEW.EXPLAIN_MVIEW</code></strong> â€” it tells you exactly what&#x27;s possible and what&#x27;s blocking fast refresh. Don&#x27;t guess.</li>
+<li><strong>The pattern transfers across databases</strong> â€” PostgreSQL has basic materialized views, but knowing Oracle&#x27;s model (MV logs, query rewrite, automatic MVs) gives you a design template for building equivalent capabilities at the application layer with Django + Celery + cache.</li>
+<li><strong>Monitor MV log growth and refresh duration</strong> â€” an unmonitored MV is a ticking time bomb. Treat refresh health like you&#x27;d treat any other SLO: measure it, alert on it, and have a runbook for when it degrades.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

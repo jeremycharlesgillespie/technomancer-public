@@ -276,6 +276,13 @@ async def handle_show_commands(message: Any) -> None:
 `dlcover <url>` - Download video thumbnail/cover art
 `dlcovers <channel_url>` - Download all thumbnails from a channel
 
+**Project Tracker**
+`track <name> [url]` - Track a new project (owner only)
+`untrack <name>` - Remove a tracked project (owner only)
+`projects` - List all tracked projects
+`project <name>` - Show project details
+`blocker <name> <text>` - Add a blocker to a project (owner only)
+
 **Admin**
 `reloadServer` - Restart the bot (owner only)
 `evolve` - Run self-improvement cycle (owner only)
@@ -539,3 +546,89 @@ async def handle_dl_covers(message: Any, content: str, user: str) -> None:
         f"Downloading 1 per minute to avoid rate limits.\n"
         f"Progress updates will be posted here. You can close Discord."
     )
+
+
+# ================================================================
+# Project Tracker commands
+# ================================================================
+
+async def handle_track(message: Any, content: str, user: str) -> None:
+    """Track a new project: track <name> [url]."""
+    if user.lower() != settings.bot_owner.lower():
+        await message.reply("Sorry, only the bot owner can manage projects.")
+        return
+    parts = content.split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "**Track a Project**\n"
+            "Usage: `track <name> [repo_url]`\n"
+            "Example: `track myapp https://github.com/user/myapp`"
+        )
+        return
+    name = parts[1].strip()
+    repo_url = parts[2].strip() if len(parts) > 2 else ""
+    from .project_tracker import add_project
+    result = add_project(name, repo_url)
+    await message.reply(result)
+
+
+async def handle_untrack(message: Any, content: str, user: str) -> None:
+    """Remove a tracked project: untrack <name>."""
+    if user.lower() != settings.bot_owner.lower():
+        await message.reply("Sorry, only the bot owner can manage projects.")
+        return
+    parts = content.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "**Untrack a Project**\n"
+            "Usage: `untrack <name>`\n"
+            "Example: `untrack myapp`"
+        )
+        return
+    name = parts[1].strip()
+    from .project_tracker import remove_project
+    result = remove_project(name)
+    await message.reply(result)
+
+
+async def handle_projects(message: Any) -> None:
+    """List all tracked projects."""
+    from .project_tracker import list_projects
+    result = list_projects()
+    await message.reply(result)
+
+
+async def handle_project_detail(message: Any, content: str) -> None:
+    """Show detail for a single project: project <name>."""
+    parts = content.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply(
+            "**Project Detail**\n"
+            "Usage: `project <name>`\n"
+            "Example: `project technomancer`"
+        )
+        return
+    name = parts[1].strip()
+    from .project_tracker import get_project
+    result = get_project(name)
+    await message.reply(result)
+
+
+async def handle_blocker(message: Any, content: str, user: str) -> None:
+    """Add a blocker to a project: blocker <name> <text>."""
+    if user.lower() != settings.bot_owner.lower():
+        await message.reply("Sorry, only the bot owner can manage projects.")
+        return
+    parts = content.split(maxsplit=2)
+    if len(parts) < 3 or not parts[2].strip():
+        await message.reply(
+            "**Add a Blocker**\n"
+            "Usage: `blocker <project> <description>`\n"
+            "Example: `blocker myapp waiting on API key from vendor`"
+        )
+        return
+    name = parts[1].strip()
+    blocker_text = parts[2].strip()
+    from .project_tracker import add_blocker
+    result = add_blocker(name, blocker_text)
+    await message.reply(result)

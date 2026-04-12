@@ -42,6 +42,7 @@ from .core import Agent, AgentConfig
 from .dev_learning import start_dev_learning
 from .bot_commands import (
     handle_better_dev,
+    handle_blocker,
     handle_dl_cover,
     handle_dl_covers,
     handle_download_channel,
@@ -54,6 +55,8 @@ from .bot_commands import (
     handle_suggest_learning,
     handle_list_videos,
     handle_perf,
+    handle_project_detail,
+    handle_projects,
     handle_publish,
     handle_reload_server,
     handle_search_videos,
@@ -62,8 +65,11 @@ from .bot_commands import (
     handle_show_learning,
     handle_tech_news,
     handle_think,
+    handle_track,
+    handle_untrack,
 )
 from .facts_db import get_facts_tools, init_db as init_facts_db, seed_db as seed_facts_db
+from .project_tracker import get_project_tracker_tools, init_db as init_projects_db
 from .knowledge_gaps import auto_enrich_gap, detect_knowledge_gap, get_knowledge_gap_tools, log_knowledge_gap
 from .image_identification import analyze_with_vision_model, ask_claude_with_image
 from .reflection import auto_search_for_factual, classify_question, is_factual_question, reflect
@@ -409,6 +415,10 @@ async def on_ready() -> None:
     seed_facts_db()
     log("Facts SQLite DB initialized")
 
+    # Initialize project tracker database
+    init_projects_db()
+    log("Project tracker SQLite DB initialized")
+
     # Build date context so the LLM never guesses days-of-week
     from datetime import timedelta as _td
     _now = datetime.now()
@@ -650,6 +660,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
     for tool in get_ref_enrichment_tools():
         agent.register_tool(tool)
     for tool in get_facts_tools():
+        agent.register_tool(tool)
+    for tool in get_project_tracker_tools():
         agent.register_tool(tool)
     for tool in get_accountability_tools():
         agent.register_tool(tool)
@@ -1012,6 +1024,26 @@ async def on_message(message: discord.Message) -> None:
     if lower == "ideas":
         _track_cmd("ideas")
         await handle_show_ideas(message, send_response)
+        return
+    if lower.startswith("track "):
+        _track_cmd("track")
+        await handle_track(message, content, user)
+        return
+    if lower.startswith("untrack "):
+        _track_cmd("untrack")
+        await handle_untrack(message, content, user)
+        return
+    if lower == "projects":
+        _track_cmd("projects")
+        await handle_projects(message)
+        return
+    if lower.startswith("project "):
+        _track_cmd("project")
+        await handle_project_detail(message, content)
+        return
+    if lower.startswith("blocker "):
+        _track_cmd("blocker")
+        await handle_blocker(message, content, user)
         return
     if lower.startswith("listvideos"):
         _track_cmd("listvideos")

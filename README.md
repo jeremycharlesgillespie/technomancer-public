@@ -1,18 +1,18 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-1489-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.2%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-67-blue) ![lines](https://img.shields.io/badge/lines-27k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-1533-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.3%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-68-blue) ![lines](https://img.shields.io/badge/lines-27k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 An Ollama-powered autonomous agent framework with Discord bot interface,
 Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-12 07:02
+> via `safe_update.py`. Last updated: 2026-04-12 09:53
 
 ## Highlights
 
-- **1489 automated tests** with 78.2% code coverage
-- **67 Python modules** across 27,014 lines of code
+- **1533 automated tests** with 78.3% code coverage
+- **68 Python modules** across 27,509 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -113,7 +113,7 @@ python safe_update.py continue          # test, merge, restart, publish
 Every code change passes through multiple quality gates before deployment:
 
 ```bash
-pytest                        # Run all 1489 tests
+pytest                        # Run all 1533 tests
 pytest --cov=agent            # With coverage report
 pytest tests/unit/            # Unit tests only
 python validate.py startup    # Full pre-commit validation (5 levels)
@@ -139,7 +139,7 @@ Every change follows the same branch → test → merge → restart flow:
 safe_update.py <name>      →  Create isolated branch
 validate.py startup        →  5-level validation (mandatory before commit)
 git commit                 →  Pre-commit hooks (black, ruff, trailing whitespace)
-safe_update.py continue    →  pytest (all 1489 tests) → mypy → merge → restart bot → quality tests → publish
+safe_update.py continue    →  pytest (all 1533 tests) → mypy → merge → restart bot → quality tests → publish
 ```
 
 No code reaches `main` without passing **all** of: pre-commit hooks, 5-level validation, the full test suite, type checking, and post-deploy quality tests.
@@ -190,11 +190,11 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 
 | Metric | Value |
 |--------|-------|
-| Test count | 1489 |
-| Code coverage | 78.2% |
-| Python modules | 67 |
-| Lines of code | 27,014 |
-| Test files | 65 |
+| Test count | 1533 |
+| Code coverage | 78.3% |
+| Python modules | 68 |
+| Lines of code | 27,509 |
+| Test files | 66 |
 
 ## License
 
