@@ -18,6 +18,7 @@ import asyncio
 import html
 import json
 import logging
+import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -1542,6 +1543,17 @@ def _render_hub() -> str:
     completion_pct = round(done / total * 100) if total else 0
     generated_at = datetime.now().strftime("%H:%M")
 
+    try:
+        git_hash = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            timeout=5,
+        ).stdout.strip() or "unknown"
+    except Exception:
+        git_hash = "unknown"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1642,7 +1654,7 @@ def _render_hub() -> str:
     updateEvolveStatus();
     setInterval(updateEvolveStatus, 5000);
     </script>
-    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Page generated at {generated_at}</p>
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Page generated at {generated_at} &middot; v: {git_hash}</p>
 </body>
 </html>"""
 
