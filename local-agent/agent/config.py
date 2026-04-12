@@ -72,6 +72,11 @@ class Settings(BaseSettings):
         description="Path to Obsidian vault root (set VAULT_PATH in .env)",
     )
 
+    # GitHub settings
+    github_token: Optional[str] = Field(
+        default=None, description="GitHub personal access token for API sync"
+    )
+
     # GitHub Pages settings
     github_pages_enabled: bool = Field(
         default=True, description="Enable GitHub Pages deployment for learning articles"

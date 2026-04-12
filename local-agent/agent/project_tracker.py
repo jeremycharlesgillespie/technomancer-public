@@ -5,18 +5,30 @@ Stores project metadata (name, repo URL, status, blockers, notes) in a local
 SQLite database.  Exposes CRUD operations as LLM tools so the agent can
 register, update, list, and remove tracked projects on behalf of the owner.
 
+Includes periodic GitHub REST API sync that pulls open PR count, issue count,
+last commit date, and repo description for each tracked project with a repo URL.
+
 Database lives at ``local-agent/data/projects.db``.
 """
 
+import asyncio
 import json
 import logging
+import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import aiohttp
+
+from .config import settings
+
 log = logging.getLogger(__name__)
+
+GITHUB_API = "https://api.github.com"
+SYNC_INTERVAL_MINUTES = 30
 
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "projects.db"
@@ -49,7 +61,8 @@ def init_db() -> None:
             blockers    TEXT    NOT NULL DEFAULT '',
             notes       TEXT    NOT NULL DEFAULT '',
             created_at  TEXT    NOT NULL,
-            last_synced TEXT    NOT NULL DEFAULT ''
+            last_synced TEXT    NOT NULL DEFAULT '',
+            github_data TEXT    NOT NULL DEFAULT ''
         )
     """)
     conn.execute("""
@@ -57,6 +70,188 @@ def init_db() -> None:
         ON projects (name)
     """)
     conn.commit()
+    # Migrate existing DBs: add github_data column if missing
+    _migrate_add_github_data(conn)
+
+
+def _migrate_add_github_data(conn: sqlite3.Connection) -> None:
+    """Add github_data column to existing DBs that lack it."""
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+        if "github_data" not in cols:
+            conn.execute("ALTER TABLE projects ADD COLUMN github_data TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+            log.info("[ProjectTracker] Migrated: added github_data column")
+    except Exception:
+        log.exception("[ProjectTracker] Migration error")
+
+
+# ---------------------------------------------------------------------------
+# GitHub API helpers
+# ---------------------------------------------------------------------------
+
+_GITHUB_URL_RE = re.compile(
+    r"(?:https?://)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/\s#?]+)"
+)
+
+
+def parse_github_repo(url: str) -> tuple[str, str] | None:
+    """Extract (owner, repo) from a GitHub URL, or None if not a GitHub URL."""
+    m = _GITHUB_URL_RE.search(url)
+    if not m:
+        return None
+    repo = m.group("repo")
+    # Strip trailing .git
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return m.group("owner"), repo
+
+
+async def github_fetch(repo_url: str, token: str | None = None) -> dict[str, Any] | None:
+    """Fetch GitHub data for a repo URL.
+
+    Returns a dict with keys: description, stars, open_issues, open_prs,
+    last_commit_sha, last_commit_date.  Returns None on error or non-GitHub URL.
+    """
+    parsed = parse_github_repo(repo_url)
+    if not parsed:
+        return None
+    owner, repo = parsed
+    headers: dict[str, str] = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 1. Repo metadata (description, stars, open_issues_count)
+            async with session.get(f"{GITHUB_API}/repos/{owner}/{repo}") as resp:
+                if resp.status != 200:
+                    log.warning("[GitHubSync] Repo API returned %d for %s/%s", resp.status, owner, repo)
+                    return None
+                repo_data = await resp.json()
+
+            # 2. Open PRs count
+            async with session.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
+                params={"state": "open", "per_page": "1"},
+            ) as resp:
+                pr_count = 0
+                if resp.status == 200:
+                    pr_body = await resp.json()
+                    if pr_body:
+                        pr_count = _parse_last_page(resp) or len(pr_body)
+
+            # 3. Last commit
+            async with session.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/commits",
+                params={"per_page": "1"},
+            ) as resp:
+                last_sha = ""
+                last_date = ""
+                if resp.status == 200:
+                    commits = await resp.json()
+                    if commits:
+                        last_sha = commits[0].get("sha", "")[:7]
+                        commit_info = commits[0].get("commit", {})
+                        last_date = commit_info.get("committer", {}).get("date", "")
+
+        return {
+            "description": repo_data.get("description", "") or "",
+            "stars": repo_data.get("stargazers_count", 0),
+            "open_issues": repo_data.get("open_issues_count", 0),
+            "open_prs": pr_count,
+            "last_commit_sha": last_sha,
+            "last_commit_date": last_date,
+        }
+    except Exception:
+        log.exception("[GitHubSync] Error fetching %s/%s", owner, repo)
+        return None
+
+
+def _parse_last_page(resp: aiohttp.ClientResponse) -> int:
+    """Extract the last page number from a GitHub pagination Link header.
+
+    When requesting per_page=1, the last page number equals the total count.
+    Returns 0 if no Link header or no 'last' relation found.
+    """
+    link = resp.headers.get("Link", "")
+    if 'rel="last"' not in link:
+        return 0
+    for part in link.split(","):
+        if 'rel="last"' in part:
+            m = re.search(r"[?&]page=(\d+)", part)
+            if m:
+                return int(m.group(1))
+    return 0
+
+
+async def sync_project_github(name: str, repo_url: str) -> bool:
+    """Sync a single project's GitHub data. Returns True on success."""
+    token = settings.github_token
+    data = await github_fetch(repo_url, token)
+    if data is None:
+        return False
+    try:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE projects SET github_data = ?, last_synced = ? WHERE name = ?",
+            (json.dumps(data), datetime.now().isoformat(), name),
+        )
+        conn.commit()
+        log.info("[GitHubSync] Synced %s: %d PRs, %d issues", name, data["open_prs"], data["open_issues"])
+        return True
+    except Exception:
+        log.exception("[GitHubSync] DB update failed for %s", name)
+        return False
+
+
+async def sync_all_projects() -> dict[str, bool]:
+    """Sync GitHub data for all projects that have a repo_url.
+
+    Returns a dict mapping project name to success/failure.
+    """
+    projects = get_all_projects_raw()
+    results: dict[str, bool] = {}
+    for p in projects:
+        if not p["repo_url"] or not parse_github_repo(p["repo_url"]):
+            continue
+        results[p["name"]] = await sync_project_github(p["name"], p["repo_url"])
+    return results
+
+
+async def _github_sync_loop() -> None:
+    """Background loop: sync all projects every SYNC_INTERVAL_MINUTES."""
+    log.info("[GitHubSync] Background sync starting (every %d min)", SYNC_INTERVAL_MINUTES)
+    while True:
+        try:
+            results = await sync_all_projects()
+            if results:
+                ok = sum(1 for v in results.values() if v)
+                log.info("[GitHubSync] Sync complete: %d/%d succeeded", ok, len(results))
+        except Exception:
+            log.exception("[GitHubSync] Sync loop error")
+        await asyncio.sleep(SYNC_INTERVAL_MINUTES * 60)
+
+
+def start_github_sync() -> None:
+    """Start the GitHub sync background task (call from on_ready)."""
+    token = settings.github_token
+    if not token:
+        log.warning("[GitHubSync] No GITHUB_TOKEN configured — sync disabled")
+        return
+    asyncio.create_task(_github_sync_loop())
+    log.info("[GitHubSync] Background task started")
+
+
+def _get_github_data(project: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse github_data JSON from a project row, or None if empty."""
+    raw = project.get("github_data", "")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +298,7 @@ def list_projects() -> str:
         conn = _get_conn()
         init_db()
         rows = conn.execute(
-            "SELECT name, repo_url, status, blockers FROM projects ORDER BY name"
+            "SELECT name, repo_url, status, blockers, github_data FROM projects ORDER BY name"
         ).fetchall()
         if not rows:
             return "No projects tracked yet. Use `track <name> <url>` to add one."
@@ -115,6 +310,17 @@ def list_projects() -> str:
             line = f"{status_icon} **{r['name']}**  \u2014  {r['status']}"
             if r["repo_url"]:
                 line += f"  |  <{r['repo_url']}>"
+            gh = _get_github_data(dict(r))
+            if gh:
+                parts = []
+                if gh.get("open_prs"):
+                    parts.append(f"{gh['open_prs']} PRs")
+                if gh.get("open_issues"):
+                    parts.append(f"{gh['open_issues']} issues")
+                if gh.get("stars"):
+                    parts.append(f"\u2b50 {gh['stars']}")
+                if parts:
+                    line += f"  |  {', '.join(parts)}"
             if r["blockers"]:
                 line += f"\n   Blockers: {r['blockers']}"
             lines.append(line)
@@ -144,6 +350,16 @@ def get_project(name: str) -> str:
             f"Created: {d['created_at']}",
             f"Last synced: {d['last_synced'] or 'never'}",
         ]
+        gh = _get_github_data(d)
+        if gh:
+            lines.append("**GitHub**")
+            if gh.get("description"):
+                lines.append(f"  Description: {gh['description']}")
+            lines.append(f"  Open PRs: {gh.get('open_prs', 0)}")
+            lines.append(f"  Open Issues: {gh.get('open_issues', 0)}")
+            lines.append(f"  Stars: {gh.get('stars', 0)}")
+            if gh.get("last_commit_sha"):
+                lines.append(f"  Last commit: {gh['last_commit_sha']} ({gh.get('last_commit_date', '')})")
         return "\n".join(lines)
     except Exception:
         log.exception("Failed to get project")
@@ -174,7 +390,7 @@ def add_blocker(name: str, blocker_text: str) -> str:
 
 def update_project(name: str, **fields: Any) -> str:
     """Update one or more fields on a project (status, notes, blockers, repo_url)."""
-    allowed = {"status", "notes", "blockers", "repo_url", "last_synced"}
+    allowed = {"status", "notes", "blockers", "repo_url", "last_synced", "github_data"}
     to_set = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not to_set:
         return "Nothing to update."
@@ -254,6 +470,14 @@ def get_project_health_summary() -> str:
                 issues.append("Last sync date invalid")
         elif p["repo_url"] and not p["last_synced"]:
             issues.append("Never synced")
+
+        # Check GitHub data for open PRs / issues
+        gh = _get_github_data(p)
+        if gh:
+            if gh.get("open_prs", 0) > 0:
+                issues.append(f"Open PRs: {gh['open_prs']}")
+            if gh.get("open_issues", 0) >= 5:
+                issues.append(f"Open issues: {gh['open_issues']}")
 
         # Check for paused status
         if p["status"] == "paused":

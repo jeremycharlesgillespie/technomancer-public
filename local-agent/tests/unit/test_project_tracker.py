@@ -1,29 +1,38 @@
 """Tests for project_tracker.py — SQLite-backed project tracking.
 
-Tests CRUD operations (add, remove, list, detail, blocker, update)
-and Discord command handlers.
+Tests CRUD operations (add, remove, list, detail, blocker, update),
+Discord command handlers, and GitHub API sync.
 """
 
 import asyncio
+import json
 import sqlite3
 import threading
-from unittest.mock import patch
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent.project_tracker import (
     DB_PATH,
     _get_conn,
+    _get_github_data,
     _local,
+    _parse_last_page,
     add_blocker,
     add_project,
     get_all_projects_raw,
     get_project,
     get_project_health_summary,
     get_project_tracker_tools,
+    github_fetch,
     init_db,
     list_projects,
+    parse_github_repo,
     remove_project,
+    start_github_sync,
+    sync_all_projects,
+    sync_project_github,
     update_project,
 )
 from agent.bot_commands import (
@@ -447,3 +456,378 @@ class TestHandleBlocker:
         msg = _make_msg("blocker proj issue", user="rando")
         _run(handle_blocker(msg, msg.content, "rando"))
         assert "owner" in msg.replied_to.lower()
+
+
+# ================================================================
+# GitHub URL parsing tests
+# ================================================================
+
+
+class TestParseGithubRepo:
+    def test_https_url(self):
+        assert parse_github_repo("https://github.com/user/repo") == ("user", "repo")
+
+    def test_http_url(self):
+        assert parse_github_repo("http://github.com/owner/project") == ("owner", "project")
+
+    def test_url_with_git_suffix(self):
+        assert parse_github_repo("https://github.com/user/repo.git") == ("user", "repo")
+
+    def test_url_with_trailing_path(self):
+        assert parse_github_repo("https://github.com/user/repo/tree/main") == ("user", "repo")
+
+    def test_non_github_url(self):
+        assert parse_github_repo("https://gitlab.com/user/repo") is None
+
+    def test_empty_string(self):
+        assert parse_github_repo("") is None
+
+    def test_bare_github_url(self):
+        assert parse_github_repo("github.com/user/repo") == ("user", "repo")
+
+    def test_url_with_query_params(self):
+        assert parse_github_repo("https://github.com/user/repo?tab=issues") == ("user", "repo")
+
+
+# ================================================================
+# _parse_last_page tests
+# ================================================================
+
+
+class TestParseLastPage:
+    def test_link_with_last(self):
+        resp = MagicMock()
+        resp.headers = {
+            "Link": '<https://api.github.com/repos/u/r/pulls?page=5>; rel="last"'
+        }
+        assert _parse_last_page(resp) == 5
+
+    def test_link_with_next_and_last(self):
+        resp = MagicMock()
+        resp.headers = {
+            "Link": (
+                '<https://api.github.com/repos/u/r/pulls?page=2>; rel="next", '
+                '<https://api.github.com/repos/u/r/pulls?page=42>; rel="last"'
+            )
+        }
+        assert _parse_last_page(resp) == 42
+
+    def test_no_link_header(self):
+        resp = MagicMock()
+        resp.headers = {}
+        assert _parse_last_page(resp) == 0
+
+    def test_link_without_last(self):
+        resp = MagicMock()
+        resp.headers = {
+            "Link": '<https://api.github.com/repos/u/r/pulls?page=2>; rel="next"'
+        }
+        assert _parse_last_page(resp) == 0
+
+
+# ================================================================
+# _get_github_data tests
+# ================================================================
+
+
+class TestGetGithubData:
+    def test_valid_json(self):
+        data = {"open_prs": 3, "open_issues": 5}
+        project = {"github_data": json.dumps(data)}
+        assert _get_github_data(project) == data
+
+    def test_empty_string(self):
+        assert _get_github_data({"github_data": ""}) is None
+
+    def test_missing_key(self):
+        assert _get_github_data({}) is None
+
+    def test_invalid_json(self):
+        assert _get_github_data({"github_data": "not-json"}) is None
+
+
+# ================================================================
+# github_fetch tests (mocked aiohttp)
+# ================================================================
+
+
+def _make_mock_response(status, json_data, headers=None):
+    """Create a mock aiohttp response with async context manager support."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=json_data)
+    resp.headers = headers or {}
+    # Wrap as async context manager so `async with session.get() as r:` works
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+def _mock_session(*responses):
+    """Build a mock aiohttp.ClientSession with sequenced get() responses."""
+    session = AsyncMock()
+    if len(responses) == 1:
+        session.get = MagicMock(return_value=responses[0])
+    else:
+        session.get = MagicMock(side_effect=list(responses))
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+class TestGithubFetch:
+    def test_non_github_url(self):
+        result = _run(github_fetch("https://gitlab.com/u/r"))
+        assert result is None
+
+    def test_successful_fetch(self):
+        repo_resp = _make_mock_response(200, {
+            "description": "A cool project",
+            "stargazers_count": 42,
+            "open_issues_count": 7,
+        })
+        pr_resp = _make_mock_response(200, [{"id": 1}], {
+            "Link": '<https://api.github.com/repos/u/r/pulls?page=3>; rel="last"'
+        })
+        commit_resp = _make_mock_response(200, [{
+            "sha": "abc1234567890",
+            "commit": {"committer": {"date": "2026-04-10T12:00:00Z"}},
+        }])
+
+        session = _mock_session(repo_resp, pr_resp, commit_resp)
+        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
+            result = _run(github_fetch("https://github.com/user/repo", token="test-token"))
+
+        assert result is not None
+        assert result["description"] == "A cool project"
+        assert result["stars"] == 42
+        assert result["open_issues"] == 7
+        assert result["open_prs"] == 3
+        assert result["last_commit_sha"] == "abc1234"
+        assert result["last_commit_date"] == "2026-04-10T12:00:00Z"
+
+    def test_repo_api_failure(self):
+        repo_resp = _make_mock_response(404, {})
+        session = _mock_session(repo_resp)
+        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
+            result = _run(github_fetch("https://github.com/user/repo"))
+        assert result is None
+
+    def test_no_prs(self):
+        repo_resp = _make_mock_response(200, {
+            "description": "Empty",
+            "stargazers_count": 0,
+            "open_issues_count": 0,
+        })
+        pr_resp = _make_mock_response(200, [])
+        commit_resp = _make_mock_response(200, [])
+
+        session = _mock_session(repo_resp, pr_resp, commit_resp)
+        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
+            result = _run(github_fetch("https://github.com/user/repo"))
+
+        assert result is not None
+        assert result["open_prs"] == 0
+        assert result["last_commit_sha"] == ""
+
+
+# ================================================================
+# sync_project_github tests
+# ================================================================
+
+
+class TestSyncProjectGithub:
+    def test_sync_stores_data(self):
+        add_project("myproj", "https://github.com/user/myproj")
+        gh_data = {
+            "description": "Test",
+            "stars": 10,
+            "open_issues": 3,
+            "open_prs": 2,
+            "last_commit_sha": "abc1234",
+            "last_commit_date": "2026-04-10T12:00:00Z",
+        }
+        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=gh_data), \
+             patch("agent.project_tracker.settings") as mock_settings:
+            mock_settings.github_token = "fake-token"
+            result = _run(sync_project_github("myproj", "https://github.com/user/myproj"))
+
+        assert result is True
+        # Verify data was stored
+        raw = get_all_projects_raw()
+        proj = raw[0]
+        assert proj["last_synced"] != ""
+        stored = json.loads(proj["github_data"])
+        assert stored["open_prs"] == 2
+        assert stored["stars"] == 10
+
+    def test_sync_returns_false_on_fetch_failure(self):
+        add_project("failproj", "https://github.com/user/failproj")
+        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=None), \
+             patch("agent.project_tracker.settings") as mock_settings:
+            mock_settings.github_token = "fake-token"
+            result = _run(sync_project_github("failproj", "https://github.com/user/failproj"))
+
+        assert result is False
+
+
+# ================================================================
+# sync_all_projects tests
+# ================================================================
+
+
+class TestSyncAllProjects:
+    def test_syncs_github_projects_only(self):
+        add_project("with_gh", "https://github.com/user/with_gh")
+        add_project("no_url")
+        add_project("gitlab", "https://gitlab.com/user/gitlab")
+
+        gh_data = {
+            "description": "Test",
+            "stars": 1,
+            "open_issues": 0,
+            "open_prs": 0,
+            "last_commit_sha": "abc",
+            "last_commit_date": "",
+        }
+
+        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=gh_data), \
+             patch("agent.project_tracker.settings") as mock_settings:
+            mock_settings.github_token = "fake-token"
+            results = _run(sync_all_projects())
+
+        # Only the GitHub project should be in results
+        assert "with_gh" in results
+        assert results["with_gh"] is True
+        assert "no_url" not in results
+        assert "gitlab" not in results
+
+    def test_empty_projects(self):
+        results = _run(sync_all_projects())
+        assert results == {}
+
+
+# ================================================================
+# list_projects with GitHub data tests
+# ================================================================
+
+
+class TestListProjectsWithGithub:
+    def test_list_shows_pr_count(self):
+        add_project("ghproj", "https://github.com/user/ghproj")
+        gh_data = json.dumps({"open_prs": 5, "open_issues": 12, "stars": 100})
+        update_project("ghproj", github_data=gh_data)
+        result = list_projects()
+        assert "5 PRs" in result
+        assert "12 issues" in result
+        assert "100" in result  # stars
+
+    def test_list_no_github_data(self):
+        add_project("plain")
+        result = list_projects()
+        assert "plain" in result
+        assert "PRs" not in result
+
+
+# ================================================================
+# get_project with GitHub data tests
+# ================================================================
+
+
+class TestGetProjectWithGithub:
+    def test_detail_shows_github_section(self):
+        add_project("ghdetail", "https://github.com/user/ghdetail")
+        gh_data = json.dumps({
+            "description": "A detailed project",
+            "open_prs": 3,
+            "open_issues": 8,
+            "stars": 50,
+            "last_commit_sha": "abc1234",
+            "last_commit_date": "2026-04-10T12:00:00Z",
+        })
+        update_project("ghdetail", github_data=gh_data)
+        result = get_project("ghdetail")
+        assert "**GitHub**" in result
+        assert "A detailed project" in result
+        assert "Open PRs: 3" in result
+        assert "Open Issues: 8" in result
+        assert "Stars: 50" in result
+        assert "abc1234" in result
+
+    def test_detail_without_github_data(self):
+        add_project("nogh")
+        result = get_project("nogh")
+        assert "**GitHub**" not in result
+
+
+# ================================================================
+# Health summary with GitHub data tests
+# ================================================================
+
+
+class TestHealthSummaryWithGithub:
+    def test_open_prs_flagged(self):
+        add_project("prproj", "https://github.com/u/prproj")
+        gh_data = json.dumps({"open_prs": 3, "open_issues": 2, "stars": 0})
+        update_project("prproj", github_data=gh_data, last_synced=datetime.now().isoformat())
+        result = get_project_health_summary()
+        assert "prproj" in result
+        assert "Open PRs: 3" in result
+
+    def test_high_issues_flagged(self):
+        add_project("issueproj", "https://github.com/u/issueproj")
+        gh_data = json.dumps({"open_prs": 0, "open_issues": 10, "stars": 0})
+        update_project("issueproj", github_data=gh_data, last_synced=datetime.now().isoformat())
+        result = get_project_health_summary()
+        assert "issueproj" in result
+        assert "Open issues: 10" in result
+
+    def test_low_issues_not_flagged(self):
+        add_project("fineproj", "https://github.com/u/fineproj")
+        gh_data = json.dumps({"open_prs": 0, "open_issues": 3, "stars": 0})
+        update_project("fineproj", github_data=gh_data, last_synced=datetime.now().isoformat())
+        result = get_project_health_summary()
+        # 3 issues is below threshold of 5, and 0 PRs — should be healthy
+        assert "fineproj" not in result
+
+
+# ================================================================
+# start_github_sync tests
+# ================================================================
+
+
+class TestStartGithubSync:
+    def test_no_token_does_not_start(self):
+        with patch("agent.project_tracker.settings") as mock_settings, \
+             patch("agent.project_tracker.asyncio.create_task") as mock_task:
+            mock_settings.github_token = None
+            start_github_sync()
+            mock_task.assert_not_called()
+
+    def test_with_token_starts_task(self):
+        with patch("agent.project_tracker.settings") as mock_settings, \
+             patch("agent.project_tracker.asyncio.create_task") as mock_task:
+            mock_settings.github_token = "ghp_test123"
+            start_github_sync()
+            mock_task.assert_called_once()
+
+
+# ================================================================
+# DB migration tests
+# ================================================================
+
+
+class TestDbMigration:
+    def test_github_data_column_exists(self):
+        """Verify the github_data column is present after init_db."""
+        conn = _get_conn()
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)").fetchall()}
+        assert "github_data" in cols
+
+    def test_add_project_with_github_data(self):
+        """Verify github_data defaults to empty string on new projects."""
+        add_project("migtest", "https://github.com/u/migtest")
+        raw = get_all_projects_raw()
+        proj = next(p for p in raw if p["name"] == "migtest")
+        assert proj["github_data"] == ""

@@ -69,7 +69,7 @@ from .bot_commands import (
     handle_untrack,
 )
 from .facts_db import get_facts_tools, init_db as init_facts_db, seed_db as seed_facts_db
-from .project_tracker import get_project_tracker_tools, init_db as init_projects_db
+from .project_tracker import get_project_tracker_tools, init_db as init_projects_db, start_github_sync
 from .knowledge_gaps import auto_enrich_gap, detect_knowledge_gap, get_knowledge_gap_tools, log_knowledge_gap
 from .image_identification import analyze_with_vision_model, ask_claude_with_image
 from .reflection import auto_search_for_factual, classify_question, is_factual_question, reflect
@@ -769,6 +769,10 @@ Keep responses concise for Discord but thorough when they need depth.""",
     # Start infrastructure monitor (every 30 min — GPU, vault, API keys)
     start_infra_monitor(client, ALLOWED_CHANNEL)
     log("Infrastructure monitor started (every 30 min)")
+
+    # Start GitHub sync for project tracker (every 30 min)
+    start_github_sync()
+    log("GitHub project sync started (every 30 min)")
 
     # Start weekly learning newsletter (Sunday 9 AM)
     start_newsletter(client, ALLOWED_CHANNEL)
