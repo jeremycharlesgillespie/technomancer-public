@@ -112,6 +112,7 @@ from .discord_errors import (
     track_bot_response,
 )
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
+from .knowledge_search import get_knowledge_search_tools, init_knowledge_index
 from .command_suggestions import (
     find_closest_command,
     format_context_suggestions,
@@ -685,6 +686,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from .tool_analytics import get_tool_analytics_tools
     for tool in get_tool_analytics_tools():
         agent.register_tool(tool)
+    for tool in get_knowledge_search_tools():
+        agent.register_tool(tool)
 
     log(f"Ready with {len(agent.tools)} tools")
 
@@ -716,6 +719,16 @@ Keep responses concise for Discord but thorough when they need depth.""",
     from idea_board.web import start_idea_board
     start_idea_board()
     log("Idea Board running on http://0.0.0.0:8322")
+
+    # Build semantic knowledge index in background thread
+    import threading
+    threading.Thread(
+        target=init_knowledge_index,
+        kwargs={"vault_path": Path(VAULT_PATH)},
+        daemon=True,
+        name="knowledge-index",
+    ).start()
+    log("Knowledge index build started (background)")
 
     # Start weekly knowledge gap reporter (Sunday midnight)
     start_gap_reporter(client, ALLOWED_CHANNEL)
