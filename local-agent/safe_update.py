@@ -16,6 +16,7 @@ Examples:
     python safe_update.py fix-memory-bug
 """
 
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -382,6 +383,12 @@ def start_workflow(short_name: str):
 
 def continue_workflow():
     """Continue workflow after code changes."""
+    # Block execution from executor context — the executor handles deploy itself
+    if os.environ.get("EXECUTOR_MODE"):
+        log("BLOCKED: safe_update.py continue cannot run inside the executor.", "ERROR")
+        log("The executor handles testing, merging, and deployment automatically.", "ERROR")
+        sys.exit(1)
+
     log("=" * 60)
     log("Safe Update Workflow - Continuing")
     log("=" * 60)

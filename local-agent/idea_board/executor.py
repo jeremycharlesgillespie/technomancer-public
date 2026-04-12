@@ -414,20 +414,20 @@ def _load_recent_errors() -> str:
 
 def _build_workflow_section(idea: Any) -> str:
     """Build the mandatory workflow and completion instructions."""
-    short_name = idea.id.replace("idea-", "")
     return (
-        f"\n## MANDATORY WORKFLOW\n"
-        f"Follow these steps EXACTLY:\n"
-        f"1. Read CLAUDE.md for project conventions\n"
-        f"2. `cd local-agent`\n"
-        f"3. `python safe_update.py {short_name}`\n"
-        f"4. Make your code changes (with tests if adding new functionality)\n"
-        f"5. `python validate.py startup` — MUST show VALIDATION PASSED\n"
-        f"6. `git add <files>` && `git commit -m 'description'`\n"
-        f"\nDo NOT skip any steps. Do NOT commit without validate.py passing.\n"
-        f"\n**STOP HERE.** Do NOT run `safe_update.py continue` — the executor "
-        f"handles testing, merging, and deployment automatically after you finish. "
-        f"Your job is done after committing.\n"
+        "\n## MANDATORY WORKFLOW\n"
+        "The branch has ALREADY been created for you. You are already on it.\n\n"
+        "Follow these steps EXACTLY:\n"
+        "1. Read CLAUDE.md for project conventions\n"
+        "2. `cd local-agent`\n"
+        "3. Make your code changes (with tests if adding new functionality)\n"
+        "4. `git add <files>` && `git commit -m 'description'`\n"
+        "\n**YOUR JOB IS DONE AFTER COMMITTING.**\n"
+        "\nDo NOT run `safe_update.py` — it is blocked in this environment.\n"
+        "Do NOT run `validate.py` — the executor runs it after you finish.\n"
+        "Do NOT run `pytest` — the executor runs it after you finish.\n"
+        "Do NOT try to deploy, merge, or restart anything.\n"
+        "\nJust write code, write tests, and commit. The executor handles the rest.\n"
     )
 
 
@@ -541,23 +541,17 @@ def _build_epic_prompt(idea: Any) -> str:
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
         _load_git_history(),
         _load_recent_errors(),
-        f"\n## Implementation Process\n"
-        f"For EACH story below, follow this exact cycle:\n"
-        f"1. Read CLAUDE.md for project conventions\n"
-        f"2. Run `python safe_update.py <short-name>` to create a branch\n"
-        f"3. Implement the story (code, tests)\n"
-        f"4. Run `python validate.py startup` before committing\n"
-        f"5. Commit and run `python safe_update.py continue` to test, merge, restart\n"
-        f"6. Verify `python bot_service.py status` shows Bot running: True\n"
-        f"7. Mark the story done with the curl command provided\n"
-        f"8. Move to the next story\n\n"
-        f"IMPORTANT:\n"
-        f"- Each story gets its OWN safe_update branch and commit\n"
-        f"- Do NOT batch multiple stories into one branch\n"
-        f"- If a story fails, log it and move to the next one\n"
-        f"- Each story should build on what the previous stories created\n"
-        f"- When ALL stories are complete, mark the epic done:\n"
-        f"```bash\ncurl -X POST http://localhost:8322/api/ideas/{idea.id}/done\n```",
+        "\n## Implementation Process\n"
+        "The branch has ALREADY been created for you. You are already on it.\n\n"
+        "For EACH story below:\n"
+        "1. Read CLAUDE.md for project conventions\n"
+        "2. Implement the story (code, tests)\n"
+        "3. `git add <files>` && `git commit -m 'description'`\n\n"
+        "**YOUR JOB IS DONE AFTER COMMITTING.**\n\n"
+        "Do NOT run safe_update.py, validate.py, pytest, bot_service.py, or "
+        "any deploy/merge/restart commands. They are blocked in this environment. "
+        "The executor handles all testing, validation, and deployment after you finish.\n\n"
+        "Just write code, write tests, and commit.\n",
         f"\n# Stories to Implement\n{story_sections}",
     ]
     return "\n".join(s for s in sections if s)
@@ -787,11 +781,66 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
         env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
+        env["EXECUTOR_MODE"] = "1"  # Blocks safe_update.py continue
         project_root = Path(__file__).parent.parent.parent
+        local_agent_dir = str(Path(__file__).parent.parent)
 
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
 
         try:
+            # --- Phase 0: Create branch (deterministic, no LLM needed) ---
+            short_name = idea.id.replace("idea-", "")
+            branch_result = subprocess.run(
+                [sys.executable, "safe_update.py", short_name],
+                capture_output=True, text=True, timeout=30,
+                cwd=local_agent_dir, env=env,
+            )
+            if branch_result.returncode != 0:
+                err = branch_result.stderr or branch_result.stdout
+                # If branch already exists (from a previous attempt), continue
+                if "uncommitted changes" in err.lower():
+                    state.log_lines.append(
+                        "Working directory dirty — stashing before branch creation"
+                    )
+                    subprocess.run(
+                        ["git", "stash"],
+                        capture_output=True, timeout=10,
+                        cwd=str(project_root),
+                    )
+                    branch_result = subprocess.run(
+                        [sys.executable, "safe_update.py", short_name],
+                        capture_output=True, text=True, timeout=30,
+                        cwd=local_agent_dir, env=env,
+                    )
+                if branch_result.returncode != 0:
+                    # Check if it's because an existing workflow is in progress
+                    if "existing workflow" in (branch_result.stdout + branch_result.stderr).lower():
+                        subprocess.run(
+                            [sys.executable, "safe_update.py", "abort"],
+                            capture_output=True, timeout=10,
+                            cwd=local_agent_dir, env=env,
+                        )
+                        branch_result = subprocess.run(
+                            [sys.executable, "safe_update.py", short_name],
+                            capture_output=True, text=True, timeout=30,
+                            cwd=local_agent_dir, env=env,
+                        )
+
+            if branch_result.returncode != 0:
+                state.log_lines.append(
+                    f"Failed to create branch: {branch_result.stdout[-300:]}"
+                )
+                mark_failed(idea_id, state.log_text)
+                _notify_discord(f"Idea {idea_id} branch creation failed")
+                return
+
+            # Extract branch name from safe_update output
+            branch_name = ""
+            for line in branch_result.stdout.split("\n"):
+                if "Branch:" in line and "202" in line:
+                    branch_name = line.split("Branch:")[-1].strip()
+                    break
+            state.log_lines.append(f"Branch created: {branch_name or short_name}")
             # --- Phase 1: Exploration ---
             session_id = _run_exploration_pass(
                 binary, idea, state, env, project_root
@@ -929,17 +978,32 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 return
 
             state.log_lines.append(
-                f"Claude finished ({state.elapsed:.0f}s). Running deploy pipeline..."
+                f"Claude finished ({state.elapsed:.0f}s). Validating..."
             )
-            _notify_discord(f"[{idea_id}] Code complete. Running tests and deploying...")
+            _notify_discord(f"[{idea_id}] Code complete. Running validation...")
+
+            # --- Phase 2.5: Validate (deterministic, no LLM) ---
+            state.log_lines.append("")
+            state.log_lines.append("--- Phase 2.5: Validation ---")
+            validate_result = subprocess.run(
+                [sys.executable, "validate.py", "startup"],
+                capture_output=True, text=True, timeout=120,
+                cwd=local_agent_dir,
+            )
+            if validate_result.returncode != 0:
+                # Extract failure info
+                for vline in validate_result.stdout.split("\n"):
+                    if "FAIL" in vline or "BLOCKED" in vline or "ERROR" in vline:
+                        state.log_lines.append(vline.strip())
+                state.log_lines.append("Validation FAILED — aborting deploy")
+                mark_failed(idea_id, state.log_text[-5000:])
+                _notify_discord(f"Idea {idea_id} validation failed: {idea.title}")
+                return
+            state.log_lines.append("Validation passed")
 
             # --- Phase 3: Deploy (pytest + merge only, no bot restart) ---
-            # We can't run safe_update.py continue because it restarts the bot,
-            # which kills THIS process (the executor runs inside the bot).
-            # Instead, run pytest and merge directly.
             state.log_lines.append("")
             state.log_lines.append("--- Phase 3: Deploy ---")
-            local_agent_dir = str(Path(__file__).parent.parent)
 
             try:
                 # Step 3a: Run pytest
