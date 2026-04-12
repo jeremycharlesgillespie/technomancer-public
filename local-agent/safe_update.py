@@ -459,7 +459,7 @@ def continue_workflow():
             try:
                 result = subprocess.run(
                     [sys.executable, str(readme_script)],
-                    capture_output=True, text=True, timeout=180,
+                    capture_output=True, text=True, timeout=660,
                     cwd=Path(__file__).parent,
                 )
                 if result.returncode == 0:

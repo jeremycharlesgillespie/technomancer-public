@@ -264,20 +264,25 @@ python safe_update.py continue
 python bot_service.py status
 # Must show "Bot running: True"
 
-# 7. PUBLISH: Push to both repos (MANDATORY)
-git push origin main
-python publish.py --push --force
-```
-
-### MANDATORY: Publish to Both Repos After Every Deploy
-**After every successful `safe_update.py continue`, push to BOTH repositories:**
-
-```bash
+# 7. PUBLISH & README: Generate fresh stats and push to both repos (MANDATORY)
+python generate_readme.py               # Regenerate README with fresh test/coverage stats
+git add README.md ../README.md
+git commit -m "Update README with latest stats [auto]"
 git push origin main                    # Private repo
 python publish.py --push --force        # Public repo (technomancer-public)
 ```
 
-**Never tell the user a change is deployed without pushing to both repos.**
+### MANDATORY: Publish to Both Repos After Every Deploy
+**After every successful deploy (whether via `safe_update.py continue` or manual merge), ALWAYS:**
+
+1. **Regenerate README**: `python generate_readme.py` (updates test count, coverage badge, module stats)
+2. **Commit the README**: `git add README.md ../README.md && git commit -m "Update README [auto]"`
+3. **Push private**: `git push origin main`
+4. **Push public**: `python publish.py --push --force`
+
+**`safe_update.py continue` does steps 1-4 automatically.** For manual merges, you MUST do them yourself.
+
+**Never tell the user a change is deployed without regenerating README and pushing to both repos.**
 
 ### MANDATORY: Run validate.py Before EVERY Commit
 **Claude MUST run `python validate.py startup` before EVERY git commit. NO EXCEPTIONS.**
