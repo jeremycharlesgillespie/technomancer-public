@@ -1559,6 +1559,28 @@ def _render_hub() -> str:
     py_files = list(agent_dir.glob("*.py"))
     total_lines = sum(f.read_text(encoding="utf-8", errors="ignore").count("\n") for f in py_files)
 
+    # Bot uptime from Discord Bridge health endpoint
+    uptime_str = ""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:8321/api/health", timeout=2) as resp:
+            import json as _json
+            data = _json.loads(resp.read())
+            secs = int(data.get("uptime", 0))
+            if secs > 0:
+                days, rem = divmod(secs, 86400)
+                hours, rem = divmod(rem, 3600)
+                mins, _ = divmod(rem, 60)
+                parts = []
+                if days:
+                    parts.append(f"{days}d")
+                if hours:
+                    parts.append(f"{hours}h")
+                parts.append(f"{mins}m")
+                uptime_str = f" &middot; uptime: {''.join(parts)}"
+    except Exception:
+        pass
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1659,7 +1681,7 @@ def _render_hub() -> str:
     updateEvolveStatus();
     setInterval(updateEvolveStatus, 5000);
     </script>
-    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">{len(py_files)} modules &middot; {total_lines:,} lines of code &middot; Page generated at {generated_at} &middot; v: {git_hash}</p>
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">{len(py_files)} modules &middot; {total_lines:,} lines of code &middot; Page generated at {generated_at} &middot; v: {git_hash}{uptime_str}</p>
 </body>
 </html>"""
 
