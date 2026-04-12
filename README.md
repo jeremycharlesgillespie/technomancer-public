@@ -1,13 +1,13 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-1464-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.2%25-yellow) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-66-blue) ![lines](https://img.shields.io/badge/lines-26k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-1464-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.2%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-66-blue) ![lines](https://img.shields.io/badge/lines-26k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 An Ollama-powered autonomous agent framework with Discord bot interface,
 Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: 2026-04-11 19:15
+> via `safe_update.py`. Last updated: 2026-04-11 19:26
 
 ## Highlights
 

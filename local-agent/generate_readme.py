@@ -122,8 +122,8 @@ def generate_readme(test_stats: dict, code_stats: dict) -> str:
     lines = code_stats["total_lines"]
     test_files = code_stats["test_file_count"]
 
-    # Color for coverage badge
-    if coverage >= 80:
+    # Color for coverage badge (green at 75% — matches fail_under threshold)
+    if coverage >= 75:
         cov_color = "brightgreen"
     elif coverage >= 60:
         cov_color = "yellow"
