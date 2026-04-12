@@ -39,6 +39,9 @@ EXECUTION_TIMEOUT: int = 1800
 # Timeout for exploration pass (5 minutes — CLAUDE.md is large)
 EXPLORATION_TIMEOUT: int = 300
 
+# Timeout for pytest in Phase 3 (10 minutes)
+PYTEST_TIMEOUT: int = 600
+
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
 
@@ -168,6 +171,36 @@ def _notify_discord(message: str) -> None:
         )
     except Exception:
         pass
+
+
+def _snapshot_system_load() -> str:
+    """Capture a one-line summary of system load for diagnostics."""
+    try:
+        import psutil
+
+        cpu = psutil.cpu_percent(interval=0.5)
+        mem = psutil.virtual_memory()
+        procs = {
+            "python": 0,
+            "claude": 0,
+            "ollama": 0,
+            "total": len(list(psutil.process_iter())),
+        }
+        for p in psutil.process_iter(["name"]):
+            name = (p.info["name"] or "").lower()
+            if "python" in name:
+                procs["python"] += 1
+            elif "claude" in name:
+                procs["claude"] += 1
+            elif "ollama" in name:
+                procs["ollama"] += 1
+        return (
+            f"cpu={cpu}% mem={mem.percent}% "
+            f"py={procs['python']} claude={procs['claude']} "
+            f"ollama={procs['ollama']} total={procs['total']}"
+        )
+    except Exception as e:
+        return f"(load snapshot failed: {e})"
 
 
 def _find_claude_binary() -> Path | None:
@@ -1006,14 +1039,27 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.log_lines.append("--- Phase 3: Deploy ---")
 
             try:
-                # Step 3a: Run pytest
+                # Step 3a: Run pytest with system load monitoring
                 state.log_lines.append("Running pytest...")
                 _notify_discord(f"[{idea_id}] Running tests...")
+
+                # Snapshot system state before tests
+                load_before = _snapshot_system_load()
+                state.log_lines.append(f"Pre-test: {load_before}")
+                test_start = time.time()
+
                 test_result = subprocess.run(
                     [sys.executable, "-m", "pytest", "-q", "--tb=short"],
-                    capture_output=True, text=True, timeout=300,
+                    capture_output=True, text=True, timeout=PYTEST_TIMEOUT,
                     cwd=local_agent_dir,
                 )
+
+                test_duration = time.time() - test_start
+                load_after = _snapshot_system_load()
+                state.log_lines.append(
+                    f"Post-test: {load_after} | duration={test_duration:.0f}s"
+                )
+
                 test_summary = [
                     ln.strip() for ln in test_result.stdout.split("\n")
                     if "passed" in ln or "failed" in ln or "error" in ln.lower()
@@ -1079,9 +1125,15 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
 
             except subprocess.TimeoutExpired:
-                state.log_lines.append("Deploy timed out")
+                load_at_timeout = _snapshot_system_load()
+                state.log_lines.append(
+                    f"Deploy timed out after {PYTEST_TIMEOUT}s | {load_at_timeout}"
+                )
                 mark_failed(idea_id, state.log_text[-5000:])
-                _notify_discord(f"Idea {idea_id} deploy timed out")
+                _notify_discord(
+                    f"Idea {idea_id} deploy timed out ({PYTEST_TIMEOUT}s). "
+                    f"System: {load_at_timeout}"
+                )
             except Exception as deploy_err:
                 state.log_lines.append(f"Deploy error: {deploy_err}")
                 mark_failed(idea_id, state.log_text[-5000:])
