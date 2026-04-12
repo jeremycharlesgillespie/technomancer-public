@@ -51,6 +51,7 @@ from .bot_commands import (
     handle_karen,
     handle_metrics,
     handle_learning_history,
+    handle_suggest_learning,
     handle_list_videos,
     handle_perf,
     handle_publish,
@@ -986,6 +987,10 @@ async def on_message(message: discord.Message) -> None:
     if lower.startswith("showlearning"):
         _track_cmd("showlearning")
         await handle_show_learning(message, content, send_response)
+        return
+    if lower in ("suggestlearning", "suggest_learning", "suggest learning"):
+        _track_cmd("suggestlearning")
+        await handle_suggest_learning(message, send_response)
         return
     if lower == "technews":
         _track_cmd("technews")

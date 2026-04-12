@@ -26,6 +26,7 @@ from .dev_learning import (
     handle_better_dev_command,
     handle_learning_history_command,
     handle_show_learning_command,
+    handle_suggest_learning_command,
 )
 from .news_digest import handle_technews_command
 from .metrics_db import get_summary as get_metrics_summary
@@ -251,6 +252,7 @@ async def handle_show_commands(message: Any) -> None:
 `betterDev system_design` - System design topic
 `betterDev best_practices` - Best practices topic
 `learningHistory` - List past learning articles
+`suggestLearning` - Suggest topics based on recent conversations
 `showLearning <#>` - View a saved article (e.g., `showLearning 1`)
 `newsletter` - Get this week's learning digest
 
@@ -310,6 +312,12 @@ async def handle_show_learning(message: Any, content: str, send_response: Any) -
         await message.reply("Usage: `showLearning <number>` (e.g., `showLearning 1`)")
         return
     response = handle_show_learning_command(parts[1])
+    await send_response(message, response)
+
+
+async def handle_suggest_learning(message: Any, send_response: Any) -> None:
+    """Suggest learning topics based on recent conversations."""
+    response = handle_suggest_learning_command()
     await send_response(message, response)
 
 

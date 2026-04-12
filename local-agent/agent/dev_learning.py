@@ -406,6 +406,108 @@ def get_unsent_topic(category: str | None = None) -> tuple[str, str] | None:
     return random.choice(available) if available else None
 
 
+def suggest_topics_from_memory(
+    vault_path: str | None = None, limit: int = 5
+) -> list[tuple[str, str, float]]:
+    """
+    Scan recent conversations for topics that match unsent learning content.
+
+    Reads the last 7 days of conversation logs and finds keywords that overlap
+    with the curated LEARNING_TOPICS catalog. Returns topics ranked by relevance
+    (number of keyword hits in recent conversations).
+
+    Args:
+        vault_path: Path to Obsidian vault (uses settings default if None)
+        limit: Max suggestions to return
+
+    Returns:
+        List of (category, topic, score) sorted by relevance descending
+    """
+    from datetime import timedelta
+
+    memory_root = Path(vault_path or settings.llm_memory_path)
+    conv_dir = memory_root / "Conversations"
+
+    if not conv_dir.exists():
+        return []
+
+    # Gather text from last 7 days of conversation logs
+    recent_text = ""
+    today = datetime.now()
+    for days_ago in range(7):
+        date = today - timedelta(days=days_ago)
+        log_file = conv_dir / f"{date.strftime('%Y-%m-%d')}.md"
+        if log_file.exists():
+            try:
+                recent_text += log_file.read_text(encoding="utf-8", errors="ignore").lower()
+            except OSError:
+                continue
+
+    if not recent_text:
+        return []
+
+    # Build keyword index for each topic
+    sent_hashes = {t["topic_hash"] for t in load_sent_topics()}
+    scored: list[tuple[str, str, float]] = []
+
+    for cat, topics_list in LEARNING_TOPICS.items():
+        for topic in topics_list:
+            if get_topic_hash(topic) in sent_hashes:
+                continue
+
+            # Extract meaningful keywords from the topic (skip stopwords)
+            stopwords = {
+                "and", "the", "for", "with", "from", "using", "when",
+                "how", "what", "why", "vs", "to", "in", "of", "a", "an",
+            }
+            words = [
+                w for w in topic.lower().replace(":", "").replace("(", "").replace(")", "").split()
+                if w not in stopwords and len(w) > 2
+            ]
+
+            # Score = number of topic keywords found in recent conversations
+            score = sum(1 for w in words if w in recent_text)
+
+            if score > 0:
+                scored.append((cat, topic, score))
+
+    scored.sort(key=lambda x: x[2], reverse=True)
+    return scored[:limit]
+
+
+def handle_suggest_learning_command(vault_path: str | None = None) -> str:
+    """
+    Handle the suggest_learning command.
+
+    Scans recent conversations for topics the user has been discussing
+    and suggests relevant learning content from the catalog.
+
+    Returns:
+        Formatted suggestion list or a fallback message
+    """
+    suggestions = suggest_topics_from_memory(vault_path=vault_path, limit=5)
+
+    if not suggestions:
+        return (
+            "No suggestions based on recent conversations. "
+            "Try `better_dev` for a random topic, or `better_dev <topic>` for something specific."
+        )
+
+    lines = ["**Suggested Learning Topics**\n"]
+    lines.append("*Based on your recent conversations:*\n")
+
+    for i, (cat, topic, score) in enumerate(suggestions, 1):
+        relevance = "high" if score >= 4 else "medium" if score >= 2 else "low"
+        lines.append(f"`{i}` | **{cat}** | {topic} ({relevance} relevance)")
+
+    lines.append(
+        "\nUse `better_dev <topic>` to generate an article on any of these, "
+        "or `better_dev` for a random pick."
+    )
+
+    return "\n".join(lines)
+
+
 def load_user_profile() -> dict[str, Any]:
     """Load user profile from Obsidian vault for personalization."""
     # Reuse the profile loading from news_digest

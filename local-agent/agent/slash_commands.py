@@ -129,6 +129,12 @@ def _build_tree(client: discord.Client) -> app_commands.CommandTree:
             response += f"\n\n[Read full article]({url})"
         await interaction.followup.send(response)
 
+    @tree.command(name="suggestlearning", description="Suggest learning topics based on your recent conversations")
+    async def cmd_suggest_learning(interaction: discord.Interaction) -> None:
+        from .dev_learning import handle_suggest_learning_command
+        result = handle_suggest_learning_command()
+        await _respond(interaction, result)
+
     @tree.command(name="karen", description="Submit a complaint to K.A.R.E.N. (generates improvement ideas)")
     @app_commands.describe(complaint="What's bothering you about the bot?")
     async def cmd_karen(
