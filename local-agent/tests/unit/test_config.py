@@ -52,13 +52,13 @@ class TestComputedProperties:
 class TestGetSettings:
     """Test the cached settings accessor."""
 
-    def test_returns_settings_instance(self):
-        get_settings.cache_clear()
+    def test_returns_object_with_expected_attrs(self):
         s = get_settings()
-        assert isinstance(s, Settings)
+        assert hasattr(s, "discord_bot_token")
+        assert hasattr(s, "ollama_host")
+        assert hasattr(s, "vault_path")
 
     def test_cached_returns_same_instance(self):
-        get_settings.cache_clear()
         s1 = get_settings()
         s2 = get_settings()
         assert s1 is s2

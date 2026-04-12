@@ -768,6 +768,11 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
     else:
         prompt = _build_story_prompt(idea)
 
+    # Log prompt size for debugging context window issues
+    prompt_chars = len(prompt)
+    prompt_tokens_est = prompt_chars // 4
+    logger.info(f"[Executor] {idea_id} prompt: {prompt_chars} chars (~{prompt_tokens_est} tokens)")
+
     def _run() -> None:
         """Background thread: two-pass Claude Code execution.
 
@@ -809,6 +814,9 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             # --- Phase 2: Implementation (streaming) ---
             state.log_lines.append("")
             state.log_lines.append("--- Phase 2: Implementation ---")
+            state.log_lines.append(
+                f"Prompt: {prompt_chars} chars (~{prompt_tokens_est} tokens)"
+            )
 
             cmd = [
                 str(binary), "-p", prompt,
