@@ -1540,6 +1540,7 @@ def _render_hub() -> str:
     proposed = len([i for i in ideas if i.state == "proposed"])
     executing = len([i for i in ideas if i.state == "executing"])
     completion_pct = round(done / total * 100) if total else 0
+    generated_at = datetime.now().strftime("%H:%M")
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1641,6 +1642,7 @@ def _render_hub() -> str:
     updateEvolveStatus();
     setInterval(updateEvolveStatus, 5000);
     </script>
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Page generated at {generated_at}</p>
 </body>
 </html>"""
 
