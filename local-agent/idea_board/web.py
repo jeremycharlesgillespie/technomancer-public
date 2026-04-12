@@ -1535,7 +1535,11 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
 def _render_hub() -> str:
     """Render the central hub page with links to all services."""
     ideas = load_ideas()
+    total = len(ideas)
+    done = len([i for i in ideas if i.state == "done"])
     proposed = len([i for i in ideas if i.state == "proposed"])
+    executing = len([i for i in ideas if i.state == "executing"])
+    completion_pct = round(done / total * 100) if total else 0
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1553,7 +1557,7 @@ def _render_hub() -> str:
         <a href="/ideas" class="card green">
             <h2>Idea Board</h2>
             <p>View, vote, and discuss improvement ideas.</p>
-            <span class="badge">{proposed} pending review</span>
+            <span class="badge">{done}/{total} done ({completion_pct}%) &middot; {proposed} pending &middot; {executing} running</span>
         </a>
         <a href="/news" class="card orange">
             <h2>News Config</h2>
