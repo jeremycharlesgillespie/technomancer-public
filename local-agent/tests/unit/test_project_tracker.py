@@ -19,6 +19,7 @@ from agent.project_tracker import (
     add_project,
     get_all_projects_raw,
     get_project,
+    get_project_health_summary,
     get_project_tracker_tools,
     init_db,
     list_projects,
@@ -224,6 +225,87 @@ class TestGetAllProjectsRaw:
         assert len(rows) == 2
         assert isinstance(rows[0], dict)
         assert "name" in rows[0]
+
+
+# ================================================================
+# Health summary tests
+# ================================================================
+
+
+class TestGetProjectHealthSummary:
+    def test_no_projects(self):
+        result = get_project_health_summary()
+        assert "no projects" in result.lower()
+
+    def test_all_healthy(self):
+        add_project("healthy", "https://github.com/u/healthy")
+        result = get_project_health_summary()
+        assert "healthy" in result.lower()
+
+    def test_project_with_blockers(self):
+        add_project("blocked")
+        add_blocker("blocked", "waiting on API key")
+        result = get_project_health_summary()
+        assert "blocked" in result
+        assert "waiting on API key" in result
+
+    def test_skips_done_projects(self):
+        add_project("finished")
+        update_project("finished", status="done")
+        result = get_project_health_summary()
+        assert "finished" not in result
+
+    def test_paused_project_flagged(self):
+        add_project("onhold")
+        update_project("onhold", status="paused")
+        result = get_project_health_summary()
+        assert "onhold" in result
+        assert "paused" in result.lower()
+
+    def test_never_synced_project(self):
+        add_project("nosync", "https://github.com/u/nosync")
+        result = get_project_health_summary()
+        assert "nosync" in result
+        assert "never synced" in result.lower()
+
+    def test_stale_sync_flagged(self):
+        add_project("stale", "https://github.com/u/stale")
+        from datetime import datetime, timedelta
+
+        old_date = (datetime.now() - timedelta(days=10)).isoformat()
+        update_project("stale", last_synced=old_date)
+        result = get_project_health_summary()
+        assert "stale" in result
+        assert "no sync in" in result.lower()
+
+    def test_recent_sync_not_flagged(self):
+        add_project("fresh", "https://github.com/u/fresh")
+        from datetime import datetime
+
+        update_project("fresh", last_synced=datetime.now().isoformat())
+        result = get_project_health_summary()
+        # fresh should not appear since it has no issues
+        assert "fresh" not in result
+
+    def test_multiple_issues(self):
+        add_project("troubled", "https://github.com/u/troubled")
+        add_blocker("troubled", "deploy broken")
+        from datetime import datetime, timedelta
+
+        old_date = (datetime.now() - timedelta(days=14)).isoformat()
+        update_project("troubled", last_synced=old_date)
+        result = get_project_health_summary()
+        assert "troubled" in result
+        assert "deploy broken" in result
+        assert "no sync in" in result.lower()
+
+    def test_header_includes_count(self):
+        add_project("a")
+        add_blocker("a", "issue")
+        add_project("b")
+        add_blocker("b", "issue")
+        result = get_project_health_summary()
+        assert "2 tracked" in result
 
 
 # ================================================================

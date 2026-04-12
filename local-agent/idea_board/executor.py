@@ -42,6 +42,9 @@ EXPLORATION_TIMEOUT: int = 300
 # Timeout for pytest in Phase 3 (10 minutes)
 PYTEST_TIMEOUT: int = 600
 
+# Max retries when tests/validation fail — Claude gets to fix its own bugs
+MAX_FIX_RETRIES: int = 2
+
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
 
@@ -1015,63 +1018,196 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             )
             _notify_discord(f"[{idea_id}] Code complete. Running validation...")
 
-            # --- Phase 2.5: Validate (deterministic, no LLM) ---
-            state.log_lines.append("")
-            state.log_lines.append("--- Phase 2.5: Validation ---")
-            validate_result = subprocess.run(
-                [sys.executable, "validate.py", "startup"],
-                capture_output=True, text=True, timeout=120,
-                cwd=local_agent_dir,
-            )
-            if validate_result.returncode != 0:
-                # Extract failure info
-                for vline in validate_result.stdout.split("\n"):
-                    if "FAIL" in vline or "BLOCKED" in vline or "ERROR" in vline:
-                        state.log_lines.append(vline.strip())
-                state.log_lines.append("Validation FAILED — aborting deploy")
-                mark_failed(idea_id, state.log_text[-5000:])
-                _notify_discord(f"Idea {idea_id} validation failed: {idea.title}")
-                return
-            state.log_lines.append("Validation passed")
+            # --- Phase 2.5 + 3: Validate, test, retry loop ---
+            # If validation or tests fail, give Claude a chance to fix.
+            for attempt in range(1, MAX_FIX_RETRIES + 2):  # +2: 1 initial + N retries
+                failure_output = ""
 
-            # --- Phase 3: Deploy (pytest + merge only, no bot restart) ---
+                # Validate
+                state.log_lines.append("")
+                state.log_lines.append(
+                    f"--- Validation (attempt {attempt}) ---"
+                )
+                validate_result = subprocess.run(
+                    [sys.executable, "validate.py", "startup"],
+                    capture_output=True, text=True, timeout=120,
+                    cwd=local_agent_dir,
+                )
+                if validate_result.returncode != 0:
+                    fail_lines = [
+                        vline.strip()
+                        for vline in validate_result.stdout.split("\n")
+                        if "FAIL" in vline or "BLOCKED" in vline
+                        or "ERROR" in vline
+                    ]
+                    for fl in fail_lines:
+                        state.log_lines.append(fl)
+                    failure_output = (
+                        "VALIDATION FAILED:\n"
+                        + validate_result.stdout[-2000:]
+                    )
+                else:
+                    state.log_lines.append("Validation passed")
+
+                    # Run pytest
+                    state.log_lines.append(
+                        f"--- Tests (attempt {attempt}) ---"
+                    )
+                    state.log_lines.append("Running pytest...")
+                    _notify_discord(f"[{idea_id}] Running tests (attempt {attempt})...")
+
+                    load_before = _snapshot_system_load()
+                    state.log_lines.append(f"Pre-test: {load_before}")
+                    test_start = time.time()
+
+                    test_result = subprocess.run(
+                        [sys.executable, "-m", "pytest", "-q", "--tb=short"],
+                        capture_output=True, text=True,
+                        timeout=PYTEST_TIMEOUT,
+                        cwd=local_agent_dir,
+                    )
+
+                    test_duration = time.time() - test_start
+                    load_after = _snapshot_system_load()
+                    state.log_lines.append(
+                        f"Post-test: {load_after} | "
+                        f"duration={test_duration:.0f}s"
+                    )
+
+                    test_summary = [
+                        ln.strip()
+                        for ln in test_result.stdout.split("\n")
+                        if "passed" in ln or "failed" in ln
+                        or "error" in ln.lower()
+                    ]
+                    for line in test_summary:
+                        state.log_lines.append(line)
+
+                    if test_result.returncode == 0:
+                        break  # All good — proceed to deploy
+
+                    # Extract failure details for Claude
+                    failure_output = (
+                        "TESTS FAILED:\n"
+                        + test_result.stdout[-3000:]
+                    )
+
+                # If we have a failure and retries remain, launch Claude to fix
+                if failure_output and attempt <= MAX_FIX_RETRIES:
+                    state.log_lines.append(
+                        f"Launching Claude to fix (retry {attempt}/{MAX_FIX_RETRIES})..."
+                    )
+                    _notify_discord(
+                        f"[{idea_id}] Tests/validation failed. "
+                        f"Retry {attempt}/{MAX_FIX_RETRIES}..."
+                    )
+
+                    fix_prompt = (
+                        f"The code you wrote for '{idea.title}' has failures.\n\n"
+                        f"```\n{failure_output}\n```\n\n"
+                        f"Fix the failing tests or code. Then `git add` and "
+                        f"`git commit -m 'Fix test failures'`.\n\n"
+                        f"Do NOT run safe_update.py, validate.py, or pytest. "
+                        f"Just fix the code and commit."
+                    )
+
+                    fix_cmd = [
+                        str(binary), "-p", fix_prompt,
+                        "--output-format", "stream-json",
+                        "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
+                        "--max-turns", "30",
+                    ]
+                    if session_id:
+                        fix_cmd.extend(["--resume", session_id])
+
+                    fix_proc = subprocess.Popen(
+                        fix_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        cwd=str(project_root),
+                        env=env,
+                    )
+                    state.pid = fix_proc.pid
+                    state.log_lines.append(
+                        f"Fix Claude started (PID: {fix_proc.pid})"
+                    )
+
+                    # Stream fix output (same as Phase 2)
+                    while True:
+                        if state.cancelled:
+                            fix_proc.kill()
+                            state.log_lines.append("CANCELLED by user")
+                            mark_failed(idea_id, state.log_text)
+                            _notify_discord(
+                                f"Execution of {idea_id} was cancelled."
+                            )
+                            _active.pop(idea_id, None)
+                            return
+
+                        if state.elapsed > EXECUTION_TIMEOUT:
+                            fix_proc.kill()
+                            state.log_lines.append(
+                                f"TIMEOUT after {EXECUTION_TIMEOUT}s"
+                            )
+                            mark_failed(idea_id, state.log_text)
+                            _active.pop(idea_id, None)
+                            return
+
+                        raw = (
+                            fix_proc.stdout.readline()
+                            if fix_proc.stdout
+                            else b""
+                        )
+                        if not raw:
+                            if fix_proc.poll() is not None:
+                                break
+                            continue
+
+                        line_text = raw.decode(
+                            "utf-8", errors="replace"
+                        ).rstrip()
+                        if not line_text:
+                            continue
+
+                        evt, dtxt = _parse_stream_event(line_text)
+                        if evt == "result":
+                            if dtxt:
+                                state.log_lines.append(dtxt)
+                            break
+                        if dtxt:
+                            state.log_lines.append(dtxt)
+
+                    # Kill fix process
+                    if fix_proc.poll() is None:
+                        fix_proc.kill()
+                        try:
+                            fix_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
+                    time.sleep(2)
+
+                    state.log_lines.append(
+                        f"Fix attempt {attempt} complete. Re-validating..."
+                    )
+                    continue  # Back to top of retry loop
+
+                elif failure_output:
+                    # No retries left
+                    state.log_lines.append(
+                        f"Failed after {attempt} attempt(s) — aborting deploy"
+                    )
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(
+                        f"Idea {idea_id} failed after {attempt} attempts: "
+                        f"{idea.title}"
+                    )
+                    return
+
+            # --- Phase 3: Deploy (merge + push) ---
             state.log_lines.append("")
             state.log_lines.append("--- Phase 3: Deploy ---")
 
             try:
-                # Step 3a: Run pytest with system load monitoring
-                state.log_lines.append("Running pytest...")
-                _notify_discord(f"[{idea_id}] Running tests...")
-
-                # Snapshot system state before tests
-                load_before = _snapshot_system_load()
-                state.log_lines.append(f"Pre-test: {load_before}")
-                test_start = time.time()
-
-                test_result = subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", "--tb=short"],
-                    capture_output=True, text=True, timeout=PYTEST_TIMEOUT,
-                    cwd=local_agent_dir,
-                )
-
-                test_duration = time.time() - test_start
-                load_after = _snapshot_system_load()
-                state.log_lines.append(
-                    f"Post-test: {load_after} | duration={test_duration:.0f}s"
-                )
-
-                test_summary = [
-                    ln.strip() for ln in test_result.stdout.split("\n")
-                    if "passed" in ln or "failed" in ln or "error" in ln.lower()
-                ]
-                for line in test_summary:
-                    state.log_lines.append(line)
-
-                if test_result.returncode != 0:
-                    state.log_lines.append("Tests FAILED — aborting deploy")
-                    mark_failed(idea_id, state.log_text[-5000:])
-                    _notify_discord(f"Idea {idea_id} tests failed: {idea.title}")
-                    return
 
                 # Step 3b: Merge to main
                 state.log_lines.append("Merging to main...")

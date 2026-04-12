@@ -51,6 +51,9 @@ OUTPUT FORMAT (use EXACTLY these section headers):
 **System Health**
 - memory, performance, infrastructure highlights
 
+**Project Health**
+- blockers, stale repos, projects needing attention
+
 **Ideas & Knowledge**
 - pending ideas, knowledge gaps, consistency notes
 
@@ -94,6 +97,9 @@ Only include sections that have meaningful content. Skip empty ones.
 
 --- MEMORY CONTEXT ---
 {memory_context}
+
+--- PROJECT HEALTH ---
+{project_health}
 """
 
 
@@ -265,6 +271,17 @@ def _collect_memory_context() -> str:
         return "Memory context unavailable."
 
 
+def _collect_project_health() -> str:
+    """Collect project health summary from the project tracker."""
+    try:
+        from .project_tracker import get_project_health_summary
+
+        return _truncate(get_project_health_summary(), 600)
+    except Exception as e:
+        logger.debug(f"[Briefing] Project health unavailable: {e}")
+        return "Project health data unavailable."
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -281,6 +298,7 @@ ALL_COLLECTORS = {
     "news_engagement": _collect_news_engagement,
     "knowledge_gaps": _collect_knowledge_gaps,
     "memory_context": _collect_memory_context,
+    "project_health": _collect_project_health,
 }
 
 
@@ -349,6 +367,7 @@ def _build_fallback_briefing(data: dict[str, str]) -> str:
         "engagement": "Engagement",
         "infra": "Infrastructure",
         "perf_metrics": "Performance",
+        "project_health": "Project Health",
         "ideas": "Ideas",
         "consistency": "Knowledge Consistency",
         "tool_analytics": "Tool Usage",

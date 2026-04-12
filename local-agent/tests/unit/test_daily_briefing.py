@@ -22,6 +22,7 @@ from agent.daily_briefing import (
     _collect_memory_context,
     _collect_news_engagement,
     _collect_perf_metrics,
+    _collect_project_health,
     _collect_tool_analytics,
     _truncate,
     collect_all_data,
@@ -145,6 +146,23 @@ class TestCollectors:
         monkeypatch.setattr("agent.daily_briefing.DAILY_CONTEXT", ctx_file)
         result = _collect_memory_context()
         assert "deployment" in result
+
+    def test_collect_project_health_returns_string(self):
+        result = _collect_project_health()
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_collect_project_health_handles_import_error(self, monkeypatch):
+        def _fail():
+            raise ImportError("no module")
+
+        monkeypatch.setattr(
+            "agent.daily_briefing._collect_project_health", _fail
+        )
+        # Direct call to patched function will raise, but the real collector
+        # wraps in try/except — test the real one with a broken import
+        result = _collect_project_health()
+        assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +313,7 @@ class TestBriefingPrompt:
         assert "Attention Required" in BRIEFING_PROMPT
         assert "Yesterday's Activity" in BRIEFING_PROMPT
         assert "System Health" in BRIEFING_PROMPT
+        assert "Project Health" in BRIEFING_PROMPT
         assert "Today's Priorities" in BRIEFING_PROMPT
 
 

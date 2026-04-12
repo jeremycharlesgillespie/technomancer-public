@@ -12,7 +12,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -205,6 +205,78 @@ def get_all_projects_raw() -> list[dict[str, Any]]:
     except Exception:
         log.exception("Failed to query projects")
         return []
+
+
+# ---------------------------------------------------------------------------
+# Health summary (for daily briefing)
+# ---------------------------------------------------------------------------
+
+
+def get_project_health_summary() -> str:
+    """Return a concise project health section for the daily briefing.
+
+    Highlights:
+    - Active projects with blockers
+    - Projects with no sync in 7+ days (stale)
+    - Open PR / issue counts if synced (future: populated by GitHub sync)
+    - Skips healthy/quiet projects to keep output short (3-5 lines max per project)
+
+    Returns:
+        Formatted markdown string, or a short note if no projects tracked.
+    """
+    projects = get_all_projects_raw()
+    if not projects:
+        return "No projects tracked."
+
+    now = datetime.now()
+    stale_threshold = now - timedelta(days=7)
+    lines: list[str] = []
+
+    for p in projects:
+        # Skip completed projects
+        if p["status"] == "done":
+            continue
+
+        issues: list[str] = []
+
+        # Check for blockers
+        if p["blockers"]:
+            issues.append(f"Blockers: {p['blockers']}")
+
+        # Check for stale sync (no sync in 7+ days, only if repo_url is set)
+        if p["repo_url"] and p["last_synced"]:
+            try:
+                last_sync = datetime.fromisoformat(p["last_synced"])
+                if last_sync < stale_threshold:
+                    days_ago = (now - last_sync).days
+                    issues.append(f"No sync in {days_ago} days")
+            except (ValueError, TypeError):
+                issues.append("Last sync date invalid")
+        elif p["repo_url"] and not p["last_synced"]:
+            issues.append("Never synced")
+
+        # Check for paused status
+        if p["status"] == "paused":
+            issues.append("Status: paused")
+
+        # Only include projects that have something to report
+        if not issues:
+            continue
+
+        status_icon = {
+            "active": "\u2705",
+            "paused": "\u23f8\ufe0f",
+        }.get(p["status"], "\u2753")
+        lines.append(f"{status_icon} **{p['name']}**")
+        for issue in issues:
+            lines.append(f"   - {issue}")
+
+    if not lines:
+        active_count = sum(1 for p in projects if p["status"] != "done")
+        return f"All {active_count} project(s) healthy. No blockers or stale repos."
+
+    header = f"**Project Health** ({len(projects)} tracked)\n"
+    return header + "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
