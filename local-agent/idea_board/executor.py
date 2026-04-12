@@ -899,13 +899,15 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         _notify_discord(f"[{idea_id}] {discord_msg}")
                         last_discord_time = now
 
-            # Process finished — ensure cleanup
+            # Process finished — kill immediately to free resources for Phase 3
             if proc.poll() is None:
-                proc.terminate()
+                proc.kill()
                 try:
-                    proc.wait(timeout=10)
+                    proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
+                    pass
+            # Brief pause to let OS fully release resources
+            time.sleep(2)
 
             # Check success via the result event, not exit code
             # (we terminate the process after getting the result event,
