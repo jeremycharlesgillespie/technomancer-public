@@ -1559,7 +1559,7 @@ def _render_hub() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Technomancer Hub</title>
+    <title>Technomancer Hub ({len(ideas)} ideas)</title>
     <style>{HUB_CSS}</style>
 </head>
 <body>
