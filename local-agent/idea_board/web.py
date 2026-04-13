@@ -10,6 +10,8 @@ Routes:
     POST /api/ideas/<id>/vote     — Vote on an idea
     POST /api/ideas/<id>/comment  — Add a comment
     POST /api/ideas/<id>/execute  — Trigger Claude Code execution
+    GET  /api/errors              — JSON list of recent crashes from crash_log.md
+    GET  /errors                  — HTML crash log viewer with collapsible stack traces
 """
 
 from __future__ import annotations
@@ -1398,6 +1400,108 @@ def api_health() -> tuple:
     })
 
 
+# ============================================================================
+# CRASH LOG / ERRORS
+# ============================================================================
+
+
+def _parse_crash_log() -> list[dict]:
+    """Parse crash_log.md into structured entries.
+
+    Each entry starts with '# Bot Crash Report'. Returns entries
+    newest-first, limited to 10.
+    """
+    crash_file = settings.vault_path / "LLM Memory" / "Permanent" / "crash_log.md"
+    if not crash_file.exists():
+        return []
+    try:
+        content = crash_file.read_text(encoding="utf-8")
+    except Exception:
+        return []
+
+    if not content.strip():
+        return []
+
+    # Split into individual crash reports
+    parts = content.split("# Bot Crash Report")
+    entries: list[dict] = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        entry: dict[str, Any] = {}
+
+        # Extract timestamp
+        for line in part.splitlines():
+            if line.startswith("**Timestamp:**"):
+                entry["timestamp"] = line.replace("**Timestamp:**", "").strip()
+            elif line.startswith("**Exception Type:**"):
+                entry["exception_type"] = line.replace("**Exception Type:**", "").strip()
+            elif line.startswith("**Exception Message:**"):
+                entry["exception_message"] = line.replace("**Exception Message:**", "").strip()
+
+        if not entry.get("timestamp"):
+            continue
+
+        # Extract stack trace (between ```python and ``` in "## Full Stack Trace")
+        stack_trace = ""
+        in_trace_section = False
+        in_code_block = False
+        trace_lines: list[str] = []
+        for line in part.splitlines():
+            if "## Full Stack Trace" in line:
+                in_trace_section = True
+                continue
+            if in_trace_section and line.strip() == "```python":
+                in_code_block = True
+                continue
+            if in_trace_section and in_code_block and line.strip() == "```":
+                in_code_block = False
+                in_trace_section = False
+                continue
+            if in_code_block and in_trace_section:
+                trace_lines.append(line)
+        stack_trace = "\n".join(trace_lines)
+        entry["stack_trace"] = stack_trace
+
+        # Extract local variables section
+        vars_section = ""
+        vars_start = part.find("## Local Variables by Frame")
+        if vars_start != -1:
+            vars_section = part[vars_start:]
+        entry["local_variables"] = vars_section
+
+        # Build a short summary (first meaningful line of traceback)
+        summary = ""
+        for tl in reversed(trace_lines):
+            tl_stripped = tl.strip()
+            if tl_stripped and not tl_stripped.startswith("Traceback") and not tl_stripped.startswith("File"):
+                summary = tl_stripped
+                break
+        entry["summary"] = summary or entry.get("exception_message", "Unknown error")
+
+        entries.append(entry)
+
+    # Return newest first, max 10
+    entries.reverse()
+    return entries[:10]
+
+
+@app.route("/api/errors")
+def api_errors() -> tuple:
+    """GET /api/errors — last 10 crash/error entries from crash_log.md."""
+    entries = _parse_crash_log()
+    return jsonify({"errors": entries, "count": len(entries)})
+
+
+@app.route("/errors")
+def errors_page() -> str:
+    """Serve the crash log / errors viewer page."""
+    return _render_errors()
+
+
 @app.route("/api/evolve/status")
 def api_evolve_status() -> tuple:
     """GET /api/evolve/status — get evolve cycle progress.
@@ -1650,6 +1754,113 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
 </body></html>"""
 
 
+ERRORS_CSS = """
+:root {
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --orange: #ff9800;
+    --border: #333;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.6; }
+h1 { margin-bottom: 0.5rem; color: var(--accent); }
+.subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+a { color: var(--accent); }
+.error-card { background: var(--surface); border-radius: 8px; padding: 1rem 1.2rem;
+              border-left: 4px solid var(--red); margin-bottom: 12px; }
+.error-header { cursor: pointer; display: flex; align-items: flex-start;
+                justify-content: space-between; gap: 12px; }
+.error-header:hover { opacity: 0.85; }
+.error-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+.error-type { font-weight: 600; color: var(--red); font-size: 0.95rem; }
+.error-summary { font-size: 0.85rem; color: var(--text); margin-top: 4px;
+                 font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.error-toggle { flex-shrink: 0; font-size: 1.2rem; color: var(--muted);
+                transition: transform 0.2s; user-select: none; }
+.error-toggle.open { transform: rotate(90deg); }
+.error-detail { display: none; margin-top: 12px; border-top: 1px solid var(--border);
+                padding-top: 12px; }
+.error-detail.open { display: block; }
+.error-detail pre { background: #1e1e1e; border-radius: 6px; padding: 12px;
+                    overflow-x: auto; font-size: 0.8rem; line-height: 1.5;
+                    font-family: 'Cascadia Code', 'Fira Code', monospace;
+                    -webkit-overflow-scrolling: touch; white-space: pre;
+                    max-height: 500px; overflow-y: auto; }
+.error-detail h3 { font-size: 0.9rem; color: var(--accent); margin: 12px 0 6px; }
+.empty-state { text-align: center; padding: 4rem 2rem; color: var(--muted); }
+.empty-state .icon { font-size: 3rem; margin-bottom: 1rem; }
+@media (max-width: 600px) {
+    body { padding: 12px; }
+    .error-detail pre { font-size: 0.7rem; padding: 8px; }
+}
+"""
+
+
+def _render_errors() -> str:
+    """Render the crash log / errors viewer page."""
+    entries = _parse_crash_log()
+    now = datetime.now().strftime("%H:%M")
+
+    if not entries:
+        cards_html = """<div class="empty-state">
+            <div class="icon">&#10003;</div>
+            <p>No crash reports found.</p>
+            <p style="font-size:0.85rem;margin-top:0.5rem">crash_log.md is empty or doesn't exist.</p>
+        </div>"""
+    else:
+        card_parts = []
+        for i, entry in enumerate(entries):
+            ts = html.escape(entry.get("timestamp", "Unknown"))
+            exc_type = html.escape(entry.get("exception_type", "Unknown"))
+            summary = html.escape(entry.get("summary", ""))
+            stack_trace = html.escape(entry.get("stack_trace", ""))
+            local_vars = html.escape(entry.get("local_variables", ""))
+
+            card_parts.append(f"""<div class="error-card">
+    <div class="error-header" onclick="toggleError({i})">
+        <div>
+            <div class="error-meta">{ts}</div>
+            <div class="error-type">{exc_type}</div>
+            <div class="error-summary">{summary}</div>
+        </div>
+        <span class="error-toggle" id="toggle-{i}">&#9654;</span>
+    </div>
+    <div class="error-detail" id="detail-{i}">
+        <h3>Stack Trace</h3>
+        <pre>{stack_trace}</pre>
+        {"<h3>Local Variables</h3><pre>" + local_vars + "</pre>" if local_vars else ""}
+    </div>
+</div>""")
+        cards_html = "\n".join(card_parts)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Errors &amp; Crashes</title>
+    <style>{ERRORS_CSS}</style>
+</head>
+<body>
+    <h1>Errors &amp; Crashes</h1>
+    <p class="subtitle"><a href="/">&larr; Hub</a> &middot; {len(entries)} recent error(s) &middot; <a href="/api/errors">API: /api/errors</a></p>
+
+    {cards_html}
+
+    <script>
+    function toggleError(i) {{
+        const detail = document.getElementById('detail-' + i);
+        const toggle = document.getElementById('toggle-' + i);
+        const isOpen = detail.classList.contains('open');
+        detail.classList.toggle('open');
+        toggle.classList.toggle('open');
+    }}
+    </script>
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Generated at {now}</p>
+</body>
+</html>"""
+
+
 def _render_hub() -> str:
     """Render the central hub page with links to all services."""
     ideas = load_ideas()
@@ -1711,7 +1922,7 @@ def _render_hub() -> str:
     <p class="subtitle">Central control panel for all Technomancer services · <a href="/api/ideas" style="color: var(--muted); font-size: 0.85em;">API: /api/ideas</a></p>
 
     <div class="health-panel">
-        <h2>Service Health</h2>
+        <h2>Service Health <a href="/errors" style="font-size:0.7rem;font-weight:normal;color:var(--muted);margin-left:8px">View errors &rarr;</a></h2>
         <div class="health-grid" id="health-grid">
             <div class="health-card" id="health-bot">
                 <div class="svc-name"><span class="dot unknown"></span> Discord Bot</div>
@@ -1749,6 +1960,10 @@ def _render_hub() -> str:
         <a href="/analytics" class="card" style="border-left: 4px solid #5865F2;">
             <h2>Analytics</h2>
             <p>Command usage, engagement trends, and feature adoption.</p>
+        </a>
+        <a href="/errors" class="card" style="border-left: 4px solid var(--red);">
+            <h2>Errors &amp; Crashes</h2>
+            <p>Recent crash reports with stack traces.</p>
         </a>
         <a href="http://{settings.server_host}:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>
