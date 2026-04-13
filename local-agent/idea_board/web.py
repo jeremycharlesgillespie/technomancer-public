@@ -21,6 +21,7 @@ import html
 import json
 import logging
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -1552,6 +1553,90 @@ def api_evolve_status() -> tuple:
 
 
 # ============================================================================
+# ACTION ENDPOINTS (restart, cleanup, github-sync)
+# ============================================================================
+
+
+@app.route("/api/actions/restart", methods=["POST"])
+def api_action_restart() -> tuple:
+    """POST /api/actions/restart — restart the Discord bot via bot_service.py start."""
+
+    def _restart() -> dict:
+        base = Path(__file__).resolve().parent.parent
+        result = subprocess.run(
+            [sys.executable, "bot_service.py", "start"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(base),
+        )
+        return {
+            "success": result.returncode == 0,
+            "output": (result.stdout + result.stderr).strip()[-500:],
+        }
+
+    try:
+        result = _restart()
+        status_code = 200 if result["success"] else 500
+        return jsonify({"action": "restart", **result}), status_code
+    except subprocess.TimeoutExpired:
+        return jsonify({"action": "restart", "success": False, "output": "Timed out after 60s"}), 504
+    except Exception as e:
+        return jsonify({"action": "restart", "success": False, "output": str(e)}), 500
+
+
+@app.route("/api/actions/cleanup", methods=["POST"])
+def api_action_cleanup() -> tuple:
+    """POST /api/actions/cleanup — run cleanup.py (kill orphans + restart)."""
+
+    def _cleanup() -> dict:
+        base = Path(__file__).resolve().parent.parent
+        result = subprocess.run(
+            [sys.executable, "cleanup.py"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(base),
+        )
+        return {
+            "success": result.returncode == 0,
+            "output": (result.stdout + result.stderr).strip()[-1000:],
+        }
+
+    try:
+        result = _cleanup()
+        status_code = 200 if result["success"] else 500
+        return jsonify({"action": "cleanup", **result}), status_code
+    except subprocess.TimeoutExpired:
+        return jsonify({"action": "cleanup", "success": False, "output": "Timed out after 120s"}), 504
+    except Exception as e:
+        return jsonify({"action": "cleanup", "success": False, "output": str(e)}), 500
+
+
+@app.route("/api/actions/github-sync", methods=["POST"])
+def api_action_github_sync() -> tuple:
+    """POST /api/actions/github-sync — trigger sync_all_projects()."""
+    try:
+        from agent.project_tracker import sync_all_projects
+
+        loop = asyncio.new_event_loop()
+        try:
+            results = loop.run_until_complete(sync_all_projects())
+        finally:
+            loop.close()
+
+        ok = sum(1 for v in results.values() if v)
+        return jsonify({
+            "action": "github-sync",
+            "success": True,
+            "output": f"Synced {ok}/{len(results)} projects",
+            "details": results,
+        })
+    except Exception as e:
+        return jsonify({"action": "github-sync", "success": False, "output": str(e)}), 500
+
+
+# ============================================================================
 # SERVER LIFECYCLE
 # ============================================================================
 
@@ -1610,7 +1695,37 @@ h1 { margin-bottom: 0.5rem; color: var(--accent); }
                           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 600px) {
     .health-grid { grid-template-columns: 1fr; }
+    .actions-grid { grid-template-columns: 1fr !important; }
 }
+.actions-panel { margin-bottom: 2rem; }
+.actions-panel h2 { font-size: 1.1rem; margin-bottom: 0.8rem; color: var(--accent); }
+.actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.action-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+              padding: 1rem 1.2rem; cursor: pointer; text-align: left;
+              transition: border-color 0.2s, transform 0.15s; color: var(--text); }
+.action-btn:hover { border-color: var(--accent); transform: translateY(-1px); }
+.action-btn:active { transform: translateY(0); }
+.action-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.action-btn .action-name { font-size: 0.95rem; font-weight: 600; display: flex;
+                           align-items: center; gap: 8px; margin-bottom: 4px; }
+.action-btn .action-desc { font-size: 0.8rem; color: var(--muted); }
+.action-btn.running .action-name::after { content: ''; width: 14px; height: 14px;
+    border: 2px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block; }
+.action-btn.success { border-color: var(--green); }
+.action-btn.error { border-color: var(--red); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.action-output { font-size: 0.75rem; color: var(--muted); margin-top: 6px;
+                 font-family: monospace; white-space: pre-wrap; max-height: 80px;
+                 overflow-y: auto; }
+.hub-toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+             background: var(--surface); color: var(--text); padding: 14px 28px;
+             border-radius: 8px; font-size: 0.95rem; z-index: 9999;
+             box-shadow: 0 4px 20px rgba(0,0,0,0.5); animation: fadeIn 0.3s ease; }
+.hub-toast.success { border: 1px solid var(--green); }
+.hub-toast.error { border: 1px solid var(--red); }
+@keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(20px); }
+                    to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 """
 
 
@@ -1943,6 +2058,24 @@ def _render_hub() -> str:
         </div>
     </div>
 
+    <div class="actions-panel">
+        <h2>Quick Actions</h2>
+        <div class="actions-grid">
+            <button class="action-btn" id="action-restart" onclick="runAction('restart', true)">
+                <div class="action-name">Restart Bot</div>
+                <div class="action-desc">Stop and restart the Discord bot process</div>
+            </button>
+            <button class="action-btn" id="action-cleanup" onclick="runAction('cleanup')">
+                <div class="action-name">Run Cleanup</div>
+                <div class="action-desc">Kill orphaned processes, restart services</div>
+            </button>
+            <button class="action-btn" id="action-github-sync" onclick="runAction('github-sync')">
+                <div class="action-name">Sync GitHub</div>
+                <div class="action-desc">Pull latest data for all tracked projects</div>
+            </button>
+        </div>
+    </div>
+
     <div class="grid">
         <a href="/ideas" class="card green">
             <h2>Idea Board</h2>
@@ -2038,6 +2171,69 @@ def _render_hub() -> str:
     }}
     updateHealth();
     setInterval(updateHealth, 10000);
+    </script>
+
+    <script>
+    function hubToast(msg, type) {{
+        const old = document.getElementById('hub-toast');
+        if (old) old.remove();
+        const t = document.createElement('div');
+        t.id = 'hub-toast';
+        t.className = 'hub-toast ' + (type || '');
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 4000);
+    }}
+
+    async function runAction(action, needsConfirm) {{
+        if (needsConfirm && !confirm('Restart the Discord bot? This will briefly disconnect it.')) return;
+
+        const btn = document.getElementById('action-' + action);
+        if (!btn || btn.disabled) return;
+
+        btn.disabled = true;
+        btn.classList.add('running');
+        btn.classList.remove('success', 'error');
+
+        // Remove any previous output
+        const oldOutput = btn.querySelector('.action-output');
+        if (oldOutput) oldOutput.remove();
+
+        try {{
+            const resp = await fetch('/api/actions/' + action, {{method: 'POST'}});
+            const data = await resp.json();
+
+            btn.classList.remove('running');
+            btn.classList.add(data.success ? 'success' : 'error');
+
+            hubToast(
+                data.success ? action + ' completed successfully' : action + ' failed: ' + (data.output || 'unknown error'),
+                data.success ? 'success' : 'error'
+            );
+
+            if (data.output) {{
+                const out = document.createElement('div');
+                out.className = 'action-output';
+                out.textContent = data.output;
+                btn.appendChild(out);
+            }}
+
+            // Refresh health after restart/cleanup
+            if (data.success && (action === 'restart' || action === 'cleanup')) {{
+                setTimeout(updateHealth, 3000);
+            }}
+        }} catch(e) {{
+            btn.classList.remove('running');
+            btn.classList.add('error');
+            hubToast('Network error: ' + e.message, 'error');
+        }}
+
+        // Re-enable after 3 seconds
+        setTimeout(() => {{
+            btn.disabled = false;
+            btn.classList.remove('success', 'error');
+        }}, 5000);
+    }}
     </script>
 
     <script>

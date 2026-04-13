@@ -902,7 +902,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             try:
                 baseline_result = subprocess.run(
                     [sys.executable, "-m", "pytest", "--tb=no", "-q",
-                     "-n", "4"],
+                     "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
                     capture_output=True, text=True,
                     timeout=BASELINE_TIMEOUT,
                     cwd=local_agent_dir,
@@ -1338,7 +1338,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
             full_result = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", "--tb=short",
-                 "-n", "4"],
+                 "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
                 capture_output=True, text=True,
                 timeout=PYTEST_TIMEOUT,
                 cwd=local_agent_dir,
