@@ -19,6 +19,7 @@ Examples:
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -264,6 +265,181 @@ def run_quality_tests() -> bool:
         return False
 
 
+def check_bot_running() -> bool:
+    """Check if the bot process is alive by reading its PID file.
+
+    Uses ctypes on Windows (os.kill signal 0 doesn't work there) and
+    os.kill on other platforms. Both are instant — no subprocess needed.
+    """
+    pid_file = SCRIPT_DIR / "bot.pid"
+    if not pid_file.exists():
+        return False
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        return False
+
+    if sys.platform == "win32":
+        # Windows: use kernel32 OpenProcess to check if PID exists
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+
+def post_deploy_health_check(
+    startup_grace: int = 20,
+    check_interval: int = 5,
+    total_duration: int = 30,
+) -> bool:
+    """Poll bot status after deploy to verify it stays alive.
+
+    Waits for the bot to finish starting, then monitors for stability.
+
+    Args:
+        startup_grace: Seconds to wait before first check (bot needs time
+            to initialize Discord connection, load models, etc.).
+        check_interval: Seconds between status checks after grace period.
+        total_duration: Total seconds to monitor after grace period.
+
+    Returns:
+        True if bot stayed alive for the full duration, False if it crashed.
+    """
+    log(f"Post-deploy health check: {startup_grace}s grace + "
+        f"{total_duration}s monitoring...")
+
+    # Grace period — let the bot finish starting
+    log(f"  Waiting {startup_grace}s for bot to initialize...")
+    time.sleep(startup_grace)
+
+    if not check_bot_running():
+        log("  Bot not running after grace period — likely crashed on startup", "ERROR")
+        return False
+
+    log("  Bot is alive after grace period, monitoring stability...")
+
+    checks = total_duration // check_interval
+    for i in range(checks):
+        time.sleep(check_interval)
+        alive = check_bot_running()
+        log(f"  Health check {i + 1}/{checks}: {'alive' if alive else 'DEAD'}")
+        if not alive:
+            log("Bot crashed during post-deploy health check!", "ERROR")
+            return False
+
+    log("Post-deploy health check passed — bot is stable")
+    return True
+
+
+def rollback_deploy(reverted_branch: str = "") -> Tuple[bool, str]:
+    """Revert the last merge commit, restart bot on previous version, notify Discord.
+
+    Args:
+        reverted_branch: Name of the branch that was merged (for logging).
+
+    Returns:
+        (success, message) tuple.
+    """
+    log("ROLLBACK: Reverting last deploy...", "ERROR")
+
+    # Capture the commit we're reverting
+    try:
+        result = run_git(["rev-parse", "--short", "HEAD"])
+        bad_commit = result.stdout.strip()
+    except SafeUpdateError:
+        bad_commit = "unknown"
+
+    # Revert the merge commit
+    try:
+        run_git(["revert", "HEAD", "--no-edit", "-m", "1"])
+        log(f"ROLLBACK: Reverted commit {bad_commit}")
+    except SafeUpdateError as e:
+        msg = f"ROLLBACK FAILED: Could not revert {bad_commit}: {e}"
+        log(msg, "ERROR")
+        _send_rollback_notification(bad_commit, reverted_branch, success=False, error=str(e))
+        return False, msg
+
+    # Push the revert
+    try:
+        run_git(["push", "origin", MAIN_BRANCH])
+        log("ROLLBACK: Pushed revert to origin")
+    except SafeUpdateError:
+        log("ROLLBACK: Could not push revert (push manually)", "WARNING")
+
+    # Restart bot on the reverted (good) code
+    log("ROLLBACK: Restarting bot on previous version...")
+    bot_ok = restart_bot()
+
+    msg = (
+        f"Auto-rollback complete. Reverted commit {bad_commit}"
+        f"{f' (branch: {reverted_branch})' if reverted_branch else ''}. "
+        f"Bot restart: {'OK' if bot_ok else 'FAILED'}."
+    )
+    log(msg)
+
+    # Send Discord notification
+    _send_rollback_notification(bad_commit, reverted_branch, success=True, bot_ok=bot_ok)
+
+    return True, msg
+
+
+def _send_rollback_notification(
+    bad_commit: str,
+    branch_name: str,
+    success: bool,
+    bot_ok: bool = False,
+    error: str = "",
+) -> None:
+    """Send a Discord webhook notification about the rollback."""
+    try:
+        from agent.config import settings
+        webhook_url = settings.discord_webhook_url
+    except Exception:
+        webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+    if not webhook_url:
+        log("No DISCORD_WEBHOOK_URL configured — cannot send rollback notification", "WARNING")
+        return
+
+    try:
+        import requests as req
+
+        if success:
+            message = (
+                f"\u26a0\ufe0f **Auto-Rollback Triggered**\n\n"
+                f"Deploy of `{bad_commit}`"
+                f"{f' (branch `{branch_name}`)' if branch_name else ''}"
+                f" crashed within 30s of restart.\n\n"
+                f"**Action taken:** `git revert HEAD` — bot restarted on previous version.\n"
+                f"**Bot status:** {'Running' if bot_ok else 'NOT running — manual intervention needed'}\n\n"
+                f"Investigate the crash and re-deploy when fixed."
+            )
+        else:
+            message = (
+                f"\U0001f6a8 **Auto-Rollback FAILED**\n\n"
+                f"Deploy of `{bad_commit}`"
+                f"{f' (branch `{branch_name}`)' if branch_name else ''}"
+                f" crashed, and the automatic revert failed.\n\n"
+                f"**Error:** `{error[:300]}`\n\n"
+                f"**Manual intervention required immediately.**"
+            )
+
+        req.post(webhook_url, json={"content": message}, timeout=10)
+        log("Rollback notification sent to Discord")
+    except Exception as e:
+        log(f"Failed to send rollback notification: {e}", "WARNING")
+
+
 def save_state(branch_name: str):
     """Save workflow state to file."""
     STATE_FILE.write_text(branch_name, encoding="utf-8")
@@ -450,6 +626,31 @@ def continue_workflow():
         # Step 6: Restart bot
         log("Step 6: Restarting bot...")
         bot_ok = restart_bot()
+
+        # Step 6b: Post-deploy health check (verify bot stays alive 30s)
+        if bot_ok:
+            log("Step 6b: Post-deploy health check...")
+            healthy = post_deploy_health_check()
+            if not healthy:
+                log("Bot crashed after deploy — initiating auto-rollback", "ERROR")
+                rollback_ok, rollback_msg = rollback_deploy(reverted_branch=branch_name)
+                print()
+                print("=" * 60)
+                print("DEPLOY ROLLED BACK")
+                print("=" * 60)
+                print()
+                print(rollback_msg)
+                print()
+                print("The bot crashed within 30 seconds of restart.")
+                print("The merge has been reverted and the bot restarted")
+                print("on the previous version.")
+                print()
+                print("Next steps:")
+                print("  1. Check crash logs for the root cause")
+                print("  2. Fix the issue on a new branch")
+                print("  3. Re-deploy with safe_update.py")
+                print("=" * 60)
+                sys.exit(1)
 
         # Step 7: Push to remote
         log("Step 7: Pushing to origin...")

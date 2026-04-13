@@ -172,7 +172,7 @@ class TestConstants:
     """Verify timeout constants exist and are reasonable."""
 
     def test_baseline_timeout_exists(self):
-        assert BASELINE_TIMEOUT == 120
+        assert BASELINE_TIMEOUT == 600
 
     def test_baseline_timeout_is_int(self):
         assert isinstance(BASELINE_TIMEOUT, int)
@@ -266,3 +266,4 @@ class TestFindRelatedTests:
             result = _find_related_tests(tmp_path)
 
         assert len(result) == 1
+# health check test

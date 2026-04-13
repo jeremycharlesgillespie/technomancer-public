@@ -1,11 +1,18 @@
+# Runtime state files (bot-generated, not source code)
 .auto_improve_report.json
 .bridge_token
-idea_board/ideas.json
-local-agent/profiling/
-profiling/
-data/
+.evolve_status.json
+.publish_blocklist
+.claude_bridge_prompt.txt
+.safe_update_state
 sent_articles.json
 sent_topics.json
 service_state.json
-.publish_blocklist
-.claude_bridge_prompt.txt
+downloaded_videos.json
+user_profile.json
+
+# Data directories
+idea_board/ideas.json
+profiling/
+data/
+README.md

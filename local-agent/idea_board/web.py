@@ -1301,6 +1301,103 @@ def api_log(idea_id: str) -> tuple:
     return jsonify({"idea_id": idea_id, "lines": [], "line_count": 0})
 
 
+@app.route("/api/health")
+def api_health() -> tuple:
+    """GET /api/health — aggregated health status of all services.
+
+    Checks: Discord bot process, Ollama API, Discord Bridge, Idea Board (self).
+    Returns JSON with per-service status, uptime, and last error.
+    """
+    import urllib.request
+
+    services: list[dict] = []
+
+    # 1. Discord Bot — read service_state.json + check PID
+    bot_status: dict[str, Any] = {"name": "Discord Bot", "id": "bot"}
+    state_file = Path(__file__).resolve().parent.parent / "service_state.json"
+    pid_file = Path(__file__).resolve().parent.parent / "bot.pid"
+    try:
+        pid_alive = False
+        if pid_file.exists():
+            pid = int(pid_file.read_text().strip())
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}"],
+                capture_output=True, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                timeout=5,
+            )
+            pid_alive = str(pid) in result.stdout
+
+        if state_file.exists():
+            state = json.loads(state_file.read_text())
+        else:
+            state = {}
+
+        bot_status["healthy"] = pid_alive
+        bot_status["status"] = "running" if pid_alive else "stopped"
+        bot_status["last_error"] = state.get("last_error")
+        bot_status["restarts"] = state.get("total_restarts", 0)
+        bot_status["consecutive_failures"] = state.get("consecutive_failures", 0)
+    except Exception as e:
+        bot_status["healthy"] = False
+        bot_status["status"] = "error"
+        bot_status["last_error"] = str(e)
+    services.append(bot_status)
+
+    # 2. Ollama — check /api/tags
+    ollama_status: dict[str, Any] = {"name": "Ollama", "id": "ollama"}
+    try:
+        with urllib.request.urlopen(f"{settings.ollama_host}/api/tags", timeout=3) as resp:
+            data = json.loads(resp.read())
+            models = [m.get("name", "?") for m in data.get("models", [])]
+            ollama_status["healthy"] = True
+            ollama_status["status"] = f"{len(models)} models loaded"
+            ollama_status["models"] = models
+    except Exception as e:
+        ollama_status["healthy"] = False
+        ollama_status["status"] = "unreachable"
+        ollama_status["last_error"] = str(e)[:200]
+    services.append(ollama_status)
+
+    # 3. Discord Bridge — check /api/health on port 8321
+    bridge_status: dict[str, Any] = {"name": "Discord Bridge", "id": "bridge"}
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8321/api/health", timeout=3) as resp:
+            data = json.loads(resp.read())
+            secs = int(data.get("uptime", 0))
+            bridge_status["healthy"] = data.get("status") == "ok"
+            bridge_status["status"] = "connected"
+            bridge_status["uptime_seconds"] = secs
+    except Exception as e:
+        bridge_status["healthy"] = False
+        bridge_status["status"] = "unreachable"
+        bridge_status["last_error"] = str(e)[:200]
+    services.append(bridge_status)
+
+    # 4. Idea Board — self-check (if we're responding, we're healthy)
+    board_status: dict[str, Any] = {
+        "name": "Idea Board",
+        "id": "idea_board",
+        "healthy": True,
+        "status": "running",
+    }
+    try:
+        ideas = load_ideas()
+        board_status["idea_count"] = len(ideas)
+    except Exception as e:
+        board_status["healthy"] = False
+        board_status["status"] = "error"
+        board_status["last_error"] = str(e)[:200]
+    services.append(board_status)
+
+    all_healthy = all(s["healthy"] for s in services)
+    return jsonify({
+        "overall": "healthy" if all_healthy else "degraded",
+        "services": services,
+        "checked_at": datetime.now().isoformat(),
+    })
+
+
 @app.route("/api/evolve/status")
 def api_evolve_status() -> tuple:
     """GET /api/evolve/status — get evolve cycle progress.
@@ -1390,6 +1487,26 @@ h1 { margin-bottom: 0.5rem; color: var(--accent); }
 .evolve-panel .log-line { font-size: 0.8rem; font-family: monospace; margin-top: 2px; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
 .thinking { animation: pulse 1.5s infinite; color: var(--orange); font-weight: bold; }
+.health-panel { margin-bottom: 2rem; }
+.health-panel h2 { font-size: 1.1rem; margin-bottom: 0.8rem; color: var(--accent); }
+.health-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.health-card { background: var(--surface); border-radius: 8px; padding: 1rem 1.2rem;
+               border-left: 4px solid var(--muted); transition: border-color 0.3s; }
+.health-card.up { border-left-color: var(--green); }
+.health-card.down { border-left-color: var(--red); }
+.health-card .svc-name { font-size: 0.95rem; font-weight: 600; display: flex;
+                         align-items: center; gap: 8px; margin-bottom: 4px; }
+.health-card .dot { width: 10px; height: 10px; border-radius: 50%;
+                    display: inline-block; flex-shrink: 0; }
+.health-card .dot.up { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.health-card .dot.down { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.health-card .dot.unknown { background: var(--muted); }
+.health-card .svc-detail { font-size: 0.8rem; color: var(--muted); }
+.health-card .svc-error { font-size: 0.75rem; color: var(--red); margin-top: 4px;
+                          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 600px) {
+    .health-grid { grid-template-columns: 1fr; }
+}
 """
 
 
@@ -1593,6 +1710,28 @@ def _render_hub() -> str:
     <h1>Technomancer Hub</h1>
     <p class="subtitle">Central control panel for all Technomancer services · <a href="/api/ideas" style="color: var(--muted); font-size: 0.85em;">API: /api/ideas</a></p>
 
+    <div class="health-panel">
+        <h2>Service Health</h2>
+        <div class="health-grid" id="health-grid">
+            <div class="health-card" id="health-bot">
+                <div class="svc-name"><span class="dot unknown"></span> Discord Bot</div>
+                <div class="svc-detail">Checking...</div>
+            </div>
+            <div class="health-card" id="health-ollama">
+                <div class="svc-name"><span class="dot unknown"></span> Ollama</div>
+                <div class="svc-detail">Checking...</div>
+            </div>
+            <div class="health-card" id="health-bridge">
+                <div class="svc-name"><span class="dot unknown"></span> Discord Bridge</div>
+                <div class="svc-detail">Checking...</div>
+            </div>
+            <div class="health-card" id="health-idea_board">
+                <div class="svc-name"><span class="dot unknown"></span> Idea Board</div>
+                <div class="svc-detail">Checking...</div>
+            </div>
+        </div>
+    </div>
+
     <div class="grid">
         <a href="/ideas" class="card green">
             <h2>Idea Board</h2>
@@ -1632,6 +1771,59 @@ def _render_hub() -> str:
         <h2>Evolve Status</h2>
         <div id="evolve-content" class="status-line">Loading...</div>
     </div>
+
+    <script>
+    function formatUptime(secs) {{
+        if (!secs || secs <= 0) return '';
+        const d = Math.floor(secs / 86400);
+        const h = Math.floor((secs % 86400) / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        let parts = [];
+        if (d) parts.push(d + 'd');
+        if (h) parts.push(h + 'h');
+        parts.push(m + 'm');
+        return parts.join(' ');
+    }}
+
+    async function updateHealth() {{
+        try {{
+            const resp = await fetch('/api/health');
+            const data = await resp.json();
+            for (const svc of data.services) {{
+                const card = document.getElementById('health-' + svc.id);
+                if (!card) continue;
+                const dot = card.querySelector('.dot');
+                const detail = card.querySelector('.svc-detail');
+
+                card.className = 'health-card ' + (svc.healthy ? 'up' : 'down');
+                dot.className = 'dot ' + (svc.healthy ? 'up' : 'down');
+
+                let info = svc.status;
+                if (svc.uptime_seconds) info += ' \u00b7 ' + formatUptime(svc.uptime_seconds);
+                if (svc.restarts) info += ' \u00b7 ' + svc.restarts + ' restarts';
+                if (svc.idea_count !== undefined) info += ' \u00b7 ' + svc.idea_count + ' ideas';
+                detail.textContent = info;
+
+                let errEl = card.querySelector('.svc-error');
+                if (svc.last_error && !svc.healthy) {{
+                    if (!errEl) {{
+                        errEl = document.createElement('div');
+                        errEl.className = 'svc-error';
+                        card.appendChild(errEl);
+                    }}
+                    errEl.textContent = svc.last_error;
+                    errEl.title = svc.last_error;
+                }} else if (errEl) {{
+                    errEl.remove();
+                }}
+            }}
+        }} catch(e) {{
+            document.querySelectorAll('.health-card .dot').forEach(d => d.className = 'dot unknown');
+        }}
+    }}
+    updateHealth();
+    setInterval(updateHealth, 10000);
+    </script>
 
     <script>
     async function updateEvolveStatus() {{

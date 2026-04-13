@@ -42,8 +42,8 @@ EXPLORATION_TIMEOUT: int = 300
 # Timeout for pytest in Phase 3 (10 minutes)
 PYTEST_TIMEOUT: int = 600
 
-# Timeout for baseline pytest run on main (2 minutes)
-BASELINE_TIMEOUT: int = 120
+# Timeout for baseline pytest run on main (same as full suite)
+BASELINE_TIMEOUT: int = 600
 
 # Max retries when tests/validation fail — Claude gets to fix its own bugs
 MAX_FIX_RETRIES: int = 2
