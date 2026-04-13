@@ -42,6 +42,9 @@ EXPLORATION_TIMEOUT: int = 300
 # Timeout for pytest in Phase 3 (10 minutes)
 PYTEST_TIMEOUT: int = 600
 
+# Timeout for baseline pytest run on main (2 minutes)
+BASELINE_TIMEOUT: int = 120
+
 # Max retries when tests/validation fail — Claude gets to fix its own bugs
 MAX_FIX_RETRIES: int = 2
 
@@ -106,6 +109,7 @@ class ExecutionState:
     log_lines: list[str] = field(default_factory=list)
     thread: threading.Thread | None = None
     cancelled: bool = False
+    baseline_failures: set[str] = field(default_factory=set)
 
     @property
     def elapsed(self) -> float:
@@ -204,6 +208,28 @@ def _snapshot_system_load() -> str:
         )
     except Exception as e:
         return f"(load snapshot failed: {e})"
+
+
+def _parse_pytest_failures(output: str) -> set[str]:
+    """Parse pytest output for FAILED test node IDs.
+
+    Looks for lines like:
+        FAILED tests/unit/test_core.py::test_something - AssertionError: ...
+        FAILED tests/unit/test_foo.py::TestBar::test_baz
+
+    Returns:
+        Set of test node IDs (e.g. "tests/unit/test_foo.py::TestBar::test_baz")
+    """
+    failures: set[str] = set()
+    for line in output.split("\n"):
+        line = line.strip()
+        if line.startswith("FAILED "):
+            # Format: "FAILED test_id" or "FAILED test_id - error description"
+            rest = line[7:]  # Remove "FAILED "
+            test_id = rest.split(" - ")[0].strip()
+            if test_id:
+                failures.add(test_id)
+    return failures
 
 
 def _find_claude_binary() -> Path | None:
@@ -824,7 +850,38 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
 
         try:
-            # --- Phase 0: Create branch (deterministic, no LLM needed) ---
+            # --- Phase 0a: Baseline pytest on main ---
+            state.log_lines.append("--- Baseline: pytest on main ---")
+            try:
+                baseline_result = subprocess.run(
+                    [sys.executable, "-m", "pytest", "--tb=no", "-q"],
+                    capture_output=True, text=True,
+                    timeout=BASELINE_TIMEOUT,
+                    cwd=local_agent_dir,
+                )
+                state.baseline_failures = _parse_pytest_failures(
+                    baseline_result.stdout
+                )
+                if state.baseline_failures:
+                    state.log_lines.append(
+                        f"Baseline: {len(state.baseline_failures)} "
+                        f"pre-existing failure(s):"
+                    )
+                    for f in sorted(state.baseline_failures):
+                        state.log_lines.append(f"  - {f}")
+                else:
+                    state.log_lines.append("Baseline: all tests passing on main")
+            except subprocess.TimeoutExpired:
+                state.log_lines.append(
+                    f"Baseline pytest timed out ({BASELINE_TIMEOUT}s) "
+                    f"— skipping baseline"
+                )
+            except Exception as e:
+                state.log_lines.append(
+                    f"Baseline pytest error: {e} — skipping baseline"
+                )
+
+            # --- Phase 0b: Create branch (deterministic, no LLM needed) ---
             short_name = idea.id.replace("idea-", "")
             branch_result = subprocess.run(
                 [sys.executable, "safe_update.py", short_name],
@@ -1085,6 +1142,26 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                     if test_result.returncode == 0:
                         break  # All good — proceed to deploy
+
+                    # Diff against baseline — only count NEW failures
+                    new_failures = _parse_pytest_failures(
+                        test_result.stdout
+                    )
+                    delta = new_failures - state.baseline_failures
+                    if not delta:
+                        baseline_ct = len(new_failures)
+                        state.log_lines.append(
+                            f"All {baseline_ct} failure(s) are pre-existing "
+                            f"(in baseline) — treating as pass"
+                        )
+                        break  # Only pre-existing failures — deploy
+
+                    state.log_lines.append(
+                        f"New failures ({len(delta)} of "
+                        f"{len(new_failures)} total):"
+                    )
+                    for f in sorted(delta):
+                        state.log_lines.append(f"  - {f}")
 
                     # Extract failure details for Claude
                     failure_output = (

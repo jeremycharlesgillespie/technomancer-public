@@ -5,5 +5,7 @@ local-agent/profiling/
 profiling/
 data/
 sent_articles.json
+sent_topics.json
+service_state.json
 .publish_blocklist
 .claude_bridge_prompt.txt
