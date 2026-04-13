@@ -57,6 +57,7 @@ all = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
+    "pytest-xdist>=3.5.0",
     "black",
     "ruff",
     "mypy>=1.15.0",

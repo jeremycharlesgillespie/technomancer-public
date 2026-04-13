@@ -210,6 +210,53 @@ def _snapshot_system_load() -> str:
         return f"(load snapshot failed: {e})"
 
 
+def _find_related_tests(project_root: str | Path) -> list[str]:
+    """Find test files related to changed source files on the current branch.
+
+    Compares HEAD against main to get changed .py files, then maps each
+    to its corresponding test file(s) using naming convention:
+        agent/foo.py -> tests/unit/test_foo.py, tests/unit/test_foo_extended.py
+        idea_board/bar.py -> tests/unit/test_bar.py
+
+    Returns:
+        List of existing test file paths (relative to local-agent/)
+    """
+    local_agent = Path(project_root) / "local-agent"
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", "main...HEAD"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(project_root),
+        )
+        changed = [
+            f for f in diff.stdout.strip().split("\n")
+            if f.startswith("local-agent/") and f.endswith(".py")
+        ]
+    except Exception:
+        return []
+
+    test_files: list[str] = []
+    for filepath in changed:
+        # Strip prefix: local-agent/agent/foo.py -> agent/foo.py
+        rel = filepath.replace("local-agent/", "", 1)
+        parts = Path(rel)
+        module_name = parts.stem  # foo
+
+        # Look for test_foo.py and test_foo_extended.py
+        for pattern in [f"test_{module_name}.py", f"test_{module_name}_extended.py"]:
+            test_path = local_agent / "tests" / "unit" / pattern
+            if test_path.exists():
+                test_files.append(str(test_path.relative_to(local_agent)))
+
+        # If the changed file IS a test file, include it directly
+        if "tests/" in rel and rel.endswith(".py"):
+            full = local_agent / rel
+            if full.exists() and str(full.relative_to(local_agent)) not in test_files:
+                test_files.append(str(full.relative_to(local_agent)))
+
+    return sorted(set(test_files))
+
+
 def _parse_pytest_failures(output: str) -> set[str]:
     """Parse pytest output for FAILED test node IDs.
 
@@ -854,7 +901,8 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.log_lines.append("--- Baseline: pytest on main ---")
             try:
                 baseline_result = subprocess.run(
-                    [sys.executable, "-m", "pytest", "--tb=no", "-q"],
+                    [sys.executable, "-m", "pytest", "--tb=no", "-q",
+                     "-n", "auto"],
                     capture_output=True, text=True,
                     timeout=BASELINE_TIMEOUT,
                     cwd=local_agent_dir,
@@ -1075,8 +1123,18 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             )
             _notify_discord(f"[{idea_id}] Code complete. Running validation...")
 
-            # --- Phase 2.5 + 3: Validate, test, retry loop ---
-            # If validation or tests fail, give Claude a chance to fix.
+            # --- Phase 2.5: Validate + targeted test retry loop ---
+            # Fast feedback: validate + run only tests related to changed files.
+            # If failures, give Claude a chance to fix. Full suite runs once at the end.
+            related_tests = _find_related_tests(project_root)
+            if related_tests:
+                state.log_lines.append(
+                    f"Related tests: {len(related_tests)} file(s) — "
+                    + ", ".join(Path(t).name for t in related_tests)
+                )
+            else:
+                state.log_lines.append("No related test files found — will run full suite only")
+
             for attempt in range(1, MAX_FIX_RETRIES + 2):  # +2: 1 initial + N retries
                 failure_output = ""
 
@@ -1106,68 +1164,58 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 else:
                     state.log_lines.append("Validation passed")
 
-                    # Run pytest
-                    state.log_lines.append(
-                        f"--- Tests (attempt {attempt}) ---"
-                    )
-                    state.log_lines.append("Running pytest...")
-                    _notify_discord(f"[{idea_id}] Running tests (attempt {attempt})...")
-
-                    load_before = _snapshot_system_load()
-                    state.log_lines.append(f"Pre-test: {load_before}")
-                    test_start = time.time()
-
-                    test_result = subprocess.run(
-                        [sys.executable, "-m", "pytest", "-q", "--tb=short"],
-                        capture_output=True, text=True,
-                        timeout=PYTEST_TIMEOUT,
-                        cwd=local_agent_dir,
-                    )
-
-                    test_duration = time.time() - test_start
-                    load_after = _snapshot_system_load()
-                    state.log_lines.append(
-                        f"Post-test: {load_after} | "
-                        f"duration={test_duration:.0f}s"
-                    )
-
-                    test_summary = [
-                        ln.strip()
-                        for ln in test_result.stdout.split("\n")
-                        if "passed" in ln or "failed" in ln
-                        or "error" in ln.lower()
-                    ]
-                    for line in test_summary:
-                        state.log_lines.append(line)
-
-                    if test_result.returncode == 0:
-                        break  # All good — proceed to deploy
-
-                    # Diff against baseline — only count NEW failures
-                    new_failures = _parse_pytest_failures(
-                        test_result.stdout
-                    )
-                    delta = new_failures - state.baseline_failures
-                    if not delta:
-                        baseline_ct = len(new_failures)
+                    # Run targeted tests (fast feedback)
+                    if related_tests:
                         state.log_lines.append(
-                            f"All {baseline_ct} failure(s) are pre-existing "
-                            f"(in baseline) — treating as pass"
+                            f"--- Targeted tests (attempt {attempt}) ---"
                         )
-                        break  # Only pre-existing failures — deploy
+                        _notify_discord(
+                            f"[{idea_id}] Running {len(related_tests)} "
+                            f"related test file(s) (attempt {attempt})..."
+                        )
+                        test_start = time.time()
+                        test_result = subprocess.run(
+                            [sys.executable, "-m", "pytest", "-q",
+                             "--tb=short"] + related_tests,
+                            capture_output=True, text=True, timeout=120,
+                            cwd=local_agent_dir,
+                        )
+                        test_duration = time.time() - test_start
+                        test_summary = [
+                            ln.strip()
+                            for ln in test_result.stdout.split("\n")
+                            if "passed" in ln or "failed" in ln
+                            or "error" in ln.lower()
+                        ]
+                        for line in test_summary:
+                            state.log_lines.append(line)
+                        state.log_lines.append(
+                            f"Targeted tests: {test_duration:.0f}s"
+                        )
 
-                    state.log_lines.append(
-                        f"New failures ({len(delta)} of "
-                        f"{len(new_failures)} total):"
-                    )
-                    for f in sorted(delta):
-                        state.log_lines.append(f"  - {f}")
-
-                    # Extract failure details for Claude
-                    failure_output = (
-                        "TESTS FAILED:\n"
-                        + test_result.stdout[-3000:]
-                    )
+                        if test_result.returncode != 0:
+                            # Check baseline diff
+                            new_failures = _parse_pytest_failures(
+                                test_result.stdout
+                            )
+                            delta = new_failures - state.baseline_failures
+                            if not delta:
+                                state.log_lines.append(
+                                    "All failure(s) are pre-existing — OK"
+                                )
+                            else:
+                                state.log_lines.append(
+                                    f"New failures: {len(delta)}"
+                                )
+                                for f in sorted(delta):
+                                    state.log_lines.append(f"  - {f}")
+                                failure_output = (
+                                    "TESTS FAILED:\n"
+                                    + test_result.stdout[-3000:]
+                                )
+                    # If no related tests or targeted tests passed, continue
+                    if not failure_output:
+                        break  # Targeted tests OK — proceed to full suite
 
                 # If we have a failure and retries remain, launch Claude to fix
                 if failure_output and attempt <= MAX_FIX_RETRIES:
@@ -1280,13 +1328,65 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     )
                     return
 
+            # --- Full test suite (final gate before deploy) ---
+            state.log_lines.append("")
+            state.log_lines.append("--- Full test suite (parallel) ---")
+            _notify_discord(f"[{idea_id}] Running full test suite...")
+            load_before = _snapshot_system_load()
+            state.log_lines.append(f"Pre-test: {load_before}")
+            full_start = time.time()
+
+            full_result = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", "--tb=short",
+                 "-n", "auto"],
+                capture_output=True, text=True,
+                timeout=PYTEST_TIMEOUT,
+                cwd=local_agent_dir,
+            )
+
+            full_duration = time.time() - full_start
+            load_after = _snapshot_system_load()
+            full_summary = [
+                ln.strip()
+                for ln in full_result.stdout.split("\n")
+                if "passed" in ln or "failed" in ln or "error" in ln.lower()
+            ]
+            for line in full_summary:
+                state.log_lines.append(line)
+            state.log_lines.append(
+                f"Full suite: {full_duration:.0f}s | {load_after}"
+            )
+
+            if full_result.returncode != 0:
+                # Check baseline diff
+                full_failures = _parse_pytest_failures(full_result.stdout)
+                delta = full_failures - state.baseline_failures
+                if delta:
+                    state.log_lines.append(
+                        f"Full suite: {len(delta)} new failure(s):"
+                    )
+                    for f in sorted(delta):
+                        state.log_lines.append(f"  - {f}")
+                    state.log_lines.append(
+                        "Full suite FAILED — aborting deploy"
+                    )
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(
+                        f"Idea {idea_id} full suite failed: {idea.title}"
+                    )
+                    return
+                else:
+                    state.log_lines.append(
+                        f"All {len(full_failures)} failure(s) are "
+                        f"pre-existing — proceeding to deploy"
+                    )
+
             # --- Phase 3: Deploy (merge + push) ---
             state.log_lines.append("")
             state.log_lines.append("--- Phase 3: Deploy ---")
 
             try:
-
-                # Step 3b: Merge to main
+                # Merge to main
                 state.log_lines.append("Merging to main...")
                 project_root = str(Path(__file__).parent.parent.parent)
                 branch = subprocess.run(

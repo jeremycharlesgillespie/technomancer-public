@@ -1,13 +1,15 @@
-"""Tests for idea_board.executor — pytest baseline and failure diffing."""
+"""Tests for idea_board.executor — pytest baseline, failure diffing, and test targeting."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
-from dataclasses import fields
 
 import pytest
 
 from idea_board.executor import (
     BASELINE_TIMEOUT,
+    PYTEST_TIMEOUT,
     ExecutionState,
+    _find_related_tests,
     _parse_pytest_failures,
 )
 
@@ -167,10 +169,100 @@ class TestExecutionState:
 
 
 class TestConstants:
-    """Verify baseline timeout constant exists and is reasonable."""
+    """Verify timeout constants exist and are reasonable."""
 
     def test_baseline_timeout_exists(self):
         assert BASELINE_TIMEOUT == 120
 
     def test_baseline_timeout_is_int(self):
         assert isinstance(BASELINE_TIMEOUT, int)
+
+    def test_pytest_timeout_is_10_min(self):
+        assert PYTEST_TIMEOUT == 600
+
+
+# ---------------------------------------------------------------------------
+# _find_related_tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindRelatedTests:
+    """Test mapping changed source files to their test files."""
+
+    def test_finds_matching_test_file(self, tmp_path):
+        """agent/core.py -> tests/unit/test_core.py"""
+        la = tmp_path / "local-agent"
+        (la / "agent").mkdir(parents=True)
+        (la / "tests" / "unit").mkdir(parents=True)
+        (la / "agent" / "core.py").write_text("x")
+        test_file = la / "tests" / "unit" / "test_core.py"
+        test_file.write_text("x")
+
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="local-agent/agent/core.py\n"
+            )
+            result = _find_related_tests(tmp_path)
+
+        # Normalize separators for cross-platform
+        normalized = [r.replace("\\", "/") for r in result]
+        assert "tests/unit/test_core.py" in normalized
+
+    def test_finds_extended_test_file(self, tmp_path):
+        """agent/foo.py -> tests/unit/test_foo_extended.py"""
+        la = tmp_path / "local-agent"
+        (la / "agent").mkdir(parents=True)
+        (la / "tests" / "unit").mkdir(parents=True)
+        (la / "agent" / "foo.py").write_text("x")
+        ext_file = la / "tests" / "unit" / "test_foo_extended.py"
+        ext_file.write_text("x")
+
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="local-agent/agent/foo.py\n"
+            )
+            result = _find_related_tests(tmp_path)
+
+        normalized = [r.replace("\\", "/") for r in result]
+        assert "tests/unit/test_foo_extended.py" in normalized
+
+    def test_no_matching_test(self, tmp_path):
+        """Changed file with no corresponding test returns empty."""
+        la = tmp_path / "local-agent"
+        (la / "agent").mkdir(parents=True)
+        (la / "tests" / "unit").mkdir(parents=True)
+
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="local-agent/agent/obscure.py\n"
+            )
+            result = _find_related_tests(tmp_path)
+
+        assert result == []
+
+    def test_no_changes(self, tmp_path):
+        la = tmp_path / "local-agent"
+        (la / "tests" / "unit").mkdir(parents=True)
+
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="")
+            result = _find_related_tests(tmp_path)
+
+        assert result == []
+
+    def test_deduplicates(self, tmp_path):
+        """Same test file not listed twice."""
+        la = tmp_path / "local-agent"
+        (la / "agent").mkdir(parents=True)
+        (la / "tests" / "unit").mkdir(parents=True)
+        (la / "agent" / "core.py").write_text("x")
+        (la / "tests" / "unit" / "test_core.py").write_text("x")
+
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            # Same module appears twice in diff (shouldn't happen, but be safe)
+            mock_run.return_value = MagicMock(
+                stdout="local-agent/agent/core.py\nlocal-agent/agent/core.py\n"
+            )
+            result = _find_related_tests(tmp_path)
+
+        assert len(result) == 1
