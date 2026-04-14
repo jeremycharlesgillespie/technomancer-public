@@ -1306,6 +1306,116 @@ def api_execute(idea_id: str) -> tuple:
     return jsonify({"status": "executing", "idea_id": idea_id, "pid": state.pid})
 
 
+@app.route("/execute/<idea_id>")
+def execute_page(idea_id: str):
+    """GET /execute/<id> — clickable execute page (linked from Jira).
+
+    Shows idea details and a one-tap Execute button. After execution
+    starts, redirects to the live log stream.
+    """
+    idea = get_idea(idea_id)
+    title = idea.title if idea else idea_id
+    state = idea.state if idea else "unknown"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Execute {idea_id}</title>
+    <style>
+        body {{ font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 2rem; }}
+        .card {{ max-width: 600px; margin: 2rem auto; background: #16213e; border-radius: 12px; padding: 2rem; border-left: 4px solid #0f3460; }}
+        h1 {{ color: #e94560; font-size: 1.4rem; margin-top: 0; }}
+        .idea-id {{ color: #0f3460; font-size: 0.9rem; }}
+        .state {{ display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.85rem; background: #0f3460; color: #e0e0e0; }}
+        .state.done {{ background: #1b5e20; }}
+        .state.executing {{ background: #e65100; }}
+        .state.failed {{ background: #b71c1c; }}
+        button {{ background: #e94560; color: white; border: none; padding: 14px 32px; border-radius: 8px; font-size: 1.1rem; cursor: pointer; width: 100%; margin-top: 1.5rem; }}
+        button:hover {{ background: #c81d45; }}
+        button:disabled {{ background: #555; cursor: not-allowed; }}
+        .log {{ margin-top: 1.5rem; background: #0a0a1a; border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem; max-height: 400px; overflow-y: auto; display: none; }}
+        .log-line {{ margin: 2px 0; }}
+        .status {{ margin-top: 1rem; font-size: 0.9rem; color: #aaa; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <span class="idea-id">{idea_id}</span>
+        <span class="state {state}">{state}</span>
+        <h1>{title}</h1>
+        <button id="exec-btn" onclick="doExecute()">Execute with Claude Code</button>
+        <div class="status" id="status"></div>
+        <div class="log" id="log"></div>
+    </div>
+    <script>
+    async function doExecute() {{
+        const btn = document.getElementById('exec-btn');
+        const status = document.getElementById('status');
+        const log = document.getElementById('log');
+        btn.disabled = true;
+        btn.textContent = 'Starting...';
+        status.textContent = 'Triggering executor...';
+
+        try {{
+            const resp = await fetch('/api/ideas/{idea_id}/execute', {{method: 'POST'}});
+            const data = await resp.json();
+            if (resp.ok) {{
+                btn.textContent = 'Running...';
+                btn.style.background = '#e65100';
+                status.textContent = 'Execution started. Streaming log...';
+                log.style.display = 'block';
+                streamLog();
+            }} else {{
+                btn.textContent = 'Failed';
+                btn.style.background = '#b71c1c';
+                status.textContent = data.error || 'Execution failed to start';
+            }}
+        }} catch(e) {{
+            btn.textContent = 'Error';
+            status.textContent = e.message;
+        }}
+    }}
+
+    function streamLog() {{
+        const log = document.getElementById('log');
+        const status = document.getElementById('status');
+        const btn = document.getElementById('exec-btn');
+        const es = new EventSource('/api/ideas/{idea_id}/log/stream');
+
+        es.addEventListener('log', function(e) {{
+            const div = document.createElement('div');
+            div.className = 'log-line';
+            div.textContent = e.data;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
+        }});
+
+        es.addEventListener('state', function(e) {{
+            const state = e.data;
+            status.textContent = 'Status: ' + state;
+            if (state === 'done') {{
+                btn.textContent = 'Done';
+                btn.style.background = '#1b5e20';
+                es.close();
+            }} else if (state === 'failed') {{
+                btn.textContent = 'Failed';
+                btn.style.background = '#b71c1c';
+                es.close();
+            }}
+        }});
+
+        es.onerror = function() {{
+            es.close();
+            status.textContent = 'Log stream ended';
+        }};
+    }}
+    </script>
+</body>
+</html>"""
+
+
 @app.route("/api/ideas/<idea_id>/cancel", methods=["POST"])
 def api_cancel(idea_id: str) -> tuple:
     """POST /api/ideas/<id>/cancel — cancel a running execution."""

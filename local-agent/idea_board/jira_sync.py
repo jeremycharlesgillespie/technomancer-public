@@ -170,6 +170,10 @@ def _add_execute_comment(jira_key: str, idea_id: str) -> None:
     hub_host = getattr(settings, "server_host", "localhost")
     hub_port = 8322
 
+    execute_url = f"http://{hub_host}:{hub_port}/execute/{idea_id}"
+    view_url = f"http://{hub_host}:{hub_port}/ideas#{idea_id}"
+    log_url = f"http://{hub_host}:{hub_port}/api/ideas/{idea_id}/log/stream"
+
     comment_adf = {
         "type": "doc",
         "version": 1,
@@ -177,7 +181,7 @@ def _add_execute_comment(jira_key: str, idea_id: str) -> None:
             {
                 "type": "paragraph",
                 "content": [
-                    {"type": "text", "text": "Technomancer Executor Links", "marks": [{"type": "strong"}]},
+                    {"type": "text", "text": "Technomancer", "marks": [{"type": "strong"}]},
                 ],
             },
             {
@@ -186,25 +190,23 @@ def _add_execute_comment(jira_key: str, idea_id: str) -> None:
                     {
                         "type": "listItem",
                         "content": [{"type": "paragraph", "content": [
-                            {"type": "text", "text": "Execute: "},
-                            {"type": "text", "text": f"POST http://{hub_host}:{hub_port}/api/ideas/{idea_id}/execute",
-                             "marks": [{"type": "code"}]},
+                            {"type": "text", "text": "Execute",
+                             "marks": [{"type": "link", "attrs": {"href": execute_url}}]},
+                            {"type": "text", "text": " — click to run Claude Code on this idea"},
                         ]}],
                     },
                     {
                         "type": "listItem",
                         "content": [{"type": "paragraph", "content": [
-                            {"type": "text", "text": "View: "},
-                            {"type": "text", "text": f"http://{hub_host}:{hub_port}/ideas#{idea_id}",
-                             "marks": [{"type": "link", "attrs": {"href": f"http://{hub_host}:{hub_port}/ideas#{idea_id}"}}]},
+                            {"type": "text", "text": "View on Idea Board",
+                             "marks": [{"type": "link", "attrs": {"href": view_url}}]},
                         ]}],
                     },
                     {
                         "type": "listItem",
                         "content": [{"type": "paragraph", "content": [
-                            {"type": "text", "text": "Stream log: "},
-                            {"type": "text", "text": f"http://{hub_host}:{hub_port}/api/ideas/{idea_id}/log/stream",
-                             "marks": [{"type": "code"}]},
+                            {"type": "text", "text": "Live Log Stream",
+                             "marks": [{"type": "link", "attrs": {"href": log_url}}]},
                         ]}],
                     },
                 ],
