@@ -43,6 +43,7 @@ def strip_thinking_tags(text: str) -> str:
 TOOL_RESULT_THRESHOLDS: dict[str, int] = {
     "web_fetch": 2000,
     "web_search": 3000,
+    "web_search_smart": 3500,
     "web_search_news": 3000,
     "read_file": 4000,
     "run_command": 3000,
