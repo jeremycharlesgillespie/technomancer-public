@@ -318,6 +318,19 @@ def patched_knowledge_gaps(temp_vault, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _block_jira_sync(monkeypatch):
+    """Prevent Jira sync from firing during tests.
+
+    Without this, any test that calls add_idea(), mark_done(), etc.
+    would trigger real Jira API calls via _jira_sync_background().
+    """
+    monkeypatch.setattr(
+        "idea_board.models._jira_sync_background",
+        lambda idea: None,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_embedding_store(tmp_path, monkeypatch):
     """Point embedding_store at a temporary SQLite DB for each test."""
     import agent.embedding_store as es_module

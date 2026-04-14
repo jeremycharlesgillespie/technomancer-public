@@ -634,6 +634,7 @@ def _build_workflow_section(idea: Any) -> str:
         "Do NOT run `validate.py` — the executor runs it after you finish.\n"
         "Do NOT run `pytest` — the executor runs it after you finish.\n"
         "Do NOT try to deploy, merge, or restart anything.\n"
+        "Do NOT call add_idea() or create ideas in production code — only in tests.\n"
         "\nJust write code, write tests, and commit. The executor handles the rest.\n"
         "\n## TESTING RULES\n"
         "Tests use `@patch('agent.module_name.thing')` to mock dependencies.\n"
