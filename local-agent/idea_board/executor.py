@@ -892,6 +892,109 @@ def _build_epic_prompt(idea: Any) -> str:
     return "\n".join(s for s in sections if s)
 
 
+def _build_diagnostic_fix_prompt(
+    idea: Any,
+    idea_id: str,
+    failure_output: str,
+    failed_tests: set[str],
+    codebase_context: str,
+    project_root: Path,
+) -> str:
+    """Build a diagnostic fix prompt that mimics how a human debugs.
+
+    Instead of "here's the error, fix it", this gives Claude:
+    1. Full content of failing test files
+    2. Full content of the production code files being tested
+    3. The complete error output
+    4. System environment info (Python version, OS)
+    5. Known pitfalls from previous failures
+    6. Instruction to DIAGNOSE first, then fix
+    """
+    local_agent = project_root / "local-agent"
+    sections = []
+
+    # 1. System environment
+    sections.append(
+        f"## Environment\n"
+        f"- Python: {sys.version.split()[0]}\n"
+        f"- OS: Windows 11 (win32)\n"
+        f"- Test runner: pytest with xdist (parallel) + rerunfailures\n"
+    )
+
+    # 2. The error output
+    sections.append(
+        f"## Test Failures\n```\n{failure_output}\n```\n"
+    )
+
+    # 3. Read the actual failing test files and their corresponding source files
+    files_read = set()
+    for test_id in sorted(failed_tests):
+        # test_id format: tests/unit/test_foo.py::TestClass::test_method
+        # or: tests\unit\test_foo.py::TestClass::test_method (Windows)
+        test_path_str = test_id.split("::")[0].replace("\\", "/")
+        test_file = local_agent / test_path_str
+
+        if test_file.exists() and str(test_file) not in files_read:
+            files_read.add(str(test_file))
+            try:
+                content = test_file.read_text(encoding="utf-8")
+                sections.append(
+                    f"## Failing test file: {test_path_str}\n"
+                    f"```python\n{content}\n```\n"
+                )
+            except Exception:
+                pass
+
+            # Find the corresponding source file
+            test_name = test_file.stem  # test_foo
+            source_name = test_name.replace("test_", "", 1) + ".py"
+            for search_dir in [local_agent / "agent", local_agent / "idea_board"]:
+                source_file = search_dir / source_name
+                if source_file.exists() and str(source_file) not in files_read:
+                    files_read.add(str(source_file))
+                    try:
+                        content = source_file.read_text(encoding="utf-8")
+                        # Cap at 5000 chars to avoid prompt bloat
+                        if len(content) > 5000:
+                            content = content[:5000] + "\n... (truncated)"
+                        sections.append(
+                            f"## Source file: {source_file.relative_to(local_agent)}\n"
+                            f"```python\n{content}\n```\n"
+                        )
+                    except Exception:
+                        pass
+
+    # 4. Known pitfalls
+    sections.append(
+        "## KNOWN PITFALLS IN THIS CODEBASE\n"
+        "These are real bugs from previous executor runs. Check each:\n\n"
+        "1. **Mock patch targets must be module-level imports.** "
+        "patch('agent.module.thing') fails if 'thing' is imported inside a function.\n"
+        "2. **Flask content_type includes '; charset=utf-8'.** Use 'in' not '=='.\n"
+        "3. **aiohttp mocks need async context managers.** "
+        "Wrap with __aenter__/__aexit__.\n"
+        "4. **Windows paths use backslashes.** Normalize in assertions.\n"
+        "5. **Mutable list aliasing.** Pass list(x) not x if the list grows.\n"
+        "6. **StopIteration in async (Python 3.14).** Becomes RuntimeError. "
+        "Use KeyboardInterrupt to break async loops in tests.\n"
+    )
+
+    # 5. Diagnostic instruction
+    sections.append(
+        "## YOUR TASK\n\n"
+        "**Step 1: Diagnose.** Read the error, the test code, and the source code. "
+        "Identify the ROOT CAUSE — not just what failed, but WHY.\n\n"
+        "**Step 2: Fix.** Make the minimum change to fix the root cause. "
+        "This might be in the test (wrong assertion, bad mock) or in the "
+        "production code (wrong behavior, missing import).\n\n"
+        "**Step 3: Commit.** `git add <files>` && "
+        f"`git commit -m '[{idea_id}] Fix: <one-line description of root cause>'`\n\n"
+        "Do NOT run safe_update.py, validate.py, or pytest. Just fix and commit.\n"
+    )
+
+    return "\n".join(sections)
+
+
 def _build_codebase_context(idea: Any, project_root: Path) -> str:
     """Build codebase context with code, not an LLM.
 
@@ -1353,6 +1456,7 @@ def execute_idea(
 
             for attempt in range(1, MAX_FIX_RETRIES + 2):  # +2: 1 initial + N retries
                 failure_output = ""
+                delta: set[str] = set()
 
                 # Validate
                 state.log("")
@@ -1443,33 +1547,9 @@ def execute_idea(
                         f"Retry {attempt}/{MAX_FIX_RETRIES}..."
                     )
 
-                    fix_prompt = (
-                        f"## Codebase Context\n\n{codebase_context}\n\n---\n\n"
-                        f"The code you wrote for '{idea.title}' has failures.\n\n"
-                        f"```\n{failure_output}\n```\n\n"
-                        f"## COMMON CAUSES (check these first)\n"
-                        f"1. **Mock patch target doesn't exist at module level.** "
-                        f"If a test patches `agent.module.thing` but `thing` is "
-                        f"imported inside a function, move the import to the top "
-                        f"of the file.\n"
-                        f"2. **Flask content_type includes charset.** Use "
-                        f"`'text/html' in resp.content_type` not `==`.\n"
-                        f"3. **aiohttp mocks need async context managers.** "
-                        f"`async with session.get()` needs `__aenter__`/`__aexit__` "
-                        f"on the mock.\n"
-                        f"4. **Windows paths use backslashes.** Normalize with "
-                        f"`.replace('\\\\', '/')` in assertions.\n"
-                        f"5. **Mutable list aliasing.** If passing a list that "
-                        f"grows over time, pass `list(my_list)` (a copy) not "
-                        f"the reference.\n"
-                        f"6. **StopIteration in async.** Python 3.14 converts "
-                        f"StopIteration raised inside a coroutine to RuntimeError. "
-                        f"Use KeyboardInterrupt or a custom exception to break "
-                        f"async loops in tests.\n\n"
-                        f"Fix the failing tests or code. Then `git add` and "
-                        f"`git commit -m '[{idea_id}] Fix test failures'`.\n\n"
-                        f"Do NOT run safe_update.py, validate.py, or pytest. "
-                        f"Just fix the code and commit."
+                    fix_prompt = _build_diagnostic_fix_prompt(
+                        idea, idea_id, failure_output, delta,
+                        codebase_context, project_root,
                     )
 
                     fix_file = Path(tempfile.mktemp(suffix=".txt", prefix="fix_"))
