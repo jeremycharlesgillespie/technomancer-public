@@ -1696,24 +1696,32 @@ def execute_idea(
                 except Exception as e:
                     state.log(f"README error (non-blocking): {e}")
 
-                # Step 3g: Publish to public repo (independent of README)
-                try:
-                    publish_script = Path(local_agent_dir) / "publish.py"
-                    if publish_script.exists():
-                        pub = subprocess.run(
-                            [sys.executable, str(publish_script),
-                             "--push", "--force"],
-                            capture_output=True, text=True, timeout=120,
-                            cwd=local_agent_dir,
-                        )
-                        if pub.returncode == 0:
-                            state.log("Published to technomancer-public")
-                        else:
-                            state.log(
-                                f"Publish failed: {(pub.stderr or pub.stdout)[:500]}"
+                # Step 3g: Publish to public repo (with retry)
+                publish_script = Path(local_agent_dir) / "publish.py"
+                if publish_script.exists():
+                    for pub_attempt in range(3):
+                        try:
+                            pub = subprocess.run(
+                                [sys.executable, str(publish_script),
+                                 "--push", "--force"],
+                                capture_output=True, text=True, timeout=120,
+                                cwd=local_agent_dir,
                             )
-                except Exception as e:
-                    state.log(f"Publish error (non-blocking): {e}")
+                            if pub.returncode == 0:
+                                state.log("Published to technomancer-public")
+                                break
+                            else:
+                                err = (pub.stderr or pub.stdout)[:500]
+                                state.log(
+                                    f"Publish attempt {pub_attempt + 1}/3 failed: {err}"
+                                )
+                        except Exception as e:
+                            state.log(
+                                f"Publish attempt {pub_attempt + 1}/3 error: {e}"
+                            )
+                        if pub_attempt < 2:
+                            state.log("Retrying publish in 30s...")
+                            time.sleep(30)
 
                 state.log(
                     f"Deploy complete ({state.elapsed:.0f}s total). "
