@@ -724,14 +724,59 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         await fetch(`/api/ideas/${{id}}/cancel`, {{method: 'POST'}});
     }}
 
+    function updateCardState(card, statusEl, ideaState) {{
+        const stateEl = card.querySelector('.badge-state');
+        const cancelBtn = card.querySelector('.btn-cancel');
+        if (ideaState === 'done') {{
+            if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
+            card.className = 'card done';
+            if (statusEl) {{ statusEl.textContent = 'Done'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--green)'; }}
+        }} else if (ideaState === 'failed') {{
+            if (stateEl) {{ stateEl.textContent = 'failed'; stateEl.className = 'badge badge-state failed'; }}
+            card.className = 'card failed';
+            if (statusEl) {{ statusEl.textContent = 'Failed'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--red)'; }}
+        }}
+        if (cancelBtn && (ideaState === 'done' || ideaState === 'failed')) cancelBtn.remove();
+    }}
+
+    function startLogPoll(id, card, initialLines) {{
+        const logEl = document.getElementById(`log-${{id}}`);
+        const statusEl = card.querySelector('.exec-status');
+        let allLines = initialLines || [];
+        if (statusEl) statusEl.textContent = 'Claude Code is working... (polling)';
+
+        const iv = setInterval(async () => {{
+            try {{
+                const resp = await fetch(`/api/ideas/${{id}}/log`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                allLines = data.lines || [];
+                if (logEl && allLines.length > 0) {{
+                    logEl.textContent = allLines.slice(-50).join('\\n');
+                    logEl.scrollTop = logEl.scrollHeight;
+                }}
+                if (statusEl && data.is_alive) {{
+                    statusEl.textContent = `Claude Code is working... (${{Math.round(data.elapsed)}}s)`;
+                }}
+                if (!data.is_alive || data.idea_state === 'done' || data.idea_state === 'failed') {{
+                    clearInterval(iv);
+                    updateCardState(card, statusEl, data.idea_state);
+                }}
+            }} catch (_) {{
+                // Network error during poll — keep trying
+            }}
+        }}, 3000);
+    }}
+
     function startLogStream(id, card) {{
         const logEl = document.getElementById(`log-${{id}}`);
         const statusEl = card.querySelector('.exec-status');
-        // Accumulate lines locally so we can cap display at 50
         let allLines = [];
+        let sseOpened = false;
         const src = new EventSource(`/api/ideas/${{id}}/log/stream`);
 
         src.addEventListener('log', (e) => {{
+            sseOpened = true;
             const data = JSON.parse(e.data);
             allLines = allLines.concat(data.lines);
             if (logEl && allLines.length > 0) {{
@@ -741,6 +786,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         }});
 
         src.addEventListener('state', (e) => {{
+            sseOpened = true;
             const data = JSON.parse(e.data);
             if (statusEl && data.is_alive) {{
                 statusEl.textContent = `Claude Code is working... (${{Math.round(data.elapsed)}}s)`;
@@ -750,21 +796,20 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         src.addEventListener('done', (e) => {{
             src.close();
             const data = JSON.parse(e.data);
-            const stateEl = card.querySelector('.badge-state');
-            const cancelBtn = card.querySelector('.btn-cancel');
-            if (data.idea_state === 'done') {{
-                if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
-                card.className = 'card done';
-                if (statusEl) {{ statusEl.textContent = 'Done'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--green)'; }}
-            }} else if (data.idea_state === 'failed') {{
-                if (stateEl) {{ stateEl.textContent = 'failed'; stateEl.className = 'badge badge-state failed'; }}
-                card.className = 'card failed';
-                if (statusEl) {{ statusEl.textContent = 'Failed'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--red)'; }}
-            }}
-            if (cancelBtn) cancelBtn.remove();
+            updateCardState(card, statusEl, data.idea_state);
         }});
 
-        src.onerror = () => {{ src.close(); }};
+        src.onerror = () => {{
+            src.close();
+            // SSE failed — fall back to polling
+            if (!sseOpened) {{
+                // Never connected successfully — start polling from scratch
+                startLogPoll(id, card, []);
+            }} else {{
+                // Had partial data — continue from where SSE left off
+                startLogPoll(id, card, allLines);
+            }}
+        }};
     }}
 
     // Auto-start log streaming for any cards already in executing state
@@ -1279,6 +1324,8 @@ def api_log(idea_id: str) -> tuple:
     process. Poll this every few seconds for live updates.
     """
     state = get_execution(idea_id)
+    idea = get_idea(idea_id)
+    idea_state = idea.state if idea else "unknown"
     if state:
         return jsonify({
             "idea_id": idea_id,
@@ -1287,10 +1334,10 @@ def api_log(idea_id: str) -> tuple:
             "is_alive": state.is_alive,
             "lines": state.log_lines,
             "line_count": len(state.log_lines),
+            "idea_state": idea_state,
         })
 
     # Not actively executing — return stored log from idea
-    idea = get_idea(idea_id)
     if idea and idea.execution_log:
         return jsonify({
             "idea_id": idea_id,
@@ -1299,9 +1346,15 @@ def api_log(idea_id: str) -> tuple:
             "is_alive": False,
             "lines": idea.execution_log.split("\n"),
             "line_count": len(idea.execution_log.split("\n")),
+            "idea_state": idea_state,
         })
 
-    return jsonify({"idea_id": idea_id, "lines": [], "line_count": 0})
+    return jsonify({
+        "idea_id": idea_id,
+        "lines": [],
+        "line_count": 0,
+        "idea_state": idea_state,
+    })
 
 
 @app.route("/api/ideas/<idea_id>/log/stream")

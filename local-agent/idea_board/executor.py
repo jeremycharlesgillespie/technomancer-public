@@ -530,7 +530,8 @@ def _build_workflow_section(idea: Any) -> str:
         "1. Read CLAUDE.md for project conventions\n"
         "2. `cd local-agent`\n"
         "3. Make your code changes (with tests if adding new functionality)\n"
-        "4. `git add <files>` && `git commit -m 'description'`\n"
+        f"4. `git add <files>` && `git commit -m '[{idea.id}] description'`\n"
+        f"\n**Every commit message MUST start with `[{idea.id}]`.**\n"
         "\n**YOUR JOB IS DONE AFTER COMMITTING.**\n"
         "\nDo NOT run `safe_update.py` — it is blocked in this environment.\n"
         "Do NOT run `validate.py` — the executor runs it after you finish.\n"
@@ -678,7 +679,8 @@ def _build_epic_prompt(idea: Any) -> str:
         "For EACH story below:\n"
         "1. Read CLAUDE.md for project conventions\n"
         "2. Implement the story (code, tests)\n"
-        "3. `git add <files>` && `git commit -m 'description'`\n\n"
+        f"3. `git add <files>` && `git commit -m '[{idea.id}] description'`\n\n"
+        f"**Every commit message MUST start with `[{idea.id}]`.**\n\n"
         "**YOUR JOB IS DONE AFTER COMMITTING.**\n\n"
         "Do NOT run safe_update.py, validate.py, pytest, bot_service.py, or "
         "any deploy/merge/restart commands. They are blocked in this environment. "
@@ -1275,7 +1277,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         f"4. **Windows paths use backslashes.** Normalize with "
                         f"`.replace('\\\\', '/')` in assertions.\n\n"
                         f"Fix the failing tests or code. Then `git add` and "
-                        f"`git commit -m 'Fix test failures'`.\n\n"
+                        f"`git commit -m '[{idea_id}] Fix test failures'`.\n\n"
                         f"Do NOT run safe_update.py, validate.py, or pytest. "
                         f"Just fix the code and commit."
                     )
@@ -1444,7 +1446,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
                 merge_result = subprocess.run(
                     ["git", "merge", "--no-ff", branch,
-                     "-m", f"Merge branch '{branch}' - executor auto-deploy"],
+                     "-m", f"[{idea_id}] Merge branch '{branch}' - executor auto-deploy"],
                     capture_output=True, text=True, cwd=project_root,
                 )
                 if merge_result.returncode != 0:

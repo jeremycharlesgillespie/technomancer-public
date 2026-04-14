@@ -1,8 +1,9 @@
 """
-Tests for the SSE log stream endpoint in idea_board/web.py.
+Tests for SSE log streaming and polling fallback in idea_board/web.py.
 
-Validates that /api/ideas/<id>/log/stream returns proper Server-Sent Events
-for both live executions and stored (completed) logs.
+Validates that:
+- /api/ideas/<id>/log/stream returns proper Server-Sent Events
+- /api/ideas/<id>/log returns idea_state for polling fallback
 """
 
 import json
@@ -178,3 +179,71 @@ class TestLogStreamSSE:
 
         done_ev = [e for e in events if e["event"] == "done"][0]
         assert done_ev["data"]["idea_state"] == "failed"
+
+
+class TestLogPollingEndpoint:
+    """Tests for GET /api/ideas/<id>/log — polling fallback endpoint."""
+
+    def test_active_execution_includes_idea_state(self, client):
+        """Polling response includes idea_state when execution is active."""
+        state = FakeExecutionState(idea_id="idea-030")
+        state.log_lines = ["Working..."]
+
+        fake_idea = MagicMock()
+        fake_idea.state = "executing"
+
+        with patch("idea_board.web.get_execution", return_value=state), \
+             patch("idea_board.web.get_idea", return_value=fake_idea):
+            resp = client.get("/api/ideas/idea-030/log")
+            data = resp.get_json()
+            assert data["idea_state"] == "executing"
+            assert data["is_alive"] is True
+            assert data["lines"] == ["Working..."]
+
+    def test_stored_log_includes_idea_state(self, client):
+        """Polling response includes idea_state for completed ideas."""
+        fake_idea = MagicMock()
+        fake_idea.state = "done"
+        fake_idea.execution_log = "line1\nline2"
+
+        with patch("idea_board.web.get_execution", return_value=None), \
+             patch("idea_board.web.get_idea", return_value=fake_idea):
+            resp = client.get("/api/ideas/idea-031/log")
+            data = resp.get_json()
+            assert data["idea_state"] == "done"
+            assert data["is_alive"] is False
+            assert data["lines"] == ["line1", "line2"]
+
+    def test_failed_idea_state(self, client):
+        """Polling response shows failed state correctly."""
+        fake_idea = MagicMock()
+        fake_idea.state = "failed"
+        fake_idea.execution_log = "Error: boom"
+
+        with patch("idea_board.web.get_execution", return_value=None), \
+             patch("idea_board.web.get_idea", return_value=fake_idea):
+            resp = client.get("/api/ideas/idea-032/log")
+            data = resp.get_json()
+            assert data["idea_state"] == "failed"
+
+    def test_no_idea_returns_unknown_state(self, client):
+        """Polling response returns unknown state when idea doesn't exist."""
+        with patch("idea_board.web.get_execution", return_value=None), \
+             patch("idea_board.web.get_idea", return_value=None):
+            resp = client.get("/api/ideas/idea-999/log")
+            data = resp.get_json()
+            assert data["idea_state"] == "unknown"
+            assert data["lines"] == []
+
+    def test_no_execution_log_returns_empty(self, client):
+        """Polling response returns empty lines when idea has no log."""
+        fake_idea = MagicMock()
+        fake_idea.state = "proposed"
+        fake_idea.execution_log = None
+
+        with patch("idea_board.web.get_execution", return_value=None), \
+             patch("idea_board.web.get_idea", return_value=fake_idea):
+            resp = client.get("/api/ideas/idea-033/log")
+            data = resp.get_json()
+            assert data["idea_state"] == "proposed"
+            assert data["lines"] == []
