@@ -1410,7 +1410,15 @@ def execute_page(idea_id: str):
 
         es.onerror = function() {{
             es.close();
-            status.textContent = 'Log stream ended';
+            // If no log lines were received, the execution is stale (lost on restart)
+            if (log.children.length === 0) {{
+                status.textContent = 'Execution was interrupted (bot restarted). Click to re-execute.';
+                btn.textContent = 'Re-execute with Claude Code';
+                btn.style.background = '#D97706';
+                btn.disabled = false;
+            }} else {{
+                status.textContent = 'Log stream ended';
+            }}
         }};
     }}
 
