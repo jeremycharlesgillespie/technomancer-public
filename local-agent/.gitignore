@@ -1,4 +1,7 @@
 # Runtime state files (bot-generated, not source code)
+*.log
+*.pid
+*.db
 .auto_improve_report.json
 .bridge_token
 .evolve_status.json
@@ -10,9 +13,13 @@ sent_topics.json
 service_state.json
 downloaded_videos.json
 user_profile.json
+README.md
+
+# Idea board runtime data
+idea_board/ideas.json
+idea_board/complaints.json
+idea_board/execution_log.json
 
 # Data directories
-idea_board/ideas.json
 profiling/
 data/
-README.md

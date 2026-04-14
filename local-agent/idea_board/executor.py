@@ -929,59 +929,68 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     f"Baseline pytest error: {e} — skipping baseline"
                 )
 
-            # --- Phase 0b: Create branch (deterministic, no LLM needed) ---
+            # --- Phase 0b: Create branch (pure git, no safe_update.py) ---
+            # safe_update.py takes ~15s just to import (loads entire bot stack).
+            # Branch creation is simple git operations — do it directly.
             short_name = idea.id.replace("idea-", "")
-            branch_result = subprocess.run(
-                [sys.executable, "safe_update.py", short_name],
-                capture_output=True, text=True, timeout=30,
-                cwd=local_agent_dir, env=env,
-            )
-            if branch_result.returncode != 0:
-                err = branch_result.stderr or branch_result.stdout
-                # If branch already exists (from a previous attempt), continue
-                if "uncommitted changes" in err.lower():
-                    state.log_lines.append(
-                        "Working directory dirty — stashing before branch creation"
-                    )
-                    subprocess.run(
-                        ["git", "stash"],
-                        capture_output=True, timeout=10,
-                        cwd=str(project_root),
-                    )
-                    branch_result = subprocess.run(
-                        [sys.executable, "safe_update.py", short_name],
-                        capture_output=True, text=True, timeout=30,
-                        cwd=local_agent_dir, env=env,
-                    )
-                if branch_result.returncode != 0:
-                    # Check if it's because an existing workflow is in progress
-                    if "existing workflow" in (branch_result.stdout + branch_result.stderr).lower():
-                        subprocess.run(
-                            [sys.executable, "safe_update.py", "abort"],
-                            capture_output=True, timeout=10,
-                            cwd=local_agent_dir, env=env,
-                        )
-                        branch_result = subprocess.run(
-                            [sys.executable, "safe_update.py", short_name],
-                            capture_output=True, text=True, timeout=30,
-                            cwd=local_agent_dir, env=env,
-                        )
+            timestamp = time.strftime("%Y-%m-%d-%H%M%S")
+            branch_name = f"{timestamp}-{short_name}"
 
-            if branch_result.returncode != 0:
-                state.log_lines.append(
-                    f"Failed to create branch: {branch_result.stdout[-300:]}"
+            def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    ["git"] + args,
+                    capture_output=True, text=True, timeout=timeout,
+                    cwd=str(project_root),
                 )
+
+            try:
+                # Step 1: Ensure we're on main
+                current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+                if current != "main":
+                    state.log_lines.append(f"On branch {current}, switching to main")
+                    _git(["checkout", "main"])
+
+                # Step 2: Abort stale safe_update state (just delete the file)
+                state_file = Path(local_agent_dir) / ".safe_update_state"
+                if state_file.exists():
+                    old_branch = state_file.read_text().strip()
+                    state.log_lines.append(f"Cleaning stale workflow: {old_branch}")
+                    _git(["branch", "-D", old_branch])
+                    state_file.unlink(missing_ok=True)
+
+                # Step 3: Clean dirty working directory
+                dirty = _git(["status", "--porcelain"]).stdout.strip()
+                if dirty:
+                    file_list = dirty.split("\n")
+                    state.log_lines.append(
+                        f"Cleaning {len(file_list)} dirty file(s): "
+                        + ", ".join(f.strip()[:40] for f in file_list[:5])
+                        + ("..." if len(file_list) > 5 else "")
+                    )
+                    _git(["stash", "-u"], timeout=30)
+                    _git(["stash", "drop"])
+
+                # Step 4: Pull latest main
+                _git(["pull", "origin", "main"], timeout=30)
+
+                # Step 5: Create and checkout branch
+                result = _git(["checkout", "-b", branch_name])
+                if result.returncode != 0:
+                    raise RuntimeError(result.stderr or result.stdout)
+
+                # Step 6: Write safe_update state file (so safe_update.py continue works)
+                state_file.write_text(branch_name)
+
+                state.log_lines.append(f"Branch created: {branch_name}")
+
+            except Exception as e:
+                msg = f"Branch creation failed: {e}"
+                state.log_lines.append(msg)
+                _notify_discord(f"[{idea_id}] {msg}")
                 mark_failed(idea_id, state.log_text)
-                _notify_discord(f"Idea {idea_id} branch creation failed")
                 return
 
-            # Extract branch name from safe_update output
-            branch_name = ""
-            for line in branch_result.stdout.split("\n"):
-                if "Branch:" in line and "202" in line:
-                    branch_name = line.split("Branch:")[-1].strip()
-                    break
-            state.log_lines.append(f"Branch created: {branch_name or short_name}")
+            # branch_name already set above in Phase 0b
             # --- Phase 1: Exploration ---
             session_id = _run_exploration_pass(
                 binary, idea, state, env, project_root

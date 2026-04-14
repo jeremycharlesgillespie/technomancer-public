@@ -300,9 +300,7 @@ class TestContinueWorkflowHealthCheck:
         safe_update.continue_workflow()
         mock_rollback.assert_not_called()
 
-    @patch("safe_update.subprocess.run")
-    @patch("safe_update.run_quality_tests", return_value=True)
-    @patch("safe_update.push_to_remote", return_value=True)
+    @patch("safe_update.rollback_deploy", return_value=(True, "Rolled back"))
     @patch("safe_update.post_deploy_health_check")
     @patch("safe_update.restart_bot", return_value=False)
     @patch("safe_update.delete_branch")
@@ -324,11 +322,44 @@ class TestContinueWorkflowHealthCheck:
         mock_delete,
         mock_restart,
         mock_health,
-        mock_push,
-        mock_qa,
-        mock_subprocess,
+        mock_rollback,
     ):
-        """When bot restart fails entirely, skip health check (nothing to monitor)."""
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        safe_update.continue_workflow()
+        """When bot restart fails entirely, skip health check and trigger rollback."""
+        with pytest.raises(SystemExit) as exc_info:
+            safe_update.continue_workflow()
+        assert exc_info.value.code == 1
         mock_health.assert_not_called()
+        mock_rollback.assert_called_once_with(reverted_branch="2026-04-13-test-branch")
+
+    @patch("safe_update.rollback_deploy", return_value=(True, "Rolled back"))
+    @patch("safe_update.post_deploy_health_check")
+    @patch("safe_update.restart_bot", return_value=False)
+    @patch("safe_update.delete_branch")
+    @patch("safe_update.merge_to_main", return_value=True)
+    @patch("safe_update.run_tests", return_value=(True, "all passed"))
+    @patch("safe_update.verify_clean_state", return_value=True)
+    @patch("safe_update.get_current_branch", return_value="2026-04-13-test-branch")
+    @patch("safe_update.load_state", return_value="2026-04-13-test-branch")
+    @patch("safe_update.clear_state")
+    @patch("safe_update.os.environ", {})
+    def test_rollback_when_restart_fails(
+        self,
+        mock_clear,
+        mock_load,
+        mock_branch,
+        mock_clean,
+        mock_tests,
+        mock_merge,
+        mock_delete,
+        mock_restart,
+        mock_health,
+        mock_rollback,
+    ):
+        """When restart_bot returns False, rollback_deploy is called and workflow exits."""
+        with pytest.raises(SystemExit) as exc_info:
+            safe_update.continue_workflow()
+        assert exc_info.value.code == 1
+        # Health check should NOT be called — nothing to monitor
+        mock_health.assert_not_called()
+        # Rollback MUST be triggered
+        mock_rollback.assert_called_once_with(reverted_branch="2026-04-13-test-branch")

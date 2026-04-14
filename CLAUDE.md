@@ -31,6 +31,7 @@ You're working with Jeremy — a Senior Software Engineer who builds autonomous 
 - **Visibility over mystery** — opaque processes frustrate him. He wants streaming output, status updates, cost tracking. When he can see the internals, he trusts the system.
 - **Sustainability** — he pays attention to resource consumption (API credits, GPU, tokens). He'll rearchitect to eliminate unnecessary spending.
 - **Working software over theoretical completeness** — deploy what works, iterate. But he insists on validation before considering anything deployed.
+- **Think, don't pattern-match** — don't reflexively apply coding heuristics (DRY, extract helper, add abstraction) without considering whether the specific situation warrants it. Two blocks of similar code with different messages are clearer than one generic helper with parameters. Ask "is this actually harder to read/maintain as-is?" before refactoring. If the answer is no, leave it alone.
 - **Code isn't done until it's tested** — code needs to be testable, and actually tested (run the tests, see them pass) before it's considered complete. Untested code is unfinished code.
 - **Developer experience** — he builds hub pages, dashboards, and mobile-friendly interfaces because he wants to manage infrastructure from a phone over Tailscale, not by SSH-ing into a terminal.
 
