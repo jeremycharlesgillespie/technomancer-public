@@ -191,6 +191,52 @@ def _notify_discord(message: str) -> None:
         pass
 
 
+def _post_execution_log_to_jira(idea_id: str, state: ExecutionState) -> None:
+    """Post the full execution log as a Jira comment for traceability."""
+    try:
+        from .jira_sync import _api, find_jira_issue, is_jira_configured
+
+        if not is_jira_configured():
+            return
+
+        jira_key = find_jira_issue(idea_id)
+        if not jira_key:
+            return
+
+        idea = get_idea(idea_id)
+        idea_state = idea.state if idea else "unknown"
+        log_text = state.log_text[-15000:]  # Cap at 15K chars
+
+        # Jira code blocks have a limit — truncate if needed
+        comment_adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {"type": "text", "text": f"Execution {idea_state}",
+                         "marks": [{"type": "strong"}]},
+                        {"type": "text",
+                         "text": f" ({state.elapsed:.0f}s)" if state.elapsed else ""},
+                    ],
+                },
+                {
+                    "type": "codeBlock",
+                    "attrs": {"language": "text"},
+                    "content": [
+                        {"type": "text", "text": log_text[-10000:]},
+                    ],
+                },
+            ],
+        }
+
+        _api("post", f"/issue/{jira_key}/comment", json={"body": comment_adf})
+        logger.info("[Executor] Posted execution log to %s", jira_key)
+    except Exception as e:
+        logger.warning("[Executor] Failed to post log to Jira: %s", e)
+
+
 def _snapshot_system_load() -> str:
     """Capture a one-line summary of system load for diagnostics."""
     try:
@@ -1127,8 +1173,13 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
                 f"Prompt: {full_prompt_chars} chars (~{full_prompt_tokens} tokens)"
             )
 
+            # Write prompt to temp file — Windows has 32K command-line limit
+            import tempfile
+            prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
+            prompt_file.write_text(full_prompt, encoding="utf-8")
+
             cmd = [
-                str(binary), "-p", full_prompt,
+                str(binary), "-p", "-",
                 "--output-format", "stream-json",
                 "--verbose",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
@@ -1136,8 +1187,10 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
             ]
             state.log("Starting Claude Code with pre-built context...")
 
+            prompt_input = open(prompt_file, "r", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
+                stdin=prompt_input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(project_root),
@@ -1368,8 +1421,12 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
                         f"Just fix the code and commit."
                     )
 
+                    fix_file = Path(tempfile.mktemp(suffix=".txt", prefix="fix_"))
+                    fix_file.write_text(fix_prompt, encoding="utf-8")
+                    fix_input = open(fix_file, "r", encoding="utf-8")
+
                     fix_cmd = [
-                        str(binary), "-p", fix_prompt,
+                        str(binary), "-p", "-",
                         "--output-format", "stream-json",
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
@@ -1377,6 +1434,7 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
 
                     fix_proc = subprocess.Popen(
                         fix_cmd,
+                        stdin=fix_input,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         cwd=str(project_root),
@@ -1644,6 +1702,8 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
 
         finally:
             _active.pop(idea_id, None)
+            # Dump execution log to Jira comment for traceability
+            _post_execution_log_to_jira(idea_id, state)
 
     thread = threading.Thread(target=_run, daemon=True, name=f"executor-{idea_id}")
     thread.start()
