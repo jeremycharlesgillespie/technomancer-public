@@ -9,10 +9,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Obsidian vault integration for persistent memory
 - Claude API escalation for complex tasks
 - Web search, image identification, news digest
-- **Test suite with 145 tests** for safe deployments
-- **safe_update.py workflow** for branch-test-merge automation
+- **Jira integration** for project tracking (primary), with built-in idea board as fallback
+- **Autonomous executor** — Claude Code implements ideas, runs tests, deploys
+- **safe_update.py workflow** for branch-test-merge automation with auto-rollback
 
 All code lives in `local-agent/`.
+
+### Idea Board & Jira
+The primary project tracking system is **Jira**. When `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, and `JIRA_PROJECT_KEY` are set in `.env`, all idea state changes automatically sync to Jira (background thread, non-blocking). The built-in idea board at `localhost:8322` continues to work as the local interface and executor trigger — Jira is the external source of truth for tracking.
+
+If Jira is not configured, the system works fully standalone using the internal idea board only. No features are lost — Jira sync simply doesn't fire.
 
 ## Owner Context
 
@@ -436,6 +442,13 @@ Before reporting success on file/memory operations:
   - `llava-llama3` - Vision model for image analysis
 - **Anthropic API**: Set `ANTHROPIC_API_KEY` in `local-agent/.env` for Claude escalation
 - **Discord**: Bot token in discord_memory_bot.py (line 29)
+- **Jira** (optional): Set in `local-agent/.env`:
+  - `JIRA_URL` - Atlassian instance URL (e.g., `https://myorg.atlassian.net`)
+  - `JIRA_EMAIL` - Account email for API auth
+  - `JIRA_API_TOKEN` - API token from https://id.atlassian.com/manage-profile/security/api-tokens
+  - `JIRA_PROJECT_KEY` - Project key (e.g., `TK`)
+  - Issue type mapping: epic → Epic, story → Story, task → Story
+  - State mapping: proposed/refining/approved → To Do, executing → In Progress, done → Done
 - **PyPDF2**: For PDF processing (`pip install PyPDF2`)
 - **python-docx**: For Word doc processing (`pip install python-docx`)
 - **pytest**: For running tests (`pip install pytest` or included in dev dependencies)
