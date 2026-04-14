@@ -24,7 +24,8 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
+import subprocess
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +33,20 @@ logger = logging.getLogger(__name__)
 
 # Paths for input data
 from .config import settings
+from .memory_system import get_memory_system
+from .perf_monitor import get_monitor as get_perf_monitor
+
+try:
+    from idea_board.models import load_ideas
+except ImportError:  # idea_board may not be on sys.path in all contexts
+    load_ideas = None  # type: ignore[assignment]
+
 VAULT_PATH: Path = settings.llm_memory_path
 CRASH_LOG: Path = VAULT_PATH / "Permanent" / "crash_log.md"
 HOURLY_CONTEXT: Path = VAULT_PATH / "Context" / "hourly.md"
 PROFILING_FILE: Path = Path(__file__).parent.parent / "profiling" / "requests.jsonl"
+COVERAGE_FILE: Path = Path(__file__).parent.parent / "profiling" / "coverage.json"
+REPO_ROOT: Path = Path(__file__).parent.parent
 
 # Schedule
 # Run once daily at 5 PM (not hourly — reduces noise)
@@ -229,8 +240,8 @@ def _load_existing_ideas() -> str:
         Bullet list of existing idea titles
     """
     try:
-        from idea_board.models import load_ideas
-
+        if load_ideas is None:
+            return "No existing ideas."
         ideas = load_ideas()
         if not ideas:
             return "No existing ideas."
@@ -240,6 +251,262 @@ def _load_existing_ideas() -> str:
         )
     except Exception:
         return "No existing ideas."
+
+
+# ---------------------------------------------------------------------------
+# Signal Collector — gathers structured improvement signals from all sources
+# ---------------------------------------------------------------------------
+
+# Timestamp pattern in crash_log.md entries: "## 2026-04-14 16:30:00"
+_CRASH_TS_RE = re.compile(r"^## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def _collect_recent_errors(since: datetime | None = None) -> str:
+    """Extract crash log entries from the last hour.
+
+    Parses crash_log.md for entries with timestamps, keeps only those
+    within the time window.
+
+    Args:
+        since: Cutoff datetime (defaults to 1 hour ago).
+
+    Returns:
+        Formatted string of recent error entries, or a no-data message.
+    """
+    if since is None:
+        since = datetime.now() - timedelta(hours=1)
+
+    if not CRASH_LOG.exists():
+        return "No crash log found."
+
+    try:
+        content = CRASH_LOG.read_text(encoding="utf-8")
+    except OSError:
+        return "Could not read crash log."
+
+    # Split into entries by "## " heading
+    entries = re.split(r"(?=^## )", content, flags=re.MULTILINE)
+    recent: list[str] = []
+    for entry in entries:
+        match = _CRASH_TS_RE.match(entry)
+        if not match:
+            continue
+        try:
+            ts = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        if ts >= since:
+            # Keep first 500 chars of each entry to stay concise
+            recent.append(entry[:500].strip())
+
+    if not recent:
+        return "No errors in the last hour."
+    return "\n\n".join(recent)
+
+
+def _collect_slow_operations() -> str:
+    """Find endpoints where p95 latency exceeds 5 seconds.
+
+    Reads from the global PerfMonitor singleton.
+
+    Returns:
+        Formatted string listing slow endpoints and their stats.
+    """
+    monitor = get_perf_monitor()
+    all_stats = monitor.get_endpoint_stats()
+    if all_stats.get("calls", 0) == 0:
+        return "No performance data recorded."
+
+    # Check each endpoint individually
+    with monitor._lock:
+        endpoints = sorted(set(r.endpoint for r in monitor._records))
+
+    slow: list[str] = []
+    for ep in endpoints:
+        stats = monitor.get_endpoint_stats(ep)
+        p95 = stats.get("p95_latency", 0)
+        if p95 > 5.0:
+            slow.append(
+                f"- {ep}: p95={p95:.1f}s, avg={stats['avg_latency']:.1f}s, "
+                f"{stats['calls']} calls, {stats['failures']} failures"
+            )
+
+    if not slow:
+        return "No slow operations (all endpoints p95 < 5s)."
+    return "Slow endpoints (p95 > 5s):\n" + "\n".join(slow)
+
+
+def _collect_conversation_topics(since: datetime | None = None) -> str:
+    """Extract recent conversation topics from the memory system.
+
+    Summarises what users have been asking about in the last hour.
+
+    Args:
+        since: Cutoff datetime (defaults to 1 hour ago).
+
+    Returns:
+        Formatted string of recent user messages.
+    """
+    if since is None:
+        since = datetime.now() - timedelta(hours=1)
+
+    try:
+        mem = get_memory_system()
+        recent = [
+            e for e in mem.recent_conversations
+            if e.timestamp >= since
+        ]
+    except Exception:
+        # Memory system may not be initialised (e.g. in tests)
+        return "Memory system not available."
+
+    if not recent:
+        return "No conversations in the last hour."
+
+    lines: list[str] = []
+    for entry in recent[-20:]:  # Cap at 20 most recent
+        # Just the user message — enough for topic extraction
+        lines.append(f"- [{entry.user}] {entry.message[:150]}")
+    return "\n".join(lines)
+
+
+def _collect_coverage_gaps() -> str:
+    """Find modules with less than 50% test coverage.
+
+    Reads from profiling/coverage.json (generated by ``make test-cov``).
+
+    Returns:
+        Formatted string listing under-covered modules.
+    """
+    if not COVERAGE_FILE.exists():
+        return "No coverage data (run `make test-cov` to generate)."
+
+    try:
+        data = json.loads(COVERAGE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "Could not parse coverage data."
+
+    files_data = data.get("files", {})
+    if not files_data:
+        return "No per-file coverage data."
+
+    gaps: list[str] = []
+    for filepath, info in sorted(files_data.items()):
+        summary = info.get("summary", {})
+        pct = summary.get("percent_covered", 100)
+        stmts = summary.get("num_statements", 0)
+        if pct < 50 and stmts > 10:  # Skip tiny files
+            gaps.append(f"- {filepath.replace(chr(92), '/')}: {pct:.0f}% ({stmts} statements)")
+
+    if not gaps:
+        return "All modules above 50% coverage."
+    return "Low coverage modules (< 50%):\n" + "\n".join(gaps[:15])
+
+
+def _collect_recent_changes() -> str:
+    """List files changed in the last hour via git log.
+
+    Returns:
+        Formatted string of recently modified files and their commit messages.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", "--since=1 hour ago", "--name-only", "--pretty=format:%h %s"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=str(REPO_ROOT),
+        )
+        output = result.stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return "Could not read git history."
+
+    if not output:
+        return "No commits in the last hour."
+
+    # Deduplicate file paths, keep commit messages
+    lines = output.split("\n")
+    commits: list[str] = []
+    files_seen: set[str] = set()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Commit lines start with a short hash (hex chars + space)
+        if re.match(r"^[0-9a-f]+ ", line):
+            commits.append(f"- {line}")
+        elif line not in files_seen:
+            files_seen.add(line)
+
+    parts: list[str] = []
+    if commits:
+        parts.append("Commits:\n" + "\n".join(commits[:10]))
+    if files_seen:
+        parts.append("Changed files:\n" + "\n".join(f"- {f}" for f in sorted(files_seen)[:15]))
+    return "\n".join(parts) if parts else "No recent changes."
+
+
+def _collect_pending_ideas() -> str:
+    """List ideas that are approved or executing but not yet done.
+
+    These represent work the system knows about but hasn't completed.
+
+    Returns:
+        Formatted string of pending idea titles and states.
+    """
+    try:
+        if load_ideas is None:
+            return "Could not load idea board."
+        ideas = load_ideas()
+    except Exception:
+        return "Could not load idea board."
+
+    if not ideas:
+        return "Idea board is empty."
+
+    pending = [i for i in ideas if i.state in ("approved", "executing", "refining")]
+    if not pending:
+        return "No approved/executing ideas pending."
+
+    lines: list[str] = []
+    for idea in pending[:15]:
+        lines.append(f"- [{idea.state}] {idea.id}: {idea.title}")
+    return "\n".join(lines)
+
+
+def collect_signals(since: datetime | None = None) -> str:
+    """Collect improvement signals from all system sources.
+
+    Gathers data from crash logs, performance metrics, conversations,
+    test coverage, git history, and the idea board, then formats them
+    into a structured string ready for LLM consumption.
+
+    This is the main entry point used by the idea synthesis step
+    (idea-194) to build context for the LLM prompt.
+
+    Args:
+        since: Cutoff datetime for time-windowed signals (defaults to 1 hour ago).
+
+    Returns:
+        A multi-section formatted string with all collected signals.
+    """
+    if since is None:
+        since = datetime.now() - timedelta(hours=1)
+
+    sections = [
+        ("RECENT ERRORS (last hour)", _collect_recent_errors(since)),
+        ("SLOW OPERATIONS", _collect_slow_operations()),
+        ("CONVERSATION TOPICS (last hour)", _collect_conversation_topics(since)),
+        ("TEST COVERAGE GAPS", _collect_coverage_gaps()),
+        ("RECENTLY CHANGED FILES (last hour)", _collect_recent_changes()),
+        ("PENDING IDEAS (approved/executing)", _collect_pending_ideas()),
+    ]
+
+    parts: list[str] = []
+    for title, content in sections:
+        parts.append(f"### {title}\n{content}")
+
+    return "\n\n".join(parts)
 
 
 def _parse_ideas(response: str) -> list[dict[str, str]]:
