@@ -1436,6 +1436,49 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 state_file = Path(local_agent_dir) / ".safe_update_state"
                 state_file.unlink(missing_ok=True)
 
+                # Step 3f: Regenerate README and publish to public repo
+                try:
+                    readme_script = Path(local_agent_dir) / "generate_readme.py"
+                    if readme_script.exists():
+                        subprocess.run(
+                            [sys.executable, str(readme_script)],
+                            capture_output=True, text=True, timeout=120,
+                            cwd=local_agent_dir,
+                        )
+                        subprocess.run(
+                            ["git", "add", "-A"],
+                            capture_output=True, timeout=10,
+                            cwd=project_root,
+                        )
+                        subprocess.run(
+                            ["git", "commit", "-m",
+                             "Update README with latest stats [auto]"],
+                            capture_output=True, timeout=10,
+                            cwd=project_root,
+                        )
+                        subprocess.run(
+                            ["git", "push", "origin", "main"],
+                            capture_output=True, timeout=30,
+                            cwd=project_root,
+                        )
+
+                    publish_script = Path(local_agent_dir) / "publish.py"
+                    if publish_script.exists():
+                        pub = subprocess.run(
+                            [sys.executable, str(publish_script),
+                             "--push", "--force"],
+                            capture_output=True, text=True, timeout=120,
+                            cwd=local_agent_dir,
+                        )
+                        if pub.returncode == 0:
+                            state.log_lines.append("Published to technomancer-public")
+                        else:
+                            state.log_lines.append(
+                                f"Publish failed: {pub.stderr[:200]}"
+                            )
+                except Exception as e:
+                    state.log_lines.append(f"README/publish error: {e}")
+
                 state.log_lines.append(
                     f"Deploy complete ({state.elapsed:.0f}s total). "
                     f"Bot restart needed — run: python bot_service.py start"
