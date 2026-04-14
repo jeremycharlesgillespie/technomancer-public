@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from idea_board.executor import (
-    BASELINE_TIMEOUT,
+    MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
     ExecutionState,
     _build_epic_execution_context,
@@ -169,21 +169,18 @@ class TestExecutionState:
 
 
 # ---------------------------------------------------------------------------
-# BASELINE_TIMEOUT constant
+# Constants
 # ---------------------------------------------------------------------------
 
 
 class TestConstants:
-    """Verify timeout constants exist and are reasonable."""
-
-    def test_baseline_timeout_exists(self):
-        assert BASELINE_TIMEOUT == 600
-
-    def test_baseline_timeout_is_int(self):
-        assert isinstance(BASELINE_TIMEOUT, int)
+    """Verify executor constants exist and are reasonable."""
 
     def test_pytest_timeout_is_10_min(self):
         assert PYTEST_TIMEOUT == 600
+
+    def test_max_fix_retries(self):
+        assert MAX_FIX_RETRIES == 5
 
 
 # ---------------------------------------------------------------------------

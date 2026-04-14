@@ -115,9 +115,11 @@ def run_tests() -> Tuple[bool, str]:
     """Run pytest and return (success, output)."""
     log("Running pytest...")
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-v", "--tb=short"],
+        [sys.executable, "-m", "pytest", "-q", "--tb=short",
+         "-n", "8", "--reruns", "2", "--reruns-delay", "1"],
         capture_output=True,
         text=True,
+        timeout=600,
         cwd=SCRIPT_DIR,
     )
 

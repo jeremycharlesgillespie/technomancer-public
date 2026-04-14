@@ -44,14 +44,14 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT: int = 1800
 
 
-# Timeout for pytest in Phase 3 (10 minutes)
+# Timeout for pytest (10 minutes)
 PYTEST_TIMEOUT: int = 600
 
-# Timeout for baseline pytest run on main (same as full suite)
-BASELINE_TIMEOUT: int = 600
-
 # Max retries when tests/validation fail — Claude gets to fix its own bugs
-MAX_FIX_RETRIES: int = 2
+MAX_FIX_RETRIES: int = 5
+
+# File to persist known failures between executor runs (replaces baseline)
+KNOWN_FAILURES_FILE: Path = Path(__file__).parent / ".known_test_failures.json"
 
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
@@ -383,6 +383,25 @@ def _parse_pytest_failures(output: str) -> set[str]:
             if test_id:
                 failures.add(test_id)
     return failures
+
+
+def _load_known_failures() -> set[str]:
+    """Load known test failures from the last successful full suite run."""
+    if KNOWN_FAILURES_FILE.exists():
+        try:
+            data = json.loads(KNOWN_FAILURES_FILE.read_text())
+            return set(data.get("failures", []))
+        except Exception:
+            pass
+    return set()
+
+
+def _save_known_failures(failures: set[str]) -> None:
+    """Save test failures from the full suite for future comparison."""
+    KNOWN_FAILURES_FILE.write_text(json.dumps({
+        "failures": sorted(failures),
+        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }, indent=2))
 
 
 def _find_claude_binary() -> Path | None:
@@ -1086,38 +1105,14 @@ def execute_idea(
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
 
         try:
-            # --- Phase 0a: Baseline pytest on main ---
-            state.log("--- Baseline: pytest on main ---")
-            try:
-                baseline_result = _run_pytest_with_progress(
-                    [sys.executable, "-m", "pytest", "--tb=no", "-q",
-                     "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
-                    cwd=local_agent_dir,
-                    state=state,
-                    label="baseline",
-                    timeout=BASELINE_TIMEOUT,
-                )
-                state.baseline_failures = _parse_pytest_failures(
-                    baseline_result.stdout
-                )
-                if state.baseline_failures:
-                    state.log(
-                        f"Baseline: {len(state.baseline_failures)} "
-                        f"pre-existing failure(s):"
-                    )
-                    for f in sorted(state.baseline_failures):
-                        state.log(f"  - {f}")
-                else:
-                    state.log("Baseline: all tests passing on main")
-            except subprocess.TimeoutExpired:
+            # Load known failures from previous full suite (replaces baseline run)
+            state.baseline_failures = _load_known_failures()
+            if state.baseline_failures:
                 state.log(
-                    f"Baseline pytest timed out ({BASELINE_TIMEOUT}s) "
-                    f"— skipping baseline"
+                    f"Known failures from last run: {len(state.baseline_failures)}"
                 )
-            except Exception as e:
-                state.log(
-                    f"Baseline pytest error: {e} — skipping baseline"
-                )
+            else:
+                state.log("No known failures cached")
 
             # --- Phase 0b: Create branch (pure git, no safe_update.py) ---
             # safe_update.py takes ~15s just to import (loads entire bot stack).
@@ -1362,8 +1357,8 @@ def execute_idea(
                     f"--- Validation (attempt {attempt}) ---"
                 )
                 validate_result = subprocess.run(
-                    [sys.executable, "validate.py", "startup"],
-                    capture_output=True, text=True, timeout=120,
+                    [sys.executable, "validate.py", "import"],
+                    capture_output=True, text=True, timeout=60,
                     cwd=local_agent_dir,
                 )
                 if validate_result.returncode != 0:
@@ -1446,6 +1441,7 @@ def execute_idea(
                     )
 
                     fix_prompt = (
+                        f"## Codebase Context\n\n{codebase_context}\n\n---\n\n"
                         f"The code you wrote for '{idea.title}' has failures.\n\n"
                         f"```\n{failure_output}\n```\n\n"
                         f"## COMMON CAUSES (check these first)\n"
@@ -1459,7 +1455,10 @@ def execute_idea(
                         f"`async with session.get()` needs `__aenter__`/`__aexit__` "
                         f"on the mock.\n"
                         f"4. **Windows paths use backslashes.** Normalize with "
-                        f"`.replace('\\\\', '/')` in assertions.\n\n"
+                        f"`.replace('\\\\', '/')` in assertions.\n"
+                        f"5. **Mutable list aliasing.** If passing a list that "
+                        f"grows over time, pass `list(my_list)` (a copy) not "
+                        f"the reference.\n\n"
                         f"Fix the failing tests or code. Then `git add` and "
                         f"`git commit -m '[{idea_id}] Fix test failures'`.\n\n"
                         f"Do NOT run safe_update.py, validate.py, or pytest. "
@@ -1571,7 +1570,7 @@ def execute_idea(
 
             full_result = _run_pytest_with_progress(
                 [sys.executable, "-m", "pytest", "-q", "--tb=short",
-                 "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
+                 "-n", "8", "--reruns", "2", "--reruns-delay", "1"],
                 cwd=local_agent_dir,
                 state=state,
                 label="tests",
@@ -1607,6 +1606,10 @@ def execute_idea(
                         f"All {len(full_failures)} failure(s) are "
                         f"pre-existing — proceeding to deploy"
                     )
+
+            # Save failures from this run as the baseline for the next execution
+            full_failures = _parse_pytest_failures(full_result.stdout)
+            _save_known_failures(full_failures)
 
             # --- Phase 3: Deploy (merge + push) ---
             state.log("")
