@@ -367,5 +367,7 @@ async def dream_loop(agent: Any) -> None:
 
 def start_dreaming(agent: Any) -> None:
     """Start the dreaming background task."""
-    asyncio.create_task(dream_loop(agent))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(dream_loop(agent), "dreaming", critical=True)
     print("[Dreaming] Background task started")

@@ -594,5 +594,7 @@ async def domain_coverage_loop(client: Any, channel_name: str) -> None:
 
 def start_domain_coverage(client: Any, channel_name: str) -> None:
     """Start the weekly domain coverage background task."""
-    asyncio.create_task(domain_coverage_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(domain_coverage_loop(client, channel_name), "domain-coverage", critical=True)
     log.info("[DomainCoverage] Background task started")

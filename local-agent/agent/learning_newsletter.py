@@ -283,7 +283,9 @@ async def newsletter_loop(client: Any, channel_name: str) -> None:
 
 def start_newsletter(client: Any, channel_name: str) -> None:
     """Start the weekly newsletter background task."""
-    asyncio.create_task(newsletter_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(newsletter_loop(client, channel_name), "learning-newsletter", critical=True)
     log.info("[Newsletter] Background task started")
 
 

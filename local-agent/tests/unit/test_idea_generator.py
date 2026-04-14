@@ -678,7 +678,7 @@ class TestIdeaGenerationLoop:
 class TestStartIdeaGenerator:
     """Test start_idea_generator creates an asyncio task."""
 
-    @patch("agent.idea_generator.asyncio.create_task")
+    @patch("agent.task_manager.create_monitored_task")
     def test_creates_task(self, mock_create):
         client = MagicMock()
         agent = MagicMock()

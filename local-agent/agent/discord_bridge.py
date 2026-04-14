@@ -543,9 +543,11 @@ def start_bridge(client: discord.Client, channel_name: str) -> DiscordBridgeAPI:
     Returns:
         The DiscordBridgeAPI instance (also stored in module-level _bridge)
     """
+    from .task_manager import create_monitored_task
+
     global _bridge
     _bridge = DiscordBridgeAPI(client, channel_name)
-    asyncio.create_task(_bridge.start())
+    create_monitored_task(_bridge.start(), "discord-bridge", critical=True)
     return _bridge
 
 

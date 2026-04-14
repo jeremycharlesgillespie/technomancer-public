@@ -569,5 +569,7 @@ async def gap_frequency_loop(client: Any, channel_name: str) -> None:
 
 def start_gap_frequency(client: Any, channel_name: str) -> None:
     """Start the weekly gap frequency background task."""
-    asyncio.create_task(gap_frequency_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(gap_frequency_loop(client, channel_name), "gap-frequency", critical=True)
     log.info("[GapFrequency] Background task started")

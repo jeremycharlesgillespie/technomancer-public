@@ -370,5 +370,7 @@ async def enrichment_loop(client: Any, channel_name: str) -> None:
 
 def start_knowledge_enrichment(client: Any, channel_name: str) -> None:
     """Start the knowledge enrichment background task."""
-    asyncio.create_task(enrichment_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(enrichment_loop(client, channel_name), "knowledge-enrichment", critical=True)
     log.info("[KnowledgeEnrichment] Background task started")

@@ -710,7 +710,9 @@ async def dev_learning_loop(client: Any, channel_name: str) -> None:
 
 def start_dev_learning(client: Any, channel_name: str) -> None:
     """Start the daily learning background task."""
-    asyncio.create_task(dev_learning_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(dev_learning_loop(client, channel_name), "dev-learning", critical=True)
     log("Background task started")
 
 

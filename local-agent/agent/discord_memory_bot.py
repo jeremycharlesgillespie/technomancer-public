@@ -119,6 +119,7 @@ from .discord_errors import (
 )
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .knowledge_search import get_knowledge_search_tools, init_knowledge_index
+from .task_manager import create_monitored_task, register_shutdown_callback, shutdown_sync, start_health_checker
 from .command_suggestions import (
     find_closest_command,
     format_context_suggestions,
@@ -713,6 +714,7 @@ Keep responses concise for Discord but thorough when they need depth.""",
         system_prompt="You are a summarization assistant. Summarize conversations concisely.",
     ))
     memory.start_background_compaction(interval_minutes=30, summarizer=compaction_agent.run)
+    register_shutdown_callback(memory.stop_background_compaction)
     log("Background compaction started with dedicated LLM agent (isolated from main)")
 
     # Start the hourly news digest (9am-9pm)
@@ -820,8 +822,12 @@ Keep responses concise for Discord but thorough when they need depth.""",
                     get_gateway_health().record_latency(round(latency * 1000, 1))
             except Exception:
                 pass
-    asyncio.create_task(_sample_heartbeat_latency())
+    create_monitored_task(_sample_heartbeat_latency(), "heartbeat-latency", critical=True)
     log("Gateway health monitor started (heartbeat latency sampling)")
+
+    # Start background task health checker (every 5 min — alerts on dead tasks)
+    start_health_checker()
+    log("Task health checker started (monitors all background tasks)")
 
 
 @client.event
@@ -1408,8 +1414,8 @@ React like a friend would - you're genuinely interested. Talk about what stands 
 
                     timer.save()
                     log(f"[Profile] {profile.total:.1f}s total | FastPath | type={complexity['complexity']}")
-                    asyncio.create_task(extract_facts_from_recent())
-                    asyncio.create_task(generate_summaries_from_recent())
+                    create_monitored_task(extract_facts_from_recent(), "extract-facts")
+                    create_monitored_task(generate_summaries_from_recent(), "generate-summaries")
                     return  # Done — skip the full pipeline
 
             # ============================================================
@@ -1653,10 +1659,10 @@ Respond naturally and helpfully. Be conversational and friendly."""
             log(f"[Profile] {profile.total:.1f}s total | {llm_time:.1f}s LLM ({len(profile.llm_calls)} calls) | ctx={profile.num_ctx_used} | type={profile.question_type}")
 
             # Try to extract identity facts (runs only when batch is full)
-            asyncio.create_task(extract_facts_from_recent())
+            create_monitored_task(extract_facts_from_recent(), "extract-facts")
 
             # Try to generate conversation summaries (runs only when batch is full)
-            asyncio.create_task(generate_summaries_from_recent())
+            create_monitored_task(generate_summaries_from_recent(), "generate-summaries")
 
         except Exception as e:
             log(f"ERR: {e}")
@@ -1757,9 +1763,6 @@ def main() -> None:
         client.run(settings.discord_bot_token)
     except KeyboardInterrupt:
         log("Shutdown requested")
-        from .session_state import mark_clean_shutdown
-        mark_clean_shutdown()
-        send_lifecycle_notification("offline", "Graceful shutdown")
     except Exception as e:
         log(f"FATAL ERROR: {e}")
         # Send crash notification
@@ -1770,6 +1773,13 @@ def main() -> None:
         log(f"Crash details saved to: {crash_file}")
         # Re-raise so process manager knows it crashed
         raise
+    finally:
+        # Graceful shutdown: flush pending writes, stop daemon threads
+        log("Running graceful shutdown...")
+        shutdown_sync()
+        from .session_state import mark_clean_shutdown
+        mark_clean_shutdown()
+        send_lifecycle_notification("offline", "Graceful shutdown")
 
 
 if __name__ == "__main__":

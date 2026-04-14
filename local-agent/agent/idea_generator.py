@@ -933,5 +933,7 @@ def start_idea_generator(client: Any, agent: Any) -> None:
         client: Discord client instance for notifications.
         agent: An isolated Agent instance (NOT the main bot agent).
     """
-    asyncio.create_task(idea_generation_loop(client, agent))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(idea_generation_loop(client, agent), "idea-generator", critical=True)
     logger.info("[IdeaGen] Background task started (hourly)")

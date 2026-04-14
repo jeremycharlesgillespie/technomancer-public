@@ -235,11 +235,13 @@ async def _github_sync_loop() -> None:
 
 def start_github_sync() -> None:
     """Start the GitHub sync background task (call from on_ready)."""
+    from .task_manager import create_monitored_task
+
     token = settings.github_token
     if not token:
         log.warning("[GitHubSync] No GITHUB_TOKEN configured — sync disabled")
         return
-    asyncio.create_task(_github_sync_loop())
+    create_monitored_task(_github_sync_loop(), "github-sync", critical=True)
     log.info("[GitHubSync] Background task started")
 
 

@@ -327,6 +327,6 @@ class TestScheduling:
         client = MagicMock()
         agent = MagicMock()
 
-        with patch("agent.daily_briefing.asyncio.create_task") as mock_task:
+        with patch("agent.task_manager.create_monitored_task") as mock_task:
             start_daily_briefing(client, "llm_chat", agent)
             assert mock_task.called

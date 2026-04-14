@@ -548,5 +548,7 @@ def start_daily_briefing(
         channel_name: Target channel name.
         agent: Isolated Agent instance (NOT the main bot agent).
     """
-    asyncio.create_task(briefing_loop(client, channel_name, agent))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(briefing_loop(client, channel_name, agent), "daily-briefing", critical=True)
     logger.info("[Briefing] Background task started")

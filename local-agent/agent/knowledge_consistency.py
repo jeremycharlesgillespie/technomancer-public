@@ -315,6 +315,7 @@ def get_consistency_report() -> str:
 
 def start_consistency_monitor(client: Any, channel_name: str) -> None:
     """Start the daily consistency audit as a background task (3 AM)."""
+    from .task_manager import create_monitored_task
 
     async def _run_loop() -> None:
         await asyncio.sleep(10)  # Wait for bot startup
@@ -334,7 +335,7 @@ def start_consistency_monitor(client: Any, channel_name: str) -> None:
             except Exception as e:
                 log.error(f"[Consistency] Audit failed: {e}")
 
-    asyncio.create_task(_run_loop())
+    create_monitored_task(_run_loop(), "knowledge-consistency", critical=True)
 
 
 # ---------------------------------------------------------------------------

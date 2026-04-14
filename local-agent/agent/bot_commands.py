@@ -19,6 +19,8 @@ from typing import Any
 
 import discord
 
+from .task_manager import create_monitored_task
+
 from .bot_utils import log
 from .config import settings
 from .core import Agent, AgentConfig
@@ -67,7 +69,7 @@ async def handle_publish(message: Any, user: str) -> None:
         except Exception as e:
             await message.channel.send(f"Publish error: {e}")
 
-    asyncio.create_task(_run_publish())
+    create_monitored_task(_run_publish(), "publish-command")
 
 
 async def handle_perf(message: Any, send_response: Any) -> None:
@@ -238,7 +240,7 @@ async def handle_evolve(message: Any, user: str) -> None:
             except OSError:
                 pass
 
-    asyncio.create_task(run_evolve())
+    create_monitored_task(run_evolve(), "evolve-command")
 
 
 async def handle_show_commands(message: Any) -> None:
@@ -540,7 +542,7 @@ async def handle_dl_covers(message: Any, content: str, user: str) -> None:
             except Exception:
                 pass
 
-    asyncio.create_task(background_download())
+    create_monitored_task(background_download(), "dl-covers-command")
     await message.reply(
         f"Started background thumbnail download for: {channel_url}\n"
         f"Downloading 1 per minute to avoid rate limits.\n"

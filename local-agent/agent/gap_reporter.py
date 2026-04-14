@@ -445,5 +445,7 @@ async def gap_reporter_loop(client: Any, channel_name: str) -> None:
 
 def start_gap_reporter(client: Any, channel_name: str) -> None:
     """Start the weekly gap reporter background task."""
-    asyncio.create_task(gap_reporter_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(gap_reporter_loop(client, channel_name), "gap-reporter", critical=True)
     log.info("[GapReporter] Background task started")

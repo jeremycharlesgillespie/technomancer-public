@@ -499,5 +499,7 @@ async def infra_monitor_loop(client: Any, channel_name: str) -> None:
 
 def start_infra_monitor(client: Any, channel_name: str) -> None:
     """Start the infrastructure monitor background task."""
-    asyncio.create_task(infra_monitor_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(infra_monitor_loop(client, channel_name), "infra-monitor", critical=True)
     log.info("[InfraMonitor] Background task started")

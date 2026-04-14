@@ -800,14 +800,14 @@ class TestHealthSummaryWithGithub:
 class TestStartGithubSync:
     def test_no_token_does_not_start(self):
         with patch("agent.project_tracker.settings") as mock_settings, \
-             patch("agent.project_tracker.asyncio.create_task") as mock_task:
+             patch("agent.task_manager.create_monitored_task") as mock_task:
             mock_settings.github_token = None
             start_github_sync()
             mock_task.assert_not_called()
 
     def test_with_token_starts_task(self):
         with patch("agent.project_tracker.settings") as mock_settings, \
-             patch("agent.project_tracker.asyncio.create_task") as mock_task:
+             patch("agent.task_manager.create_monitored_task") as mock_task:
             mock_settings.github_token = "ghp_test123"
             start_github_sync()
             mock_task.assert_called_once()

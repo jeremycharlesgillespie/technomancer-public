@@ -647,7 +647,9 @@ async def news_digest_loop(client: Any, channel_name: str, agent: Any) -> None:
 
 def start_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     """Start the news digest background task."""
-    asyncio.create_task(news_digest_loop(client, channel_name, agent))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(news_digest_loop(client, channel_name, agent), "news-digest", critical=True)
     print("[NewsDigest] Background task started")
 
 

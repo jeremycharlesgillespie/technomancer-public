@@ -688,5 +688,7 @@ async def ref_enrichment_loop(client: Any, channel_name: str) -> None:
 
 def start_ref_enrichment(client: Any, channel_name: str) -> None:
     """Start the daily reference enrichment background task."""
-    asyncio.create_task(ref_enrichment_loop(client, channel_name))
+    from .task_manager import create_monitored_task
+
+    create_monitored_task(ref_enrichment_loop(client, channel_name), "ref-enrichment", critical=True)
     log.info("[RefEnrichment] Background task started")
