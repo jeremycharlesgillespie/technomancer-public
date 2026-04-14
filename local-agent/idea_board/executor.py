@@ -472,24 +472,48 @@ def _build_epic_execution_context(
     Returns:
         Context string, or empty string if nothing to inject
     """
+    return _format_injected_epic_context(
+        epic.epic_context or "", previous_results
+    )
+
+
+def _format_injected_epic_context(
+    epic_context: str,
+    previous_results: list[dict[str, str]] | None,
+) -> str:
+    """Format epic context and previous story results for prompt injection.
+
+    Called by _build_story_prompt() when executing stories within an epic.
+    Provides the executing Claude session with the epic's big-picture goal
+    and a summary of what previous stories accomplished.
+
+    Args:
+        epic_context: Free-text narrative for the epic's overall goal
+        previous_results: List of dicts with id, title, state, summary keys
+
+    Returns:
+        Formatted context string, or empty string if nothing to inject
+    """
     lines: list[str] = []
 
-    if epic.epic_context:
-        lines.append("## Epic Context (big-picture goal)")
-        lines.append(epic.epic_context)
+    if epic_context:
+        lines.append("## Epic Context")
+        lines.append(epic_context)
         lines.append("")
 
-    done_results = [r for r in previous_results if r["state"] == "done"]
-    if done_results:
-        lines.append("## Previously Completed Stories in This Epic")
-        for r in done_results:
-            lines.append(f"- **{r['id']}**: {r['title']} [DONE]")
-            if r.get("summary"):
-                lines.append(f"  Summary: {r['summary'][:500]}")
-        lines.append("")
-        lines.append(
-            "Build on what these stories created. Do not duplicate their work."
-        )
+    if previous_results:
+        done = [r for r in previous_results if r.get("state") == "done"]
+        if done:
+            lines.append("## Previous Stories (already completed)")
+            for r in done:
+                entry = f"- **{r['id']}**: {r['title']} [DONE]"
+                if r.get("summary"):
+                    entry += f"\n  Result: {r['summary'][:500]}"
+                lines.append(entry)
+            lines.append("")
+            lines.append(
+                "Build on what these stories created. Do not duplicate their work."
+            )
 
     return "\n".join(lines)
 
@@ -736,8 +760,18 @@ def _enrich_stub_description(idea: Any) -> str:
     )
 
 
-def _build_story_prompt(idea: Any) -> str:
-    """Build a rich prompt for executing a single story/task."""
+def _build_story_prompt(
+    idea: Any,
+    epic_context: str = "",
+    previous_results: list[dict[str, str]] | None = None,
+) -> str:
+    """Build a rich prompt for executing a single story/task.
+
+    Args:
+        idea: The Idea object to build a prompt for
+        epic_context: Optional epic narrative injected during epic execution
+        previous_results: Optional list of prior story results (id, title, state, summary)
+    """
     type_label = f"[{idea.idea_type.upper()}] " if idea.idea_type != "story" else ""
     description = _enrich_stub_description(idea)
 
@@ -749,6 +783,7 @@ def _build_story_prompt(idea: Any) -> str:
         f"- **Category:** {idea.category}",
         f"- **Description:** {description}",
         _build_epic_context(idea),
+        _format_injected_epic_context(epic_context, previous_results),
         _build_discussion(idea),
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
         _load_git_history(),
@@ -974,7 +1009,12 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
     return (event_type, "")
 
 
-def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None:
+def execute_idea(
+    idea_id: str,
+    extra_context: str = "",
+    epic_context: str = "",
+    previous_results: list[dict[str, str]] | None = None,
+) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
     Spawns a background thread that runs claude.exe and streams
@@ -983,8 +1023,9 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
 
     Args:
         idea_id: The idea to execute
-        extra_context: Optional context to inject into the prompt
-            (used by execute_epic to pass epic narrative and prior results)
+        extra_context: Optional flat context string (legacy, still supported)
+        epic_context: Optional epic narrative for story-in-epic execution
+        previous_results: Optional list of prior story results (id, title, state, summary)
 
     Returns:
         ExecutionState for tracking, or None if idea not found
@@ -1006,7 +1047,11 @@ def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None
     if idea.idea_type == "epic":
         prompt = _build_epic_prompt(idea)
     else:
-        prompt = _build_story_prompt(idea)
+        prompt = _build_story_prompt(
+            idea,
+            epic_context=epic_context,
+            previous_results=previous_results,
+        )
 
     # Log prompt size for debugging context window issues
     prompt_chars = len(prompt)
@@ -1826,14 +1871,13 @@ def execute_epic(epic_id: str) -> ExecutionState | None:
                     f"{story.title}"
                 )
 
-                # Build context from epic narrative + previous results
-                extra_ctx = _build_epic_execution_context(
-                    epic, story_results
-                )
-
                 # Execute the story (full lifecycle: branch, Claude, tests, deploy)
+                # Pass epic context and previous results as structured data
+                # so _build_story_prompt() can embed them in the prompt.
                 story_state = execute_idea(
-                    story_id, extra_context=extra_ctx
+                    story_id,
+                    epic_context=epic.epic_context or "",
+                    previous_results=list(story_results),  # Copy — list grows after each story
                 )
                 if not story_state:
                     state.log(

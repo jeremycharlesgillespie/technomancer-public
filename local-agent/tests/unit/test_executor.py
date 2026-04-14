@@ -11,7 +11,9 @@ from idea_board.executor import (
     PYTEST_TIMEOUT,
     ExecutionState,
     _build_epic_execution_context,
+    _build_story_prompt,
     _find_related_tests,
+    _format_injected_epic_context,
     _parse_pytest_failures,
     execute_epic,
 )
@@ -303,7 +305,7 @@ class TestBuildEpicExecutionContext:
             {"id": "s-1", "title": "Story 1", "state": "done", "summary": "Done"},
         ]
         ctx = _build_epic_execution_context(epic, results)
-        assert "big-picture" not in ctx
+        assert "## Epic Context" not in ctx
         assert "Story 1" in ctx
 
     def test_no_previous_results(self):
@@ -311,7 +313,7 @@ class TestBuildEpicExecutionContext:
         epic.epic_context = "Build something great"
         ctx = _build_epic_execution_context(epic, [])
         assert "Build something great" in ctx
-        assert "Previously Completed" not in ctx
+        assert "Previous Stories" not in ctx
 
     def test_empty_context_and_no_results(self):
         epic = MagicMock()
@@ -393,7 +395,7 @@ class TestExecuteEpic:
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
+        def mock_execute_idea(idea_id, **kwargs):
             executed.append(idea_id)
             ideas[idea_id].state = "done"
             return self._quick_state(idea_id)
@@ -431,7 +433,7 @@ class TestExecuteEpic:
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
+        def mock_execute_idea(idea_id, **kwargs):
             executed.append(idea_id)
             # First story fails
             ideas[idea_id].state = "failed"
@@ -472,7 +474,7 @@ class TestExecuteEpic:
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
+        def mock_execute_idea(idea_id, **kwargs):
             executed.append(idea_id)
             ideas[idea_id].state = "done"
             return self._quick_state(idea_id)
@@ -549,15 +551,15 @@ class TestExecuteEpic:
         assert result is None
 
     def test_passes_epic_context_to_stories(self):
-        """Extra context passed to execute_idea includes epic narrative."""
+        """Structured epic_context and previous_results passed to execute_idea."""
         ideas = self._make_mock_ideas()
-        captured_contexts = []
+        captured_calls = []
 
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
-            captured_contexts.append(extra_context)
+        def mock_execute_idea(idea_id, **kwargs):
+            captured_calls.append(kwargs)
             ideas[idea_id].state = "done"
             return self._quick_state(idea_id)
 
@@ -579,10 +581,12 @@ class TestExecuteEpic:
             result.thread.join(timeout=10)
 
         # First story gets epic context but no previous results
-        assert "End-to-end feature" in captured_contexts[0]
+        assert captured_calls[0]["epic_context"] == "End-to-end feature"
+        assert captured_calls[0]["previous_results"] == []
         # Second story gets epic context AND first story's result
-        assert "End-to-end feature" in captured_contexts[1]
-        assert "Story 1" in captured_contexts[1]
+        assert captured_calls[1]["epic_context"] == "End-to-end feature"
+        assert len(captured_calls[1]["previous_results"]) == 1
+        assert captured_calls[1]["previous_results"][0]["title"] == "Story 1"
 
     def test_all_stories_already_done(self):
         """When all stories are done, epic is marked done without executing any."""
@@ -594,7 +598,7 @@ class TestExecuteEpic:
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
+        def mock_execute_idea(idea_id, **kwargs):
             executed.append(idea_id)
             return self._quick_state(idea_id)
 
@@ -629,7 +633,7 @@ class TestExecuteEpic:
         def mock_get_idea(idea_id):
             return ideas.get(idea_id)
 
-        def mock_execute_idea(idea_id, extra_context=""):
+        def mock_execute_idea(idea_id, **kwargs):
             ideas[idea_id].state = "done"
             return self._quick_state(idea_id)
 
@@ -656,3 +660,174 @@ class TestExecuteEpic:
         assert "[DONE] s-1" in log
         assert "[DONE] s-2" in log
         assert "All 2 stories completed" in log
+
+
+# ---------------------------------------------------------------------------
+# _format_injected_epic_context
+# ---------------------------------------------------------------------------
+
+
+class TestFormatInjectedEpicContext:
+    """Test formatting of epic context and previous results for prompt injection."""
+
+    def test_with_context_and_results(self):
+        ctx = _format_injected_epic_context(
+            "Build a complete auth system",
+            [
+                {
+                    "id": "s-1",
+                    "title": "Add user model",
+                    "state": "done",
+                    "summary": "Created User table with migrations",
+                },
+            ],
+        )
+        assert "## Epic Context" in ctx
+        assert "Build a complete auth system" in ctx
+        assert "## Previous Stories (already completed)" in ctx
+        assert "Add user model" in ctx
+        assert "Created User table" in ctx
+        assert "Do not duplicate" in ctx
+
+    def test_no_epic_context(self):
+        ctx = _format_injected_epic_context(
+            "",
+            [{"id": "s-1", "title": "Story 1", "state": "done", "summary": "Done"}],
+        )
+        assert "## Epic Context" not in ctx
+        assert "Story 1" in ctx
+
+    def test_no_previous_results(self):
+        ctx = _format_injected_epic_context("Build something great", [])
+        assert "Build something great" in ctx
+        assert "Previous Stories" not in ctx
+
+    def test_none_previous_results(self):
+        ctx = _format_injected_epic_context("Big goal", None)
+        assert "Big goal" in ctx
+        assert "Previous Stories" not in ctx
+
+    def test_empty_context_and_no_results(self):
+        assert _format_injected_epic_context("", []) == ""
+
+    def test_empty_context_and_none_results(self):
+        assert _format_injected_epic_context("", None) == ""
+
+    def test_skips_non_done_results(self):
+        ctx = _format_injected_epic_context(
+            "",
+            [
+                {"id": "s-1", "title": "Done story", "state": "done", "summary": "OK"},
+                {"id": "s-2", "title": "Failed story", "state": "failed", "summary": "Err"},
+            ],
+        )
+        assert "Done story" in ctx
+        assert "Failed story" not in ctx
+
+    def test_truncates_long_summary(self):
+        long_summary = "x" * 1000
+        ctx = _format_injected_epic_context(
+            "",
+            [{"id": "s-1", "title": "Story", "state": "done", "summary": long_summary}],
+        )
+        # Summary truncated to 500 chars
+        assert len(ctx) < 800
+
+
+# ---------------------------------------------------------------------------
+# _build_story_prompt with epic context injection
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStoryPromptEpicContext:
+    """Test that _build_story_prompt injects epic context and previous results."""
+
+    @staticmethod
+    def _make_story():
+        idea = MagicMock()
+        idea.id = "s-1"
+        idea.title = "Add API endpoint"
+        idea.idea_type = "story"
+        idea.category = "feature"
+        idea.parent_id = "epic-1"
+        idea.description = "Create the /api/users endpoint"
+        return idea
+
+    def test_includes_epic_context_when_provided(self):
+        idea = self._make_story()
+        with patch.multiple(
+            "idea_board.executor",
+            _enrich_stub_description=lambda i: i.description,
+            _build_epic_context=lambda i: "",
+            _build_discussion=lambda i: "",
+            _load_codebase_summary=lambda: "",
+            _load_git_history=lambda: "",
+            _load_recent_errors=lambda: "",
+            _load_similar_execution_logs=lambda i: "",
+            _get_category_guidance=lambda c: "",
+            _find_relevant_test_file=lambda i: "",
+            _build_workflow_section=lambda i: "",
+        ):
+            prompt = _build_story_prompt(
+                idea,
+                epic_context="Build a complete auth system",
+                previous_results=[
+                    {
+                        "id": "s-0",
+                        "title": "Create data model",
+                        "state": "done",
+                        "summary": "Added User model with migrations",
+                    },
+                ],
+            )
+
+        assert "## Epic Context" in prompt
+        assert "Build a complete auth system" in prompt
+        assert "## Previous Stories (already completed)" in prompt
+        assert "Create data model" in prompt
+        assert "Added User model" in prompt
+
+    def test_no_epic_sections_without_params(self):
+        idea = self._make_story()
+        with patch.multiple(
+            "idea_board.executor",
+            _enrich_stub_description=lambda i: i.description,
+            _build_epic_context=lambda i: "",
+            _build_discussion=lambda i: "",
+            _load_codebase_summary=lambda: "",
+            _load_git_history=lambda: "",
+            _load_recent_errors=lambda: "",
+            _load_similar_execution_logs=lambda i: "",
+            _get_category_guidance=lambda c: "",
+            _find_relevant_test_file=lambda i: "",
+            _build_workflow_section=lambda i: "",
+        ):
+            prompt = _build_story_prompt(idea)
+
+        assert "## Epic Context" not in prompt
+        assert "## Previous Stories" not in prompt
+
+    def test_preserves_story_details(self):
+        """Epic context injection doesn't clobber the story's own details."""
+        idea = self._make_story()
+        with patch.multiple(
+            "idea_board.executor",
+            _enrich_stub_description=lambda i: i.description,
+            _build_epic_context=lambda i: "",
+            _build_discussion=lambda i: "",
+            _load_codebase_summary=lambda: "",
+            _load_git_history=lambda: "",
+            _load_recent_errors=lambda: "",
+            _load_similar_execution_logs=lambda i: "",
+            _get_category_guidance=lambda c: "",
+            _find_relevant_test_file=lambda i: "",
+            _build_workflow_section=lambda i: "",
+        ):
+            prompt = _build_story_prompt(
+                idea,
+                epic_context="Big picture goal",
+            )
+
+        assert "Add API endpoint" in prompt
+        assert "s-1" in prompt
+        assert "Create the /api/users endpoint" in prompt
