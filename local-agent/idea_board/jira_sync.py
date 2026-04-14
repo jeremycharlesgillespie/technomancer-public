@@ -147,6 +147,7 @@ def create_jira_issue(
         if resp.status_code == 201:
             key = resp.json()["key"]
             logger.info("[JiraSync] Created %s for %s: %s", key, idea_id, title[:50])
+            _add_execute_comment(key, idea_id)
             return key
         else:
             logger.warning(
@@ -158,6 +159,67 @@ def create_jira_issue(
         logger.warning("[JiraSync] Create error: %s", e)
 
     return None
+
+
+def _add_execute_comment(jira_key: str, idea_id: str) -> None:
+    """Add a comment to the Jira issue with execution links.
+
+    Includes links to the idea board page, execute API endpoint,
+    and the idea detail endpoint for quick access from Jira.
+    """
+    hub_host = getattr(settings, "server_host", "localhost")
+    hub_port = 8322
+
+    comment_adf = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": "Technomancer Executor Links", "marks": [{"type": "strong"}]},
+                ],
+            },
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [{"type": "paragraph", "content": [
+                            {"type": "text", "text": "Execute: "},
+                            {"type": "text", "text": f"POST http://{hub_host}:{hub_port}/api/ideas/{idea_id}/execute",
+                             "marks": [{"type": "code"}]},
+                        ]}],
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{"type": "paragraph", "content": [
+                            {"type": "text", "text": "View: "},
+                            {"type": "text", "text": f"http://{hub_host}:{hub_port}/ideas#{idea_id}",
+                             "marks": [{"type": "link", "attrs": {"href": f"http://{hub_host}:{hub_port}/ideas#{idea_id}"}}]},
+                        ]}],
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [{"type": "paragraph", "content": [
+                            {"type": "text", "text": "Stream log: "},
+                            {"type": "text", "text": f"http://{hub_host}:{hub_port}/api/ideas/{idea_id}/log/stream",
+                             "marks": [{"type": "code"}]},
+                        ]}],
+                    },
+                ],
+            },
+        ],
+    }
+
+    try:
+        _api(
+            "post",
+            f"/issue/{jira_key}/comment",
+            json={"body": comment_adf},
+        )
+    except Exception as e:
+        logger.warning("[JiraSync] Failed to add execute comment to %s: %s", jira_key, e)
 
 
 def transition_jira_issue(jira_key: str, target_status: str) -> bool:

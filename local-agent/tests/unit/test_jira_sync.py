@@ -112,6 +112,7 @@ class TestCreateJiraIssue:
     @patch("idea_board.jira_sync.settings")
     def test_creates_story(self, mock_settings, mock_conf, mock_api, mock_find):
         mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "localhost"
         mock_resp = MagicMock()
         mock_resp.status_code = 201
         mock_resp.json.return_value = {"key": "TK-10"}
@@ -120,9 +121,9 @@ class TestCreateJiraIssue:
         result = create_jira_issue("idea-001", "My Story", "Description here")
         assert result == "TK-10"
 
-        # Check the API was called with Story type
-        call_args = mock_api.call_args
-        fields = call_args[1]["json"]["fields"]
+        # First API call is the create, second is the comment
+        create_call = mock_api.call_args_list[0]
+        fields = create_call[1]["json"]["fields"]
         assert fields["issuetype"]["name"] == "Story"
         assert "[idea-001]" in fields["summary"]
 
@@ -132,6 +133,7 @@ class TestCreateJiraIssue:
     @patch("idea_board.jira_sync.settings")
     def test_creates_epic(self, mock_settings, mock_conf, mock_api, mock_find):
         mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "localhost"
         mock_resp = MagicMock()
         mock_resp.status_code = 201
         mock_resp.json.return_value = {"key": "TK-11"}
@@ -139,8 +141,28 @@ class TestCreateJiraIssue:
 
         result = create_jira_issue("idea-001", "My Epic", "Desc", idea_type="epic")
         assert result == "TK-11"
-        fields = mock_api.call_args[1]["json"]["fields"]
+        create_call = mock_api.call_args_list[0]
+        fields = create_call[1]["json"]["fields"]
         assert fields["issuetype"]["name"] == "Epic"
+
+    @patch("idea_board.jira_sync.find_jira_issue", return_value=None)
+    @patch("idea_board.jira_sync._api")
+    @patch("idea_board.jira_sync.is_jira_configured", return_value=True)
+    @patch("idea_board.jira_sync.settings")
+    def test_adds_execute_comment(self, mock_settings, mock_conf, mock_api, mock_find):
+        mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "10.0.0.1"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {"key": "TK-20"}
+        mock_api.return_value = mock_resp
+
+        create_jira_issue("idea-042", "Test", "Desc")
+
+        # Second API call should be the comment
+        assert mock_api.call_count == 2
+        comment_call = mock_api.call_args_list[1]
+        assert comment_call[0] == ("post", "/issue/TK-20/comment")
 
     @patch("idea_board.jira_sync.find_jira_issue", return_value="TK-5")
     @patch("idea_board.jira_sync._api")
@@ -148,6 +170,7 @@ class TestCreateJiraIssue:
     @patch("idea_board.jira_sync.settings")
     def test_links_to_parent_epic(self, mock_settings, mock_conf, mock_api, mock_find):
         mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "localhost"
         mock_resp = MagicMock()
         mock_resp.status_code = 201
         mock_resp.json.return_value = {"key": "TK-12"}
@@ -158,7 +181,8 @@ class TestCreateJiraIssue:
             parent_idea_id="idea-001"
         )
         assert result == "TK-12"
-        fields = mock_api.call_args[1]["json"]["fields"]
+        create_call = mock_api.call_args_list[0]
+        fields = create_call[1]["json"]["fields"]
         assert fields["parent"]["key"] == "TK-5"
 
 
