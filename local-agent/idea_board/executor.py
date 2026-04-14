@@ -1711,9 +1711,9 @@ def execute_idea(
                                 state.log("Published to technomancer-public")
                                 break
                             else:
-                                err = (pub.stderr or pub.stdout)[:500]
+                                err = (pub.stderr or pub.stdout)[:2000]
                                 state.log(
-                                    f"Publish attempt {pub_attempt + 1}/3 failed: {err}"
+                                    f"Publish attempt {pub_attempt + 1}/3 failed:\n{err}"
                                 )
                         except Exception as e:
                             state.log(

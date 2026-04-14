@@ -131,11 +131,14 @@ def scan_for_secrets(repo_path: Path) -> list[str]:
         try:
             content = f.read_text(encoding="utf-8", errors="ignore")
             for pattern in SECRET_PATTERNS:
-                matches = re.findall(pattern, content)
+                try:
+                    matches = re.findall(pattern, content)
+                except re.error:
+                    continue  # Skip invalid regex patterns
                 if matches:
                     rel = f.relative_to(repo_path)
                     findings.append(f"  {rel}: {pattern} ({len(matches)} matches)")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
     return findings
 
