@@ -1501,7 +1501,7 @@ def execute_page(idea_id: str):
         body {{ font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 2rem; }}
         .card {{ max-width: 600px; margin: 2rem auto; background: #16213e; border-radius: 12px; padding: 2rem; border-left: 4px solid #0f3460; }}
         h1 {{ color: {title_color}; font-size: 1.4rem; margin-top: 0; }}
-        .idea-id {{ color: #0f3460; font-size: 0.9rem; }}
+        .idea-id {{ color: #ffffff; font-size: 0.9rem; font-weight: bold; }}
         .state {{ display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.85rem; background: #0f3460; color: #e0e0e0; }}
         .state.done {{ background: #1b5e20; }}
         .state.executing {{ background: #e65100; }}
