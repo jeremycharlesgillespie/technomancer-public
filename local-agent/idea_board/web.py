@@ -1334,8 +1334,8 @@ def execute_page(idea_id: str):
         .state.done {{ background: #1b5e20; }}
         .state.executing {{ background: #e65100; }}
         .state.failed {{ background: #b71c1c; }}
-        button {{ background: #e94560; color: white; border: none; padding: 14px 32px; border-radius: 8px; font-size: 1.1rem; cursor: pointer; width: 100%; margin-top: 1.5rem; }}
-        button:hover {{ background: #c81d45; }}
+        button {{ background: #D97706; color: white; border: none; padding: 14px 32px; border-radius: 8px; font-size: 1.1rem; cursor: pointer; width: 100%; margin-top: 1.5rem; }}
+        button:hover {{ background: #b45309; }}
         button:disabled {{ background: #555; cursor: not-allowed; }}
         .log {{ margin-top: 1.5rem; background: #0a0a1a; border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.85rem; max-height: 400px; overflow-y: auto; display: none; }}
         .log-line {{ margin: 2px 0; }}
@@ -1412,6 +1412,18 @@ def execute_page(idea_id: str):
             es.close();
             status.textContent = 'Log stream ended';
         }};
+    }}
+
+    // Auto-detect: if already executing, show the log immediately
+    if ('{state}' === 'executing') {{
+        const btn = document.getElementById('exec-btn');
+        const log = document.getElementById('log');
+        btn.textContent = 'Running...';
+        btn.style.background = '#e65100';
+        btn.disabled = true;
+        log.style.display = 'block';
+        document.getElementById('status').textContent = 'Execution in progress. Streaming log...';
+        streamLog();
     }}
     </script>
 </body>
