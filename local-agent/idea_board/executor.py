@@ -1252,11 +1252,13 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             f"related test file(s) (attempt {attempt})..."
                         )
                         test_start = time.time()
-                        test_result = subprocess.run(
+                        test_result = _run_pytest_with_progress(
                             [sys.executable, "-m", "pytest", "-q",
                              "--tb=short"] + related_tests,
-                            capture_output=True, text=True, timeout=120,
                             cwd=local_agent_dir,
+                            state=state,
+                            label="targeted",
+                            timeout=PYTEST_TIMEOUT,
                         )
                         test_duration = time.time() - test_start
                         test_summary = [

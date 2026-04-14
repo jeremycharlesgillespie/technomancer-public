@@ -235,23 +235,23 @@ class FallbackOrchestrator:
         self._send_alert_recovery()
 
     def _send_alert(self, message: str) -> None:
-        """Send fallback activation alert to Discord."""
+        """Send fallback activation alert to the dedicated alerts channel."""
         try:
-            from .notifications import discord_alert
+            from .alerts import send_alert
 
-            discord_alert(message, level="warning", title="API Fallback")
+            send_alert(message, title="API Fallback", level="warning")
         except Exception:
             log.exception("Failed to send fallback alert")
 
     def _send_alert_recovery(self) -> None:
-        """Send recovery notification to Discord."""
+        """Send recovery notification to the dedicated alerts channel."""
         try:
-            from .notifications import discord_alert
+            from .alerts import send_alert
 
-            discord_alert(
+            send_alert(
                 "Claude API is available again. Resuming normal operation.",
-                level="success",
                 title="API Fallback Recovered",
+                level="success",
             )
         except Exception:
             log.exception("Failed to send recovery alert")

@@ -253,15 +253,11 @@ class UsageAnomalyDetector:
             log.exception("Failed to refresh anomaly baselines from metrics_db")
 
     def _send_alert(self, message: str, endpoint: str) -> None:
-        """Send an anomaly alert to Discord."""
+        """Send an anomaly alert to the dedicated alerts channel."""
         try:
-            from .notifications import discord_alert
+            from .alerts import send_alert
 
-            discord_alert(
-                message,
-                level="warning",
-                title="API Usage Anomaly",
-            )
+            send_alert(message, title="API Usage Anomaly", level="warning")
             log.warning("API anomaly alert: %s", message)
         except Exception:
             log.exception("Failed to send anomaly alert for %s", endpoint)

@@ -225,19 +225,21 @@ class TestFallbackOrchestrator:
 
 
 class TestNotificationIntegration:
-    """Test that alerts are sent to Discord."""
+    """Test that alerts are sent to the dedicated alerts channel."""
 
-    @patch("agent.notifications.discord_send")
+    @patch("agent.alerts.send_alert")
     def test_activation_sends_alert(self, mock_send):
-        mock_send.return_value = "Sent"
         orch = FallbackOrchestrator(max_consecutive_errors=1)
         orch.record_claude_result(success=False, error="blocked")
 
-        assert mock_send.called
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args
+        assert "fallback activated" in call_args[0][0].lower()
+        assert call_args[1]["title"] == "API Fallback"
+        assert call_args[1]["level"] == "warning"
 
-    @patch("agent.notifications.discord_send")
+    @patch("agent.alerts.send_alert")
     def test_recovery_sends_alert(self, mock_send):
-        mock_send.return_value = "Sent"
         orch = FallbackOrchestrator(max_consecutive_errors=1, recovery_cooldown=0)
         orch.record_claude_result(success=False, error="blocked")
         mock_send.reset_mock()
@@ -246,9 +248,13 @@ class TestNotificationIntegration:
         orch.should_use_fallback()
         orch.record_claude_result(success=True, latency=1.0)
 
-        assert mock_send.called
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args
+        assert "available again" in call_args[0][0].lower()
+        assert call_args[1]["title"] == "API Fallback Recovered"
+        assert call_args[1]["level"] == "success"
 
-    @patch("agent.notifications.discord_send", side_effect=Exception("webhook down"))
+    @patch("agent.alerts.send_alert", side_effect=Exception("webhook down"))
     def test_alert_failure_doesnt_crash(self, mock_send):
         orch = FallbackOrchestrator(max_consecutive_errors=1)
         # Should not raise

@@ -305,19 +305,18 @@ class TestBaselineRefresh:
 
 
 class TestNotificationIntegration:
-    """Test that alerts are sent to Discord."""
+    """Test that alerts are sent to the dedicated alerts channel."""
 
-    @patch("agent.notifications.discord_send")
-    def test_send_alert_calls_discord(self, mock_send):
-        mock_send.return_value = "Sent"
+    @patch("agent.alerts.send_alert")
+    def test_send_alert_calls_alerts_channel(self, mock_send):
         det = UsageAnomalyDetector(cooldown_seconds=0)
         det._send_alert("Test alert message", "ollama")
 
-        mock_send.assert_called_once()
-        call_args = mock_send.call_args
-        assert "Test alert message" in call_args[1].get("message", "") or "Test alert message" in str(call_args)
+        mock_send.assert_called_once_with(
+            "Test alert message", title="API Usage Anomaly", level="warning"
+        )
 
-    @patch("agent.notifications.discord_send", side_effect=Exception("webhook down"))
+    @patch("agent.alerts.send_alert", side_effect=Exception("webhook down"))
     def test_send_alert_handles_discord_failure(self, mock_send):
         det = UsageAnomalyDetector()
         # Should not raise even if Discord is down
