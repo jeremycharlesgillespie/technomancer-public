@@ -37,9 +37,17 @@ from .memory_system import get_memory_system
 from .perf_monitor import get_monitor as get_perf_monitor
 
 try:
-    from idea_board.models import load_ideas
+    from idea_board.models import (
+        add_idea,
+        load_ideas,
+        set_epic_context,
+        set_execution_order,
+    )
 except ImportError:  # idea_board may not be on sys.path in all contexts
     load_ideas = None  # type: ignore[assignment]
+    add_idea = None  # type: ignore[assignment]
+    set_execution_order = None  # type: ignore[assignment]
+    set_epic_context = None  # type: ignore[assignment]
 
 VAULT_PATH: Path = settings.llm_memory_path
 CRASH_LOG: Path = VAULT_PATH / "Permanent" / "crash_log.md"
@@ -107,6 +115,50 @@ Output ONLY a JSON array of idea objects. No other text.
 
 --- EXISTING IDEAS (don't duplicate these) ---
 {existing}
+"""
+
+
+# Prompt for signal-driven epic synthesis (idea-194)
+SYNTHESIS_PROMPT = """You are an improvement analyst for the Technomancer project — a Discord bot
+framework with Ollama LLM, Claude API integration, memory system, news digest,
+and developer learning tools.
+
+Analyze these system signals and synthesize exactly ONE epic with 1-3 small,
+focused stories.  The epic should address the most impactful opportunity found
+in the signals.
+
+Output a JSON object (NOT an array) with these fields:
+- "title": Epic title (under 80 chars)
+- "epic_context": 2-3 sentences explaining the big picture — what problem this
+  epic solves and what the end state looks like when all stories are done.
+- "category": One of: performance, feature, quality, security, ux
+- "source": Which signal most influenced this — one of: error_analysis,
+  performance_analysis, conversation_analysis, coverage_analysis, recent_changes
+- "stories": Array of 1-3 story objects, each with:
+    - "title": Story title (under 80 chars)
+    - "description": Structured with WHAT/WHY/HOW sections.
+      Use this format:
+      "WHAT: <what to build>\\n\\nWHY: <problem it solves>\\n\\nHOW: <implementation approach>\\n\\nFiles to modify: <comma-separated file paths>"
+
+RULES:
+- Each story must be independently implementable and testable
+- Stories should be small: 1-2 files changed, under 200 lines of new code
+- The epic must deliver end-to-end value — not just data collection without action
+- Be specific: name files, functions, and concrete changes
+- Don't suggest things already in the EXISTING IDEAS list
+- Don't suggest things the CODEBASE already has
+- Focus on what would genuinely help the project owner (a Sr. Software Engineer)
+
+--- COLLECTED SIGNALS ---
+{signals}
+
+--- CODEBASE (files that already exist — don't suggest features we already have) ---
+{codebase}
+
+--- EXISTING IDEAS (don't duplicate these) ---
+{existing}
+
+Output ONLY a JSON object. No other text.
 """
 
 
@@ -537,19 +589,199 @@ def _parse_ideas(response: str) -> list[dict[str, str]]:
         valid = []
         for idea in ideas:
             if isinstance(idea, dict) and "title" in idea and "description" in idea:
-                valid.append({
+                parsed: dict[str, Any] = {
                     "title": str(idea["title"])[:100],
                     "description": str(idea["description"])[:2000],
                     "category": str(idea.get("category", "feature")),
                     "source": str(idea.get("source", "llm_analysis")),
-                })
+                }
+                # Preserve epic-related fields when present
+                if "idea_type" in idea:
+                    parsed["idea_type"] = str(idea["idea_type"])
+                if "stories" in idea and isinstance(idea["stories"], list):
+                    parsed["stories"] = idea["stories"]
+                if "epic_context" in idea:
+                    parsed["epic_context"] = str(idea["epic_context"])[:2000]
+                valid.append(parsed)
         return valid
     except (json.JSONDecodeError, TypeError):
         return []
 
 
+def _parse_epic_response(response: str) -> dict[str, Any] | None:
+    """Parse the LLM's JSON response into an epic dict with stories.
+
+    Expects a JSON *object* (not array) with title, epic_context,
+    category, source, and stories fields.
+
+    Args:
+        response: Raw LLM output
+
+    Returns:
+        Validated epic dict, or None if parsing fails
+    """
+    # Try markdown code block first
+    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", response, re.DOTALL)
+    if json_match:
+        raw = json_match.group(1)
+    else:
+        # Fall back to bare JSON object
+        json_match = re.search(r"\{.*\}", response, re.DOTALL)
+        if json_match:
+            raw = json_match.group(0)
+        else:
+            return None
+
+    try:
+        epic = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    if not isinstance(epic, dict) or "title" not in epic:
+        return None
+
+    # Normalise stories — accept list of dicts or list of strings
+    stories = epic.get("stories", [])
+    if not isinstance(stories, list):
+        stories = []
+
+    valid_stories: list[dict[str, str]] = []
+    for s in stories:
+        if isinstance(s, dict) and s.get("title", "").strip():
+            valid_stories.append({
+                "title": str(s["title"]).strip()[:100],
+                "description": str(s.get("description", f"Story under epic: {epic['title']}"))[:2000],
+            })
+        elif isinstance(s, str) and s.strip():
+            valid_stories.append({
+                "title": s.strip()[:100],
+                "description": f"Story under epic: {epic['title']}",
+            })
+    epic["stories"] = valid_stories[:3]
+
+    return epic
+
+
+async def synthesize_epic(signals: str, agent: Any) -> dict[str, Any] | None:
+    """Synthesize one epic with stories from collected signals using the LLM.
+
+    This is the core synthesis step of the idea generation pipeline:
+    collected signals in, structured epic + stories out on the idea board.
+
+    Steps:
+        1. Build prompt from signals + codebase summary + existing ideas
+        2. Call Ollama via the agent
+        3. Parse the structured JSON response
+        4. Create epic via add_idea (dedup handled automatically)
+        5. Create child stories under the epic
+        6. Set execution_order and epic_context on the epic
+
+    Args:
+        signals: Formatted signal string from collect_signals()
+        agent: An isolated Agent instance for LLM calls
+
+    Returns:
+        Dict with epic_id, epic_title, story_ids, category, source — or
+        None if nothing was created (LLM failure, parse failure, or dedup).
+    """
+    codebase = _load_codebase_summary()
+    existing = _load_existing_ideas()
+
+    prompt = SYNTHESIS_PROMPT.format(
+        signals=signals,
+        codebase=codebase,
+        existing=existing,
+    )
+
+    # Call Ollama via the isolated agent
+    try:
+        response = await asyncio.to_thread(agent.run, prompt)
+    except Exception as e:
+        logger.error("[IdeaGen] LLM synthesis failed: %s", e)
+        return None
+
+    # Parse the response
+    epic_data = _parse_epic_response(response)
+    if not epic_data:
+        logger.info("[IdeaGen] No valid epic parsed from LLM response.")
+        return None
+
+    # Record existing IDs so we can detect dedup from add_idea
+    existing_ids = set()
+    if load_ideas is not None:
+        try:
+            existing_ids = {i.id for i in load_ideas()}
+        except Exception:
+            pass
+
+    # Create the epic
+    epic_desc = epic_data.get("epic_context", epic_data.get("description", ""))
+    epic = add_idea(
+        title=str(epic_data["title"])[:100],
+        description=str(epic_desc)[:2000],
+        source=str(epic_data.get("source", "signal_analysis")),
+        category=str(epic_data.get("category", "feature")),
+        idea_type="epic",
+    )
+
+    # If add_idea returned an existing idea (dedup), skip story creation
+    if epic.id in existing_ids:
+        logger.info(
+            "[IdeaGen] Duplicate epic skipped: '%s' ≈ '%s'",
+            epic_data["title"],
+            epic.title,
+        )
+        return None
+
+    # Set epic_context
+    epic_context = str(epic_data.get("epic_context", ""))[:2000]
+    if epic_context:
+        set_epic_context(epic.id, epic_context)
+
+    # Create child stories
+    story_ids: list[str] = []
+    for story_data in epic_data.get("stories", []):
+        title = story_data.get("title", "").strip()
+        if not title:
+            continue
+
+        story = add_idea(
+            title=title[:100],
+            description=str(story_data.get("description", f"Story under epic: {epic.title}"))[:2000],
+            source=str(epic_data.get("source", "signal_analysis")),
+            category=str(epic_data.get("category", "feature")),
+            idea_type="story",
+            parent_id=epic.id,
+        )
+        # Only track if it's a genuinely new story (not deduped)
+        if story.id not in existing_ids:
+            story_ids.append(story.id)
+
+    # Set execution order on the epic
+    if story_ids:
+        set_execution_order(epic.id, story_ids)
+
+    logger.info(
+        "[IdeaGen] Synthesized epic %s: %s with %d stories",
+        epic.id,
+        epic.title,
+        len(story_ids),
+    )
+
+    return {
+        "epic_id": epic.id,
+        "epic_title": epic.title,
+        "story_ids": story_ids,
+        "category": epic_data.get("category", "feature"),
+        "source": epic_data.get("source", "signal_analysis"),
+    }
+
+
 async def generate_ideas(agent: Any) -> list[dict[str, str]]:
     """Run one idea generation cycle using the provided agent.
+
+    Collects system signals, synthesizes an epic with stories via the
+    LLM, and creates them on the idea board.
 
     IMPORTANT: The agent passed here MUST be a dedicated instance,
     not the main bot agent. This prevents any interaction leakage.
@@ -558,73 +790,29 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
         agent: An isolated Agent instance for idea generation
 
     Returns:
-        List of idea dicts that were created
+        List of idea summary dicts (one per epic created)
     """
     logger.info("[IdeaGen] Starting idea generation cycle...")
 
-    # Gather all inputs
-    codebase = _load_codebase_summary()
-    news = await _load_news_articles()
-    conversations = _load_conversations()
-    errors = _load_errors()
-    performance = _load_performance()
-    existing = _load_existing_ideas()
+    # Collect signals from all system sources (idea-193)
+    signals = collect_signals()
 
-    # Build prompt
-    prompt = IDEA_PROMPT.format(
-        owner_name=settings.owner_name,
-        codebase=codebase,
-        news=news,
-        conversations=conversations,
-        errors=errors,
-        performance=performance,
-        existing=existing,
-    )
-
-    # Run through the isolated agent
-    try:
-        response = await asyncio.to_thread(agent.run, prompt)
-    except Exception as e:
-        logger.error(f"[IdeaGen] LLM call failed: {e}")
-        return []
-
-    # Parse and save ideas
-    parsed = _parse_ideas(response)
-    if not parsed:
+    # Synthesize an epic + stories from the signals (idea-194)
+    result = await synthesize_epic(signals, agent)
+    if not result:
         logger.info("[IdeaGen] No new ideas generated this cycle.")
         return []
 
-    from idea_board.models import add_idea
+    # Return a list for compatibility with _notify_discord
+    created = [{
+        "title": result["epic_title"],
+        "category": result["category"],
+        "source": result["source"],
+        "story_count": len(result["story_ids"]),
+    }]
 
-    created = []
-    for idea_data in parsed:
-        idea_type = idea_data.get("idea_type", "story")
-        if idea_type not in ("epic", "story", "task"):
-            idea_type = "story"
-
-        idea = add_idea(
-            title=idea_data["title"],
-            description=idea_data["description"],
-            source=idea_data["source"],
-            category=idea_data["category"],
-            idea_type=idea_type,
-        )
-        created.append(idea_data)
-
-        # If this is an epic with stories, create child story stubs
-        if idea_type == "epic" and idea_data.get("stories"):
-            for story_title in idea_data["stories"][:6]:
-                if isinstance(story_title, str) and story_title.strip():
-                    add_idea(
-                        title=story_title.strip(),
-                        description=f"Story under epic: {idea.title}",
-                        source=idea_data["source"],
-                        category=idea_data["category"],
-                        idea_type="story",
-                        parent_id=idea.id,
-                    )
-
-    logger.info(f"[IdeaGen] Generated {len(created)} new ideas.")
+    logger.info("[IdeaGen] Generated epic %s with %d stories.",
+                result["epic_id"], len(result["story_ids"]))
     return created
 
 
