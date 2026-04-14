@@ -160,6 +160,16 @@ def get_execution(idea_id: str) -> ExecutionState | None:
     return _active.get(idea_id)
 
 
+def is_any_executing() -> bool:
+    """Check if any idea is currently being executed."""
+    return any(state.is_alive for state in _active.values())
+
+
+def get_active_execution_ids() -> list[str]:
+    """Get IDs of all currently executing ideas."""
+    return [idea_id for idea_id, state in _active.items() if state.is_alive]
+
+
 def _notify_discord(message: str) -> None:
     """Send a notification to the #claude-code-updates channel via webhook.
 

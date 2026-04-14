@@ -133,6 +133,33 @@ class Settings(BaseSettings):
         default=True, description="Enable/disable the daily briefing"
     )
 
+    # AIM (AI Manager) settings
+    aim_cycle_interval: int = Field(
+        default=180, description="Seconds between AIM decision cycles"
+    )
+    aim_board_low_threshold: int = Field(
+        default=10, description="Generate new work when TODO count drops below this"
+    )
+    aim_board_high_threshold: int = Field(
+        default=100, description="Stop generating work when TODO count exceeds this"
+    )
+    aim_worker_heartbeat_timeout: int = Field(
+        default=300, description="Seconds without heartbeat before Worker is considered dead"
+    )
+    aim_execution_timeout: int = Field(
+        default=2700, description="Seconds before Worker considers an execution stuck (45 min)"
+    )
+    aim_max_worker_failures: int = Field(
+        default=3, description="Consecutive Worker failures before Discord escalation"
+    )
+    aim_auto_approve_categories: str = Field(
+        default="quality,performance,test",
+        description="Comma-separated categories that AIM auto-approves",
+    )
+    aim_status_report_interval: int = Field(
+        default=20, description="Send Discord status report every N cycles"
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"
