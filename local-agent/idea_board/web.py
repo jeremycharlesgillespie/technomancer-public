@@ -1319,6 +1319,12 @@ def execute_page(idea_id: str):
     idea_type = idea.idea_type if idea else "story"
     title_color = "#9b59b6" if idea_type == "epic" else "#2ecc71"
 
+    # Detect stale "executing" (no executor thread alive)
+    if state == "executing":
+        live = get_execution(idea_id)
+        if not live:
+            state = "interrupted"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1334,6 +1340,7 @@ def execute_page(idea_id: str):
         .state.done {{ background: #1b5e20; }}
         .state.executing {{ background: #e65100; }}
         .state.failed {{ background: #b71c1c; }}
+        .state.interrupted {{ background: #6a1b9a; }}
         button {{ background: #D97706; color: white; border: none; padding: 14px 32px; border-radius: 8px; font-size: 1.1rem; cursor: pointer; width: 100%; margin-top: 1.5rem; }}
         button:hover {{ background: #b45309; }}
         button:disabled {{ background: #555; cursor: not-allowed; }}
@@ -1465,7 +1472,7 @@ def execute_page(idea_id: str):
         }};
     }}
 
-    // Auto-detect: if already executing, show the log immediately
+    // Auto-detect on page load
     if ('{state}' === 'executing') {{
         const btn = document.getElementById('exec-btn');
         const log = document.getElementById('log');
@@ -1475,6 +1482,8 @@ def execute_page(idea_id: str):
         log.style.display = 'block';
         document.getElementById('status').textContent = 'Execution in progress. Streaming log...';
         streamLog();
+    }} else if ('{state}' === 'interrupted') {{
+        document.getElementById('status').textContent = 'Execution was interrupted (bot restarted). Click to re-execute.';
     }}
     </script>
 </body>
@@ -1558,9 +1567,16 @@ def api_log_stream(idea_id: str) -> Response:
         if not state:
             idea = get_idea(idea_id)
             lines = idea.execution_log.split("\n") if idea and idea.execution_log else []
-            yield _sse("log", {"lines": lines})
+
+            # Detect stale "executing" state (executor thread lost on restart)
+            actual_state = idea.state if idea else "unknown"
+            if actual_state == "executing":
+                actual_state = "interrupted"
+
+            if lines:
+                yield _sse("log", {"lines": lines})
             yield _sse("done", {
-                "idea_state": idea.state if idea else "unknown",
+                "idea_state": actual_state,
                 "is_alive": False,
             })
             return
