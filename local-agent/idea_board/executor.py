@@ -210,6 +210,67 @@ def _snapshot_system_load() -> str:
         return f"(load snapshot failed: {e})"
 
 
+def _run_pytest_with_progress(
+    cmd: list[str],
+    cwd: str,
+    state: ExecutionState,
+    label: str,
+    timeout: int = 600,
+) -> subprocess.CompletedProcess:
+    """Run pytest as a subprocess, streaming progress lines to the execution log.
+
+    Reads stdout line by line so the execute page shows live updates
+    instead of a blank screen for minutes.
+
+    Returns a CompletedProcess-like result with stdout captured.
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=cwd,
+    )
+    start = time.time()
+    stdout_lines: list[str] = []
+
+    while True:
+        if time.time() - start > timeout:
+            proc.kill()
+            raise subprocess.TimeoutExpired(cmd, timeout)
+
+        raw = proc.stdout.readline() if proc.stdout else b""
+        if not raw:
+            if proc.poll() is not None:
+                break
+            continue
+
+        line = raw.decode("utf-8", errors="replace").rstrip()
+        stdout_lines.append(line)
+
+        # Show meaningful pytest progress lines
+        if "passed" in line or "failed" in line or "error" in line.lower():
+            state.log_lines.append(f"[{label}] {line.strip()}")
+        elif "%" in line and ("PASSED" in line or "FAILED" in line):
+            state.log_lines.append(f"[{label}] {line.strip()}")
+        elif line.startswith("FAILED "):
+            state.log_lines.append(f"[{label}] {line.strip()}")
+        elif "rerun" in line.lower():
+            state.log_lines.append(f"[{label}] {line.strip()}")
+        # Show periodic progress (every ~30 lines of dot output)
+        elif len(stdout_lines) % 30 == 0 and line.strip():
+            elapsed = int(time.time() - start)
+            state.log_lines.append(
+                f"[{label}] {elapsed}s elapsed... ({len(stdout_lines)} lines)"
+            )
+
+    # Drain remaining
+    rest = proc.stdout.read() if proc.stdout else b""
+    if rest:
+        stdout_lines.extend(rest.decode("utf-8", errors="replace").split("\n"))
+
+    proc.wait()
+    stdout = "\n".join(stdout_lines)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout=stdout, stderr="")
+
+
 def _find_related_tests(project_root: str | Path) -> list[str]:
     """Find test files related to changed source files on the current branch.
 
@@ -925,12 +986,13 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             # --- Phase 0a: Baseline pytest on main ---
             state.log_lines.append("--- Baseline: pytest on main ---")
             try:
-                baseline_result = subprocess.run(
+                baseline_result = _run_pytest_with_progress(
                     [sys.executable, "-m", "pytest", "--tb=no", "-q",
                      "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
-                    capture_output=True, text=True,
-                    timeout=BASELINE_TIMEOUT,
                     cwd=local_agent_dir,
+                    state=state,
+                    label="baseline",
+                    timeout=BASELINE_TIMEOUT,
                 )
                 state.baseline_failures = _parse_pytest_failures(
                     baseline_result.stdout
@@ -1379,23 +1441,17 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.log_lines.append(f"Pre-test: {load_before}")
             full_start = time.time()
 
-            full_result = subprocess.run(
+            full_result = _run_pytest_with_progress(
                 [sys.executable, "-m", "pytest", "-q", "--tb=short",
                  "-n", "4", "--reruns", "2", "--reruns-delay", "1"],
-                capture_output=True, text=True,
-                timeout=PYTEST_TIMEOUT,
                 cwd=local_agent_dir,
+                state=state,
+                label="tests",
+                timeout=PYTEST_TIMEOUT,
             )
 
             full_duration = time.time() - full_start
             load_after = _snapshot_system_load()
-            full_summary = [
-                ln.strip()
-                for ln in full_result.stdout.split("\n")
-                if "passed" in ln or "failed" in ln or "error" in ln.lower()
-            ]
-            for line in full_summary:
-                state.log_lines.append(line)
             state.log_lines.append(
                 f"Full suite: {full_duration:.0f}s | {load_after}"
             )
