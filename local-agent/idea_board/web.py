@@ -10,6 +10,7 @@ Routes:
     POST /api/ideas/<id>/vote     — Vote on an idea
     POST /api/ideas/<id>/comment  — Add a comment
     POST /api/ideas/<id>/execute  — Trigger Claude Code execution
+    GET  /api/ideas/<id>/log/stream — SSE stream for live execution log
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
 """
@@ -27,10 +28,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, request
+import time
+
+from flask import Flask, Response, jsonify, request
 
 from agent.config import settings
 
+from .executor import get_execution
 from .models import (
     Idea,
     add_comment,
@@ -603,7 +607,8 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
                 showToast('Claude Code execution started! Watch the log below.');
                 btn.textContent = 'Running...';
                 btn.style.background = 'var(--green)';
-                setTimeout(() => location.reload(), 2000);
+                const card = document.querySelector(`[data-idea="${{id}}"]`);
+                if (card) startLogStream(id, card);
             }} else {{
                 showToast(data.error || 'Failed to start execution');
                 btn.textContent = 'Execute';
@@ -719,56 +724,53 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         await fetch(`/api/ideas/${{id}}/cancel`, {{method: 'POST'}});
     }}
 
-    function startLogPolling(id, card) {{
-        // Poll execution log every 3 seconds
-        const poll = setInterval(async () => {{
-            try {{
-                // Check idea state
-                const ideaResp = await fetch(`/api/ideas/${{id}}`);
-                const idea = await ideaResp.json();
+    function startLogStream(id, card) {{
+        const logEl = document.getElementById(`log-${{id}}`);
+        const statusEl = card.querySelector('.exec-status');
+        // Accumulate lines locally so we can cap display at 50
+        let allLines = [];
+        const src = new EventSource(`/api/ideas/${{id}}/log/stream`);
 
-                // Get live log
-                const logResp = await fetch(`/api/ideas/${{id}}/log`);
-                const logData = await logResp.json();
+        src.addEventListener('log', (e) => {{
+            const data = JSON.parse(e.data);
+            allLines = allLines.concat(data.lines);
+            if (logEl && allLines.length > 0) {{
+                logEl.textContent = allLines.slice(-50).join('\\n');
+                logEl.scrollTop = logEl.scrollHeight;
+            }}
+        }});
 
-                const logEl = document.getElementById(`log-${{id}}`);
-                if (logEl && logData.lines.length > 0) {{
-                    logEl.textContent = logData.lines.slice(-50).join('\\n');
-                    logEl.scrollTop = logEl.scrollHeight;
-                }}
+        src.addEventListener('state', (e) => {{
+            const data = JSON.parse(e.data);
+            if (statusEl && data.is_alive) {{
+                statusEl.textContent = `Claude Code is working... (${{Math.round(data.elapsed)}}s)`;
+            }}
+        }});
 
-                // Update elapsed time
-                const statusEl = card.querySelector('.exec-status');
-                if (statusEl && logData.is_alive) {{
-                    statusEl.textContent = `Claude Code is working... (${{Math.round(logData.elapsed)}}s)`;
-                }}
+        src.addEventListener('done', (e) => {{
+            src.close();
+            const data = JSON.parse(e.data);
+            const stateEl = card.querySelector('.badge-state');
+            const cancelBtn = card.querySelector('.btn-cancel');
+            if (data.idea_state === 'done') {{
+                if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
+                card.className = 'card done';
+                if (statusEl) {{ statusEl.textContent = 'Done'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--green)'; }}
+            }} else if (data.idea_state === 'failed') {{
+                if (stateEl) {{ stateEl.textContent = 'failed'; stateEl.className = 'badge badge-state failed'; }}
+                card.className = 'card failed';
+                if (statusEl) {{ statusEl.textContent = 'Failed'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--red)'; }}
+            }}
+            if (cancelBtn) cancelBtn.remove();
+        }});
 
-                // Check for completion
-                if (idea.state === 'done') {{
-                    clearInterval(poll);
-                    const stateEl = card.querySelector('.badge-state');
-                    if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
-                    card.className = 'card done';
-                    if (statusEl) {{ statusEl.textContent = 'Done'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--green)'; }}
-                    const cancelBtn = card.querySelector('.btn-cancel');
-                    if (cancelBtn) cancelBtn.remove();
-                }} else if (idea.state === 'failed') {{
-                    clearInterval(poll);
-                    const stateEl = card.querySelector('.badge-state');
-                    if (stateEl) {{ stateEl.textContent = 'failed'; stateEl.className = 'badge badge-state failed'; }}
-                    card.className = 'card failed';
-                    if (statusEl) {{ statusEl.textContent = 'Failed'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--red)'; }}
-                    const cancelBtn = card.querySelector('.btn-cancel');
-                    if (cancelBtn) cancelBtn.remove();
-                }}
-            }} catch(e) {{}}
-        }}, 3000);
+        src.onerror = () => {{ src.close(); }};
     }}
 
-    // Auto-start log polling for any cards already in executing state
+    // Auto-start log streaming for any cards already in executing state
     document.querySelectorAll('.card.executing').forEach(card => {{
         const id = card.dataset.idea;
-        if (id) startLogPolling(id, card);
+        if (id) startLogStream(id, card);
     }})
     async function doComment(e, id) {{
         e.preventDefault();
@@ -1276,8 +1278,6 @@ def api_log(idea_id: str) -> tuple:
     Returns the current stdout buffer from the running Claude Code
     process. Poll this every few seconds for live updates.
     """
-    from .executor import get_execution
-
     state = get_execution(idea_id)
     if state:
         return jsonify({
@@ -1302,6 +1302,83 @@ def api_log(idea_id: str) -> tuple:
         })
 
     return jsonify({"idea_id": idea_id, "lines": [], "line_count": 0})
+
+
+@app.route("/api/ideas/<idea_id>/log/stream")
+def api_log_stream(idea_id: str) -> Response:
+    """GET /api/ideas/<id>/log/stream — SSE stream for live execution log.
+
+    Replaces polling of /api/ideas/<id>/log with a single persistent
+    connection.  Sends three event types:
+
+    - ``log``   : new log lines (JSON list of strings)
+    - ``state`` : execution metadata (elapsed, is_alive, idea state)
+    - ``done``  : final event when execution finishes (includes idea state)
+
+    The stream closes itself once the execution is no longer alive and all
+    lines have been flushed, or after a short idle period if the idea is
+    not currently executing at all (returns stored log in one shot).
+    """
+
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    def generate():
+        state = get_execution(idea_id)
+
+        # ---- Not actively executing: send stored log and close ----
+        if not state:
+            idea = get_idea(idea_id)
+            lines = idea.execution_log.split("\n") if idea and idea.execution_log else []
+            yield _sse("log", {"lines": lines})
+            yield _sse("done", {
+                "idea_state": idea.state if idea else "unknown",
+                "is_alive": False,
+            })
+            return
+
+        # ---- Live execution: stream incremental updates ----
+        sent = 0
+        while True:
+            current_lines = state.log_lines
+            new_count = len(current_lines)
+
+            # Send any new lines since last push
+            if new_count > sent:
+                yield _sse("log", {"lines": current_lines[sent:]})
+                sent = new_count
+
+            # Send state update
+            alive = state.is_alive
+            idea = get_idea(idea_id)
+            idea_state = idea.state if idea else "unknown"
+            yield _sse("state", {
+                "elapsed": round(state.elapsed, 1),
+                "is_alive": alive,
+                "idea_state": idea_state,
+            })
+
+            # Execution finished — flush remaining lines and close
+            if not alive or idea_state in ("done", "failed"):
+                final_lines = state.log_lines
+                if len(final_lines) > sent:
+                    yield _sse("log", {"lines": final_lines[sent:]})
+                yield _sse("done", {
+                    "idea_state": idea_state,
+                    "is_alive": False,
+                })
+                return
+
+            time.sleep(1)
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.route("/api/health")
