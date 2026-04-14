@@ -2,18 +2,26 @@
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent.idea_generator import (
     IDEA_PROMPT,
+    MAX_PROPOSED_IDEAS,
+    OFFSET_AFTER_NEWS_MINUTES,
     SYNTHESIS_PROMPT,
+    _count_proposed_ideas,
     _load_codebase_summary,
     _load_errors,
     _load_performance,
+    _notify_discord,
     _parse_epic_response,
+    _seconds_until_next_run,
+    idea_generation_loop,
+    start_idea_generator,
     synthesize_epic,
 )
 
@@ -436,3 +444,249 @@ class TestSynthesizeEpic:
         assert result["story_ids"] == []
         # execution_order should NOT be called with empty list
         mock_order.assert_not_called()
+
+
+# =============================================================================
+# HOURLY SCHEDULE (idea-195)
+# =============================================================================
+
+
+class TestCountProposedIdeas:
+    """Test _count_proposed_ideas backlog check."""
+
+    def _make_idea(self, state: str) -> MagicMock:
+        idea = MagicMock()
+        idea.state = state
+        return idea
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_counts_only_proposed(self, mock_load):
+        mock_load.return_value = [
+            self._make_idea("proposed"),
+            self._make_idea("proposed"),
+            self._make_idea("approved"),
+            self._make_idea("done"),
+            self._make_idea("proposed"),
+        ]
+        assert _count_proposed_ideas() == 3
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_when_no_proposed(self, mock_load):
+        mock_load.return_value = [
+            self._make_idea("approved"),
+            self._make_idea("done"),
+        ]
+        assert _count_proposed_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_on_empty_board(self, mock_load):
+        mock_load.return_value = []
+        assert _count_proposed_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_on_exception(self, mock_load):
+        mock_load.side_effect = RuntimeError("file locked")
+        assert _count_proposed_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas", None)
+    def test_returns_zero_when_import_missing(self):
+        assert _count_proposed_ideas() == 0
+
+
+class TestSecondsUntilNextRun:
+    """Test _seconds_until_next_run hourly timing logic."""
+
+    @patch("agent.idea_generator.datetime")
+    def test_before_target_minute_waits_this_hour(self, mock_dt):
+        # 10:02 → should wait until 10:05 (3 minutes)
+        now = datetime(2026, 4, 14, 10, 2, 0)
+        mock_dt.now.return_value = now
+        # now.replace() works because now is a real datetime instance
+        result = _seconds_until_next_run()
+        assert 170 <= result <= 190  # ~3 minutes
+
+    @patch("agent.idea_generator.datetime")
+    def test_after_target_minute_waits_next_hour(self, mock_dt):
+        # 10:10 → should wait until 11:05 (55 minutes)
+        now = datetime(2026, 4, 14, 10, 10, 0)
+        mock_dt.now.return_value = now
+        # now.replace() works because now is a real datetime instance
+        result = _seconds_until_next_run()
+        assert 3200 <= result <= 3400  # ~55 minutes
+
+    @patch("agent.idea_generator.datetime")
+    def test_at_exact_target_waits_next_hour(self, mock_dt):
+        # Exactly at :05 → should wait until next hour's :05
+        now = datetime(2026, 4, 14, 10, OFFSET_AFTER_NEWS_MINUTES, 0)
+        mock_dt.now.return_value = now
+        # now.replace() works because now is a real datetime instance
+        result = _seconds_until_next_run()
+        assert 3500 <= result <= 3700  # ~60 minutes
+
+    @patch("agent.idea_generator.datetime")
+    def test_minimum_60_seconds(self, mock_dt):
+        # 10:04:55 → would be 5 seconds, but clamps to 60
+        now = datetime(2026, 4, 14, 10, 4, 55)
+        mock_dt.now.return_value = now
+        # now.replace() works because now is a real datetime instance
+        result = _seconds_until_next_run()
+        assert result >= 60
+
+
+class TestNotifyDiscord:
+    """Test _notify_discord sends to #claude-code."""
+
+    @pytest.mark.asyncio
+    async def test_sends_to_claude_code_channel(self):
+        channel = AsyncMock()
+        channel.name = "claude-code"
+        guild = MagicMock()
+        guild.text_channels = [channel]
+        client = MagicMock()
+        client.guilds = [guild]
+
+        ideas = [{"title": "Test Epic", "category": "feature", "story_count": 2}]
+        await _notify_discord(client, ideas)
+
+        channel.send.assert_called_once()
+        msg = channel.send.call_args[0][0]
+        assert "Test Epic" in msg
+        assert "2 stories" in msg
+        assert "[IdeaGen]" in msg
+
+    @pytest.mark.asyncio
+    async def test_skips_when_channel_not_found(self):
+        channel = MagicMock()
+        channel.name = "other-channel"
+        guild = MagicMock()
+        guild.text_channels = [channel]
+        client = MagicMock()
+        client.guilds = [guild]
+
+        # Should not raise
+        await _notify_discord(client, [{"title": "X", "category": "y"}])
+
+    @pytest.mark.asyncio
+    async def test_handles_send_exception(self):
+        channel = AsyncMock()
+        channel.name = "claude-code"
+        channel.send.side_effect = RuntimeError("Discord down")
+        guild = MagicMock()
+        guild.text_channels = [channel]
+        client = MagicMock()
+        client.guilds = [guild]
+
+        # Should not raise
+        await _notify_discord(client, [{"title": "X", "category": "y"}])
+
+
+class TestIdeaGenerationLoop:
+    """Test the hourly loop behavior."""
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas")
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_skips_when_backlog_full(
+        self, mock_wait, mock_count, mock_gen, mock_notify
+    ):
+        """Loop skips generation when proposed ideas exceed limit."""
+        mock_count.return_value = MAX_PROPOSED_IDEAS + 1
+
+        client = MagicMock()
+        agent = MagicMock()
+
+        # Run one iteration then break
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        # generate_ideas should NOT have been called
+        mock_gen.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas", return_value=3)
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_generates_when_backlog_ok(
+        self, mock_wait, mock_count, mock_gen, mock_notify
+    ):
+        """Loop runs generation when proposed count is under limit."""
+        mock_gen.return_value = [{"title": "New Epic", "category": "feature"}]
+
+        client = MagicMock()
+        agent = MagicMock()
+
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        mock_gen.assert_called_once_with(agent)
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas", return_value=0)
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_no_notify_when_nothing_generated(
+        self, mock_wait, mock_count, mock_gen, mock_notify
+    ):
+        """Loop does not notify when generate_ideas returns empty."""
+        mock_gen.return_value = []
+
+        client = MagicMock()
+        agent = MagicMock()
+
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        mock_gen.assert_called_once()
+        mock_notify.assert_not_called()
+
+
+class TestStartIdeaGenerator:
+    """Test start_idea_generator creates an asyncio task."""
+
+    @patch("agent.idea_generator.asyncio.create_task")
+    def test_creates_task(self, mock_create):
+        client = MagicMock()
+        agent = MagicMock()
+        start_idea_generator(client, agent)
+        mock_create.assert_called_once()
+
+    def test_max_proposed_ideas_constant(self):
+        assert MAX_PROPOSED_IDEAS == 10
+
+    def test_offset_constant(self):
+        assert OFFSET_AFTER_NEWS_MINUTES == 5

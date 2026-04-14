@@ -56,10 +56,9 @@ PROFILING_FILE: Path = Path(__file__).parent.parent / "profiling" / "requests.js
 COVERAGE_FILE: Path = Path(__file__).parent.parent / "profiling" / "coverage.json"
 REPO_ROOT: Path = Path(__file__).parent.parent
 
-# Schedule
-# Run once daily at 5 PM (not hourly — reduces noise)
-GENERATION_HOUR: int = 17  # 5 PM
+# Schedule — hourly, 5 minutes after each hour (after news digest)
 OFFSET_AFTER_NEWS_MINUTES: int = 5
+MAX_PROPOSED_IDEAS: int = 10  # skip generation if backlog exceeds this
 
 # Prompt for the LLM
 IDEA_PROMPT = """You are an improvement analyst for the Technomancer project — a Discord bot
@@ -816,90 +815,123 @@ async def generate_ideas(agent: Any) -> list[dict[str, str]]:
     return created
 
 
-def _notify_discord_sync(ideas: list[dict[str, str]]) -> None:
-    """Blocking helper that sends a Discord notification via the bridge.
+def _count_proposed_ideas() -> int:
+    """Count unreviewed proposed ideas on the board.
 
-    Runs in a thread (called via asyncio.to_thread) so it never blocks
-    the event loop or starves the Discord heartbeat.
-    """
-    import requests
-
-    token_file = Path(__file__).parent.parent / ".bridge_token"
-    if not token_file.exists():
-        return
-
-    lines = [f"**{len(ideas)} new idea(s) on the board:**"]
-    for idea in ideas:
-        cat = idea.get("category", "")
-        lines.append(f"- [{cat}] {idea['title']}")
-    lines.append("\nhttp://localhost:8322")
-
-    token = token_file.read_text(encoding="utf-8").strip()
-    requests.post(
-        "http://127.0.0.1:8321/api/send",
-        headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
-        json={"message": "\n".join(lines)},
-        timeout=30,
-    )
-
-
-async def _notify_discord(ideas: list[dict[str, str]]) -> None:
-    """Send a notification to Discord with idea titles.
-
-    Uses asyncio.to_thread so the blocking HTTP call doesn't stall
-    the event loop (which was causing heartbeat timeouts).
+    Returns:
+        Number of ideas with state == "proposed".  Returns 0 if the
+        idea board is unavailable (import missing, file unreadable, etc.).
     """
     try:
-        await asyncio.to_thread(_notify_discord_sync, ideas)
-    except Exception as e:
-        logger.warning(f"[IdeaGen] Discord notification failed: {e}")
+        if load_ideas is None:
+            return 0
+        ideas = load_ideas()
+        return sum(1 for i in ideas if i.state == "proposed")
+    except Exception:
+        return 0
 
 
-def _seconds_until_generation_hour() -> float:
-    """Calculate seconds until the next daily generation time."""
-    from datetime import timedelta
+def _seconds_until_next_run() -> float:
+    """Calculate seconds until the next hourly run.
 
+    Target: OFFSET_AFTER_NEWS_MINUTES past each hour (default :05).
+    If the current time is before :05 this hour, wait until :05.
+    Otherwise wait until :05 next hour.
+
+    Returns:
+        Seconds to sleep (minimum 60 to avoid tight loops).
+    """
     now = datetime.now()
-    next_run = now.replace(hour=GENERATION_HOUR, minute=5, second=0, microsecond=0)
-    if now.hour >= GENERATION_HOUR:
-        next_run += timedelta(days=1)
-    return max((next_run - now).total_seconds(), 60)
+    target = now.replace(minute=OFFSET_AFTER_NEWS_MINUTES, second=0, microsecond=0)
+    if now >= target:
+        target += timedelta(hours=1)
+    return max((target - now).total_seconds(), 60)
 
 
-async def idea_generation_loop(agent: Any) -> None:
-    """Background loop that generates ideas once daily at 5 PM.
-
-    Uses a dedicated Agent instance.  Also triggerable on-demand
-    via the ``idea`` Discord command.
+async def _notify_discord(client: Any, ideas: list[dict[str, str]]) -> None:
+    """Send a notification to Discord #claude-code with generated idea summary.
 
     Args:
-        agent: An isolated Agent instance (NOT the main bot agent)
+        client: Discord client instance (must be connected).
+        ideas: List of idea summary dicts from generate_ideas().
     """
-    logger.info(f"[IdeaGen] Started — daily at {GENERATION_HOUR}:00")
+    try:
+        channel = None
+        for guild in client.guilds:
+            for ch in guild.text_channels:
+                if ch.name == "claude-code":
+                    channel = ch
+                    break
+            if channel:
+                break
+
+        if not channel:
+            logger.warning("[IdeaGen] #claude-code channel not found")
+            return
+
+        lines = [f"**[IdeaGen] {len(ideas)} new epic(s) generated:**"]
+        for idea in ideas:
+            cat = idea.get("category", "")
+            story_count = idea.get("story_count", 0)
+            lines.append(f"- [{cat}] {idea['title']} ({story_count} stories)")
+        lines.append("\n<http://localhost:8322>")
+
+        await channel.send("\n".join(lines))
+    except Exception as e:
+        logger.warning("[IdeaGen] Discord notification failed: %s", e)
+
+
+async def idea_generation_loop(client: Any, agent: Any) -> None:
+    """Background loop that generates ideas once per hour.
+
+    Runs OFFSET_AFTER_NEWS_MINUTES past each hour (after the news
+    digest). Skips the cycle when the idea board already has more
+    than MAX_PROPOSED_IDEAS unreviewed proposed ideas.
+
+    Args:
+        client: Discord client instance for sending notifications.
+        agent: An isolated Agent instance (NOT the main bot agent).
+    """
+    logger.info(
+        "[IdeaGen] Started — hourly, %d min past each hour",
+        OFFSET_AFTER_NEWS_MINUTES,
+    )
 
     while True:
         try:
-            wait = _seconds_until_generation_hour()
-            logger.info(f"[IdeaGen] Next run in {wait / 3600:.1f} hours")
+            wait = _seconds_until_next_run()
+            logger.info("[IdeaGen] Next run in %.0f min", wait / 60)
             await asyncio.sleep(wait)
+
+            # Check backlog before generating
+            proposed = _count_proposed_ideas()
+            if proposed > MAX_PROPOSED_IDEAS:
+                logger.info(
+                    "[IdeaGen] Skipping — %d proposed ideas on board (limit %d)",
+                    proposed,
+                    MAX_PROPOSED_IDEAS,
+                )
+                await asyncio.sleep(120)
+                continue
 
             created = await generate_ideas(agent)
             if created:
-                await _notify_discord(created)
+                await _notify_discord(client, created)
 
-            # Sleep past the trigger window
-            await asyncio.sleep(60)
+            # Sleep past the trigger window to avoid double-fire
+            await asyncio.sleep(120)
 
         except Exception as e:
-            logger.error(f"[IdeaGen] Loop error: {e}")
-            await asyncio.sleep(600)
+            logger.error("[IdeaGen] Loop error: %s", e)
+            await asyncio.sleep(300)
 
 
-def start_idea_generator(agent: Any) -> None:
+def start_idea_generator(client: Any, agent: Any) -> None:
     """Start the idea generation background task.
 
     Args:
-        agent: An isolated Agent instance (NOT the main bot agent)
+        client: Discord client instance for notifications.
+        agent: An isolated Agent instance (NOT the main bot agent).
     """
-    asyncio.create_task(idea_generation_loop(agent))
-    logger.info("[IdeaGen] Background task started")
+    asyncio.create_task(idea_generation_loop(client, agent))
+    logger.info("[IdeaGen] Background task started (hourly)")

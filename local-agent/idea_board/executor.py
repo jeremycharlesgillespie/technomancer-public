@@ -747,7 +747,10 @@ def _build_workflow_section(idea: Any) -> str:
         "4. **Windows path separators.** `Path.relative_to()` returns backslashes\n"
         "   on Windows. Use `result.replace('\\\\', '/')` for cross-platform assertions.\n\n"
         "5. **os.kill(pid, 0) doesn't work on Windows.** Use ctypes OpenProcess\n"
-        "   or subprocess-based checks instead.\n"
+        "   or subprocess-based checks instead.\n\n"
+        "6. **StopIteration in async (Python 3.14).** Raising StopIteration inside\n"
+        "   a coroutine becomes RuntimeError. Use KeyboardInterrupt or a custom\n"
+        "   exception to break async loops in tests.\n"
     )
 
 
@@ -1458,7 +1461,11 @@ def execute_idea(
                         f"`.replace('\\\\', '/')` in assertions.\n"
                         f"5. **Mutable list aliasing.** If passing a list that "
                         f"grows over time, pass `list(my_list)` (a copy) not "
-                        f"the reference.\n\n"
+                        f"the reference.\n"
+                        f"6. **StopIteration in async.** Python 3.14 converts "
+                        f"StopIteration raised inside a coroutine to RuntimeError. "
+                        f"Use KeyboardInterrupt or a custom exception to break "
+                        f"async loops in tests.\n\n"
                         f"Fix the failing tests or code. Then `git add` and "
                         f"`git commit -m '[{idea_id}] Fix test failures'`.\n\n"
                         f"Do NOT run safe_update.py, validate.py, or pytest. "

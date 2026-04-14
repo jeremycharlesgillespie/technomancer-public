@@ -786,8 +786,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         verbose=False,
         system_prompt="You are an improvement analyst. Output only JSON arrays.",
     ))
-    start_idea_generator(idea_agent)
-    log("Idea generator started (hourly, isolated agent)")
+    start_idea_generator(client, idea_agent)
+    log("Idea generator started (hourly, 5 min after each hour)")
 
     # Start daily morning briefing (7 AM — synthesized digest from all subsystems)
     if settings.briefing_enabled:
