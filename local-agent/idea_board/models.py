@@ -103,6 +103,8 @@ class Idea:
     comments: list[Comment] = field(default_factory=list)
     parent_id: str | None = None
     execution_log: str | None = None
+    execution_order: list[str] = field(default_factory=list)
+    epic_context: str = ""
 
     def __post_init__(self) -> None:
         if not self.created:
@@ -122,6 +124,8 @@ class Idea:
             "comments": [c.to_dict() for c in self.comments],
             "parent_id": self.parent_id,
             "execution_log": self.execution_log,
+            "execution_order": self.execution_order,
+            "epic_context": self.epic_context,
         }
 
     @classmethod
@@ -143,6 +147,8 @@ class Idea:
             comments=comments,
             parent_id=data.get("parent_id"),
             execution_log=data.get("execution_log"),
+            execution_order=data.get("execution_order", []),
+            epic_context=data.get("epic_context", ""),
         )
 
 
@@ -506,6 +512,66 @@ def delete_idea(idea_id: str) -> bool:
 
     logger.info(f"Deleted idea {idea_id}")
     return True
+
+
+def set_execution_order(idea_id: str, order: list[str]) -> Idea | None:
+    """Set the execution order for an epic's child stories.
+
+    Args:
+        idea_id: The epic idea ID
+        order: List of child story IDs in execution order
+
+    Returns:
+        Updated Idea, or None if not found
+    """
+    ideas = load_ideas()
+    idea = next((i for i in ideas if i.id == idea_id), None)
+    if not idea:
+        return None
+    idea.execution_order = order
+    save_ideas(ideas)
+    return idea
+
+
+def set_epic_context(idea_id: str, context: str) -> Idea | None:
+    """Set the epic context narrative for an epic.
+
+    Args:
+        idea_id: The epic idea ID
+        context: Free-text narrative explaining the big picture
+
+    Returns:
+        Updated Idea, or None if not found
+    """
+    ideas = load_ideas()
+    idea = next((i for i in ideas if i.id == idea_id), None)
+    if not idea:
+        return None
+    idea.epic_context = context
+    save_ideas(ideas)
+    return idea
+
+
+def get_execution_order(idea_id: str) -> list[str]:
+    """Get the execution order for an epic, auto-populating from children if empty.
+
+    If execution_order is not set, builds it from child story IDs in creation order.
+
+    Args:
+        idea_id: The epic idea ID
+
+    Returns:
+        List of child story IDs in execution order
+    """
+    ideas = load_ideas()
+    idea = next((i for i in ideas if i.id == idea_id), None)
+    if not idea:
+        return []
+    if idea.execution_order:
+        return idea.execution_order
+    # Auto-populate from children in creation order
+    children = [i for i in ideas if i.parent_id == idea_id]
+    return [c.id for c in children]
 
 
 def get_idea(idea_id: str) -> Idea | None:

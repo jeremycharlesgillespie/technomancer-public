@@ -239,7 +239,7 @@ class FallbackOrchestrator:
         try:
             from .alerts import send_alert
 
-            send_alert(message, title="API Fallback", level="warning")
+            send_alert(message, level="warning", title="API Fallback")
         except Exception:
             log.exception("Failed to send fallback alert")
 
@@ -250,8 +250,8 @@ class FallbackOrchestrator:
 
             send_alert(
                 "Claude API is available again. Resuming normal operation.",
-                title="API Fallback Recovered",
                 level="success",
+                title="API Fallback Recovered",
             )
         except Exception:
             log.exception("Failed to send recovery alert")

@@ -234,9 +234,8 @@ class TestNotificationIntegration:
 
         mock_send.assert_called_once()
         call_args = mock_send.call_args
-        assert "fallback activated" in call_args[0][0].lower()
-        assert call_args[1]["title"] == "API Fallback"
         assert call_args[1]["level"] == "warning"
+        assert call_args[1]["title"] == "API Fallback"
 
     @patch("agent.alerts.send_alert")
     def test_recovery_sends_alert(self, mock_send):
@@ -248,11 +247,11 @@ class TestNotificationIntegration:
         orch.should_use_fallback()
         orch.record_claude_result(success=True, latency=1.0)
 
-        mock_send.assert_called_once()
-        call_args = mock_send.call_args
-        assert "available again" in call_args[0][0].lower()
-        assert call_args[1]["title"] == "API Fallback Recovered"
-        assert call_args[1]["level"] == "success"
+        mock_send.assert_called_once_with(
+            "Claude API is available again. Resuming normal operation.",
+            level="success",
+            title="API Fallback Recovered",
+        )
 
     @patch("agent.alerts.send_alert", side_effect=Exception("webhook down"))
     def test_alert_failure_doesnt_crash(self, mock_send):

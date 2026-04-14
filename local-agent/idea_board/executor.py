@@ -36,8 +36,6 @@ logger = logging.getLogger(__name__)
 # Timeout for Claude Code execution (30 minutes — includes safe_update workflow)
 EXECUTION_TIMEOUT: int = 1800
 
-# Timeout for exploration pass (5 minutes — CLAUDE.md is large)
-EXPLORATION_TIMEOUT: int = 300
 
 # Timeout for pytest in Phase 3 (10 minutes)
 PYTEST_TIMEOUT: int = 600
@@ -740,123 +738,98 @@ def _build_epic_prompt(idea: Any) -> str:
     return "\n".join(s for s in sections if s)
 
 
-def _build_exploration_prompt(idea: Any) -> str:
-    """Build a read-only exploration prompt for the first pass.
+def _build_codebase_context(idea: Any, project_root: Path) -> str:
+    """Build codebase context with code, not an LLM.
 
-    This prompt instructs Claude Code to explore the codebase and understand
-    the architecture without making any changes. The session context from
-    this pass carries forward into the implementation pass via --resume.
+    Replaces the 5-minute LLM exploration pass with a <1 second script
+    that reads CLAUDE.md, identifies relevant files, and extracts test
+    patterns — everything the LLM was slowly discovering on its own.
     """
-    return (
-        f"You are about to implement: {idea.title}\n\n"
-        f"Description: {idea.description}\n\n"
-        f"Category: {idea.category}\n\n"
-        f"IMPORTANT: This is an EXPLORATION pass. Do NOT make any changes.\n"
-        f"Your job is to build understanding by:\n"
-        f"1. Read CLAUDE.md for project conventions and mandatory workflows\n"
-        f"2. Explore the codebase files most relevant to this task\n"
-        f"3. Read existing test files to understand test patterns and fixtures\n"
-        f"4. Identify which files you will need to create or modify\n"
-        f"5. Note any existing utilities or patterns you should reuse\n\n"
-        f"After exploring, summarize your findings:\n"
-        f"- Which files need to change\n"
-        f"- What patterns to follow\n"
-        f"- What test approach to use\n"
-        f"- Any potential issues to watch for\n\n"
-        f"Do NOT edit any files. Do NOT run any commands. Just read and plan."
+    local_agent = project_root / "local-agent"
+    agent_dir = local_agent / "agent"
+    test_dir = local_agent / "tests" / "unit"
+    sections = []
+
+    # 1. CLAUDE.md (full — it's the project bible)
+    claude_md = project_root / "CLAUDE.md"
+    if claude_md.exists():
+        sections.append(f"## CLAUDE.md\n```\n{claude_md.read_text(encoding='utf-8')}\n```")
+
+    # 2. Find relevant files from the idea description
+    desc = (idea.description or "") + " " + (idea.title or "")
+    desc_lower = desc.lower()
+
+    # Extract explicit file references: "agent/foo.py", "idea_board/bar.py"
+    import re as _re
+    explicit_files = _re.findall(
+        r'(?:agent|idea_board|tests/unit)/[\w/]+\.py', desc
     )
 
+    relevant_modules = []
+    # Add explicitly mentioned files
+    for ref in explicit_files:
+        full = local_agent / ref
+        if full.exists():
+            relevant_modules.append(full)
 
-def _run_exploration_pass(
-    binary: Path,
-    idea: Any,
-    state: ExecutionState,
-    env: dict[str, str],
-    project_root: Path,
-) -> str | None:
-    """Run the exploration pass and return the session_id for --resume.
+    # Also match module names by partial word overlap
+    all_dirs = [agent_dir, local_agent / "idea_board"]
+    for search_dir in all_dirs:
+        if not search_dir.exists():
+            continue
+        for py_file in sorted(search_dir.glob("*.py")):
+            name = py_file.stem
+            if name == "__init__" or py_file in relevant_modules:
+                continue
+            # Match: full name, underscored name, or any word fragment
+            name_words = name.split("_")
+            if (name in desc_lower
+                    or name.replace("_", " ") in desc_lower
+                    or any(w in desc_lower for w in name_words if len(w) > 3)):
+                relevant_modules.append(py_file)
 
-    Args:
-        binary: Path to the Claude Code binary
-        idea: The idea being executed
-        state: ExecutionState for logging
-        env: Environment variables
-        project_root: Working directory
+    # 3. For each relevant module, include first 50 lines (imports + class/function signatures)
+    if relevant_modules:
+        sections.append("## Relevant modules (first 50 lines each)")
+        for mod in relevant_modules[:8]:  # Cap at 8 to avoid prompt bloat
+            try:
+                lines = mod.read_text(encoding="utf-8").split("\n")[:50]
+                rel_path = mod.relative_to(project_root)
+                sections.append(f"### {rel_path}\n```python\n{chr(10).join(lines)}\n```")
+            except Exception:
+                pass
 
-    Returns:
-        session_id string if successful, None if exploration failed
-    """
-    explore_prompt = _build_exploration_prompt(idea)
+    # 4. Matching test files
+    sections.append("## Existing test patterns")
+    for mod in relevant_modules[:4]:
+        test_name = f"test_{mod.stem}.py"
+        test_file = test_dir / test_name
+        if test_file.exists():
+            try:
+                lines = test_file.read_text(encoding="utf-8").split("\n")[:30]
+                sections.append(f"### {test_name} (first 30 lines)\n```python\n{chr(10).join(lines)}\n```")
+            except Exception:
+                pass
 
-    state.log_lines.append("--- Phase 1: Exploration ---")
-    state.log_lines.append("Reading CLAUDE.md, exploring relevant files, understanding patterns...")
-    _notify_discord(f"[{idea.id}] Phase 1: Exploring codebase before implementation...")
-
-    try:
-        proc = subprocess.Popen(
-            [
-                str(binary), "-p", explore_prompt,
-                "--output-format", "json",
-                "--allowedTools", "Read,Glob,Grep",
-                "--max-turns", "15",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=str(project_root),
-            env=env,
-        )
-
-        start = time.time()
-        while proc.poll() is None:
-            time.sleep(2)
-            elapsed = time.time() - start
-
-            if state.cancelled:
-                proc.kill()
-                return None
-
-            if elapsed > EXPLORATION_TIMEOUT:
-                proc.kill()
-                state.log_lines.append(
-                    f"Exploration timed out after {EXPLORATION_TIMEOUT}s — "
-                    f"proceeding with single-pass execution"
-                )
-                return None
-
-        stdout_bytes = proc.stdout.read() if proc.stdout else b""
-        raw_output = stdout_bytes.decode("utf-8", errors="replace").strip()
-
-        if proc.returncode != 0:
-            state.log_lines.append("Exploration pass returned non-zero — falling back to single-pass")
-            return None
-
-        # Parse JSON to extract session_id
+    # 5. conftest.py fixtures
+    conftest = test_dir / "conftest.py"
+    if conftest.exists():
         try:
-            result = json.loads(raw_output)
-            session_id = result.get("session_id", "")
-            if session_id:
-                elapsed = time.time() - start
-                state.log_lines.append(
-                    f"Exploration complete ({elapsed:.0f}s) — "
-                    f"session {session_id[:12]}... preserved for implementation"
-                )
-                _notify_discord(
-                    f"[{idea.id}] Exploration complete ({elapsed:.0f}s). "
-                    f"Starting implementation with full codebase context..."
-                )
-                return session_id
-            else:
-                state.log_lines.append("No session_id in exploration output — falling back")
-                return None
-        except (json.JSONDecodeError, TypeError):
-            state.log_lines.append("Could not parse exploration JSON — falling back")
-            return None
+            lines = conftest.read_text(encoding="utf-8").split("\n")[:40]
+            sections.append(f"### conftest.py (fixtures)\n```python\n{chr(10).join(lines)}\n```")
+        except Exception:
+            pass
 
-    except Exception as e:
-        state.log_lines.append(f"Exploration error: {e} — falling back to single-pass")
-        state.log_lines.append(traceback.format_exc())
-        logger.error(f"[Executor] Exploration error: {traceback.format_exc()}")
-        return None
+    # 6. Module inventory (so Claude knows what exists)
+    all_modules = sorted(f.stem for f in agent_dir.glob("*.py") if f.stem != "__init__")
+    sections.append(f"## All modules in agent/\n{', '.join(all_modules)}")
+
+    return "\n\n".join(sections)
+
+
+
+# _run_exploration_pass removed — replaced by _build_codebase_context()
+# which builds context with code in <1s instead of an LLM in 5+ minutes.
 
 
 def _parse_stream_event(line: str) -> tuple[str, str]:
@@ -1060,10 +1033,24 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 return
 
             # branch_name already set above in Phase 0b
-            # --- Phase 1: Exploration ---
-            session_id = _run_exploration_pass(
-                binary, idea, state, env, project_root
+            # --- Phase 1: Build codebase context (code, not LLM) ---
+            state.log_lines.append("--- Building codebase context ---")
+            codebase_context = _build_codebase_context(idea, project_root)
+            context_chars = len(codebase_context)
+            state.log_lines.append(
+                f"Context built: {context_chars} chars "
+                f"(~{context_chars // 4} tokens)"
             )
+
+            # Inject context into the prompt
+            full_prompt = (
+                f"## Codebase Context (pre-built)\n\n"
+                f"{codebase_context}\n\n"
+                f"---\n\n"
+                f"{prompt}"
+            )
+            full_prompt_chars = len(full_prompt)
+            full_prompt_tokens = full_prompt_chars // 4
 
             if state.cancelled:
                 state.log_lines.append("CANCELLED by user")
@@ -1076,23 +1063,17 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             state.log_lines.append("")
             state.log_lines.append("--- Phase 2: Implementation ---")
             state.log_lines.append(
-                f"Prompt: {prompt_chars} chars (~{prompt_tokens_est} tokens)"
+                f"Prompt: {full_prompt_chars} chars (~{full_prompt_tokens} tokens)"
             )
 
             cmd = [
-                str(binary), "-p", prompt,
+                str(binary), "-p", full_prompt,
                 "--output-format", "stream-json",
                 "--verbose",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
             ]
-            if session_id:
-                cmd.extend(["--resume", session_id])
-                state.log_lines.append(
-                    f"Resuming session {session_id[:12]}... with full exploration context"
-                )
-            else:
-                state.log_lines.append("Running single-pass (no exploration context)")
+            state.log_lines.append("Starting Claude Code with pre-built context...")
 
             proc = subprocess.Popen(
                 cmd,
@@ -1252,13 +1233,11 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             f"related test file(s) (attempt {attempt})..."
                         )
                         test_start = time.time()
-                        test_result = _run_pytest_with_progress(
+                        test_result = subprocess.run(
                             [sys.executable, "-m", "pytest", "-q",
                              "--tb=short"] + related_tests,
+                            capture_output=True, text=True, timeout=120,
                             cwd=local_agent_dir,
-                            state=state,
-                            label="targeted",
-                            timeout=PYTEST_TIMEOUT,
                         )
                         test_duration = time.time() - test_start
                         test_summary = [
@@ -1334,8 +1313,6 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
                     ]
-                    if session_id:
-                        fix_cmd.extend(["--resume", session_id])
 
                     fix_proc = subprocess.Popen(
                         fix_cmd,

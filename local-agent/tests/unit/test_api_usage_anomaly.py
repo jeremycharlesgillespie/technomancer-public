@@ -313,7 +313,9 @@ class TestNotificationIntegration:
         det._send_alert("Test alert message", "ollama")
 
         mock_send.assert_called_once_with(
-            "Test alert message", title="API Usage Anomaly", level="warning"
+            "Test alert message",
+            level="warning",
+            title="API Usage Anomaly",
         )
 
     @patch("agent.alerts.send_alert", side_effect=Exception("webhook down"))

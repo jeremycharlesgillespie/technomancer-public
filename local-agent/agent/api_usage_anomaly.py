@@ -257,7 +257,11 @@ class UsageAnomalyDetector:
         try:
             from .alerts import send_alert
 
-            send_alert(message, title="API Usage Anomaly", level="warning")
+            send_alert(
+                message,
+                level="warning",
+                title="API Usage Anomaly",
+            )
             log.warning("API anomaly alert: %s", message)
         except Exception:
             log.exception("Failed to send anomaly alert for %s", endpoint)

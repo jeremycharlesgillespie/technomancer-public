@@ -40,12 +40,15 @@ from .models import (
     add_comment,
     add_idea,
     delete_idea,
+    get_execution_order,
     get_idea,
     load_ideas,
     mark_done,
     mark_executing,
     mark_failed,
     save_ideas,
+    set_epic_context,
+    set_execution_order,
     vote,
 )
 
@@ -264,6 +267,8 @@ h1 { margin-bottom: 1rem; color: var(--accent); }
 .epic-children > .card.child-card { opacity: 0.95; font-size: 0.95em; }
 .btn-epic-copy { background: #7c3aed; color: white; font-weight: 600; }
 .archive-section { margin-top: 2rem; border-top: 2px solid var(--border); padding-top: 1rem; }
+.drag-child.drag-over { border-top: 2px solid #7c3aed; }
+.drag-handle { display: inline-block; vertical-align: middle; }
 .archive-toggle { cursor: pointer; color: var(--muted); font-size: 1.1rem; padding: 0.8rem 0;
                   user-select: none; list-style: none; }
 .archive-toggle::-webkit-details-marker { display: none; }
@@ -399,6 +404,24 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
         safe_pid = html.escape(parent_id)
         parent_link = f' &bull; <a href="#" onclick="document.querySelector(\'[data-idea=\\x27{safe_pid}\\x27]\')?.scrollIntoView({{behavior:\\x27smooth\\x27}});return false" style="color:var(--accent)">parent: {safe_pid}</a>'
 
+    # Epic context section (only for epics with context set)
+    epic_context_html = ""
+    if idea_type == "epic" and idea.get("epic_context"):
+        ctx_text = html.escape(idea["epic_context"])
+        epic_context_html = f"""
+        <div class="epic-context" style="margin: 0.8rem 0; padding: 0.6rem; background: rgba(74,26,107,0.15); border-radius: 6px; border-left: 3px solid #7c3aed;">
+            <div style="font-size: 0.8rem; color: #c084fc; font-weight: 600; margin-bottom: 4px;">Epic Context</div>
+            <div style="font-size: 0.9rem; white-space: pre-wrap;">{ctx_text}</div>
+        </div>
+        <div style="margin-top: 4px;">
+            <button class="btn" style="font-size:0.75rem;padding:3px 8px;background:transparent;color:var(--muted);border:1px solid var(--border)" onclick="editEpicContext('{eid}')">Edit Context</button>
+        </div>"""
+    elif idea_type == "epic":
+        epic_context_html = f"""
+        <div style="margin: 0.5rem 0;">
+            <button class="btn" style="font-size:0.75rem;padding:3px 8px;background:transparent;color:var(--muted);border:1px solid var(--border)" onclick="editEpicContext('{eid}')">Add Epic Context</button>
+        </div>"""
+
     child_class = " child-card" if is_child else ""
     epic_class = " epic-card" if idea_type == "epic" else ""
 
@@ -413,6 +436,7 @@ def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
             &bull; {created} &bull; Claude: {claude_vote} &bull; {owner_display}: {owner_vote}{parent_link}
         </div>
         <div class="card-desc">{desc}</div>
+        {epic_context_html}
         {actions}
         {exec_log_section}
         <div class="comments">
@@ -448,23 +472,43 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
     active_states = ["proposed", "refining", "approved", "executing"]
     archived_states = ["done", "failed", "vetoed"]
 
+    def _order_children(parent: dict, kids: list[dict]) -> list[dict]:
+        """Sort children by execution_order if set, else by creation order."""
+        order = parent.get("execution_order", [])
+        if not order:
+            return kids
+        kid_by_id = {k["id"]: k for k in kids}
+        ordered = [kid_by_id[oid] for oid in order if oid in kid_by_id]
+        # Append any children not in execution_order at the end
+        ordered_ids = set(order)
+        for k in kids:
+            if k["id"] not in ordered_ids:
+                ordered.append(k)
+        return ordered
+
     def _render_state_section(state: str, items: list[dict]) -> str:
-        html = f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
+        html_out = f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
         for idea in items:
             idea_type = idea.get("idea_type", "story")
             kids = children_of.get(idea["id"], [])
             if idea_type == "epic" or kids:
-                html += '<div class="epic-group">\n'
-                html += _render_idea_card(idea)
+                html_out += '<div class="epic-group">\n'
+                html_out += _render_idea_card(idea)
                 if kids:
-                    html += '<div class="epic-children">\n'
-                    for child in kids:
-                        html += _render_idea_card(child, is_child=True)
-                    html += '</div>\n'
-                html += '</div>\n'
+                    ordered_kids = _order_children(idea, kids)
+                    epic_id = html.escape(idea["id"])
+                    html_out += f'<div class="epic-children" id="children-{epic_id}" data-epic="{epic_id}">\n'
+                    for idx, child in enumerate(ordered_kids):
+                        child_id = html.escape(child["id"])
+                        html_out += f'<div class="drag-child" draggable="true" data-child-id="{child_id}" data-order="{idx}">\n'
+                        html_out += f'<span class="drag-handle" style="cursor:grab;color:var(--muted);margin-right:6px;font-size:0.9rem" title="Drag to reorder">&#9776;</span>'
+                        html_out += _render_idea_card(child, is_child=True)
+                        html_out += '</div>\n'
+                    html_out += '</div>\n'
+                html_out += '</div>\n'
             else:
-                html += _render_idea_card(idea)
-        return html
+                html_out += _render_idea_card(idea)
+        return html_out
 
     sections_html = ""
     for state in active_states:
@@ -948,6 +992,66 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
 
     updateEvolveStatus();
     setInterval(updateEvolveStatus, 5000);
+
+    // --- Epic context editing ---
+    async function editEpicContext(epicId) {{
+        const idea = await (await fetch(`/api/ideas/${{epicId}}`)).json();
+        const current = idea.epic_context || '';
+        const newCtx = prompt('Epic Context (big-picture narrative for this epic):', current);
+        if (newCtx === null) return;  // cancelled
+        await fetch(`/api/ideas/${{epicId}}/context`, {{
+            method: 'PUT', headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{context: newCtx}})
+        }});
+        location.reload();
+    }}
+
+    // --- Drag-to-reorder stories ---
+    let dragSrcEl = null;
+    document.querySelectorAll('.drag-child').forEach(item => {{
+        item.addEventListener('dragstart', function(e) {{
+            dragSrcEl = this;
+            this.style.opacity = '0.4';
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.dataset.childId);
+        }});
+        item.addEventListener('dragend', function() {{
+            this.style.opacity = '1';
+            document.querySelectorAll('.drag-child').forEach(el => el.classList.remove('drag-over'));
+        }});
+        item.addEventListener('dragover', function(e) {{
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            this.classList.add('drag-over');
+        }});
+        item.addEventListener('dragleave', function() {{
+            this.classList.remove('drag-over');
+        }});
+        item.addEventListener('drop', async function(e) {{
+            e.preventDefault();
+            this.classList.remove('drag-over');
+            if (dragSrcEl === this) return;
+            const container = this.parentElement;
+            const epicId = container.dataset.epic;
+            // Reorder DOM
+            const children = [...container.querySelectorAll('.drag-child')];
+            const fromIdx = children.indexOf(dragSrcEl);
+            const toIdx = children.indexOf(this);
+            if (fromIdx < toIdx) {{
+                container.insertBefore(dragSrcEl, this.nextSibling);
+            }} else {{
+                container.insertBefore(dragSrcEl, this);
+            }}
+            // Build new order from DOM
+            const newOrder = [...container.querySelectorAll('.drag-child')].map(el => el.dataset.childId);
+            // Save to API
+            await fetch(`/api/ideas/${{epicId}}/order`, {{
+                method: 'PUT', headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{order: newOrder}})
+            }});
+            showToast('Story order updated');
+        }});
+    }});
     </script>
 </body>
 </html>"""
@@ -1123,6 +1227,34 @@ def api_add_story(idea_id: str) -> tuple:
     return jsonify(idea.to_dict())
 
 
+@app.route("/api/ideas/<idea_id>/order", methods=["PUT"])
+def api_set_order(idea_id: str) -> tuple:
+    """PUT /api/ideas/<id>/order — set execution order for an epic's stories."""
+    data = request.get_json(silent=True) or {}
+    order = data.get("order")
+    if not isinstance(order, list):
+        return jsonify({"error": "order must be a list of story IDs"}), 400
+
+    idea = set_execution_order(idea_id, order)
+    if not idea:
+        return jsonify({"error": "Idea not found"}), 404
+    return jsonify(idea.to_dict())
+
+
+@app.route("/api/ideas/<idea_id>/context", methods=["PUT"])
+def api_set_context(idea_id: str) -> tuple:
+    """PUT /api/ideas/<id>/context — set epic context narrative."""
+    data = request.get_json(silent=True) or {}
+    context = data.get("context", "")
+    if not isinstance(context, str):
+        return jsonify({"error": "context must be a string"}), 400
+
+    idea = set_epic_context(idea_id, context)
+    if not idea:
+        return jsonify({"error": "Idea not found"}), 404
+    return jsonify(idea.to_dict())
+
+
 @app.route("/api/ideas/<idea_id>/prompt")
 def api_prompt(idea_id: str) -> tuple:
     """GET /api/ideas/<id>/prompt — build a ready-to-paste prompt for Claude Code.
@@ -1213,11 +1345,26 @@ def api_epic_prompt(idea_id: str) -> tuple:
         return jsonify({"error": "Idea not found"}), 404
 
     all_ideas = load_ideas()
-    stories = [i for i in all_ideas if i.parent_id == idea_id and i.state != "done"]
-    done_stories = [i for i in all_ideas if i.parent_id == idea_id and i.state == "done"]
+    all_children = [i for i in all_ideas if i.parent_id == idea_id]
+
+    if not all_children:
+        # Not an epic or no children — fall back to single prompt
+        return api_prompt(idea_id)
+
+    # Order children by execution_order (auto-populated if empty)
+    order = get_execution_order(idea_id)
+    child_by_id = {i.id: i for i in all_children}
+    ordered_children = [child_by_id[oid] for oid in order if oid in child_by_id]
+    # Append any not in order
+    ordered_ids = set(order)
+    for c in all_children:
+        if c.id not in ordered_ids:
+            ordered_children.append(c)
+
+    stories = [i for i in ordered_children if i.state != "done"]
+    done_stories = [i for i in ordered_children if i.state == "done"]
 
     if not stories and not done_stories:
-        # Not an epic or no children — fall back to single prompt
         return api_prompt(idea_id)
 
     # Build the story sections
@@ -1258,12 +1405,21 @@ def api_epic_prompt(idea_id: str) -> tuple:
             done_context += f"- {d.id}: {d.title} [DONE]\n"
         done_context += "\nThese are already implemented. Build on them, don't duplicate them.\n"
 
+    # Include epic context if set
+    epic_ctx_section = ""
+    if epic.epic_context:
+        epic_ctx_section = (
+            f"\n## Epic Context\n"
+            f"{epic.epic_context}\n"
+        )
+
     prompt = (
         f"# EPIC: {epic.title}\n\n"
         f"You are implementing an entire epic for the Technomancer project.\n"
         f"This epic has **{len(stories)} stories** to implement sequentially.\n\n"
         f"## Epic Description\n"
         f"{epic.description}\n"
+        f"{epic_ctx_section}"
         f"{done_context}\n"
         f"## Implementation Process\n\n"
         f"For EACH story below, follow this exact cycle:\n"
