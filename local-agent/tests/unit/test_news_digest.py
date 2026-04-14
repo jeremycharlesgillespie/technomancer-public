@@ -1,18 +1,22 @@
-"""Tests for news_digest.py - relevance filtering, article selection, and memory cross-reference."""
+"""Tests for news_digest.py - relevance filtering, article selection, memory cross-reference, and retry."""
 
 import asyncio
 import json
+import logging
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from agent.news_digest import (
+    FEED_BASE_DELAY,
+    FEED_MAX_RETRIES,
     MEDIUM_MATCH_THRESHOLD,
     STRONG_MATCH_THRESHOLD,
     build_conversation_context,
     check_relevance,
     extract_article_keywords,
+    fetch_feed,
     filter_new_articles,
     format_memory_section,
     get_article_hash,
@@ -560,3 +564,127 @@ class TestSentArticlesExtended:
         sent_articles_file.write_text("not valid json{{{")
         result = load_sent_articles()
         assert result == set()
+
+
+# =============================================================================
+# FETCH FEED RETRY TESTS
+# =============================================================================
+
+
+class TestFetchFeedRetry:
+    """Tests for fetch_feed retry logic on transient failures."""
+
+    def _make_mock_response(self, status=200, body=""):
+        """Create an async context manager mock for aiohttp response."""
+        resp = AsyncMock()
+        resp.status = status
+        resp.text = AsyncMock(return_value=body)
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=resp)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    def test_success_on_first_attempt(self):
+        """Successful fetch returns articles without retrying."""
+        rss_body = """<?xml version="1.0"?>
+        <rss version="2.0"><channel>
+            <item><title>Test Article</title><link>https://example.com/1</link>
+            <description>Summary</description></item>
+        </channel></rss>"""
+
+        session = MagicMock()
+        session.get = MagicMock(return_value=self._make_mock_response(body=rss_body))
+
+        result = asyncio.run(fetch_feed(session, "TestFeed", "https://feed.example.com"))
+        assert len(result) == 1
+        assert result[0]["title"] == "Test Article"
+        assert session.get.call_count == 1
+
+    @patch("agent.news_digest.asyncio.sleep", new_callable=AsyncMock)
+    def test_retries_on_exception(self, mock_sleep):
+        """Should retry on network errors and succeed on last attempt."""
+        rss_body = """<?xml version="1.0"?>
+        <rss version="2.0"><channel>
+            <item><title>Retry Article</title><link>https://example.com/2</link>
+            <description>Got it</description></item>
+        </channel></rss>"""
+
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                cm = AsyncMock()
+                cm.__aenter__ = AsyncMock(side_effect=Exception("Connection reset"))
+                cm.__aexit__ = AsyncMock(return_value=False)
+                return cm
+            return self._make_mock_response(body=rss_body)
+
+        session = MagicMock()
+        session.get = MagicMock(side_effect=side_effect)
+
+        result = asyncio.run(fetch_feed(session, "RetryFeed", "https://feed.example.com"))
+        assert len(result) == 1
+        assert result[0]["title"] == "Retry Article"
+        assert call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("agent.news_digest.asyncio.sleep", new_callable=AsyncMock)
+    def test_returns_empty_after_all_retries_fail(self, mock_sleep):
+        """Should return empty list after exhausting retries."""
+        def side_effect(*args, **kwargs):
+            cm = AsyncMock()
+            cm.__aenter__ = AsyncMock(side_effect=Exception("Timeout"))
+            cm.__aexit__ = AsyncMock(return_value=False)
+            return cm
+
+        session = MagicMock()
+        session.get = MagicMock(side_effect=side_effect)
+
+        result = asyncio.run(fetch_feed(session, "FailFeed", "https://feed.example.com"))
+        assert result == []
+        assert session.get.call_count == FEED_MAX_RETRIES
+        assert mock_sleep.call_count == FEED_MAX_RETRIES - 1
+
+    def test_non_200_returns_empty_no_retry(self):
+        """Non-200 status is not a transient error — no retry."""
+        session = MagicMock()
+        session.get = MagicMock(return_value=self._make_mock_response(status=404))
+
+        result = asyncio.run(fetch_feed(session, "NotFound", "https://feed.example.com"))
+        assert result == []
+        assert session.get.call_count == 1
+
+
+# =============================================================================
+# LOGGING TESTS (no more print statements)
+# =============================================================================
+
+
+class TestNewsDigestLogging:
+    """Verify news_digest uses logging instead of print."""
+
+    def test_module_has_logger(self):
+        """news_digest module should define a module-level logger."""
+        import agent.news_digest as nd
+        assert hasattr(nd, "log")
+        assert isinstance(nd.log, logging.Logger)
+
+    def test_no_print_in_source(self):
+        """news_digest.py should not contain any print() calls."""
+        import inspect
+        import agent.news_digest as nd
+        source = inspect.getsource(nd)
+        # Allow 'print' in docstrings/comments but not as function calls
+        # Check for print( with an opening paren — the pattern for a call
+        import re
+        # Exclude lines that are comments or strings
+        lines = source.splitlines()
+        for i, line in enumerate(lines, 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith('"""') or stripped.startswith("'"):
+                continue
+            assert "print(" not in stripped, (
+                f"Found print() call at line ~{i}: {stripped.strip()}"
+            )

@@ -1,5 +1,6 @@
-"""Tests for the web_search module — DuckDuckGo search, URL fetching, and smart search."""
+"""Tests for the web_search module — DuckDuckGo search, URL fetching, smart search, cache, and retry."""
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,8 +9,13 @@ from agent.web_search import (
     CREDIBILITY_TIERS,
     DEFAULT_CREDIBILITY,
     DOMAIN_CREDIBILITY,
+    _cache_get,
+    _cache_set,
+    _retry_search,
     _rewrite_query_with_llm,
+    _search_cache,
     _tier_label,
+    clear_search_cache,
     get_domain_credibility,
     get_web_tools,
     web_fetch,
@@ -448,3 +454,176 @@ class TestWebSearchSmart:
 
         result = web_search_smart("django")
         assert "credibility: 95/100" in result
+
+
+# =============================================================================
+# SEARCH CACHE TESTS
+# =============================================================================
+
+
+class TestSearchCache:
+    """Test TTL search result cache."""
+
+    def setup_method(self):
+        clear_search_cache()
+
+    def teardown_method(self):
+        clear_search_cache()
+
+    def test_cache_miss_returns_none(self):
+        assert _cache_get(("web_search", "test", 5)) is None
+
+    def test_cache_set_and_get(self):
+        key = ("web_search", "python", 5)
+        _cache_set(key, "cached result")
+        assert _cache_get(key) == "cached result"
+
+    def test_cache_expired_returns_none(self):
+        key = ("web_search", "expired", 5)
+        # Manually insert an expired entry
+        _search_cache[key] = (time.monotonic() - 7200, "old result")
+        assert _cache_get(key) is None
+        # Entry should be cleaned up
+        assert key not in _search_cache
+
+    def test_clear_cache(self):
+        _cache_set(("web_search", "a", 5), "result a")
+        _cache_set(("web_search", "b", 5), "result b")
+        assert len(_search_cache) == 2
+        clear_search_cache()
+        assert len(_search_cache) == 0
+
+    @patch("agent.web_search.DDGS")
+    def test_web_search_returns_cached(self, mock_ddgs_cls):
+        """Second call with same query should return cached result, not hit DDG."""
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.text.return_value = [
+            {"title": "Result", "body": "Body", "href": "https://example.com"},
+        ]
+        mock_ddgs_cls.return_value = mock_ddgs
+
+        result1 = web_search("cache test query")
+        result2 = web_search("cache test query")
+
+        assert result1 == result2
+        # DDGS should only be instantiated once (cached on second call)
+        assert mock_ddgs_cls.call_count == 1
+
+    @patch("agent.web_search.DDGS")
+    def test_web_search_news_returns_cached(self, mock_ddgs_cls):
+        """News search cache works."""
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.news.return_value = [
+            {"title": "News", "body": "Body", "source": "Src", "date": "2026-04-14", "url": "https://example.com"},
+        ]
+        mock_ddgs_cls.return_value = mock_ddgs
+
+        result1 = web_search_news("cache news")
+        result2 = web_search_news("cache news")
+
+        assert result1 == result2
+        assert mock_ddgs_cls.call_count == 1
+
+    @patch("agent.web_search.DDGS")
+    def test_different_queries_not_cached(self, mock_ddgs_cls):
+        """Different queries should each hit DDG."""
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.text.return_value = [
+            {"title": "Result", "body": "Body", "href": "https://example.com"},
+        ]
+        mock_ddgs_cls.return_value = mock_ddgs
+
+        web_search("query one")
+        web_search("query two")
+
+        assert mock_ddgs_cls.call_count == 2
+
+
+# =============================================================================
+# RETRY WITH BACKOFF TESTS
+# =============================================================================
+
+
+class TestRetrySearch:
+    """Test retry logic for search calls."""
+
+    def setup_method(self):
+        clear_search_cache()
+
+    def teardown_method(self):
+        clear_search_cache()
+
+    @patch("agent.web_search.time.sleep")
+    def test_retries_on_failure_then_succeeds(self, mock_sleep):
+        """Should retry and return result on eventual success."""
+        call_count = 0
+
+        def flaky():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise Exception("rate limited")
+            return "success"
+
+        result = _retry_search(flaky)
+        assert result == "success"
+        assert call_count == 3
+        # Should have slept between retries
+        assert mock_sleep.call_count == 2
+
+    @patch("agent.web_search.time.sleep")
+    def test_raises_after_max_retries(self, mock_sleep):
+        """Should raise the last exception after all retries exhausted."""
+        def always_fail():
+            raise Exception("permanent failure")
+
+        with pytest.raises(Exception, match="permanent failure"):
+            _retry_search(always_fail)
+        # 3 attempts, 2 sleeps between them
+        assert mock_sleep.call_count == 2
+
+    def test_no_retry_on_success(self):
+        """Should not retry when the first call succeeds."""
+        call_count = 0
+
+        def succeeds():
+            nonlocal call_count
+            call_count += 1
+            return "ok"
+
+        result = _retry_search(succeeds)
+        assert result == "ok"
+        assert call_count == 1
+
+    @patch("agent.web_search.time.sleep")
+    @patch("agent.web_search.DDGS")
+    def test_web_search_retries_ddg_error(self, mock_ddgs_cls, mock_sleep):
+        """web_search should retry when DDG raises an error."""
+        call_count = 0
+
+        def side_effect():
+            nonlocal call_count
+            call_count += 1
+            mock = MagicMock()
+            if call_count < 3:
+                mock.__enter__ = MagicMock(side_effect=Exception("429 Too Many Requests"))
+            else:
+                inner = MagicMock()
+                inner.text.return_value = [
+                    {"title": "Result", "body": "Body", "href": "https://example.com"},
+                ]
+                mock.__enter__ = MagicMock(return_value=inner)
+            mock.__exit__ = MagicMock(return_value=False)
+            return mock
+
+        mock_ddgs_cls.side_effect = side_effect
+
+        result = web_search("retry test")
+        assert "Result" in result
+        assert call_count == 3

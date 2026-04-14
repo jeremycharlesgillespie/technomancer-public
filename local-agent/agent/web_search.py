@@ -3,10 +3,14 @@ Web Search - Give the LLM ability to search the internet.
 
 Uses DuckDuckGo for free web searches without API keys.
 Includes context-aware search with source credibility scoring.
+Caches results with a 1-hour TTL to avoid rate limits and retries
+transient failures with exponential backoff.
 """
 
 import logging
+import random
 import re
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -17,6 +21,75 @@ from .config import settings
 from .core import _ollama_client
 
 log = logging.getLogger(__name__)
+
+# =============================================================================
+# TTL SEARCH CACHE
+# =============================================================================
+# Maps (func_name, query, max_results) -> (timestamp, result_string)
+# Entries expire after CACHE_TTL_SECONDS.
+
+CACHE_TTL_SECONDS: int = 3600  # 1 hour
+
+_search_cache: dict[tuple[str, str, int], tuple[float, str]] = {}
+
+
+def _cache_get(key: tuple[str, str, int]) -> str | None:
+    """Return cached result if present and not expired, else None."""
+    entry = _search_cache.get(key)
+    if entry is None:
+        return None
+    ts, result = entry
+    if time.monotonic() - ts > CACHE_TTL_SECONDS:
+        del _search_cache[key]
+        return None
+    log.debug("Search cache hit for %s", key)
+    return result
+
+
+def _cache_set(key: tuple[str, str, int], result: str) -> None:
+    """Store a result in the cache with the current timestamp."""
+    _search_cache[key] = (time.monotonic(), result)
+
+
+def clear_search_cache() -> None:
+    """Clear the entire search cache (useful for tests)."""
+    _search_cache.clear()
+
+
+# =============================================================================
+# RETRY WITH BACKOFF
+# =============================================================================
+
+#: Maximum retry attempts for DuckDuckGo calls.
+SEARCH_MAX_RETRIES: int = 3
+
+#: Base delay in seconds between retries (doubled each attempt).
+SEARCH_BASE_DELAY: float = 1.0
+
+
+def _retry_search(fn, *args, **kwargs):
+    """Call *fn* with retries and exponential backoff.
+
+    Returns the result of *fn* on success.  Raises the last exception
+    after SEARCH_MAX_RETRIES failures.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(SEARCH_MAX_RETRIES):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt < SEARCH_MAX_RETRIES - 1:
+                delay = SEARCH_BASE_DELAY * (2 ** attempt) + random.uniform(0, 0.5)
+                log.warning(
+                    "Search attempt %d/%d failed (%s), retrying in %.1fs",
+                    attempt + 1,
+                    SEARCH_MAX_RETRIES,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
 
 # =============================================================================
 # DOMAIN CREDIBILITY SCORING
@@ -246,8 +319,12 @@ def web_search_smart(query: str, max_results: int = 8) -> str:
     # Step 2: Search with DuckDuckGo (fetch more than needed to allow filtering)
     try:
         fetch_count = min(max_results + 5, 15)  # Over-fetch for better ranking
-        with DDGS() as ddgs:
-            raw_results = list(ddgs.text(optimized_query, max_results=fetch_count))
+
+        def _do_smart():
+            with DDGS() as ddgs:
+                return list(ddgs.text(optimized_query, max_results=fetch_count))
+
+        raw_results = _retry_search(_do_smart)
     except Exception as e:
         return f"Search error: {e}"
 
@@ -300,6 +377,9 @@ def web_search(query: str, max_results: int = 5) -> str:
     """
     Search the web using DuckDuckGo.
 
+    Results are cached for 1 hour to avoid rate limits. Transient failures
+    are retried up to 3 times with exponential backoff.
+
     Args:
         query: The search query
         max_results: Maximum number of results to return (default 5)
@@ -307,9 +387,17 @@ def web_search(query: str, max_results: int = 5) -> str:
     Returns:
         Formatted search results as a string
     """
+    cache_key = ("web_search", query, max_results)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
+        def _do_search():
+            with DDGS() as ddgs:
+                return list(ddgs.text(query, max_results=max_results))
+
+        results = _retry_search(_do_search)
 
         if not results:
             return f"No results found for: {query}"
@@ -326,7 +414,9 @@ def web_search(query: str, max_results: int = 5) -> str:
                 output.append(f"   Source: {url}")
             output.append("")
 
-        return "\n".join(output)
+        result = "\n".join(output)
+        _cache_set(cache_key, result)
+        return result
 
     except Exception as e:
         return f"Search error: {e}"
@@ -336,6 +426,9 @@ def web_search_news(query: str, max_results: int = 5) -> str:
     """
     Search for recent news using DuckDuckGo.
 
+    Results are cached for 1 hour. Transient failures are retried
+    up to 3 times with exponential backoff.
+
     Args:
         query: The search query
         max_results: Maximum number of results to return
@@ -343,9 +436,17 @@ def web_search_news(query: str, max_results: int = 5) -> str:
     Returns:
         Formatted news results as a string
     """
+    cache_key = ("web_search_news", query, max_results)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.news(query, max_results=max_results))
+        def _do_news():
+            with DDGS() as ddgs:
+                return list(ddgs.news(query, max_results=max_results))
+
+        results = _retry_search(_do_news)
 
         if not results:
             return f"No news found for: {query}"
@@ -366,7 +467,9 @@ def web_search_news(query: str, max_results: int = 5) -> str:
                 output.append(f"   Link: {url}")
             output.append("")
 
-        return "\n".join(output)
+        result = "\n".join(output)
+        _cache_set(cache_key, result)
+        return result
 
     except Exception as e:
         return f"News search error: {e}"

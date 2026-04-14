@@ -4,11 +4,13 @@ Tech News Digest - Hourly tech news with LLM commentary.
 Fetches news from tech sources, has the LLM analyze them,
 and sends to Discord with opinions on relevance to developers.
 Cross-references articles with conversation memory for richer context.
+Feed fetching retries transient failures with exponential backoff.
 """
 
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,14 @@ import aiohttp
 import feedparser
 
 from .message_validators import validate_discord_message
+
+log = logging.getLogger(__name__)
+
+#: Maximum retry attempts for RSS feed fetches.
+FEED_MAX_RETRIES: int = 3
+
+#: Base delay in seconds between feed fetch retries.
+FEED_BASE_DELAY: float = 1.0
 
 # Fallback feeds if news config is not available
 _FALLBACK_FEEDS = [
@@ -99,7 +109,7 @@ def load_user_profile() -> dict[str, Any]:
             ):
                 profile["role"] = line
     except Exception as e:
-        print(f"[NewsDigest] Error loading profile: {e}")
+        log.warning("Error loading profile: %s", e)
 
     return profile
 
@@ -321,29 +331,45 @@ def get_article_hash(title: str, link: str) -> str:
 
 
 async def fetch_feed(session: aiohttp.ClientSession, name: str, url: str) -> list[dict[str, str]]:
-    """Fetch and parse an RSS feed."""
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            if resp.status != 200:
-                return []
-            text = await resp.text()
-            feed = feedparser.parse(text)
+    """Fetch and parse an RSS feed with retry on transient failures."""
+    last_exc: Exception | None = None
+    for attempt in range(FEED_MAX_RETRIES):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status != 200:
+                    log.warning("Feed %s returned HTTP %d", name, resp.status)
+                    return []
+                text = await resp.text()
+                feed = feedparser.parse(text)
 
-            articles = []
-            for entry in feed.entries[:5]:  # Top 5 from each source
-                articles.append(
-                    {
-                        "source": name,
-                        "title": entry.get("title", "No title"),
-                        "link": entry.get("link", ""),
-                        "summary": entry.get("summary", "")[:500],  # Truncate summary
-                        "published": entry.get("published", ""),
-                    }
+                articles = []
+                for entry in feed.entries[:5]:  # Top 5 from each source
+                    articles.append(
+                        {
+                            "source": name,
+                            "title": entry.get("title", "No title"),
+                            "link": entry.get("link", ""),
+                            "summary": entry.get("summary", "")[:500],
+                            "published": entry.get("published", ""),
+                        }
+                    )
+                return articles
+        except Exception as e:
+            last_exc = e
+            if attempt < FEED_MAX_RETRIES - 1:
+                delay = FEED_BASE_DELAY * (2 ** attempt)
+                log.warning(
+                    "Feed %s attempt %d/%d failed (%s), retrying in %.1fs",
+                    name,
+                    attempt + 1,
+                    FEED_MAX_RETRIES,
+                    e,
+                    delay,
                 )
-            return articles
-    except Exception as e:
-        print(f"[NewsDigest] Error fetching {name}: {e}")
-        return []
+                await asyncio.sleep(delay)
+
+    log.error("Feed %s failed after %d attempts: %s", name, FEED_MAX_RETRIES, last_exc)
+    return []
 
 
 async def fetch_all_news() -> list[dict[str, str]]:
@@ -493,7 +519,7 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     """Fetch news, get LLM opinions, and send to Discord."""
     from datetime import datetime
 
-    print(f"[NewsDigest] {datetime.now().strftime('%H:%M')} - Fetching tech news...")
+    log.info("%s - Fetching tech news...", datetime.now().strftime("%H:%M"))
 
     # Find the channel
     channel = None
@@ -504,13 +530,13 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
                 break
 
     if not channel:
-        print(f"[NewsDigest] Channel '{channel_name}' not found")
+        log.warning("Channel '%s' not found", channel_name)
         return
 
     # Fetch news
     articles = await fetch_all_news()
     if not articles:
-        print("[NewsDigest] No articles fetched")
+        log.info("No articles fetched")
         return
 
     # Filter out already-sent articles
@@ -518,7 +544,7 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     new_articles = filter_new_articles(articles, sent)
 
     if not new_articles:
-        print("[NewsDigest] No new articles to share")
+        log.info("No new articles to share")
         return
 
     # Shuffle for variety, then screen for relevance
@@ -531,21 +557,21 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     max_candidates = min(10, len(new_articles))
 
     for candidate in new_articles[:max_candidates]:
-        print(f"[NewsDigest] Checking relevance: {candidate['title'][:60]}...")
+        log.info("Checking relevance: %s...", candidate["title"][:60])
         is_relevant = await check_relevance(agent, candidate, profile)
         if is_relevant:
             article = candidate
             break
-        print(f"[NewsDigest] Skipped (irrelevant): {candidate['title'][:60]}")
+        log.info("Skipped (irrelevant): %s", candidate["title"][:60])
         # Mark skipped articles as sent so we don't re-check them next hour
         sent.add(candidate.get("hash", get_article_hash(candidate["title"], candidate["link"])))
 
     if article is None:
         # All candidates were irrelevant — fall back to first one
-        print("[NewsDigest] No relevant articles found, using best available")
+        log.info("No relevant articles found, using best available")
         article = new_articles[0]
 
-    print(f"[NewsDigest] Analyzing: {article['title'][:50]}...")
+    log.info("Analyzing: %s...", article["title"][:50])
 
     # Score conversation memory — split into tiers before LLM call
     scored = score_memory_connections(article)
@@ -572,10 +598,10 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     try:
         validated = validate_discord_message(message)
         if not validated:
-            print(f"[NewsDigest] Skipping empty message for: {article['title'][:50]}")
+            log.warning("Skipping empty message for: %s", article["title"][:50])
             return
         sent_msg = await channel.send(validated)
-        print(f"[NewsDigest] Sent article: {article['title'][:50]}...")
+        log.info("Sent article: %s...", article["title"][:50])
 
         # Track engagement for this article
         try:
@@ -589,14 +615,14 @@ async def send_news_digest(client: Any, channel_name: str, agent: Any) -> None:
                 link=article.get("link", ""),
             )
         except Exception as eng_err:
-            print(f"[NewsDigest] Engagement tracking error: {eng_err}")
+            log.warning("Engagement tracking error: %s", eng_err)
 
         # Mark as sent
         sent.add(article["hash"])
         save_sent_articles(sent)
 
     except Exception as e:
-        print(f"[NewsDigest] Error sending: {e}")
+        log.error("Error sending digest: %s", e)
 
 
 def is_active_hour() -> bool:
@@ -609,15 +635,17 @@ def is_active_hour() -> bool:
 async def news_digest_loop(client: Any, channel_name: str, agent: Any) -> None:
     """Background loop that sends news digest hourly during active hours."""
     start, end = _get_schedule()
-    print(f"[NewsDigest] Started - will send news hourly from {start}:00 to {end}:00")
+    log.info("Started - will send news hourly from %d:00 to %d:00", start, end)
 
     # Wait until the next hour boundary before first check (don't send on startup)
     now = datetime.now()
     next_hour = now.replace(minute=0, second=0, microsecond=0)
     next_hour = next_hour.replace(hour=next_hour.hour + 1)
     wait_seconds = (next_hour - now).total_seconds()
-    print(
-        f"[NewsDigest] First check at {next_hour.strftime('%H:%M')} (waiting {int(wait_seconds/60)} min)"
+    log.info(
+        "First check at %s (waiting %d min)",
+        next_hour.strftime("%H:%M"),
+        int(wait_seconds / 60),
     )
     await asyncio.sleep(wait_seconds)
 
@@ -627,9 +655,7 @@ async def news_digest_loop(client: Any, channel_name: str, agent: Any) -> None:
                 await send_news_digest(client, channel_name, agent)
             else:
                 start, end = _get_schedule()
-                print(
-                    f"[NewsDigest] Outside active hours ({start}:00-{end}:00), skipping"
-                )
+                log.info("Outside active hours (%d:00-%d:00), skipping", start, end)
 
             # Wait until the next hour
             now = datetime.now()
@@ -637,11 +663,11 @@ async def news_digest_loop(client: Any, channel_name: str, agent: Any) -> None:
             next_hour = next_hour.replace(hour=next_hour.hour + 1)
             wait_seconds = (next_hour - now).total_seconds()
 
-            print(f"[NewsDigest] Next check at {next_hour.strftime('%H:%M')}")
+            log.info("Next check at %s", next_hour.strftime("%H:%M"))
             await asyncio.sleep(wait_seconds)
 
         except Exception as e:
-            print(f"[NewsDigest] Loop error: {e}")
+            log.error("Loop error: %s", e)
             await asyncio.sleep(300)  # Wait 5 min on error
 
 
@@ -650,7 +676,7 @@ def start_news_digest(client: Any, channel_name: str, agent: Any) -> None:
     from .task_manager import create_monitored_task
 
     create_monitored_task(news_digest_loop(client, channel_name, agent), "news-digest", critical=True)
-    print("[NewsDigest] Background task started")
+    log.info("Background task started")
 
 
 async def handle_technews_command(agent: Any) -> str:
@@ -664,7 +690,7 @@ async def handle_technews_command(agent: Any) -> str:
     Returns:
         Formatted news string (single article)
     """
-    print("[NewsDigest] On-demand request")
+    log.info("On-demand request")
 
     articles = await fetch_all_news()
     if not articles:
@@ -688,17 +714,17 @@ async def handle_technews_command(agent: Any) -> str:
     max_candidates = min(10, len(new_articles))
 
     for candidate in new_articles[:max_candidates]:
-        print(f"[NewsDigest] Checking relevance: {candidate['title'][:60]}...")
+        log.info("Checking relevance: %s...", candidate["title"][:60])
         is_relevant = await check_relevance(agent, candidate, profile)
         if is_relevant:
             article = candidate
             break
-        print(f"[NewsDigest] Skipped (irrelevant): {candidate['title'][:60]}")
+        log.info("Skipped (irrelevant): %s", candidate["title"][:60])
 
     if article is None:
         article = new_articles[0]  # fallback
 
-    print(f"[NewsDigest] Analyzing: {article['title'][:50]}...")
+    log.info("Analyzing: %s...", article["title"][:50])
 
     # Score conversation memory — split into tiers before LLM call
     scored = score_memory_connections(article)
