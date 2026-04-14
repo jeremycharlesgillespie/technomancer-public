@@ -595,6 +595,11 @@ def continue_workflow():
         log("Step 3: Running tests...")
         tests_passed, test_output = run_tests()
 
+        # Extract test count for README generation (avoid rerunning pytest)
+        import re as _re
+        _test_count_match = _re.search(r"(\d+) passed", test_output)
+        _test_count = int(_test_count_match.group(1)) if _test_count_match else 0
+
         if not tests_passed:
             print()
             print("=" * 60)
@@ -685,9 +690,12 @@ def continue_workflow():
         if readme_script.exists():
             log("Step 9: Updating README...")
             try:
+                readme_cmd = [sys.executable, str(readme_script)]
+                if _test_count:
+                    readme_cmd += ["--test-count", str(_test_count)]
                 result = subprocess.run(
-                    [sys.executable, str(readme_script)],
-                    capture_output=True, text=True, timeout=660,
+                    readme_cmd,
+                    capture_output=True, text=True, timeout=60,
                     cwd=Path(__file__).parent,
                 )
                 if result.returncode == 0:

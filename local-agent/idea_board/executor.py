@@ -899,9 +899,7 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
         return ("tool_result", "")
 
     if event_type == "result":
-        cost = event.get("total_cost_usd", 0)
-        meta = f"(cost: ${cost:.4f})" if cost else ""
-        return ("result", f"Final result {meta}")
+        return ("result", "Final result")
 
     return (event_type, "")
 
@@ -1513,13 +1511,23 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 state_file = Path(local_agent_dir) / ".safe_update_state"
                 state_file.unlink(missing_ok=True)
 
-                # Step 3f: Regenerate README and publish to public repo
+                # Step 3f: Regenerate README (pass test count, skip rerunning pytest)
+                import re as _re
+                test_count = 0
+                for ln in (full_result.stdout or "").split("\n"):
+                    m = _re.search(r"(\d+) passed", ln)
+                    if m:
+                        test_count = int(m.group(1))
+
                 try:
                     readme_script = Path(local_agent_dir) / "generate_readme.py"
                     if readme_script.exists():
+                        readme_cmd = [sys.executable, str(readme_script)]
+                        if test_count:
+                            readme_cmd += ["--test-count", str(test_count)]
                         subprocess.run(
-                            [sys.executable, str(readme_script)],
-                            capture_output=True, text=True, timeout=120,
+                            readme_cmd,
+                            capture_output=True, text=True, timeout=60,
                             cwd=local_agent_dir,
                         )
                         subprocess.run(
@@ -1538,7 +1546,12 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             capture_output=True, timeout=30,
                             cwd=project_root,
                         )
+                        state.log_lines.append("README updated")
+                except Exception as e:
+                    state.log_lines.append(f"README error (non-blocking): {e}")
 
+                # Step 3g: Publish to public repo (independent of README)
+                try:
                     publish_script = Path(local_agent_dir) / "publish.py"
                     if publish_script.exists():
                         pub = subprocess.run(
@@ -1554,7 +1567,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                                 f"Publish failed: {pub.stderr[:200]}"
                             )
                 except Exception as e:
-                    state.log_lines.append(f"README/publish error: {e}")
+                    state.log_lines.append(f"Publish error (non-blocking): {e}")
 
                 state.log_lines.append(
                     f"Deploy complete ({state.elapsed:.0f}s total). "

@@ -30,28 +30,39 @@ def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     )
 
 
-def collect_test_stats() -> dict:
-    """Run pytest with coverage and collect statistics."""
+def collect_test_stats(known_test_count: int | None = None) -> dict:
+    """Collect test statistics.
+
+    Args:
+        known_test_count: If provided, skip pytest entirely and use this
+            count. The executor and safe_update already ran the full suite
+            — no need to run it again.
+    """
+    if known_test_count is not None and known_test_count > 0:
+        # Use cached coverage if available, otherwise report 0
+        coverage_pct = 0
+        if COVERAGE_JSON.exists():
+            try:
+                data = json.loads(COVERAGE_JSON.read_text())
+                coverage_pct = round(data.get("totals", {}).get("percent_covered", 0), 1)
+            except Exception:
+                pass
+        return {"test_count": known_test_count, "coverage_pct": coverage_pct}
+
+    # Fallback: run pytest --co to count tests (fast, ~2s)
+    import re
     result = _run([
         sys.executable, "-m", "pytest",
-        "--co", "-q",  # collect-only, quiet
+        "--co", "-q",
     ])
     test_count = 0
     for line in result.stdout.splitlines():
         if "test" in line and "collected" in line:
-            import re
             m = re.search(r"(\d+) tests? collected", line)
             if m:
                 test_count = int(m.group(1))
 
-    # Run coverage (with longer timeout for Ollama-dependent tests)
-    cov_result = _run([
-        sys.executable, "-m", "pytest",
-        "--cov=agent", "--cov-report=json:" + str(COVERAGE_JSON),
-        "--cov-report=term-missing",
-        "-q", "--tb=no", "-x",
-    ], timeout=600)
-
+    # Use cached coverage if available — don't rerun the full suite
     coverage_pct = 0
     if COVERAGE_JSON.exists():
         try:
@@ -345,9 +356,22 @@ MIT
 
 
 def main():
+    # Accept --test-count N to skip running pytest
+    known_count = None
+    if "--test-count" in sys.argv:
+        idx = sys.argv.index("--test-count")
+        if idx + 1 < len(sys.argv):
+            try:
+                known_count = int(sys.argv[idx + 1])
+            except ValueError:
+                pass
+
     print("[README] Collecting test statistics...")
-    test_stats = collect_test_stats()
-    print(f"  Tests: {test_stats['test_count']}, Coverage: {test_stats['coverage_pct']}%")
+    test_stats = collect_test_stats(known_test_count=known_count)
+    if known_count:
+        print(f"  Tests: {test_stats['test_count']} (from caller), Coverage: {test_stats['coverage_pct']}%")
+    else:
+        print(f"  Tests: {test_stats['test_count']}, Coverage: {test_stats['coverage_pct']}%")
 
     print("[README] Collecting code statistics...")
     code_stats = collect_code_stats()

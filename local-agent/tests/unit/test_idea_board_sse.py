@@ -88,20 +88,18 @@ class TestLogStreamSSE:
             assert events[1]["data"]["is_alive"] is False
 
     def test_no_idea_returns_empty_log(self, client):
-        """When idea doesn't exist, returns empty log and done."""
+        """When idea doesn't exist, returns done with unknown state."""
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=None):
             resp = client.get("/api/ideas/idea-999/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
-            assert events[0]["event"] == "log"
-            assert events[0]["data"]["lines"] == []
-
-            assert events[1]["event"] == "done"
-            assert events[1]["data"]["idea_state"] == "unknown"
+            # No log event when there are no lines — just done
+            assert events[0]["event"] == "done"
+            assert events[0]["data"]["idea_state"] == "unknown"
 
     def test_no_stored_log_returns_empty(self, client):
-        """Completed idea with no execution_log returns empty lines."""
+        """Completed idea with no execution_log returns done only."""
         fake_idea = MagicMock()
         fake_idea.execution_log = None
         fake_idea.state = "proposed"
@@ -110,7 +108,8 @@ class TestLogStreamSSE:
              patch("idea_board.web.get_idea", return_value=fake_idea):
             resp = client.get("/api/ideas/idea-002/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
-            assert events[0]["data"]["lines"] == []
+            # No lines = no log event, just done
+            assert events[0]["event"] == "done"
 
     def test_live_execution_streams_lines(self, client):
         """Live execution sends log and state events, then done on finish."""

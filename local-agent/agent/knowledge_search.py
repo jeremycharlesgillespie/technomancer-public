@@ -7,6 +7,9 @@ Embeds and indexes:
   - Permanent memories (Permanent/memories.md)
   - Recent conversations (from MemorySystem buffer)
 
+Embeddings are persisted to SQLite (via embedding_store) so that subsequent
+startups load from cache instead of re-embedding via Ollama.
+
 One ``search_knowledge`` query returns the most relevant results regardless
 of where they are stored.
 """
@@ -19,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from . import embedding_store
 from .config import settings
 from .embeddings import SemanticCache, embed_text, embed_texts
 
@@ -73,7 +77,7 @@ class KnowledgeIndex:
         if not refs_dir.exists():
             return 0
 
-        items: list[tuple[str, Any]] = []
+        items: list[tuple[str, str, Any]] = []
         for md_file in sorted(refs_dir.glob("*.md")):
             try:
                 content = md_file.read_text(encoding="utf-8").strip()
@@ -90,11 +94,11 @@ class KnowledgeIndex:
                     "title": title,
                     "path": str(md_file),
                 }
-                items.append((text, meta))
+                items.append((text, title, meta))
             except Exception:
                 log.warning("[KnowledgeIndex] Failed to read %s", md_file, exc_info=True)
 
-        return self._embed_and_add(items)
+        return self._embed_cached(items, "vault_article")
 
     def _index_facts_db(self) -> int:
         """Embed all facts from the SQLite facts database."""
@@ -110,18 +114,19 @@ class KnowledgeIndex:
             log.warning("[KnowledgeIndex] Failed to read facts_db", exc_info=True)
             return 0
 
-        items: list[tuple[str, Any]] = []
+        items: list[tuple[str, str, Any]] = []
         for row in rows:
             text = f"{row['key']}: {row['value']}"
+            cache_key = f"{row['category']}:{row['key']}"
             meta = {
                 "source": "fact",
                 "category": row["category"],
                 "key": row["key"],
                 "fact_id": row["id"],
             }
-            items.append((text, meta))
+            items.append((text, cache_key, meta))
 
-        return self._embed_and_add(items)
+        return self._embed_cached(items, "fact")
 
     def _index_permanent_memories(self) -> int:
         """Embed permanent memories from Permanent/memories.md."""
@@ -140,7 +145,7 @@ class KnowledgeIndex:
 
         # Split on headings or double-newlines to get individual memory chunks
         chunks = _split_memory_chunks(content)
-        items: list[tuple[str, Any]] = []
+        items: list[tuple[str, str, Any]] = []
         for i, chunk in enumerate(chunks):
             chunk = chunk.strip()
             if len(chunk) < 10:
@@ -149,9 +154,9 @@ class KnowledgeIndex:
                 "source": "memory",
                 "chunk_index": i,
             }
-            items.append((chunk[:1500], meta))
+            items.append((chunk[:1500], f"chunk_{i}", meta))
 
-        return self._embed_and_add(items)
+        return self._embed_cached(items, "memory")
 
     def _index_conversations(self) -> int:
         """Embed recent conversations from the MemorySystem buffer."""
@@ -194,6 +199,14 @@ class KnowledgeIndex:
         source = metadata.get("source", "unknown")
         with self._lock:
             self._stats[source] = self._stats.get(source, 0) + 1
+        # Persist to embedding store for faster restarts
+        cache_key = metadata.get("key") or metadata.get("title") or str(metadata.get("chunk_index", ""))
+        if cache_key:
+            try:
+                h = embedding_store.content_hash(text[:1500])
+                embedding_store.save_cached(source, [(cache_key, h, embedding, metadata)])
+            except Exception:
+                pass
         return True
 
     # ------------------------------------------------------------------
@@ -277,6 +290,72 @@ class KnowledgeIndex:
             added += len(embeddings)
 
         return added
+
+    def _embed_cached(self, items: list[tuple[str, str, Any]], source: str) -> int:
+        """Embed items with persistent cache — loads cached embeddings from disk
+        when content hasn't changed, only calling Ollama for new/modified entries.
+
+        Args:
+            items: List of (text, cache_key, metadata) tuples.
+            source: Cache source type (e.g. "vault_article", "fact", "memory").
+
+        Returns:
+            Total number of entries added to the index.
+        """
+        if not items:
+            return 0
+
+        # Load persistent cache for this source
+        try:
+            cached = embedding_store.load_cached(source)
+        except Exception:
+            cached = {}
+
+        hits: list[tuple[str, Any, list[float]]] = []
+        misses: list[tuple[str, str, Any]] = []
+
+        for text, cache_key, meta in items:
+            h = embedding_store.content_hash(text)
+            if cache_key in cached and cached[cache_key][0] == h:
+                _, emb, _ = cached[cache_key]
+                hits.append((text[:1500], meta, emb))
+            else:
+                misses.append((text, cache_key, meta))
+
+        # Load cached embeddings directly into SemanticCache
+        for text, meta, emb in hits:
+            self._cache.add(text, meta, emb)
+
+        # Embed new/changed entries via Ollama
+        newly_embedded = 0
+        to_save: list[tuple[str, str, list[float], dict]] = []
+
+        for i in range(0, len(misses), _EMBED_BATCH_SIZE):
+            batch = misses[i : i + _EMBED_BATCH_SIZE]
+            texts = [text[:1500] for text, _, _ in batch]
+            embeddings = embed_texts(texts)
+            if not embeddings:
+                continue
+            for (text, cache_key, meta), emb in zip(batch, embeddings):
+                self._cache.add(text[:1500], meta, emb)
+                h = embedding_store.content_hash(text)
+                to_save.append((cache_key, h, emb, meta))
+            newly_embedded += len(embeddings)
+
+        # Persist newly embedded entries for next startup
+        if to_save:
+            try:
+                embedding_store.save_cached(source, to_save)
+            except Exception:
+                log.debug("[KnowledgeIndex] Failed to persist embeddings for %s", source)
+
+        if hits:
+            log.info(
+                "[KnowledgeIndex] %s: %d from cache, %d newly embedded",
+                source, len(hits), newly_embedded,
+            )
+
+        return len(hits) + newly_embedded
 
 
 # ---------------------------------------------------------------------------

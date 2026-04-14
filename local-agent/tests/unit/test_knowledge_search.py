@@ -321,3 +321,127 @@ class TestSingleton:
             from agent.knowledge_search import init_knowledge_index
             idx = init_knowledge_index(vault_path=temp_vault)
             assert idx.is_built
+
+
+# ---------------------------------------------------------------------------
+# Persistent embedding cache (_embed_cached)
+# ---------------------------------------------------------------------------
+
+
+class TestCachedIndexing:
+    """Tests for persistent embedding cache via embedding_store."""
+
+    def test_cache_hit_skips_embedding(self, temp_vault):
+        """Second build uses cached embeddings — no embed_texts calls."""
+        refs_dir = temp_vault / "LLM Memory" / "Permanent" / "References"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "Python.md").write_text(
+            "Python is a programming language.", encoding="utf-8"
+        )
+
+        fake_embeddings = [[0.1, 0.2, 0.3]]
+
+        # First build: embeds and persists to store
+        with patch("agent.knowledge_search.embed_texts", return_value=fake_embeddings):
+            idx1 = KnowledgeIndex(vault_path=temp_vault)
+            count1 = idx1._index_vault_articles()
+            assert count1 == 1
+
+        # Second build: should load from cache, no Ollama calls
+        with patch("agent.knowledge_search.embed_texts") as mock_embed:
+            idx2 = KnowledgeIndex(vault_path=temp_vault)
+            count2 = idx2._index_vault_articles()
+            assert count2 == 1
+            mock_embed.assert_not_called()
+
+    def test_changed_content_reembeds(self, temp_vault):
+        """Changed file content triggers re-embedding."""
+        refs_dir = temp_vault / "LLM Memory" / "Permanent" / "References"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "Python.md").write_text(
+            "Python is a programming language.", encoding="utf-8"
+        )
+
+        # First build
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
+            idx1 = KnowledgeIndex(vault_path=temp_vault)
+            idx1._index_vault_articles()
+
+        # Change file content
+        (refs_dir / "Python.md").write_text(
+            "Python is an amazing programming language!", encoding="utf-8"
+        )
+
+        # Second build: changed content forces re-embedding
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.4, 0.5, 0.6]]) as mock_embed:
+            idx2 = KnowledgeIndex(vault_path=temp_vault)
+            count2 = idx2._index_vault_articles()
+            assert count2 == 1
+            mock_embed.assert_called_once()
+
+    def test_store_failure_falls_back(self, temp_vault):
+        """Embedding store failure falls back to normal embedding."""
+        refs_dir = temp_vault / "LLM Memory" / "Permanent" / "References"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "Test.md").write_text("Test content.", encoding="utf-8")
+
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.1, 0.2, 0.3]]), \
+             patch("agent.knowledge_search.embedding_store.load_cached", side_effect=Exception("DB error")):
+            idx = KnowledgeIndex(vault_path=temp_vault)
+            count = idx._index_vault_articles()
+            assert count == 1
+
+    def test_facts_cache_hit(self, temp_vault):
+        """Facts DB entries use persistent cache on second build."""
+        fake_rows = [
+            {"id": 1, "category": "definition", "key": "Python", "value": "A programming language", "source": "seed"},
+        ]
+        mock_rows = []
+        for row in fake_rows:
+            mock_row = MagicMock()
+            mock_row.__getitem__ = lambda self, k, r=row: r[k]
+            mock_rows.append(mock_row)
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = mock_rows
+
+        # First build: embeds and caches
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.1, 0.2, 0.3]]), \
+             patch("agent.facts_db.init_db"), \
+             patch("agent.facts_db._get_conn", return_value=mock_conn):
+            idx1 = KnowledgeIndex(vault_path=temp_vault)
+            idx1._index_facts_db()
+
+        # Second build: cache hit
+        with patch("agent.knowledge_search.embed_texts") as mock_embed, \
+             patch("agent.facts_db.init_db"), \
+             patch("agent.facts_db._get_conn", return_value=mock_conn):
+            idx2 = KnowledgeIndex(vault_path=temp_vault)
+            count2 = idx2._index_facts_db()
+            assert count2 == 1
+            mock_embed.assert_not_called()
+
+    def test_new_article_added_to_existing_cache(self, temp_vault):
+        """Adding a new article embeds only the new one, not the cached one."""
+        refs_dir = temp_vault / "LLM Memory" / "Permanent" / "References"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        (refs_dir / "Python.md").write_text(
+            "Python is a programming language.", encoding="utf-8"
+        )
+
+        # First build: one article
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.1, 0.2, 0.3]]):
+            idx1 = KnowledgeIndex(vault_path=temp_vault)
+            idx1._index_vault_articles()
+
+        # Add a second article
+        (refs_dir / "Kubernetes.md").write_text(
+            "Kubernetes is a container orchestration platform.", encoding="utf-8"
+        )
+
+        # Second build: Python from cache, Kubernetes newly embedded
+        with patch("agent.knowledge_search.embed_texts", return_value=[[0.4, 0.5, 0.6]]) as mock_embed:
+            idx2 = KnowledgeIndex(vault_path=temp_vault)
+            count2 = idx2._index_vault_articles()
+            assert count2 == 2  # 1 cached + 1 new
+            mock_embed.assert_called_once()  # Only Kubernetes was embedded

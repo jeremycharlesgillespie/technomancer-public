@@ -313,6 +313,26 @@ def patched_knowledge_gaps(temp_vault, monkeypatch):
 
 
 # =============================================================================
+# EMBEDDING STORE - Isolated DB
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _isolate_embedding_store(tmp_path, monkeypatch):
+    """Point embedding_store at a temporary SQLite DB for each test."""
+    import agent.embedding_store as es_module
+
+    monkeypatch.setattr(es_module, "DB_DIR", tmp_path)
+    monkeypatch.setattr(es_module, "DB_PATH", tmp_path / "embeddings.db")
+    es_module._local.__dict__.pop("emb_conn", None)
+    yield
+    conn = getattr(es_module._local, "emb_conn", None)
+    if conn:
+        conn.close()
+        es_module._local.emb_conn = None
+
+
+# =============================================================================
 # DISCORD MOCKS
 # =============================================================================
 
