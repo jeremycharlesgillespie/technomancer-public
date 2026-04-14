@@ -537,6 +537,13 @@ def _build_workflow_section(idea: Any) -> str:
         "Do NOT run `pytest` — the executor runs it after you finish.\n"
         "Do NOT try to deploy, merge, or restart anything.\n"
         "\nJust write code, write tests, and commit. The executor handles the rest.\n"
+        "\n## TESTING RULES\n"
+        "Tests use `@patch('agent.module_name.thing')` to mock dependencies.\n"
+        "This ONLY works if `thing` is imported at module level.\n"
+        "**Any dependency your code uses that tests will need to mock MUST be\n"
+        "imported at the top of the file, not inside a function body.**\n"
+        "Example — WRONG: `def foo(): from .config import settings`\n"
+        "Example — RIGHT: top of file has `from .config import settings`\n"
     )
 
 
