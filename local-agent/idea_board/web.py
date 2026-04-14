@@ -1345,7 +1345,7 @@ def execute_page(idea_id: str):
 <body>
     <div class="card">
         <span class="idea-id">{idea_id}</span>
-        <span class="state {state}">{state}</span>
+        <span class="state {state}" id="state-badge">{state}</span>
         <h1>{title}</h1>
         <button id="exec-btn" onclick="doExecute()">Execute with Claude Code</button>
         <div class="status" id="status"></div>
@@ -1368,16 +1368,24 @@ def execute_page(idea_id: str):
                 btn.style.background = '#e65100';
                 status.textContent = 'Execution started. Streaming log...';
                 log.style.display = 'block';
+                setBadge('executing', 'executing');
                 streamLog();
             }} else {{
                 btn.textContent = 'Failed';
                 btn.style.background = '#b71c1c';
                 status.textContent = data.error || 'Execution failed to start';
+                setBadge('failed', 'failed');
             }}
         }} catch(e) {{
             btn.textContent = 'Error';
             status.textContent = e.message;
         }}
+    }}
+
+    function setBadge(text, cls) {{
+        const badge = document.getElementById('state-badge');
+        badge.textContent = text;
+        badge.className = 'state ' + cls;
     }}
 
     function streamLog() {{
@@ -1387,25 +1395,59 @@ def execute_page(idea_id: str):
         const es = new EventSource('/api/ideas/{idea_id}/log/stream');
 
         es.addEventListener('log', function(e) {{
-            const div = document.createElement('div');
-            div.className = 'log-line';
-            div.textContent = e.data;
-            log.appendChild(div);
+            try {{
+                const data = JSON.parse(e.data);
+                const lines = data.lines || [];
+                for (const line of lines) {{
+                    const div = document.createElement('div');
+                    div.className = 'log-line';
+                    div.textContent = line;
+                    log.appendChild(div);
+                }}
+            }} catch(err) {{
+                // Fallback: treat as plain text
+                const div = document.createElement('div');
+                div.className = 'log-line';
+                div.textContent = e.data;
+                log.appendChild(div);
+            }}
             log.scrollTop = log.scrollHeight;
         }});
 
         es.addEventListener('state', function(e) {{
-            const state = e.data;
-            status.textContent = 'Status: ' + state;
-            if (state === 'done') {{
-                btn.textContent = 'Done';
-                btn.style.background = '#1b5e20';
-                es.close();
-            }} else if (state === 'failed') {{
-                btn.textContent = 'Failed';
-                btn.style.background = '#b71c1c';
-                es.close();
-            }}
+            try {{
+                const data = JSON.parse(e.data);
+                const st = data.idea_state || 'unknown';
+                const elapsed = data.elapsed ? Math.round(data.elapsed) + 's' : '';
+                status.textContent = 'Status: ' + st + (elapsed ? ' (' + elapsed + ')' : '');
+                setBadge(st, st);
+                if (st === 'done') {{
+                    btn.textContent = 'Done';
+                    btn.style.background = '#1b5e20';
+                    es.close();
+                }} else if (st === 'failed') {{
+                    btn.textContent = 'Failed';
+                    btn.style.background = '#b71c1c';
+                    es.close();
+                }}
+            }} catch(err) {{}}
+        }});
+
+        es.addEventListener('done', function(e) {{
+            try {{
+                const data = JSON.parse(e.data);
+                const st = data.idea_state || 'done';
+                setBadge(st, st);
+                if (st === 'done') {{
+                    btn.textContent = 'Done';
+                    btn.style.background = '#1b5e20';
+                }} else {{
+                    btn.textContent = st;
+                    btn.style.background = '#b71c1c';
+                }}
+                status.textContent = 'Execution complete: ' + st;
+            }} catch(err) {{}}
+            es.close();
         }});
 
         es.onerror = function() {{
@@ -1416,6 +1458,7 @@ def execute_page(idea_id: str):
                 btn.textContent = 'Re-execute with Claude Code';
                 btn.style.background = '#D97706';
                 btn.disabled = false;
+                setBadge('interrupted', 'failed');
             }} else {{
                 status.textContent = 'Log stream ended';
             }}
