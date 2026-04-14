@@ -1,5 +1,6 @@
-"""Tests for idea_board.executor — pytest baseline, failure diffing, and test targeting."""
+"""Tests for idea_board.executor — pytest baseline, failure diffing, test targeting, and epic execution."""
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,8 +10,10 @@ from idea_board.executor import (
     BASELINE_TIMEOUT,
     PYTEST_TIMEOUT,
     ExecutionState,
+    _build_epic_execution_context,
     _find_related_tests,
     _parse_pytest_failures,
+    execute_epic,
 )
 
 
@@ -266,4 +269,390 @@ class TestFindRelatedTests:
             result = _find_related_tests(tmp_path)
 
         assert len(result) == 1
-# health check test
+
+
+# ---------------------------------------------------------------------------
+# _build_epic_execution_context
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEpicExecutionContext:
+    """Test building context for epic story injection."""
+
+    def test_with_context_and_results(self):
+        epic = MagicMock()
+        epic.epic_context = "Build a complete auth system"
+        results = [
+            {
+                "id": "s-1",
+                "title": "Add user model",
+                "state": "done",
+                "summary": "Created User table with migrations",
+            },
+        ]
+        ctx = _build_epic_execution_context(epic, results)
+        assert "Build a complete auth system" in ctx
+        assert "Add user model" in ctx
+        assert "Created User table" in ctx
+        assert "Do not duplicate" in ctx
+
+    def test_no_epic_context(self):
+        epic = MagicMock()
+        epic.epic_context = ""
+        results = [
+            {"id": "s-1", "title": "Story 1", "state": "done", "summary": "Done"},
+        ]
+        ctx = _build_epic_execution_context(epic, results)
+        assert "big-picture" not in ctx
+        assert "Story 1" in ctx
+
+    def test_no_previous_results(self):
+        epic = MagicMock()
+        epic.epic_context = "Build something great"
+        ctx = _build_epic_execution_context(epic, [])
+        assert "Build something great" in ctx
+        assert "Previously Completed" not in ctx
+
+    def test_empty_context_and_no_results(self):
+        epic = MagicMock()
+        epic.epic_context = ""
+        ctx = _build_epic_execution_context(epic, [])
+        assert ctx == ""
+
+    def test_skips_non_done_results(self):
+        epic = MagicMock()
+        epic.epic_context = ""
+        results = [
+            {"id": "s-1", "title": "Done story", "state": "done", "summary": "OK"},
+            {"id": "s-2", "title": "Failed story", "state": "failed", "summary": "Err"},
+        ]
+        ctx = _build_epic_execution_context(epic, results)
+        assert "Done story" in ctx
+        assert "Failed story" not in ctx
+
+    def test_truncates_long_summary(self):
+        epic = MagicMock()
+        epic.epic_context = ""
+        long_summary = "x" * 1000
+        results = [
+            {"id": "s-1", "title": "Story", "state": "done", "summary": long_summary},
+        ]
+        ctx = _build_epic_execution_context(epic, results)
+        # Summary truncated to 500 chars — total output well under 800
+        assert len(ctx) < 800
+
+
+# ---------------------------------------------------------------------------
+# execute_epic
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteEpic:
+    """Test epic orchestration — sequential story execution."""
+
+    @staticmethod
+    def _make_mock_ideas():
+        """Create mock ideas dict for testing."""
+        epic = MagicMock()
+        epic.id = "epic-1"
+        epic.title = "Test Epic"
+        epic.idea_type = "epic"
+        epic.state = "approved"
+        epic.epic_context = "End-to-end feature"
+
+        s1 = MagicMock()
+        s1.id = "s-1"
+        s1.title = "Story 1"
+        s1.state = "approved"
+        s1.idea_type = "story"
+
+        s2 = MagicMock()
+        s2.id = "s-2"
+        s2.title = "Story 2"
+        s2.state = "approved"
+        s2.idea_type = "story"
+
+        return {"epic-1": epic, "s-1": s1, "s-2": s2}
+
+    @staticmethod
+    def _quick_state(idea_id):
+        """Return an ExecutionState with an already-finished thread."""
+        es = ExecutionState(idea_id=idea_id)
+        es.log_lines.append("Done")
+        t = threading.Thread(target=lambda: None)
+        t.start()
+        t.join()
+        es.thread = t
+        return es
+
+    def test_all_stories_succeed(self):
+        """All stories execute and complete — epic marked done."""
+        ideas = self._make_mock_ideas()
+        executed = []
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            executed.append(idea_id)
+            ideas[idea_id].state = "done"
+            return self._quick_state(idea_id)
+
+        mock_mark_done = MagicMock()
+        mock_mark_failed = MagicMock()
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=mock_mark_done,
+            mark_failed=mock_mark_failed,
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        assert executed == ["s-1", "s-2"]
+        mock_mark_done.assert_called_once()
+        assert mock_mark_done.call_args[0][0] == "epic-1"
+        mock_mark_failed.assert_not_called()
+
+    def test_stops_on_failed_story(self):
+        """When a story fails, epic stops and remaining stories are skipped."""
+        ideas = self._make_mock_ideas()
+        executed = []
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            executed.append(idea_id)
+            # First story fails
+            ideas[idea_id].state = "failed"
+            return self._quick_state(idea_id)
+
+        mock_mark_done = MagicMock()
+        mock_mark_failed = MagicMock()
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=mock_mark_done,
+            mark_failed=mock_mark_failed,
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        # s-2 was never started
+        assert executed == ["s-1"]
+        mock_mark_failed.assert_called()
+        assert mock_mark_failed.call_args[0][0] == "epic-1"
+        mock_mark_done.assert_not_called()
+
+    def test_skips_done_stories(self):
+        """Already-done stories are skipped."""
+        ideas = self._make_mock_ideas()
+        ideas["s-1"].state = "done"
+        executed = []
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            executed.append(idea_id)
+            ideas[idea_id].state = "done"
+            return self._quick_state(idea_id)
+
+        mock_mark_done = MagicMock()
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=mock_mark_done,
+            mark_failed=MagicMock(),
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        # Only s-2 was executed; s-1 was skipped
+        assert executed == ["s-2"]
+        mock_mark_done.assert_called_once()
+
+    def test_empty_execution_order(self):
+        """Epic with no stories is marked failed immediately."""
+        ideas = self._make_mock_ideas()
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        mock_mark_failed = MagicMock()
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            get_execution_order=lambda eid: [],
+            mark_executing=MagicMock(),
+            mark_done=MagicMock(),
+            mark_failed=mock_mark_failed,
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+
+        mock_mark_failed.assert_called_once()
+        assert mock_mark_failed.call_args[0][0] == "epic-1"
+
+    def test_not_found_returns_none(self):
+        """Non-existent epic returns None."""
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch("idea_board.executor.get_idea", return_value=None):
+            result = execute_epic("nonexistent")
+        assert result is None
+
+    def test_non_epic_returns_none(self):
+        """Calling execute_epic on a story returns None."""
+        story = MagicMock()
+        story.idea_type = "story"
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch("idea_board.executor.get_idea", return_value=story):
+            result = execute_epic("story-1")
+        assert result is None
+
+    def test_passes_epic_context_to_stories(self):
+        """Extra context passed to execute_idea includes epic narrative."""
+        ideas = self._make_mock_ideas()
+        captured_contexts = []
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            captured_contexts.append(extra_context)
+            ideas[idea_id].state = "done"
+            return self._quick_state(idea_id)
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=MagicMock(),
+            mark_failed=MagicMock(),
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        # First story gets epic context but no previous results
+        assert "End-to-end feature" in captured_contexts[0]
+        # Second story gets epic context AND first story's result
+        assert "End-to-end feature" in captured_contexts[1]
+        assert "Story 1" in captured_contexts[1]
+
+    def test_all_stories_already_done(self):
+        """When all stories are done, epic is marked done without executing any."""
+        ideas = self._make_mock_ideas()
+        ideas["s-1"].state = "done"
+        ideas["s-2"].state = "done"
+        executed = []
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            executed.append(idea_id)
+            return self._quick_state(idea_id)
+
+        mock_mark_done = MagicMock()
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=mock_mark_done,
+            mark_failed=MagicMock(),
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        # No stories executed
+        assert executed == []
+        mock_mark_done.assert_called_once()
+        assert mock_mark_done.call_args[0][0] == "epic-1"
+
+    def test_logs_progress(self):
+        """Epic execution state captures progress log lines."""
+        ideas = self._make_mock_ideas()
+
+        def mock_get_idea(idea_id):
+            return ideas.get(idea_id)
+
+        def mock_execute_idea(idea_id, extra_context=""):
+            ideas[idea_id].state = "done"
+            return self._quick_state(idea_id)
+
+        from idea_board.executor import _active
+        _active.clear()
+
+        with patch.multiple(
+            "idea_board.executor",
+            get_idea=mock_get_idea,
+            execute_idea=mock_execute_idea,
+            get_execution_order=lambda eid: ["s-1", "s-2"],
+            mark_executing=MagicMock(),
+            mark_done=MagicMock(),
+            mark_failed=MagicMock(),
+            _notify_discord=MagicMock(),
+        ):
+            result = execute_epic("epic-1")
+            assert result is not None
+            result.thread.join(timeout=10)
+
+        log = result.log_text
+        assert "Epic Executor: Test Epic" in log
+        assert "Stories to execute: 2" in log
+        assert "[DONE] s-1" in log
+        assert "[DONE] s-2" in log
+        assert "All 2 stories completed" in log

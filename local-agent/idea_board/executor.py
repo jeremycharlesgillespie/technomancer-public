@@ -29,7 +29,14 @@ from typing import Any
 
 from agent.config import settings
 
-from .models import get_idea, load_ideas, mark_done, mark_executing, mark_failed
+from .models import (
+    get_execution_order,
+    get_idea,
+    load_ideas,
+    mark_done,
+    mark_executing,
+    mark_failed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +115,12 @@ class ExecutionState:
     thread: threading.Thread | None = None
     cancelled: bool = False
     baseline_failures: set[str] = field(default_factory=set)
+
+    def log(self, msg: str) -> None:
+        """Append a timestamped message to the execution log."""
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d %H:%M:%S.%f")[:-3]
+        self.log_lines.append(f"[{ts}] {msg}")
 
     @property
     def elapsed(self) -> float:
@@ -245,7 +258,7 @@ def _run_pytest_with_progress(
 
         # Stream every non-empty line — the user wants to see activity
         if line.strip():
-            state.log_lines.append(f"[{label}] {line.strip()}")
+            state.log(f"[{label}] {line.strip()}")
 
     # Drain remaining
     rest = proc.stdout.read() if proc.stdout else b""
@@ -395,6 +408,43 @@ def _build_children_context(idea: Any) -> str:
     for k in kids:
         done_marker = " [DONE]" if k.state == "done" else ""
         lines.append(f"  - {k.id}: {k.title}{done_marker}")
+    return "\n".join(lines)
+
+
+def _build_epic_execution_context(
+    epic: Any, previous_results: list[dict[str, str]]
+) -> str:
+    """Build context from epic narrative and previous story results.
+
+    Used by execute_epic() to give each story awareness of the epic's
+    big-picture goal and what prior stories accomplished.
+
+    Args:
+        epic: The parent epic Idea object
+        previous_results: List of dicts with id, title, state, summary keys
+
+    Returns:
+        Context string, or empty string if nothing to inject
+    """
+    lines: list[str] = []
+
+    if epic.epic_context:
+        lines.append("## Epic Context (big-picture goal)")
+        lines.append(epic.epic_context)
+        lines.append("")
+
+    done_results = [r for r in previous_results if r["state"] == "done"]
+    if done_results:
+        lines.append("## Previously Completed Stories in This Epic")
+        for r in done_results:
+            lines.append(f"- **{r['id']}**: {r['title']} [DONE]")
+            if r.get("summary"):
+                lines.append(f"  Summary: {r['summary'][:500]}")
+        lines.append("")
+        lines.append(
+            "Build on what these stories created. Do not duplicate their work."
+        )
+
     return "\n".join(lines)
 
 
@@ -877,7 +927,7 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
     return (event_type, "")
 
 
-def execute_idea(idea_id: str) -> ExecutionState | None:
+def execute_idea(idea_id: str, extra_context: str = "") -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
     Spawns a background thread that runs claude.exe and streams
@@ -886,6 +936,8 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
     Args:
         idea_id: The idea to execute
+        extra_context: Optional context to inject into the prompt
+            (used by execute_epic to pass epic narrative and prior results)
 
     Returns:
         ExecutionState for tracking, or None if idea not found
@@ -927,7 +979,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
         """
         binary = _find_claude_binary()
         if not binary:
-            state.log_lines.append("ERROR: Claude Code binary not found")
+            state.log("ERROR: Claude Code binary not found")
             mark_failed(idea_id, "Claude Code binary not found")
             _active.pop(idea_id, None)
             return
@@ -943,7 +995,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
         try:
             # --- Phase 0a: Baseline pytest on main ---
-            state.log_lines.append("--- Baseline: pytest on main ---")
+            state.log("--- Baseline: pytest on main ---")
             try:
                 baseline_result = _run_pytest_with_progress(
                     [sys.executable, "-m", "pytest", "--tb=no", "-q",
@@ -957,21 +1009,21 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     baseline_result.stdout
                 )
                 if state.baseline_failures:
-                    state.log_lines.append(
+                    state.log(
                         f"Baseline: {len(state.baseline_failures)} "
                         f"pre-existing failure(s):"
                     )
                     for f in sorted(state.baseline_failures):
-                        state.log_lines.append(f"  - {f}")
+                        state.log(f"  - {f}")
                 else:
-                    state.log_lines.append("Baseline: all tests passing on main")
+                    state.log("Baseline: all tests passing on main")
             except subprocess.TimeoutExpired:
-                state.log_lines.append(
+                state.log(
                     f"Baseline pytest timed out ({BASELINE_TIMEOUT}s) "
                     f"— skipping baseline"
                 )
             except Exception as e:
-                state.log_lines.append(
+                state.log(
                     f"Baseline pytest error: {e} — skipping baseline"
                 )
 
@@ -990,20 +1042,20 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
 
             try:
-                state.log_lines.append("--- Setting up fresh branch ---")
+                state.log("--- Setting up fresh branch ---")
 
                 # Step 1: Force switch to main
                 current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
                 if current != "main":
-                    state.log_lines.append(f"Resetting from {current} to main...")
+                    state.log(f"Resetting from {current} to main...")
                     _git(["checkout", "--force", "main"])
                     _git(["branch", "-D", current])
-                    state.log_lines.append(f"Deleted old branch {current}")
+                    state.log(f"Deleted old branch {current}")
 
                 # Step 2: Clean working directory
                 _git(["checkout", "--force", "main"])
                 _git(["clean", "-fd"], timeout=30)
-                state.log_lines.append("Working directory clean")
+                state.log("Working directory clean")
 
                 # Step 3: Clean stale safe_update state
                 state_file = Path(local_agent_dir) / ".safe_update_state"
@@ -1011,11 +1063,11 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     state_file.unlink(missing_ok=True)
 
                 # Step 4: Pull latest
-                state.log_lines.append("Pulling latest main...")
+                state.log("Pulling latest main...")
                 _git(["pull", "origin", "main"], timeout=30)
 
                 # Step 5: Create branch
-                state.log_lines.append(f"Creating branch {branch_name}...")
+                state.log(f"Creating branch {branch_name}...")
                 result = _git(["checkout", "-b", branch_name])
                 if result.returncode != 0:
                     raise RuntimeError(result.stderr or result.stdout)
@@ -1023,29 +1075,37 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 # Step 6: Write safe_update state file (so safe_update.py continue works)
                 state_file.write_text(branch_name)
 
-                state.log_lines.append(f"Branch created: {branch_name}")
+                state.log(f"Branch created: {branch_name}")
 
             except Exception as e:
                 msg = f"Branch creation failed: {e}"
-                state.log_lines.append(msg)
+                state.log(msg)
                 _notify_discord(f"[{idea_id}] {msg}")
                 mark_failed(idea_id, state.log_text)
                 return
 
             # branch_name already set above in Phase 0b
             # --- Phase 1: Build codebase context (code, not LLM) ---
-            state.log_lines.append("--- Building codebase context ---")
+            state.log("--- Building codebase context ---")
             codebase_context = _build_codebase_context(idea, project_root)
             context_chars = len(codebase_context)
-            state.log_lines.append(
+            state.log(
                 f"Context built: {context_chars} chars "
                 f"(~{context_chars // 4} tokens)"
             )
 
             # Inject context into the prompt
+            epic_ctx_section = ""
+            if extra_context:
+                epic_ctx_section = (
+                    f"## Epic Execution Context\n\n"
+                    f"{extra_context}\n\n"
+                )
+
             full_prompt = (
                 f"## Codebase Context (pre-built)\n\n"
                 f"{codebase_context}\n\n"
+                f"{epic_ctx_section}"
                 f"---\n\n"
                 f"{prompt}"
             )
@@ -1053,46 +1113,38 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             full_prompt_tokens = full_prompt_chars // 4
 
             if state.cancelled:
-                state.log_lines.append("CANCELLED by user")
+                state.log("CANCELLED by user")
                 mark_failed(idea_id, state.log_text)
                 _notify_discord(f"Execution of {idea_id} was cancelled.")
                 _active.pop(idea_id, None)
                 return
 
             # --- Phase 2: Implementation (streaming) ---
-            state.log_lines.append("")
-            state.log_lines.append("--- Phase 2: Implementation ---")
-            state.log_lines.append(
+            state.log("")
+            state.log("--- Phase 2: Implementation ---")
+            state.log(
                 f"Prompt: {full_prompt_chars} chars (~{full_prompt_tokens} tokens)"
             )
 
-            # Write prompt to temp file to avoid Windows 32K command-line limit
-            import tempfile
-            prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
-            prompt_file.write_text(full_prompt, encoding="utf-8")
-            state.log_lines.append("Starting Claude Code...")
-
             cmd = [
-                str(binary), "-p", "-",
+                str(binary), "-p", full_prompt,
                 "--output-format", "stream-json",
                 "--verbose",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
             ]
+            state.log("Starting Claude Code with pre-built context...")
 
-            # Pipe prompt via stdin (avoids command-line length limit)
-            prompt_input = open(prompt_file, "r", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
-                stdin=prompt_input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(project_root),
                 env=env,
             )
             state.pid = proc.pid
-            state.log_lines.append(f"Claude Code started (PID: {proc.pid})")
-            state.log_lines.append(f"Working on: {idea.title}")
+            state.log(f"Claude Code started (PID: {proc.pid})")
+            state.log(f"Working on: {idea.title}")
             logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
 
             # Stream stdout line-by-line, parsing JSON events as they arrive
@@ -1103,7 +1155,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 # Check cancellation and timeout before blocking on readline
                 if state.cancelled:
                     proc.kill()
-                    state.log_lines.append("CANCELLED by user")
+                    state.log("CANCELLED by user")
                     mark_failed(idea_id, state.log_text)
                     _notify_discord(f"Execution of {idea_id} was cancelled.")
                     _active.pop(idea_id, None)
@@ -1111,7 +1163,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                 if state.elapsed > EXECUTION_TIMEOUT:
                     proc.kill()
-                    state.log_lines.append(f"TIMEOUT after {EXECUTION_TIMEOUT}s")
+                    state.log(f"TIMEOUT after {EXECUTION_TIMEOUT}s")
                     mark_failed(idea_id, state.log_text)
                     _notify_discord(
                         f"Execution of {idea_id} timed out after "
@@ -1141,12 +1193,12 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     except (json.JSONDecodeError, TypeError):
                         pass
                     if display_text:
-                        state.log_lines.append(display_text)
+                        state.log(display_text)
                     break  # Result event = Claude is done, stop reading
 
                 if display_text:
                     # Log to dashboard
-                    state.log_lines.append(display_text)
+                    state.log(display_text)
 
                     # Rate-limited Discord notification for meaningful events
                     now = time.time()
@@ -1176,7 +1228,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             )
 
             if not claude_succeeded:
-                state.log_lines.append(
+                state.log(
                     f"Claude failed ({state.elapsed:.0f}s)"
                 )
                 mark_failed(idea_id, state.log_text[-5000:])
@@ -1185,7 +1237,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
                 return
 
-            state.log_lines.append(
+            state.log(
                 f"Claude finished ({state.elapsed:.0f}s). Validating..."
             )
             _notify_discord(f"[{idea_id}] Code complete. Running validation...")
@@ -1195,19 +1247,19 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
             # If failures, give Claude a chance to fix. Full suite runs once at the end.
             related_tests = _find_related_tests(project_root)
             if related_tests:
-                state.log_lines.append(
+                state.log(
                     f"Related tests: {len(related_tests)} file(s) — "
                     + ", ".join(Path(t).name for t in related_tests)
                 )
             else:
-                state.log_lines.append("No related test files found — will run full suite only")
+                state.log("No related test files found — will run full suite only")
 
             for attempt in range(1, MAX_FIX_RETRIES + 2):  # +2: 1 initial + N retries
                 failure_output = ""
 
                 # Validate
-                state.log_lines.append("")
-                state.log_lines.append(
+                state.log("")
+                state.log(
                     f"--- Validation (attempt {attempt}) ---"
                 )
                 validate_result = subprocess.run(
@@ -1223,17 +1275,17 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         or "ERROR" in vline
                     ]
                     for fl in fail_lines:
-                        state.log_lines.append(fl)
+                        state.log(fl)
                     failure_output = (
                         "VALIDATION FAILED:\n"
                         + validate_result.stdout[-2000:]
                     )
                 else:
-                    state.log_lines.append("Validation passed")
+                    state.log("Validation passed")
 
                     # Run targeted tests (fast feedback)
                     if related_tests:
-                        state.log_lines.append(
+                        state.log(
                             f"--- Targeted tests (attempt {attempt}) ---"
                         )
                         _notify_discord(
@@ -1255,8 +1307,8 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             or "error" in ln.lower()
                         ]
                         for line in test_summary:
-                            state.log_lines.append(line)
-                        state.log_lines.append(
+                            state.log(line)
+                        state.log(
                             f"Targeted tests: {test_duration:.0f}s"
                         )
 
@@ -1267,15 +1319,15 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             )
                             delta = new_failures - state.baseline_failures
                             if not delta:
-                                state.log_lines.append(
+                                state.log(
                                     "All failure(s) are pre-existing — OK"
                                 )
                             else:
-                                state.log_lines.append(
+                                state.log(
                                     f"New failures: {len(delta)}"
                                 )
                                 for f in sorted(delta):
-                                    state.log_lines.append(f"  - {f}")
+                                    state.log(f"  - {f}")
                                 failure_output = (
                                     "TESTS FAILED:\n"
                                     + test_result.stdout[-3000:]
@@ -1286,7 +1338,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                 # If we have a failure and retries remain, launch Claude to fix
                 if failure_output and attempt <= MAX_FIX_RETRIES:
-                    state.log_lines.append(
+                    state.log(
                         f"Launching Claude to fix (retry {attempt}/{MAX_FIX_RETRIES})..."
                     )
                     _notify_discord(
@@ -1315,12 +1367,8 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         f"Just fix the code and commit."
                     )
 
-                    fix_file = Path(tempfile.mktemp(suffix=".txt", prefix="fix_"))
-                    fix_file.write_text(fix_prompt, encoding="utf-8")
-                    fix_input = open(fix_file, "r", encoding="utf-8")
-
                     fix_cmd = [
-                        str(binary), "-p", "-",
+                        str(binary), "-p", fix_prompt,
                         "--output-format", "stream-json",
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
@@ -1328,14 +1376,13 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                     fix_proc = subprocess.Popen(
                         fix_cmd,
-                        stdin=fix_input,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         cwd=str(project_root),
                         env=env,
                     )
                     state.pid = fix_proc.pid
-                    state.log_lines.append(
+                    state.log(
                         f"Fix Claude started (PID: {fix_proc.pid})"
                     )
 
@@ -1343,7 +1390,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     while True:
                         if state.cancelled:
                             fix_proc.kill()
-                            state.log_lines.append("CANCELLED by user")
+                            state.log("CANCELLED by user")
                             mark_failed(idea_id, state.log_text)
                             _notify_discord(
                                 f"Execution of {idea_id} was cancelled."
@@ -1353,7 +1400,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                         if state.elapsed > EXECUTION_TIMEOUT:
                             fix_proc.kill()
-                            state.log_lines.append(
+                            state.log(
                                 f"TIMEOUT after {EXECUTION_TIMEOUT}s"
                             )
                             mark_failed(idea_id, state.log_text)
@@ -1379,10 +1426,10 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         evt, dtxt = _parse_stream_event(line_text)
                         if evt == "result":
                             if dtxt:
-                                state.log_lines.append(dtxt)
+                                state.log(dtxt)
                             break
                         if dtxt:
-                            state.log_lines.append(dtxt)
+                            state.log(dtxt)
 
                     # Kill fix process
                     if fix_proc.poll() is None:
@@ -1393,14 +1440,14 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             pass
                     time.sleep(2)
 
-                    state.log_lines.append(
+                    state.log(
                         f"Fix attempt {attempt} complete. Re-validating..."
                     )
                     continue  # Back to top of retry loop
 
                 elif failure_output:
                     # No retries left
-                    state.log_lines.append(
+                    state.log(
                         f"Failed after {attempt} attempt(s) — aborting deploy"
                     )
                     mark_failed(idea_id, state.log_text[-5000:])
@@ -1411,11 +1458,11 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     return
 
             # --- Full test suite (final gate before deploy) ---
-            state.log_lines.append("")
-            state.log_lines.append("--- Full test suite (parallel) ---")
+            state.log("")
+            state.log("--- Full test suite (parallel) ---")
             _notify_discord(f"[{idea_id}] Running full test suite...")
             load_before = _snapshot_system_load()
-            state.log_lines.append(f"Pre-test: {load_before}")
+            state.log(f"Pre-test: {load_before}")
             full_start = time.time()
 
             full_result = _run_pytest_with_progress(
@@ -1429,7 +1476,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
             full_duration = time.time() - full_start
             load_after = _snapshot_system_load()
-            state.log_lines.append(
+            state.log(
                 f"Full suite: {full_duration:.0f}s | {load_after}"
             )
 
@@ -1438,12 +1485,12 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 full_failures = _parse_pytest_failures(full_result.stdout)
                 delta = full_failures - state.baseline_failures
                 if delta:
-                    state.log_lines.append(
+                    state.log(
                         f"Full suite: {len(delta)} new failure(s):"
                     )
                     for f in sorted(delta):
-                        state.log_lines.append(f"  - {f}")
-                    state.log_lines.append(
+                        state.log(f"  - {f}")
+                    state.log(
                         "Full suite FAILED — aborting deploy"
                     )
                     mark_failed(idea_id, state.log_text[-5000:])
@@ -1452,18 +1499,18 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     )
                     return
                 else:
-                    state.log_lines.append(
+                    state.log(
                         f"All {len(full_failures)} failure(s) are "
                         f"pre-existing — proceeding to deploy"
                     )
 
             # --- Phase 3: Deploy (merge + push) ---
-            state.log_lines.append("")
-            state.log_lines.append("--- Phase 3: Deploy ---")
+            state.log("")
+            state.log("--- Phase 3: Deploy ---")
 
             try:
                 # Merge to main
-                state.log_lines.append("Merging to main...")
+                state.log("Merging to main...")
                 project_root = str(Path(__file__).parent.parent.parent)
                 branch = subprocess.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1480,7 +1527,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     capture_output=True, text=True, cwd=project_root,
                 )
                 if merge_result.returncode != 0:
-                    state.log_lines.append(f"Merge failed: {merge_result.stderr[:200]}")
+                    state.log(f"Merge failed: {merge_result.stderr[:200]}")
                     mark_failed(idea_id, state.log_text[-5000:])
                     _notify_discord(f"Idea {idea_id} merge failed: {idea.title}")
                     return
@@ -1492,7 +1539,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
 
                 # Step 3d: Push to origin
-                state.log_lines.append("Pushing to origin...")
+                state.log("Pushing to origin...")
                 subprocess.run(
                     ["git", "push", "origin", "main"],
                     capture_output=True, text=True, timeout=30,
@@ -1538,9 +1585,9 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             capture_output=True, timeout=30,
                             cwd=project_root,
                         )
-                        state.log_lines.append("README updated")
+                        state.log("README updated")
                 except Exception as e:
-                    state.log_lines.append(f"README error (non-blocking): {e}")
+                    state.log(f"README error (non-blocking): {e}")
 
                 # Step 3g: Publish to public repo (independent of README)
                 try:
@@ -1553,15 +1600,15 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                             cwd=local_agent_dir,
                         )
                         if pub.returncode == 0:
-                            state.log_lines.append("Published to technomancer-public")
+                            state.log("Published to technomancer-public")
                         else:
-                            state.log_lines.append(
+                            state.log(
                                 f"Publish failed: {pub.stderr[:200]}"
                             )
                 except Exception as e:
-                    state.log_lines.append(f"Publish error (non-blocking): {e}")
+                    state.log(f"Publish error (non-blocking): {e}")
 
-                state.log_lines.append(
+                state.log(
                     f"Deploy complete ({state.elapsed:.0f}s total). "
                     f"Bot restart needed — run: python bot_service.py start"
                 )
@@ -1573,7 +1620,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
             except subprocess.TimeoutExpired:
                 load_at_timeout = _snapshot_system_load()
-                state.log_lines.append(
+                state.log(
                     f"Deploy timed out after {PYTEST_TIMEOUT}s | {load_at_timeout}"
                 )
                 mark_failed(idea_id, state.log_text[-5000:])
@@ -1582,14 +1629,14 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                     f"System: {load_at_timeout}"
                 )
             except Exception as deploy_err:
-                state.log_lines.append(f"Deploy error: {deploy_err}")
+                state.log(f"Deploy error: {deploy_err}")
                 mark_failed(idea_id, state.log_text[-5000:])
                 _notify_discord(f"Idea {idea_id} deploy error: {deploy_err}")
 
         except Exception as e:
             tb = traceback.format_exc()
-            state.log_lines.append(f"ERROR: {e}")
-            state.log_lines.append(tb)
+            state.log(f"ERROR: {e}")
+            state.log(tb)
             logger.error(f"[Executor] {idea_id} error: {tb}")
             mark_failed(idea_id, state.log_text)
             _notify_discord(f"Idea {idea_id} execution error: {e}")
@@ -1627,3 +1674,214 @@ def cancel_execution(idea_id: str) -> bool:
             pass
 
     return True
+
+
+def execute_epic(epic_id: str) -> ExecutionState | None:
+    """Execute an epic by running each story in execution_order sequentially.
+
+    Spawns a background thread that iterates through the epic's child stories,
+    executing each via execute_idea() and waiting for completion before
+    starting the next.
+
+    Each story receives the epic's big-picture context and a summary of
+    what previous stories accomplished.
+
+    Args:
+        epic_id: The epic idea ID
+
+    Returns:
+        ExecutionState for tracking, or None if epic not found or not an epic
+    """
+    epic = get_idea(epic_id)
+    if not epic or epic.idea_type != "epic":
+        return None
+
+    # Don't start if already executing
+    if epic_id in _active and _active[epic_id].is_alive:
+        return _active[epic_id]
+
+    execution_order = get_execution_order(epic_id)
+
+    mark_executing(epic_id)
+    state = ExecutionState(idea_id=epic_id)
+    _active[epic_id] = state
+
+    if not execution_order:
+        state.log("No stories in execution order")
+        mark_failed(epic_id, "No stories in execution order")
+        _active.pop(epic_id, None)
+        return state
+
+    def _run_epic() -> None:
+        try:
+            story_results: list[dict[str, str]] = []
+
+            state.log(f"=== Epic Executor: {epic.title} ===")
+            state.log(
+                f"Stories to execute: {len(execution_order)}"
+            )
+            for i, sid in enumerate(execution_order):
+                story = get_idea(sid)
+                name = story.title if story else sid
+                state.log(f"  {i + 1}. {sid}: {name}")
+            state.log("")
+
+            _notify_discord(
+                f"Starting epic {epic_id}: {epic.title} "
+                f"({len(execution_order)} stories)"
+            )
+
+            for idx, story_id in enumerate(execution_order):
+                story = get_idea(story_id)
+                if not story:
+                    state.log(
+                        f"Story {story_id} not found -- skipping"
+                    )
+                    continue
+
+                # Skip already-done stories
+                if story.state == "done":
+                    state.log(
+                        f"[{idx + 1}/{len(execution_order)}] "
+                        f"{story_id}: {story.title} -- already done, skipping"
+                    )
+                    story_results.append({
+                        "id": story_id,
+                        "title": story.title,
+                        "state": "done",
+                        "summary": "(completed before this epic run)",
+                    })
+                    continue
+
+                state.log("=" * 60)
+                state.log(
+                    f"[{idx + 1}/{len(execution_order)}] "
+                    f"Starting: {story_id} -- {story.title}"
+                )
+                state.log("=" * 60)
+
+                _notify_discord(
+                    f"[{epic_id}] Story {idx + 1}/{len(execution_order)}: "
+                    f"{story.title}"
+                )
+
+                # Build context from epic narrative + previous results
+                extra_ctx = _build_epic_execution_context(
+                    epic, story_results
+                )
+
+                # Execute the story (full lifecycle: branch, Claude, tests, deploy)
+                story_state = execute_idea(
+                    story_id, extra_context=extra_ctx
+                )
+                if not story_state:
+                    state.log(
+                        f"Failed to start {story_id}"
+                    )
+                    mark_failed(
+                        epic_id,
+                        f"Could not start story {story_id}\n\n"
+                        + state.log_text[-5000:],
+                    )
+                    _notify_discord(
+                        f"[{epic_id}] Epic FAILED: "
+                        f"could not start {story_id}"
+                    )
+                    return
+
+                # Wait for story execution to complete
+                if story_state.thread:
+                    story_state.thread.join()
+
+                # Check final state
+                completed_story = get_idea(story_id)
+                final_state = (
+                    completed_story.state
+                    if completed_story
+                    else "unknown"
+                )
+
+                # Capture summary from execution log
+                summary_lines = [
+                    ln
+                    for ln in story_state.log_lines[-10:]
+                    if ln.strip()
+                ]
+                summary = "\n".join(summary_lines[-5:])
+
+                story_results.append({
+                    "id": story_id,
+                    "title": story.title,
+                    "state": final_state,
+                    "summary": summary,
+                })
+
+                if final_state == "done":
+                    state.log(
+                        f"[DONE] {story_id} completed successfully"
+                    )
+                elif final_state == "failed":
+                    state.log(f"[FAILED] {story_id}")
+                    state.log(
+                        f"Stopping epic -- story {story_id} failed"
+                    )
+                    mark_failed(
+                        epic_id,
+                        f"Failed at story {story_id}: {story.title}"
+                        f"\n\n{state.log_text[-5000:]}",
+                    )
+                    _notify_discord(
+                        f"[{epic_id}] Epic FAILED at story "
+                        f"{story_id}: {story.title}"
+                    )
+                    return
+                else:
+                    state.log(
+                        f"[?] {story_id} ended in unexpected state: "
+                        f"{final_state}"
+                    )
+                    mark_failed(
+                        epic_id,
+                        f"Story {story_id} ended in state "
+                        f"'{final_state}'\n\n{state.log_text[-5000:]}",
+                    )
+                    _notify_discord(
+                        f"[{epic_id}] Epic stopped -- {story_id} "
+                        f"in state '{final_state}'"
+                    )
+                    return
+
+                state.log("")
+
+            # All stories completed
+            state.log("=" * 60)
+            state.log(
+                f"All {len(execution_order)} stories completed!"
+            )
+            state.log(
+                f"Epic execution time: {state.elapsed:.0f}s"
+            )
+
+            mark_done(epic_id, state.log_text[-5000:])
+            _notify_discord(
+                f"Epic {epic_id} complete ({state.elapsed:.0f}s): "
+                f"{epic.title}"
+            )
+
+        except Exception as e:
+            tb = traceback.format_exc()
+            state.log(f"Epic execution error: {e}")
+            state.log(tb)
+            logger.error(f"[EpicExecutor] {epic_id} error: {tb}")
+            mark_failed(epic_id, state.log_text[-5000:])
+            _notify_discord(f"[{epic_id}] Epic error: {e}")
+
+        finally:
+            _active.pop(epic_id, None)
+
+    thread = threading.Thread(
+        target=_run_epic, daemon=True, name=f"epic-executor-{epic_id}"
+    )
+    thread.start()
+    state.thread = thread
+    return state

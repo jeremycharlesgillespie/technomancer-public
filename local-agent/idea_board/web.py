@@ -1451,14 +1451,24 @@ def api_epic_prompt(idea_id: str) -> tuple:
 def api_execute(idea_id: str) -> tuple:
     """POST /api/ideas/<id>/execute — trigger Claude Code to implement this idea.
 
-    Uses the executor module for live streaming, PID tracking,
-    auto-timeout recovery, and cancel support.
+    For epics with child stories, uses execute_epic() to run stories
+    sequentially. For stories/tasks, uses execute_idea() directly.
     """
-    from .executor import execute_idea
-
-    state = execute_idea(idea_id)
-    if not state:
+    idea = get_idea(idea_id)
+    if not idea:
         return jsonify({"error": "Idea not found"}), 404
+
+    if idea.idea_type == "epic":
+        from .executor import execute_epic
+
+        state = execute_epic(idea_id)
+    else:
+        from .executor import execute_idea
+
+        state = execute_idea(idea_id)
+
+    if not state:
+        return jsonify({"error": "Failed to start execution"}), 500
     return jsonify({"status": "executing", "idea_id": idea_id, "pid": state.pid})
 
 

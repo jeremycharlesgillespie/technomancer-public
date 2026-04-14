@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RESTful API design principles - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>RESTful API design principles</h1>
+            <p class="meta">best_practices &bull; April 14, 2026</p>
+        </header>
+        <main>
+<h1>RESTful API Design Principles</h1>
+
+<h2>Quick Overview</h2>
+
+<p>REST (Representational State Transfer) is an architectural style for designing networked applications. At its core, it&#x27;s a set of constraints that, when followed, produce APIs that are predictable, scalable, and easy to consume. You model your system as <strong>resources</strong> (nouns, not verbs), manipulate them with <strong>HTTP methods</strong> (GET, POST, PUT, PATCH, DELETE), and communicate outcomes with <strong>standard status codes</strong>. The server is stateless â€” every request carries everything needed to fulfill it.</p>
+
+<p>Why does this matter when you&#x27;re building autonomous systems and LLM-powered tooling? Because REST is the lingua franca of service integration. Your Discord bot talks to Ollama over a REST API. Your agent framework escalates to Claude over a REST API. Jira sync, webhooks, health checks â€” all REST. When you design your own APIs well, every component you build becomes composable. When you design them poorly, you end up with bespoke glue code for every integration point, and debugging becomes archaeology.</p>
+
+<p>Here&#x27;s the simplest illustration â€” the difference between a poorly designed endpoint and a RESTful one:</p>
+
+<pre><code class="language-python"># Bad: verbs in URLs, no consistent structure
+POST /api/createUser
+GET  /api/getUserById?id=42
+POST /api/deleteUser
+
+<h1>Good: resources as nouns, HTTP methods carry the intent</h1>
+POST   /api/users          # Create
+GET    /api/users/42       # Read
+PUT    /api/users/42       # Replace
+PATCH  /api/users/42       # Partial update
+DELETE /api/users/42       # Delete
+</code></pre>
+
+<p>The RESTful version is self-documenting. A developer seeing <code>/api/users/42</code> with a <code>DELETE</code> method knows exactly what&#x27;s happening without reading a single line of documentation.</p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Solid REST design directly improves every layer of the systems you already build. Your Django views become thinner and more predictable when they map cleanly to resources and methods. Your Flask microservices â€” say, a lightweight API in front of Ollama inference â€” become trivially consumable by any client when they follow conventions other developers already expect. Your autonomous executor&#x27;s webhook endpoints become standardized enough that you can swap notification targets without rewriting handlers.</p>
+
+<p>More practically: if you&#x27;re exposing your agent framework&#x27;s idea board, memory system, or execution pipeline as an API (and you should be, because then you can drive it from Discord, a dashboard, a CLI, or a scheduled trigger), REST gives you a design language that scales without inventing new patterns per endpoint. This is especially valuable when building for yourself â€” future-you consuming an API you designed six months ago will thank present-you for following conventions instead of ad-hoc shortcuts. It also means any new tool or integration you bolt on (Prometheus metrics exporter, Grafana annotations, a mobile dashboard over Tailscale) can speak to your services immediately.</p>
+
+<h2>How to Implement It</h2>
+
+<h3>1. Design Resources, Not Procedures</h3>
+
+<p>Start by identifying the nouns in your system. For an autonomous agent framework, your resources might be: <code>ideas</code>, <code>executions</code>, <code>memories</code>, <code>digests</code>. Each gets a collection endpoint and an item endpoint.</p>
+
+<pre><code class="language-python"># Flask example: an API for your idea board
+from flask import Flask, jsonify, request, abort
+
+<p>app = Flask(__name__)</p>
+
+<h1>In-memory for illustration; you&#x27;d back this with PostgreSQL/SQLite</h1>
+ideas = {}
+next_id = 1
+
+<p>@app.route(&quot;/api/ideas&quot;, methods=[&quot;GET&quot;])<br>
+def list_ideas():<br>
+    &quot;&quot;&quot;List all ideas, with optional status filter.&quot;&quot;&quot;<br>
+    status = request.args.get(&quot;status&quot;)<br>
+    results = list(ideas.values())<br>
+    if status:<br>
+        results = [i for i in results if i[&quot;status&quot;] == status]<br>
+    return jsonify({&quot;data&quot;: results, &quot;count&quot;: len(results)}), 200</p>
+
+<p>@app.route(&quot;/api/ideas&quot;, methods=[&quot;POST&quot;])<br>
+def create_idea():<br>
+    &quot;&quot;&quot;Create a new idea.&quot;&quot;&quot;<br>
+    global next_id<br>
+    body = request.get_json()<br>
+    if not body or &quot;title&quot; not in body:<br>
+        abort(400, description=&quot;Missing required field: title&quot;)</p>
+
+<p>idea = {<br>
+        &quot;id&quot;: next_id,<br>
+        &quot;title&quot;: body[&quot;title&quot;],<br>
+        &quot;description&quot;: body.get(&quot;description&quot;, &quot;&quot;),<br>
+        &quot;status&quot;: &quot;proposed&quot;,<br>
+    }<br>
+    ideas[next_id] = idea<br>
+    next_id += 1<br>
+    return jsonify(idea), 201</p>
+
+<p>@app.route(&quot;/api/ideas/&lt;int:idea_id&gt;&quot;, methods=[&quot;GET&quot;])<br>
+def get_idea(idea_id):<br>
+    &quot;&quot;&quot;Get a single idea by ID.&quot;&quot;&quot;<br>
+    idea = ideas.get(idea_id)<br>
+    if not idea:<br>
+        abort(404, description=f&quot;Idea {idea_id} not found&quot;)<br>
+    return jsonify(idea), 200</p>
+
+<p>@app.route(&quot;/api/ideas/&lt;int:idea_id&gt;&quot;, methods=[&quot;PATCH&quot;])<br>
+def update_idea(idea_id):<br>
+    &quot;&quot;&quot;Partial update â€” only change the fields provided.&quot;&quot;&quot;<br>
+    idea = ideas.get(idea_id)<br>
+    if not idea:<br>
+        abort(404)</p>
+
+<p>body = request.get_json()<br>
+    for field in (&quot;title&quot;, &quot;description&quot;, &quot;status&quot;):<br>
+        if field in body:<br>
+            idea[field] = body[field]</p>
+
+<p>return jsonify(idea), 200</p>
+
+<p>@app.route(&quot;/api/ideas/&lt;int:idea_id&gt;&quot;, methods=[&quot;DELETE&quot;])<br>
+def delete_idea(idea_id):<br>
+    if idea_id not in ideas:<br>
+        abort(404)<br>
+    del ideas[idea_id]<br>
+    return &quot;&quot;, 204  # No content<br>
+</code></pre></p>
+
+<h3>2. Use Status Codes Correctly</h3>
+
+<p>This is where most APIs fall apart. The status code is the first thing a client reads â€” get it wrong and you force consumers to parse error bodies just to know what happened.</p>
+
+<p>| Code | Meaning | When to use |<br>
+|------|---------|-------------|<br>
+| <code>200</code> | OK | Successful GET, PUT, PATCH |<br>
+| <code>201</code> | Created | Successful POST that creates a resource |<br>
+| <code>204</code> | No Content | Successful DELETE |<br>
+| <code>400</code> | Bad Request | Malformed input, missing required fields |<br>
+| <code>401</code> | Unauthorized | No credentials / invalid token |<br>
+| <code>403</code> | Forbidden | Valid credentials, insufficient permissions |<br>
+| <code>404</code> | Not Found | Resource doesn&#x27;t exist |<br>
+| <code>409</code> | Conflict | State conflict (e.g., duplicate creation) |<br>
+| <code>422</code> | Unprocessable Entity | Valid JSON, but semantically invalid |<br>
+| <code>429</code> | Too Many Requests | Rate limiting |<br>
+| <code>500</code> | Internal Server Error | Unhandled exception (never return this intentionally) |</p>
+
+<h3>3. Version Your API</h3>
+
+<p>When you&#x27;re iterating fast on an autonomous system, your API shape will change. Version it from day one so you don&#x27;t break existing consumers.</p>
+
+<pre><code class="language-python"># Django URL conf â€” prefix-based versioning
+from django.urls import path, include
+
+<p>urlpatterns = [<br>
+    path(&quot;api/v1/&quot;, include(&quot;myapp.api_v1.urls&quot;)),<br>
+    path(&quot;api/v2/&quot;, include(&quot;myapp.api_v2.urls&quot;)),<br>
+]<br>
+</code></pre></p>
+
+<p>Prefix versioning (<code>/api/v1/</code>) is the simplest and most explicit. Header-based versioning is cleaner in theory but harder to debug when you&#x27;re curling endpoints from a phone over Tailscale.</p>
+
+<h3>4. Consistent Error Responses</h3>
+
+<p>Every error should return the same shape. Don&#x27;t make clients guess.</p>
+
+<pre><code class="language-python">from flask import jsonify
+
+<p>@app.errorhandler(400)<br>
+@app.errorhandler(404)<br>
+@app.errorhandler(422)<br>
+def handle_error(error):<br>
+    return jsonify({<br>
+        &quot;error&quot;: {<br>
+            &quot;code&quot;: error.code,<br>
+            &quot;message&quot;: error.description,<br>
+        }<br>
+    }), error.code<br>
+</code></pre></p>
+
+<h3>5. Filter, Paginate, Sort</h3>
+
+<p>Any list endpoint will eventually return too much data. Build pagination in from the start â€” retrofitting it is a breaking change.</p>
+
+<pre><code class="language-python">@app.route(&quot;/api/executions&quot;, methods=[&quot;GET&quot;])
+def list_executions():
+    page = request.args.get(&quot;page&quot;, 1, type=int)
+    per_page = min(request.args.get(&quot;per_page&quot;, 20, type=int), 100)
+    sort = request.args.get(&quot;sort&quot;, &quot;-created_at&quot;)  # - prefix = descending
+    status = request.args.get(&quot;status&quot;)
+
+<p>query = Execution.query<br>
+    if status:<br>
+        query = query.filter_by(status=status)</p>
+
+<p># Sort<br>
+    if sort.startswith(&quot;-&quot;):<br>
+        query = query.order_by(getattr(Execution, sort[1:]).desc())<br>
+    else:<br>
+        query = query.order_by(getattr(Execution, sort).asc())</p>
+
+<p>result = query.paginate(page=page, per_page=per_page)</p>
+
+<p>return jsonify({<br>
+        &quot;data&quot;: [e.to_dict() for e in result.items],<br>
+        &quot;meta&quot;: {<br>
+            &quot;page&quot;: page,<br>
+            &quot;per_page&quot;: per_page,<br>
+            &quot;total&quot;: result.total,<br>
+            &quot;pages&quot;: result.pages,<br>
+        }<br>
+    }), 200<br>
+</code></pre></p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Exposing your agent framework&#x27;s internals as an API</strong> â€” idea board, execution status, memory queries. Lets you build dashboards, mobile UIs, and CLI tools that all speak the same protocol.</li><br>
+<li><strong>Microservices between your bot components</strong> â€” a lightweight Flask service wrapping Ollama inference, a separate service for news digest scheduling. Each gets clean resource-oriented endpoints.</li><br>
+<li><strong>Webhook receivers</strong> â€” standardized POST endpoints for Jira callbacks, Discord interactions, or GitHub events. REST conventions make the contract obvious.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Real-time streaming</strong> â€” REST is request-response. For streaming LLM token output to Discord, WebSockets or Server-Sent Events (SSE) are the right tool. Don&#x27;t try to fake streaming with polling a REST endpoint every 200ms.</li><br>
+<li><strong>Tightly coupled internal function calls</strong> â€” if two Python modules in the same process need to communicate, just call the function. Wrapping an internal operation in an HTTP endpoint adds latency, failure modes, and serialization overhead for zero benefit. REST is for boundaries between services, not within them.</li><br>
+</ul><br>
+<strong>Common pitfalls:</strong><br>
+<ul><br>
+<li><strong>Inconsistent naming</strong> â€” mixing <code>/api/ideas</code> (plural) with <code>/api/execution</code> (singular) and <code>/api/getMemory</code> (verb). Pick plural nouns and stick with it.</li><br>
+<li><strong>Ignoring idempotency</strong> â€” PUT and DELETE should be idempotent. Calling <code>DELETE /api/ideas/42</code> twice should return 204 then 404, not crash.</li><br>
+<li><strong>Overloading POST</strong> â€” if you have <code>POST /api/ideas/execute</code>, <code>POST /api/ideas/approve</code>, <code>POST /api/ideas/archive</code>, you&#x27;ve reinvented RPC with extra steps. Model state transitions as PATCH updates to a <code>status</code> field, or create sub-resources (<code>POST /api/ideas/42/executions</code>).</li><br>
+<li><strong>Returning 200 for errors</strong> â€” <code>{&quot;status&quot;: &quot;error&quot;, &quot;message&quot;: &quot;not found&quot;}</code> with a 200 status code defeats the purpose of HTTP. Use the status code.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>Resources are nouns, methods are verbs.</strong> Design around <code>/ideas</code>, <code>/executions</code>, <code>/memories</code> â€” let GET/POST/PUT/PATCH/DELETE express the action.</li>
+<li><strong>Status codes are your first API documentation.</strong> A client should know success vs. failure, and what kind of failure, before parsing the body.</li>
+<li><strong>Version from day one.</strong> <code>/api/v1/</code> costs nothing now and saves a breaking-change migration later.</li>
+<li><strong>Paginate every list endpoint at creation time.</strong> Adding pagination to an existing endpoint is a breaking change for every consumer.</li>
+<li><strong>REST is for service boundaries, not internal calls.</strong> If it&#x27;s in the same process, just call the function. Save HTTP for the seams between independently deployable components.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
