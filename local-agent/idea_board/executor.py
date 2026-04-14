@@ -1066,17 +1066,25 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 f"Prompt: {full_prompt_chars} chars (~{full_prompt_tokens} tokens)"
             )
 
+            # Write prompt to temp file to avoid Windows 32K command-line limit
+            import tempfile
+            prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
+            prompt_file.write_text(full_prompt, encoding="utf-8")
+            state.log_lines.append("Starting Claude Code...")
+
             cmd = [
-                str(binary), "-p", full_prompt,
+                str(binary), "-p", "-",
                 "--output-format", "stream-json",
                 "--verbose",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
             ]
-            state.log_lines.append("Starting Claude Code with pre-built context...")
 
+            # Pipe prompt via stdin (avoids command-line length limit)
+            prompt_input = open(prompt_file, "r", encoding="utf-8")
             proc = subprocess.Popen(
                 cmd,
+                stdin=prompt_input,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=str(project_root),
@@ -1307,8 +1315,12 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                         f"Just fix the code and commit."
                     )
 
+                    fix_file = Path(tempfile.mktemp(suffix=".txt", prefix="fix_"))
+                    fix_file.write_text(fix_prompt, encoding="utf-8")
+                    fix_input = open(fix_file, "r", encoding="utf-8")
+
                     fix_cmd = [
-                        str(binary), "-p", fix_prompt,
+                        str(binary), "-p", "-",
                         "--output-format", "stream-json",
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
@@ -1316,6 +1328,7 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
 
                     fix_proc = subprocess.Popen(
                         fix_cmd,
+                        stdin=fix_input,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         cwd=str(project_root),
