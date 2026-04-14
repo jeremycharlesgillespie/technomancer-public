@@ -88,6 +88,7 @@ class TestCheckGitClean:
 
     @patch("aim.worker.subprocess.run")
     def test_dirty_working_dir(self, mock_run):
+        # --untracked-files=no means only tracked file changes are reported
         mock_run.side_effect = [
             MagicMock(stdout="M agent/core.py\n"),
         ]

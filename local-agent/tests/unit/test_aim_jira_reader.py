@@ -25,12 +25,10 @@ class TestCountIssuesByStatus:
     def test_empty_project(self, mock_api):
         from aim.jira_reader import count_issues_by_status
 
-        # First call: total count
-        resp_total = MagicMock()
-        resp_total.status_code = 200
-        resp_total.json.return_value = {"total": 0}
-
-        mock_api.return_value = resp_total
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"issues": [], "isLast": True}
+        mock_api.return_value = resp
 
         result = count_issues_by_status()
         assert result == {}
@@ -38,12 +36,6 @@ class TestCountIssuesByStatus:
     def test_counts_multiple_statuses(self, mock_api):
         from aim.jira_reader import count_issues_by_status
 
-        # First call returns total
-        resp_total = MagicMock()
-        resp_total.status_code = 200
-        resp_total.json.return_value = {"total": 3}
-
-        # Second call returns paginated results
         resp_page = MagicMock()
         resp_page.status_code = 200
         resp_page.json.return_value = {
@@ -51,13 +43,38 @@ class TestCountIssuesByStatus:
                 {"fields": {"status": {"name": "To Do"}}},
                 {"fields": {"status": {"name": "To Do"}}},
                 {"fields": {"status": {"name": "Done"}}},
-            ]
+            ],
+            "isLast": True,
         }
 
-        mock_api.side_effect = [resp_total, resp_page]
+        mock_api.return_value = resp_page
 
         result = count_issues_by_status()
         assert result == {"To Do": 2, "Done": 1}
+
+    def test_pagination_with_next_token(self, mock_api):
+        from aim.jira_reader import count_issues_by_status
+
+        page1 = MagicMock()
+        page1.status_code = 200
+        page1.json.return_value = {
+            "issues": [{"fields": {"status": {"name": "To Do"}}}],
+            "isLast": False,
+            "nextPageToken": "abc123",
+        }
+
+        page2 = MagicMock()
+        page2.status_code = 200
+        page2.json.return_value = {
+            "issues": [{"fields": {"status": {"name": "Done"}}}],
+            "isLast": True,
+        }
+
+        mock_api.side_effect = [page1, page2]
+
+        result = count_issues_by_status()
+        assert result == {"To Do": 1, "Done": 1}
+        assert mock_api.call_count == 2
 
     def test_api_failure_returns_empty(self, mock_api):
         from aim.jira_reader import count_issues_by_status
@@ -202,18 +219,15 @@ class TestGetBoardSummary:
     def test_combines_counts_and_completions(self, mock_api):
         from aim.jira_reader import get_board_summary
 
-        # Mock count_issues_by_status (calls _api twice for pagination)
-        resp_total = MagicMock()
-        resp_total.status_code = 200
-        resp_total.json.return_value = {"total": 2}
-
+        # Mock count_issues_by_status (single page response)
         resp_page = MagicMock()
         resp_page.status_code = 200
         resp_page.json.return_value = {
             "issues": [
                 {"fields": {"status": {"name": "To Do"}}},
                 {"fields": {"status": {"name": "Done"}}},
-            ]
+            ],
+            "isLast": True,
         }
 
         # Mock get_recent_completions
@@ -232,7 +246,7 @@ class TestGetBoardSummary:
             ]
         }
 
-        mock_api.side_effect = [resp_total, resp_page, resp_completions]
+        mock_api.side_effect = [resp_page, resp_completions]
 
         result = get_board_summary()
         assert result["todo"] == 1
