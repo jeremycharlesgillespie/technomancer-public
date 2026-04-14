@@ -1316,6 +1316,8 @@ def execute_page(idea_id: str):
     idea = get_idea(idea_id)
     title = idea.title if idea else idea_id
     state = idea.state if idea else "unknown"
+    idea_type = idea.idea_type if idea else "story"
+    title_color = "#9b59b6" if idea_type == "epic" else "#2ecc71"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1326,7 +1328,7 @@ def execute_page(idea_id: str):
     <style>
         body {{ font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 2rem; }}
         .card {{ max-width: 600px; margin: 2rem auto; background: #16213e; border-radius: 12px; padding: 2rem; border-left: 4px solid #0f3460; }}
-        h1 {{ color: #e94560; font-size: 1.4rem; margin-top: 0; }}
+        h1 {{ color: {title_color}; font-size: 1.4rem; margin-top: 0; }}
         .idea-id {{ color: #0f3460; font-size: 0.9rem; }}
         .state {{ display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.85rem; background: #0f3460; color: #e0e0e0; }}
         .state.done {{ background: #1b5e20; }}
