@@ -13,6 +13,8 @@ from agent.fallback_orchestrator import (
 )
 
 
+@patch("agent.fallback_orchestrator.FallbackOrchestrator._send_alert", new=lambda self, msg: None)
+@patch("agent.fallback_orchestrator.FallbackOrchestrator._send_alert_recovery", new=lambda self: None)
 class TestFallbackOrchestrator:
     """Test the FallbackOrchestrator class."""
 

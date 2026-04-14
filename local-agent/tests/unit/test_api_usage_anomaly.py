@@ -14,6 +14,7 @@ from agent.api_usage_anomaly import (
 )
 
 
+@patch("agent.api_usage_anomaly.UsageAnomalyDetector._send_alert", new=lambda self, msg, ep: None)
 class TestUsageAnomalyDetector:
     """Test the UsageAnomalyDetector class."""
 
@@ -201,6 +202,21 @@ class TestUsageAnomalyDetector:
         spike_alerts = [a for a in all_alerts if "USAGE SPIKE" in a]
         assert len(spike_alerts) >= 1
         assert "baseline" in spike_alerts[0].lower()
+
+
+
+class TestUsageAnomalyAlerts:
+    """Test that alerts fire correctly (separate class — no blanket _send_alert mock)."""
+
+    def _make_detector(self, **kwargs):
+        defaults = {
+            "spike_multiplier": 2.0,
+            "window_seconds": 60,
+            "baseline_hours": 24,
+            "cooldown_seconds": 0,
+        }
+        defaults.update(kwargs)
+        return UsageAnomalyDetector(**defaults)
 
     @patch("agent.api_usage_anomaly.UsageAnomalyDetector._send_alert")
     def test_alert_fires_for_spike(self, mock_send):
