@@ -245,21 +245,9 @@ def _run_pytest_with_progress(
         line = raw.decode("utf-8", errors="replace").rstrip()
         stdout_lines.append(line)
 
-        # Show meaningful pytest progress lines
-        if "passed" in line or "failed" in line or "error" in line.lower():
+        # Stream every non-empty line — the user wants to see activity
+        if line.strip():
             state.log_lines.append(f"[{label}] {line.strip()}")
-        elif "%" in line and ("PASSED" in line or "FAILED" in line):
-            state.log_lines.append(f"[{label}] {line.strip()}")
-        elif line.startswith("FAILED "):
-            state.log_lines.append(f"[{label}] {line.strip()}")
-        elif "rerun" in line.lower():
-            state.log_lines.append(f"[{label}] {line.strip()}")
-        # Show periodic progress (every ~30 lines of dot output)
-        elif len(stdout_lines) % 30 == 0 and line.strip():
-            elapsed = int(time.time() - start)
-            state.log_lines.append(
-                f"[{label}] {elapsed}s elapsed... ({len(stdout_lines)} lines)"
-            )
 
     # Drain remaining
     rest = proc.stdout.read() if proc.stdout else b""
@@ -1031,33 +1019,32 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
 
             try:
-                # Every execution starts completely fresh from main.
-                # Discard any leftover state from previous failed attempts.
+                state.log_lines.append("--- Setting up fresh branch ---")
 
-                # Step 1: Force switch to main, discarding any uncommitted work
+                # Step 1: Force switch to main
                 current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
                 if current != "main":
-                    state.log_lines.append(
-                        f"Resetting from branch {current} to main"
-                    )
-                    # Discard all uncommitted changes (tracked + untracked)
+                    state.log_lines.append(f"Resetting from {current} to main...")
                     _git(["checkout", "--force", "main"])
-                    # Delete the old branch — it's disposable
                     _git(["branch", "-D", current])
+                    state.log_lines.append(f"Deleted old branch {current}")
 
-                # Step 2: Discard any dirty files on main too
+                # Step 2: Clean working directory
                 _git(["checkout", "--force", "main"])
                 _git(["clean", "-fd"], timeout=30)
+                state.log_lines.append("Working directory clean")
 
                 # Step 3: Clean stale safe_update state
                 state_file = Path(local_agent_dir) / ".safe_update_state"
                 if state_file.exists():
                     state_file.unlink(missing_ok=True)
 
-                # Step 4: Pull latest main
+                # Step 4: Pull latest
+                state.log_lines.append("Pulling latest main...")
                 _git(["pull", "origin", "main"], timeout=30)
 
-                # Step 5: Create and checkout fresh branch
+                # Step 5: Create branch
+                state.log_lines.append(f"Creating branch {branch_name}...")
                 result = _git(["checkout", "-b", branch_name])
                 if result.returncode != 0:
                     raise RuntimeError(result.stderr or result.stdout)
