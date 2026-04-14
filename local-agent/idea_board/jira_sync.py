@@ -95,7 +95,8 @@ def find_jira_issue(idea_id: str) -> str | None:
             json={
                 "jql": (
                     f'project = {settings.jira_project_key} '
-                    f'AND summary ~ "{idea_id}"'
+                    f'AND summary ~ "{idea_id}" '
+                    f'ORDER BY created ASC'
                 ),
                 "maxResults": 1,
                 "fields": ["summary"],
