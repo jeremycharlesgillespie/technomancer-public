@@ -1710,7 +1710,7 @@ def execute_idea(
                             state.log("Published to technomancer-public")
                         else:
                             state.log(
-                                f"Publish failed: {pub.stderr[:200]}"
+                                f"Publish failed: {(pub.stderr or pub.stdout)[:500]}"
                             )
                 except Exception as e:
                     state.log(f"Publish error (non-blocking): {e}")
