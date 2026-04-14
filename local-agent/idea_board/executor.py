@@ -969,36 +969,33 @@ def execute_idea(idea_id: str) -> ExecutionState | None:
                 )
 
             try:
-                # Step 1: Ensure we're on main
+                # Every execution starts completely fresh from main.
+                # Discard any leftover state from previous failed attempts.
+
+                # Step 1: Force switch to main, discarding any uncommitted work
                 current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
                 if current != "main":
-                    state.log_lines.append(f"On branch {current}, switching to main")
-                    _git(["checkout", "main"])
+                    state.log_lines.append(
+                        f"Resetting from branch {current} to main"
+                    )
+                    # Discard all uncommitted changes (tracked + untracked)
+                    _git(["checkout", "--force", "main"])
+                    # Delete the old branch — it's disposable
+                    _git(["branch", "-D", current])
 
-                # Step 2: Abort stale safe_update state (just delete the file)
+                # Step 2: Discard any dirty files on main too
+                _git(["checkout", "--force", "main"])
+                _git(["clean", "-fd"], timeout=30)
+
+                # Step 3: Clean stale safe_update state
                 state_file = Path(local_agent_dir) / ".safe_update_state"
                 if state_file.exists():
-                    old_branch = state_file.read_text().strip()
-                    state.log_lines.append(f"Cleaning stale workflow: {old_branch}")
-                    _git(["branch", "-D", old_branch])
                     state_file.unlink(missing_ok=True)
-
-                # Step 3: Clean dirty working directory
-                dirty = _git(["status", "--porcelain"]).stdout.strip()
-                if dirty:
-                    file_list = dirty.split("\n")
-                    state.log_lines.append(
-                        f"Cleaning {len(file_list)} dirty file(s): "
-                        + ", ".join(f.strip()[:40] for f in file_list[:5])
-                        + ("..." if len(file_list) > 5 else "")
-                    )
-                    _git(["stash", "-u"], timeout=30)
-                    _git(["stash", "drop"])
 
                 # Step 4: Pull latest main
                 _git(["pull", "origin", "main"], timeout=30)
 
-                # Step 5: Create and checkout branch
+                # Step 5: Create and checkout fresh branch
                 result = _git(["checkout", "-b", branch_name])
                 if result.returncode != 0:
                     raise RuntimeError(result.stderr or result.stdout)
