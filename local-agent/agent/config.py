@@ -77,6 +77,20 @@ class Settings(BaseSettings):
         default=None, description="GitHub personal access token for API sync"
     )
 
+    # Jira integration
+    jira_url: Optional[str] = Field(
+        default=None, description="Jira instance URL (e.g., https://myorg.atlassian.net)"
+    )
+    jira_email: Optional[str] = Field(
+        default=None, description="Jira account email for API auth"
+    )
+    jira_api_token: Optional[str] = Field(
+        default=None, description="Jira API token"
+    )
+    jira_project_key: Optional[str] = Field(
+        default=None, description="Jira project key (e.g., TK)"
+    )
+
     # GitHub Pages settings
     github_pages_enabled: bool = Field(
         default=True, description="Enable GitHub Pages deployment for learning articles"

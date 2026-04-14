@@ -20,6 +20,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _jira_sync_background(idea: Any) -> None:
+    """Sync idea to Jira in a background thread (non-blocking)."""
+    def _sync():
+        try:
+            from .jira_sync import is_jira_configured, sync_idea_to_jira
+            if is_jira_configured():
+                sync_idea_to_jira(idea)
+        except Exception as e:
+            logger.warning("[JiraSync] Background sync failed: %s", e)
+    threading.Thread(target=_sync, daemon=True).start()
+
+
 # Storage paths
 IDEAS_DIR: Path = Path(__file__).parent
 IDEAS_FILE: Path = IDEAS_DIR / "ideas.json"
@@ -332,6 +345,7 @@ def add_idea(
     ideas.append(idea)
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     logger.info(f"Added idea {idea.id}: {title}")
     return idea
 
@@ -367,6 +381,7 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
 
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     return idea
 
 
@@ -394,6 +409,7 @@ def add_comment(idea_id: str, author: str, text: str) -> Idea | None:
 
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     return idea
 
 
@@ -413,6 +429,7 @@ def mark_executing(idea_id: str) -> Idea | None:
     idea.state = "executing"
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     return idea
 
 
@@ -434,6 +451,7 @@ def mark_done(idea_id: str, execution_log: str) -> Idea | None:
     idea.execution_log = execution_log
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     # Auto-resolve KAREN complaint when its idea completes
     if idea.source == "karen":
         from .karen import resolve_complaint_for_idea
@@ -459,6 +477,7 @@ def mark_failed(idea_id: str, error: str) -> Idea | None:
     idea.execution_log = error
     save_ideas(ideas)
     sync_to_obsidian(idea)
+    _jira_sync_background(idea)
     return idea
 
 
