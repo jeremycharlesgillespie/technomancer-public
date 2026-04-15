@@ -184,6 +184,12 @@ class ToolResultStorage:
 
 
 from .perf_monitor import record_llm_call as _record_perf
+from .prompt_compression import (
+    DEFAULT_COMPRESSION_THRESHOLD_CHARS,
+    compress_messages,
+    estimate_size_chars,
+    is_cacheable_task,
+)
 
 try:
     import ollama
@@ -214,6 +220,14 @@ class AgentConfig:
     max_turns: int = 20  # Max tool-calling turns per task
     system_prompt: str = ""
     verbose: bool = True
+    # Response cache: skip the Ollama call for repeated short prompts that
+    # previously completed without tool calls. Uses llm_optimizer.cache_*.
+    enable_response_cache: bool = False
+    response_cache_max_age_hours: int = 1
+    # Prompt compression: before each Ollama turn, collapse bulky older
+    # tool/assistant messages once the running context crosses this size.
+    compression_threshold_chars: int = DEFAULT_COMPRESSION_THRESHOLD_CHARS
+    compression_keep_recent: int = 4
 
 
 class Agent:
@@ -426,6 +440,46 @@ If you need to perform multiple steps, do them one at a time."""
         else:
             return 131072
 
+    def _try_cache_lookup(self, task: str) -> str | None:
+        """Look up a cached response for a single-turn task.
+
+        Failures in the cache layer (SQLite locked, permission error, etc.)
+        must never break the agent — they just skip the fast path.
+        """
+        try:
+            from .llm_optimizer import cache_lookup
+
+            return cache_lookup(task, max_age_hours=self.config.response_cache_max_age_hours)
+        except Exception as e:
+            self._log(f"cache_lookup failed: {e}")
+            return None
+
+    def _cache_store(self, task: str, response: str) -> None:
+        """Store a successful response in the cache. Soft-fails on errors."""
+        try:
+            from .llm_optimizer import cache_store
+
+            cache_store(task, response, endpoint="ollama", model=self.config.model)
+        except Exception as e:
+            self._log(f"cache_store failed: {e}")
+
+    def _maybe_compress_messages(self) -> None:
+        """Compress older bulky messages in-place if the history is large."""
+        before = estimate_size_chars(self.messages)
+        if before <= self.config.compression_threshold_chars:
+            return
+        compressed, saved = compress_messages(
+            self.messages,
+            max_chars=self.config.compression_threshold_chars,
+            keep_recent=self.config.compression_keep_recent,
+        )
+        if saved > 0:
+            self.messages = compressed
+            self._log(
+                f"Compressed messages: {before:,} → {before - saved:,} chars "
+                f"(saved {saved:,})"
+            )
+
     def run(self, task: str, context: str = "", images: list[bytes] | None = None) -> str:
         """
         Run the agent on a task.
@@ -455,10 +509,28 @@ If you need to perform multiple steps, do them one at a time."""
 
         self._log(f"Starting task: {task[:100]}...")
 
+        # Response cache: short text-only prompts may have a fresh cached
+        # answer. Only attempt when images aren't present and the task is
+        # small enough to make equality hashing meaningful.
+        if (
+            self.config.enable_response_cache
+            and not images
+            and is_cacheable_task(task)
+        ):
+            cached = self._try_cache_lookup(task)
+            if cached is not None:
+                self._log("Cache hit — skipping Ollama call")
+                return cached
+
         # Agent loop
         while self.turn_count < self.config.max_turns:
             self.turn_count += 1
             self._log(f"Turn {self.turn_count}/{self.config.max_turns}")
+
+            # Compress older tool/assistant messages if the history is getting
+            # large. Keeps the system prompt and the recent reasoning chain
+            # intact — only stale tool output is collapsed.
+            self._maybe_compress_messages()
 
             num_ctx = self._estimate_ctx_size()
             input_chars = sum(len(m.get("content", "")) for m in self.messages)
@@ -513,7 +585,18 @@ If you need to perform multiple steps, do them one at a time."""
                 self._log("Task complete (no more tool calls)")
                 result = strip_thinking_tags(content)
                 # Guard against empty responses (LLM put everything in <think> tags)
-                return result if result else "I processed your request but didn't generate a visible response. Could you try rephrasing?"
+                final = result if result else "I processed your request but didn't generate a visible response. Could you try rephrasing?"
+                # Only cache single-turn, tool-free runs — those are the ones
+                # cheap-enough to treat as deterministic.
+                if (
+                    self.config.enable_response_cache
+                    and self.turn_count == 1
+                    and not images
+                    and is_cacheable_task(task)
+                    and result
+                ):
+                    self._cache_store(task, final)
+                return final
 
             # Execute tool calls
             for tool_call in tool_calls:

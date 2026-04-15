@@ -3,6 +3,7 @@ Tests for agent/core.py - Agent class, Tool dataclass, and utilities.
 """
 
 import time
+from unittest.mock import patch
 
 from agent.core import (
     Agent,
@@ -10,6 +11,7 @@ from agent.core import (
     Tool,
     ToolResultStorage,
     create_tool,
+    extract_thinking,
     strip_thinking_tags,
 )
 
@@ -569,3 +571,241 @@ class TestToolTimeout:
         result = agent._execute_tool("err", {})
         assert "Error" in result
         assert "broken" in result
+
+
+# =============================================================================
+# EXTRACT_THINKING TESTS
+# =============================================================================
+
+
+class TestExtractThinking:
+    """Tests for extract_thinking utility — mirror of strip_thinking_tags."""
+
+    def test_extracts_single_block(self):
+        assert extract_thinking("pre <think>reasoning here</think> post") == "reasoning here"
+
+    def test_multiline_block(self):
+        text = "pre <think>\nline one\nline two\n</think> post"
+        assert "line one" in extract_thinking(text)
+        assert "line two" in extract_thinking(text)
+
+    def test_no_block_returns_empty(self):
+        assert extract_thinking("no tags here") == ""
+
+    def test_strips_surrounding_whitespace(self):
+        assert extract_thinking("<think>   hello   </think>") == "hello"
+
+
+# =============================================================================
+# CTX SIZE ESTIMATION
+# =============================================================================
+
+
+class TestEstimateCtxSize:
+    """Agent._estimate_ctx_size should snap to power-of-two sizes."""
+
+    def test_empty_messages_returns_minimum(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        agent.messages = []
+        assert agent._estimate_ctx_size() == 8192
+
+    def test_small_messages_stay_small(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        agent.messages = [{"role": "user", "content": "hi"}]
+        assert agent._estimate_ctx_size() == 8192
+
+    def test_medium_messages_step_up(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        # ~5000 tokens of content
+        agent.messages = [{"role": "user", "content": "x" * 20_000}]
+        ctx = agent._estimate_ctx_size()
+        assert ctx in (16384, 32768)
+
+    def test_huge_messages_max_out(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        # ~50K tokens worth of content
+        agent.messages = [{"role": "user", "content": "x" * 200_000}]
+        assert agent._estimate_ctx_size() == 131072
+
+
+# =============================================================================
+# TEMPERATURE OVERRIDE
+# =============================================================================
+
+
+class TestTemperatureOverride:
+    def test_default_returns_config_temperature(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False, temperature=0.42))
+        assert agent._get_temperature() == 0.42
+
+    def test_override_applied_once(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False, temperature=0.7))
+        agent.set_temperature(0.1)
+        # First call consumes the override.
+        assert agent._get_temperature() == 0.1
+        # Second call falls back to config default.
+        assert agent._get_temperature() == 0.7
+
+
+# =============================================================================
+# PROMPT COMPRESSION INTEGRATION
+# =============================================================================
+
+
+class TestAgentCompression:
+    def test_compress_noop_when_under_threshold(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False, compression_threshold_chars=10_000))
+        agent.messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "tool", "content": "x" * 100},
+        ]
+        before = list(agent.messages)
+        agent._maybe_compress_messages()
+        assert agent.messages == before
+
+    def test_compress_collapses_when_over_threshold(self, mock_ollama_client):
+        # Small threshold forces compression on next call.
+        agent = Agent(AgentConfig(
+            verbose=False,
+            compression_threshold_chars=500,
+            compression_keep_recent=1,
+        ))
+        big = "x" * 2000
+        agent.messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "tool", "content": big},
+            {"role": "tool", "content": big},
+            {"role": "user", "content": "latest"},
+        ]
+        agent._maybe_compress_messages()
+        # The oldest tool result should have been collapsed.
+        tools = [m for m in agent.messages if m.get("role") == "tool"]
+        assert any("compressed" in m["content"] for m in tools)
+        # Latest user message preserved.
+        assert agent.messages[-1] == {"role": "user", "content": "latest"}
+
+
+# =============================================================================
+# RESPONSE CACHE INTEGRATION
+# =============================================================================
+
+
+class TestAgentResponseCache:
+    def test_cache_disabled_by_default(self, mock_ollama_client):
+        """By default the agent doesn't consult the cache — keeps behavior unchanged."""
+        agent = Agent(AgentConfig(verbose=False))
+        assert agent.config.enable_response_cache is False
+
+    def test_cache_hit_skips_ollama(self, mock_ollama_client):
+        """When the cache returns a hit, no Ollama call is issued."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+
+        with patch("agent.llm_optimizer.cache_lookup", return_value="cached answer"):
+            result = agent.run("What is 2+2?")
+
+        assert result == "cached answer"
+        # Mock Ollama was never asked.
+        assert mock_ollama_client.call_history == []
+
+    def test_cache_miss_calls_ollama_and_stores(self, mock_ollama_client):
+        """On cache miss the agent runs Ollama and writes the result back."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        mock_ollama_client.set_responses(
+            [{"message": {"content": "fresh answer", "tool_calls": []}}]
+        )
+
+        with patch("agent.llm_optimizer.cache_lookup", return_value=None) as mock_lookup, \
+             patch("agent.llm_optimizer.cache_store") as mock_store:
+            result = agent.run("What is 2+2?")
+
+        assert result == "fresh answer"
+        mock_lookup.assert_called_once()
+        mock_store.assert_called_once()
+        # Second positional arg is the response string.
+        args, kwargs = mock_store.call_args
+        assert "fresh answer" in (args[1] if len(args) > 1 else kwargs.get("response", ""))
+
+    def test_multi_turn_not_cached(self, mock_ollama_client):
+        """Responses that required tool calls shouldn't be cached — they're not deterministic."""
+        def sample_func(**kwargs):
+            return "tool result"
+
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        tool = create_tool(
+            "sample", "sample tool",
+            {"type": "object", "properties": {}, "required": []},
+            sample_func,
+        )
+        agent.register_tool(tool)
+
+        mock_ollama_client.set_responses([
+            {"message": {"content": "", "tool_calls": [
+                {"function": {"name": "sample", "arguments": {}}}
+            ]}},
+            {"message": {"content": "done", "tool_calls": []}},
+        ])
+
+        with patch("agent.llm_optimizer.cache_lookup", return_value=None), \
+             patch("agent.llm_optimizer.cache_store") as mock_store:
+            result = agent.run("Run the tool")
+
+        assert result == "done"
+        mock_store.assert_not_called()
+
+    def test_cache_skipped_for_images(self, mock_ollama_client):
+        """Vision prompts never hit the cache — the hash would ignore the image."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        mock_ollama_client.set_responses(
+            [{"message": {"content": "vision answer", "tool_calls": []}}]
+        )
+
+        with patch("agent.llm_optimizer.cache_lookup") as mock_lookup, \
+             patch("agent.llm_optimizer.cache_store") as mock_store:
+            result = agent.run("describe this", images=[b"\x89PNG"])
+
+        assert result == "vision answer"
+        mock_lookup.assert_not_called()
+        mock_store.assert_not_called()
+
+    def test_cache_skipped_for_long_tasks(self, mock_ollama_client):
+        """Long prompts aren't cache candidates — the normalized hash is too coarse."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        mock_ollama_client.set_responses(
+            [{"message": {"content": "long answer", "tool_calls": []}}]
+        )
+
+        long_task = "x" * 2000
+
+        with patch("agent.llm_optimizer.cache_lookup") as mock_lookup, \
+             patch("agent.llm_optimizer.cache_store") as mock_store:
+            result = agent.run(long_task)
+
+        assert result == "long answer"
+        mock_lookup.assert_not_called()
+        mock_store.assert_not_called()
+
+    def test_cache_lookup_exception_falls_through(self, mock_ollama_client):
+        """If the cache backend errors we still complete the request via Ollama."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        mock_ollama_client.set_responses(
+            [{"message": {"content": "fallback answer", "tool_calls": []}}]
+        )
+
+        with patch("agent.llm_optimizer.cache_lookup", side_effect=RuntimeError("db locked")), \
+             patch("agent.llm_optimizer.cache_store"):
+            result = agent.run("hi")
+
+        assert result == "fallback answer"
+
+    def test_cache_store_exception_does_not_fail_request(self, mock_ollama_client):
+        """A cache write failure must not change what the user sees."""
+        agent = Agent(AgentConfig(verbose=False, enable_response_cache=True))
+        mock_ollama_client.set_responses(
+            [{"message": {"content": "still ok", "tool_calls": []}}]
+        )
+
+        with patch("agent.llm_optimizer.cache_lookup", return_value=None), \
+             patch("agent.llm_optimizer.cache_store", side_effect=RuntimeError("disk full")):
+            result = agent.run("hi")
+
+        assert result == "still ok"
