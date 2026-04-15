@@ -324,7 +324,7 @@ class TestCreateNewWork:
         ]
         call_idx = [0]
 
-        def mock_add_idea(title, description, source, category):
+        def mock_add_idea(title, description, source, category, **kwargs):
             idx = call_idx[0]
             call_idx[0] += 1
             return created_ideas[idx]

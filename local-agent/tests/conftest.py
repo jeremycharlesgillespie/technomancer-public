@@ -8,9 +8,22 @@ Provides mocks for:
 - Memory system initialized with temp vault
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _block_git_cleanup():
+    """Prevent AIM/Worker git cleanup from running real `git checkout --force main`.
+
+    The production cleanup wipes the current branch when a worker fails.
+    Without this guard, any test that exercises handle_worker_failure or
+    _ensure_git_clean wipes the feature branch pytest is running from.
+    """
+    with patch("aim.manager._cleanup_git_and_executions"), \
+         patch("aim.worker._ensure_git_clean"):
+        yield
 
 # =============================================================================
 # OLLAMA MOCK

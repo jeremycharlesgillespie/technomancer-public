@@ -339,6 +339,11 @@ class TestScoreMemoryConnections:
 
         monkeypatch.setattr(mem_module, "_memory_system", memory_system)
 
+        # Mock embed_texts to avoid hitting Ollama
+        import agent.embeddings as emb_module
+
+        monkeypatch.setattr(emb_module, "embed_texts", lambda texts: [])
+
         article = {
             "title": "Python 3.14 Released",
             "summary": "Major Python update with new features.",

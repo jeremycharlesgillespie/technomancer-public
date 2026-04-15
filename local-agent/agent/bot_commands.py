@@ -129,9 +129,9 @@ async def handle_karen(message: Any, content: str, user: str) -> None:
             idea_ids = await asyncio.to_thread(generate_ideas_from_complaint, complaint)
 
             if idea_ids:
-                from idea_board.models import load_ideas
+                from board import get_provider
 
-                ideas = load_ideas()
+                ideas = get_provider().load_all()
                 lines = [f"Generated {len(idea_ids)} idea(s) from your complaint:"]
                 for iid in idea_ids:
                     idea = next((i for i in ideas if i.id == iid), None)
@@ -343,9 +343,9 @@ async def handle_tech_news(
 
 async def handle_show_ideas(message: Any, send_response: Any) -> None:
     """Show active ideas from the idea board."""
-    from idea_board.models import list_ideas_for_llm
+    from board import get_provider
 
-    response = list_ideas_for_llm()
+    response = get_provider().list_ideas_for_llm()
     await send_response(message, response)
 
 

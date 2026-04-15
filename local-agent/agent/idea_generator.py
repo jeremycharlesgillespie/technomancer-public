@@ -37,13 +37,35 @@ from .memory_system import get_memory_system
 from .perf_monitor import get_monitor as get_perf_monitor
 
 try:
-    from idea_board.models import (
-        add_idea,
-        load_ideas,
-        set_epic_context,
-        set_execution_order,
-    )
-except ImportError:  # idea_board may not be on sys.path in all contexts
+    from board import get_provider as _get_board_provider
+
+    def load_ideas():  # type: ignore[no-redef]
+        return _get_board_provider().load_all()
+
+    def add_idea(  # type: ignore[no-redef]
+        title,
+        description,
+        source="llm_analysis",
+        category="feature",
+        idea_type="story",
+        parent_id=None,
+    ):
+        return _get_board_provider().add(
+            title=title,
+            description=description,
+            source=source,
+            category=category,
+            idea_type=idea_type,
+            parent_id=parent_id,
+        )
+
+    def set_execution_order(item_id, order):  # type: ignore[no-redef]
+        return _get_board_provider().set_execution_order(item_id, order)
+
+    def set_epic_context(item_id, context):  # type: ignore[no-redef]
+        return _get_board_provider().set_epic_context(item_id, context)
+
+except ImportError:  # board package unavailable in some contexts
     load_ideas = None  # type: ignore[assignment]
     add_idea = None  # type: ignore[assignment]
     set_execution_order = None  # type: ignore[assignment]

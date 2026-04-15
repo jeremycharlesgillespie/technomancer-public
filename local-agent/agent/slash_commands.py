@@ -54,8 +54,8 @@ def _build_tree(client: discord.Client) -> app_commands.CommandTree:
 
     @tree.command(name="ideas", description="Show active ideas from the idea board")
     async def cmd_ideas(interaction: discord.Interaction) -> None:
-        from idea_board.models import list_ideas_for_llm
-        result = list_ideas_for_llm()
+        from board import get_provider
+        result = get_provider().list_ideas_for_llm()
         await _respond(interaction, result)
 
     @tree.command(name="think", description="Show what the bot knows about you (permanent memories)")

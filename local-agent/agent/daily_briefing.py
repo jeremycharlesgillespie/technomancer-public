@@ -130,9 +130,9 @@ def _collect_engagement() -> str:
 def _collect_ideas() -> str:
     """Collect pending and executing ideas from the idea board."""
     try:
-        from idea_board.models import load_ideas
+        from board import get_provider
 
-        ideas = load_ideas()
+        ideas = get_provider().load_all()
         if not ideas:
             return "No ideas on the board."
 
