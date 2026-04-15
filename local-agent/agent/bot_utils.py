@@ -72,6 +72,73 @@ def build_crash_message(
     return result
 
 
+def write_crash_log(
+    exc_type: type[BaseException],
+    exc_value: BaseException,
+    exc_tb: TracebackType | None,
+    vault_path: str | Path,
+) -> Path:
+    """Write detailed crash information to the vault for later diagnosis.
+
+    Includes the full stack trace and local variables from each frame.
+    ``vault_path`` is the base Obsidian vault directory; the crash log is
+    written to ``<vault>/LLM Memory/Permanent/crash_log.md``.
+    """
+    crash_file = Path(vault_path) / "LLM Memory" / "Permanent" / "crash_log.md"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    lines = [
+        "# Bot Crash Report",
+        "",
+        f"**Timestamp:** {timestamp}",
+        f"**Exception Type:** {exc_type.__name__}",
+        f"**Exception Message:** {exc_value}",
+        "",
+        "## Full Stack Trace",
+        "```python",
+    ]
+
+    tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+    lines.extend([line.rstrip() for line in tb_lines])
+    lines.append("```")
+
+    lines.append("")
+    lines.append("## Local Variables by Frame")
+
+    tb = exc_tb
+    frame_num = 0
+    while tb is not None:
+        frame = tb.tb_frame
+        lineno = tb.tb_lineno
+        filename = frame.f_code.co_filename
+        func_name = frame.f_code.co_name
+
+        lines.append("")
+        lines.append(f"### Frame {frame_num}: {func_name} ({filename}:{lineno})")
+        lines.append("```python")
+
+        for var_name, var_value in frame.f_locals.items():
+            try:
+                if isinstance(var_value, (type, type(sys))):
+                    continue
+                value_str = repr(var_value)
+                if len(value_str) > 500:
+                    value_str = value_str[:500] + "... [truncated]"
+                lines.append(f"{var_name} = {value_str}")
+            except Exception:
+                lines.append(f"{var_name} = <unable to repr>")
+
+        lines.append("```")
+        tb = tb.tb_next
+        frame_num += 1
+
+    crash_file.parent.mkdir(parents=True, exist_ok=True)
+    crash_file.write_text("\n".join(lines), encoding="utf-8")
+    log(f"Crash log written to {crash_file}")
+
+    return crash_file
+
+
 def send_lifecycle_notification(event: str, details: str = "") -> None:
     """Send bot lifecycle event to Discord webhook.
 

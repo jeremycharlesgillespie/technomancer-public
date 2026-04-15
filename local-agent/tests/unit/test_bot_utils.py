@@ -14,6 +14,7 @@ from agent.bot_utils import (
     is_image_attachment,
     log,
     send_lifecycle_notification,
+    write_crash_log,
 )
 
 
@@ -67,6 +68,74 @@ class TestBuildCrashMessage:
             assert isinstance(msg, str)
         except (AttributeError, TypeError):
             pass  # Some implementations require a real traceback
+
+
+class TestWriteCrashLog:
+    """Test crash log file writing."""
+
+    def _crash_exc_info(self):
+        try:
+            _unused = "local_evidence"  # noqa: F841
+            raise ValueError("boom")
+        except ValueError:
+            return sys.exc_info()
+
+    def test_creates_file_with_expected_path(self, tmp_path):
+        exc_type, exc_value, exc_tb = self._crash_exc_info()
+        result = write_crash_log(exc_type, exc_value, exc_tb, tmp_path)
+
+        expected = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        assert result == expected
+        assert expected.exists()
+
+    def test_creates_parent_directories(self, tmp_path):
+        exc_type, exc_value, exc_tb = self._crash_exc_info()
+        # Point to a deeply nested vault path that doesn't exist yet
+        vault = tmp_path / "nested" / "vault"
+        assert not vault.exists()
+
+        write_crash_log(exc_type, exc_value, exc_tb, vault)
+        assert (vault / "LLM Memory" / "Permanent" / "crash_log.md").exists()
+
+    def test_writes_exception_metadata(self, tmp_path):
+        exc_type, exc_value, exc_tb = self._crash_exc_info()
+        path = write_crash_log(exc_type, exc_value, exc_tb, tmp_path)
+        content = path.read_text(encoding="utf-8")
+
+        assert "# Bot Crash Report" in content
+        assert "**Exception Type:** ValueError" in content
+        assert "boom" in content
+        assert "## Full Stack Trace" in content
+
+    def test_includes_local_variables_per_frame(self, tmp_path):
+        exc_type, exc_value, exc_tb = self._crash_exc_info()
+        path = write_crash_log(exc_type, exc_value, exc_tb, tmp_path)
+        content = path.read_text(encoding="utf-8")
+
+        assert "## Local Variables by Frame" in content
+        assert "### Frame 0:" in content
+        # The local set in _crash_exc_info should show up
+        assert "local_evidence" in content
+
+    def test_truncates_long_repr_values(self, tmp_path):
+        try:
+            big_blob = "A" * 2000  # noqa: F841 — intentionally referenced via locals
+            raise RuntimeError("overflow")
+        except RuntimeError:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+
+        path = write_crash_log(exc_type, exc_value, exc_tb, tmp_path)
+        content = path.read_text(encoding="utf-8")
+
+        assert "... [truncated]" in content
+        # Raw 2000-char repr should not fit verbatim after truncation
+        assert "A" * 2000 not in content
+
+    def test_accepts_string_vault_path(self, tmp_path):
+        exc_type, exc_value, exc_tb = self._crash_exc_info()
+        # Passing a str (not Path) should also work
+        result = write_crash_log(exc_type, exc_value, exc_tb, str(tmp_path))
+        assert result.exists()
 
 
 class TestDetectDocumentType:

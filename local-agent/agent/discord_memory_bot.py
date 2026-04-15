@@ -10,10 +10,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
 from datetime import datetime
 from pathlib import Path
-from types import TracebackType
 from typing import Any
 
 import aiohttp
@@ -34,6 +32,7 @@ from .bot_utils import (
     is_image_attachment,
     log,
     send_lifecycle_notification,
+    write_crash_log,
 )
 from .capability_request import get_capability_tools
 from .claude_bridge import ClaudeBridge
@@ -1677,7 +1676,7 @@ Respond naturally and helpfully. Be conversational and friendly."""
 
             # Write crash log for debugging (sys is imported at module level)
             exc_type, exc_value, exc_tb = sys.exc_info()
-            _crash_file = write_crash_log(exc_type, exc_value, exc_tb)
+            _crash_file = write_crash_log(exc_type, exc_value, exc_tb, VAULT_PATH)
 
             # Send detailed crash to Discord webhook
             crash_details = build_crash_message(exc_type, exc_value, exc_tb)
@@ -1686,75 +1685,6 @@ Respond naturally and helpfully. Be conversational and friendly."""
                 await message.reply(f"Error: {e}\n(Crash log saved)")
             except Exception:
                 pass  # Can't reply if the error IS a send failure
-
-
-def write_crash_log(
-    exc_type: type[BaseException], exc_value: BaseException, exc_tb: TracebackType | None
-) -> Path:
-    """
-    Write detailed crash information to the vault for Claude to diagnose.
-    Includes full stack trace and local variables from each frame.
-    """
-    crash_file = Path(VAULT_PATH) / "LLM Memory" / "Permanent" / "crash_log.md"
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Build detailed crash report
-    lines = [
-        "# Bot Crash Report",
-        "",
-        f"**Timestamp:** {timestamp}",
-        f"**Exception Type:** {exc_type.__name__}",
-        f"**Exception Message:** {exc_value}",
-        "",
-        "## Full Stack Trace",
-        "```python",
-    ]
-
-    # Add full traceback
-    tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-    lines.extend([line.rstrip() for line in tb_lines])
-    lines.append("```")
-
-    # Extract local variables from each frame
-    lines.append("")
-    lines.append("## Local Variables by Frame")
-
-    tb = exc_tb
-    frame_num = 0
-    while tb is not None:
-        frame = tb.tb_frame
-        lineno = tb.tb_lineno
-        filename = frame.f_code.co_filename
-        func_name = frame.f_code.co_name
-
-        lines.append("")
-        lines.append(f"### Frame {frame_num}: {func_name} ({filename}:{lineno})")
-        lines.append("```python")
-
-        # Get local variables, filtering out large/complex objects
-        for var_name, var_value in frame.f_locals.items():
-            try:
-                # Skip modules, classes, functions
-                if isinstance(var_value, (type, type(sys))):
-                    continue
-                # Truncate long values
-                value_str = repr(var_value)
-                if len(value_str) > 500:
-                    value_str = value_str[:500] + "... [truncated]"
-                lines.append(f"{var_name} = {value_str}")
-            except Exception:
-                lines.append(f"{var_name} = <unable to repr>")
-
-        lines.append("```")
-        tb = tb.tb_next
-        frame_num += 1
-
-    # Write to file
-    crash_file.parent.mkdir(parents=True, exist_ok=True)
-    crash_file.write_text("\n".join(lines), encoding="utf-8")
-    log(f"Crash log written to {crash_file}")
-
-    return crash_file
 
 
 def main() -> None:
@@ -1769,7 +1699,7 @@ def main() -> None:
         send_lifecycle_notification("crash", f"```{str(e)[:200]}```")
         # Write comprehensive crash log
         exc_type, exc_value, exc_tb = sys.exc_info()
-        crash_file = write_crash_log(exc_type, exc_value, exc_tb)
+        crash_file = write_crash_log(exc_type, exc_value, exc_tb, VAULT_PATH)
         log(f"Crash details saved to: {crash_file}")
         # Re-raise so process manager knows it crashed
         raise
