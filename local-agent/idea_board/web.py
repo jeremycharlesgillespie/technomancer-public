@@ -2689,10 +2689,57 @@ a { color: var(--accent); }
 }
 #widget-error.visible { display: block; }
 
+#aim-events {
+    margin-top: 1.5rem;
+}
+#aim-events h2 {
+    font-size: 1rem; color: var(--accent); margin-bottom: 0.5rem;
+    display: flex; justify-content: space-between; align-items: baseline;
+}
+#aim-events-status {
+    font-size: 0.75rem; color: var(--muted); font-weight: normal;
+}
+#aim-events-status.connected { color: var(--green); }
+#aim-events-status.disconnected { color: var(--red); }
+#aim-events-timeline {
+    display: flex; flex-direction: column; gap: 0.4rem;
+    max-height: 70vh; overflow-y: auto;
+    padding-right: 0.25rem;
+}
+.aim-event {
+    background: var(--surface); border-radius: 6px;
+    border-left: 4px solid var(--muted); padding: 0.5rem 0.75rem;
+    font-size: 0.85rem; word-break: break-word;
+}
+.aim-event.color-blue { border-left-color: var(--accent); }
+.aim-event.color-green { border-left-color: var(--green); }
+.aim-event.color-red { border-left-color: var(--red); }
+.aim-event.color-yellow { border-left-color: var(--yellow); }
+.aim-event-header {
+    display: flex; gap: 0.75rem; align-items: baseline;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    margin-bottom: 0.2rem;
+}
+.aim-event-time {
+    color: var(--muted); font-size: 0.75rem;
+}
+.aim-event-type {
+    color: var(--text); font-weight: 600; font-size: 0.8rem;
+}
+.aim-event-summary {
+    color: var(--text); line-height: 1.4;
+}
+.aim-event-empty {
+    color: var(--muted); font-style: italic; font-size: 0.85rem;
+    padding: 0.5rem 0;
+}
+
 @media (max-width: 600px) {
     body { padding: 12px; }
     .widget-row { gap: 0.75rem 1.25rem; }
     .widget-value { font-size: 0.85rem; }
+    #aim-events-timeline { max-height: 60vh; }
+    .aim-event { font-size: 0.8rem; }
 }
 """
 
@@ -2844,8 +2891,97 @@ def _render_aim_dashboard() -> str:
     setInterval(poll, POLL_MS);
     </script>
 
+    <section id="aim-events" aria-live="polite">
+        <h2>Timeline <span id="aim-events-status">connecting&hellip;</span></h2>
+        <div id="aim-events-timeline">
+            <div class="aim-event-empty">Waiting for events&hellip;</div>
+        </div>
+    </section>
+
+    <script>
+    const EVENT_COLORS = {{
+        decision_made: 'blue',
+        worker_started: 'green',
+        worker_spawned: 'green',
+        worker_assigned: 'green',
+        execution_failed: 'red',
+        worker_died: 'red',
+        escalation: 'yellow'
+    }};
+    const MAX_EVENTS_RENDERED = 200;
+
+    function colorForEvent(type) {{
+        return EVENT_COLORS[type] || 'neutral';
+    }}
+
+    function eventSummary(event) {{
+        const data = event.data || {{}};
+        return data.summary || data.decision || data.reason ||
+               data.description || data.message || data.idea_id ||
+               event.type || '(no details)';
+    }}
+
+    function renderEvent(event) {{
+        const wrapper = document.createElement('div');
+        wrapper.className = 'aim-event color-' + colorForEvent(event.type);
+
+        const header = document.createElement('div');
+        header.className = 'aim-event-header';
+
+        const timeEl = document.createElement('span');
+        timeEl.className = 'aim-event-time';
+        timeEl.textContent = (event.timestamp || '').slice(11, 19) || '--:--:--';
+
+        const typeEl = document.createElement('span');
+        typeEl.className = 'aim-event-type';
+        typeEl.textContent = event.type || 'event';
+
+        header.appendChild(timeEl);
+        header.appendChild(typeEl);
+
+        const summary = document.createElement('div');
+        summary.className = 'aim-event-summary';
+        summary.textContent = eventSummary(event);
+
+        wrapper.appendChild(header);
+        wrapper.appendChild(summary);
+        return wrapper;
+    }}
+
+    function prependEvent(event) {{
+        const timeline = document.getElementById('aim-events-timeline');
+        const empty = timeline.querySelector('.aim-event-empty');
+        if (empty) empty.remove();
+        timeline.insertBefore(renderEvent(event), timeline.firstChild);
+        while (timeline.children.length > MAX_EVENTS_RENDERED) {{
+            timeline.removeChild(timeline.lastChild);
+        }}
+    }}
+
+    function setStreamStatus(text, cls) {{
+        const el = document.getElementById('aim-events-status');
+        el.textContent = text;
+        el.className = cls || '';
+    }}
+
+    function handleEventPayload(raw) {{
+        if (!raw) return;
+        try {{
+            const event = JSON.parse(raw);
+            prependEvent(event);
+        }} catch (err) {{ /* skip malformed */ }}
+    }}
+
+    const evtSrc = new EventSource('/api/aim/events/stream');
+    evtSrc.onopen = () => setStreamStatus('connected', 'connected');
+    evtSrc.onmessage = (e) => handleEventPayload(e.data);
+    evtSrc.addEventListener('event', (e) => handleEventPayload(e.data));
+    evtSrc.onerror = () => setStreamStatus('disconnected', 'disconnected');
+    </script>
+
     <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">
-        Page loaded at {now} &middot; Polling every 5s
+        Page loaded at {now} &middot; Polling every 5s &middot;
+        Timeline streams from <a href="/api/aim/events/stream">/api/aim/events/stream</a>
     </p>
 </body>
 </html>"""
