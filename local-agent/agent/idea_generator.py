@@ -170,6 +170,23 @@ RULES:
 - Don't suggest things the CODEBASE already has
 - Focus on what would genuinely help the project owner (a Sr. Software Engineer)
 
+SCOPING RULES — architect in the epic, execute in the story:
+
+RULE A (EPIC content): The epic_context carries the complete design:
+problem statement, architecture choices, trade-offs considered,
+constraints, interfaces, failure modes, and a short rationale for each
+major decision. If anything requires judgment, it belongs in epic_context.
+
+RULE B (STORY content): Each story description contains only execution
+instructions: WHAT to change, in which files / functions / data
+structures, with concrete acceptance criteria (tests pass, endpoint
+returns X, migration applies cleanly). Stories must NOT require the
+executor to design, choose between options, evaluate approaches, or
+research. Disallowed story-title verbs: "design", "decide", "evaluate",
+"choose", "plan", "architect", "research". If a story would start with
+any of those, pull that work up into the epic and restate the story as
+pure execution.
+
 --- COLLECTED SIGNALS ---
 {signals}
 

@@ -182,6 +182,18 @@ class TestSynthesisPrompt:
     def test_mentions_json_object(self):
         assert "JSON object" in SYNTHESIS_PROMPT
 
+    def test_contains_scoping_rules(self):
+        """Prompt must spell out RULE A / RULE B and the disallowed story verbs."""
+        assert "RULE A" in SYNTHESIS_PROMPT
+        assert "RULE B" in SYNTHESIS_PROMPT
+        # RULE A describes epics carrying the design.
+        assert "EPIC" in SYNTHESIS_PROMPT
+        # RULE B describes stories as pure execution.
+        assert "STORY" in SYNTHESIS_PROMPT
+        # Disallowed verbs must be listed so the model avoids them in stories.
+        for verb in ("design", "decide", "evaluate", "choose", "plan", "architect", "research"):
+            assert verb in SYNTHESIS_PROMPT
+
 
 # =============================================================================
 # PARSE EPIC RESPONSE
