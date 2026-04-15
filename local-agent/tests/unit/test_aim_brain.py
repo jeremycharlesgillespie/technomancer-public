@@ -377,3 +377,27 @@ class TestGenerateWorkIdeas:
         assert len(result) == 1
         assert result[0]["category"] == "quality"  # default
         assert result[0]["idea_type"] == "story"  # default
+
+    @patch("aim.brain._run_claude_p")
+    def test_prompt_contains_scoping_rules(self, mock_claude):
+        """Prompt must spell out RULE A / RULE B and the disallowed story verbs."""
+        mock_claude.return_value = "[]"
+
+        generate_work_ideas(
+            codebase_summary="agent/core.py",
+            existing_idea_titles=[],
+            board_state={"todo": 1},
+        )
+
+        assert mock_claude.call_count == 1
+        sent_prompt = mock_claude.call_args[0][0]
+
+        assert "RULE A" in sent_prompt
+        assert "RULE B" in sent_prompt
+        # RULE A describes epics carrying the design.
+        assert "EPIC" in sent_prompt
+        # RULE B describes stories as pure execution.
+        assert "STORY" in sent_prompt
+        # Disallowed verbs must be listed so the model avoids them in stories.
+        for verb in ("design", "decide", "evaluate", "choose", "plan", "architect", "research"):
+            assert verb in sent_prompt
