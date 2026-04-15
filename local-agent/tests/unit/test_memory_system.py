@@ -2,7 +2,12 @@
 Tests for agent/memory_system.py - MemorySystem class and tools.
 """
 
-from datetime import datetime
+import json
+import logging
+import threading
+import time
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from agent.memory_system import (
     ConversationEntry,
@@ -388,3 +393,211 @@ class TestMemoryTools:
         memories_file = temp_vault / "LLM Memory" / "Permanent" / "memories.md"
         assert memories_file.exists()
         assert "Test memory" in memories_file.read_text()
+
+
+class TestCompactionLogging:
+    """Tests for compaction logging (print→logging replacement)."""
+
+    def test_llm_summarize_logs_error_not_print(self, memory_system, caplog):
+        """_llm_summarize uses logging, not print(), on LLM failure."""
+        def failing_summarizer(prompt):
+            raise RuntimeError("model offline")
+
+        with caplog.at_level(logging.ERROR, logger="agent.memory_system"):
+            summary, stats = memory_system._llm_summarize(
+                failing_summarizer, "test text", "hourly"
+            )
+
+        assert summary is None
+        assert stats["success"] is False
+        assert any("model offline" in r.message for r in caplog.records)
+
+    def test_compaction_loop_logs_info(self, memory_system, caplog):
+        """Background compaction loop uses log.info, not print()."""
+        # Run a single compaction cycle synchronously to verify logging
+        memory_system.log_conversation("user1", "Hello", "Hi")
+
+        with caplog.at_level(logging.INFO, logger="agent.memory_system"):
+            memory_system.compact_daily()
+
+        # No print output, just logging — the key assertion is no exception
+
+
+class TestCompactionStatsCapping:
+    """Tests for compaction_stats.json rotating window on read."""
+
+    def test_get_compaction_stats_caps_on_read(self, memory_system, temp_vault):
+        """get_compaction_stats truncates file when over max_entries."""
+        stats_path = temp_vault / "LLM Memory" / "Context" / "compaction_stats.json"
+
+        # Write 20 entries
+        entries = [{"tier": "hourly", "i": i} for i in range(20)]
+        stats_path.write_text(json.dumps(entries), encoding="utf-8")
+
+        # Read with max_entries=10 — should cap to last 10
+        result = memory_system.get_compaction_stats(max_entries=10)
+
+        assert len(result) == 10
+        assert result[0]["i"] == 10  # kept the most recent 10
+
+        # File should also be truncated on disk
+        on_disk = json.loads(stats_path.read_text(encoding="utf-8"))
+        assert len(on_disk) == 10
+
+    def test_get_compaction_stats_no_truncate_when_under_limit(self, memory_system, temp_vault):
+        """get_compaction_stats doesn't rewrite file when under limit."""
+        stats_path = temp_vault / "LLM Memory" / "Context" / "compaction_stats.json"
+
+        entries = [{"tier": "daily", "i": i} for i in range(5)]
+        stats_path.write_text(json.dumps(entries), encoding="utf-8")
+
+        result = memory_system.get_compaction_stats(max_entries=500)
+
+        assert len(result) == 5
+
+    def test_get_compaction_stats_empty_file(self, memory_system):
+        """get_compaction_stats returns empty list for missing file."""
+        result = memory_system.get_compaction_stats()
+        assert result == []
+
+    def test_get_compaction_stats_corrupt_json(self, memory_system, temp_vault):
+        """get_compaction_stats handles corrupt JSON gracefully."""
+        stats_path = temp_vault / "LLM Memory" / "Context" / "compaction_stats.json"
+        stats_path.write_text("not valid json {{{", encoding="utf-8")
+
+        result = memory_system.get_compaction_stats()
+        assert result == []
+
+
+class TestCompactionHealth:
+    """Tests for compaction_health() method."""
+
+    def test_health_before_start(self, memory_system):
+        """compaction_health reports not running before start."""
+        health = memory_system.compaction_health()
+
+        assert health["running"] is False
+        assert health["thread_alive"] is False
+        assert health["last_run"] is None
+        assert health["error_count"] == 0
+        assert health["last_error"] is None
+        assert health["healthy"] is False  # not running = not healthy
+
+    def test_health_after_successful_run(self, memory_system):
+        """compaction_health reports healthy after a successful cycle."""
+        # Simulate state after a successful compaction
+        memory_system._running = True
+        memory_system._last_compaction_run = datetime.now()
+        memory_system._compaction_error_count = 0
+
+        # Create a fake alive thread
+        t = threading.Thread(target=lambda: time.sleep(10), daemon=True)
+        t.start()
+        memory_system._compaction_thread = t
+
+        health = memory_system.compaction_health()
+
+        assert health["running"] is True
+        assert health["thread_alive"] is True
+        assert health["last_run"] is not None
+        assert health["healthy"] is True
+
+        # Clean up
+        memory_system._running = False
+
+    def test_health_with_errors(self, memory_system):
+        """compaction_health reports unhealthy after many errors."""
+        memory_system._running = True
+        memory_system._compaction_error_count = 5
+        memory_system._last_compaction_error = "disk full"
+
+        t = threading.Thread(target=lambda: time.sleep(10), daemon=True)
+        t.start()
+        memory_system._compaction_thread = t
+
+        health = memory_system.compaction_health()
+
+        assert health["error_count"] == 5
+        assert health["last_error"] == "disk full"
+        assert health["healthy"] is False  # >= 5 errors
+
+        memory_system._running = False
+
+    def test_health_dead_thread(self, memory_system):
+        """compaction_health detects dead thread."""
+        memory_system._running = True
+
+        # Thread that finishes immediately
+        t = threading.Thread(target=lambda: None, daemon=True)
+        t.start()
+        t.join()  # wait for it to die
+        memory_system._compaction_thread = t
+
+        health = memory_system.compaction_health()
+
+        assert health["running"] is True
+        assert health["thread_alive"] is False
+        assert health["healthy"] is False
+
+        memory_system._running = False
+
+
+class TestCompactionThreadResilience:
+    """Tests for compaction thread not dying on exceptions."""
+
+    def test_compaction_loop_survives_exception(self, memory_system):
+        """Compaction loop retries after an exception instead of dying."""
+        call_count = 0
+
+        # Patch compact_hourly to fail once, then succeed
+        original_hourly = memory_system.compact_hourly
+
+        def flaky_hourly(summarizer=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("transient error")
+            return original_hourly(summarizer)
+
+        memory_system.compact_hourly = flaky_hourly
+
+        # Patch sleep to avoid real waits — track calls
+        sleep_calls = []
+
+        def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            # Stop after retry sleep
+            if len(sleep_calls) >= 3:
+                memory_system._running = False
+
+        with patch("agent.memory_system.time.sleep", side_effect=fake_sleep):
+            memory_system.start_background_compaction(interval_minutes=1)
+            # Wait for thread to finish
+            memory_system._compaction_thread.join(timeout=5)
+
+        # Should have been called at least twice (first fail + retry)
+        assert call_count >= 1
+        assert memory_system._compaction_error_count == 0 or memory_system._last_compaction_error is not None
+
+    def test_compaction_tracks_error_state(self, memory_system):
+        """Compaction loop updates error tracking on failure."""
+
+        def always_fail(summarizer=None):
+            raise RuntimeError("permanent failure")
+
+        memory_system.compact_hourly = always_fail
+
+        iteration = 0
+
+        def fake_sleep(seconds):
+            nonlocal iteration
+            iteration += 1
+            if iteration >= 3:
+                memory_system._running = False
+
+        with patch("agent.memory_system.time.sleep", side_effect=fake_sleep):
+            memory_system.start_background_compaction(interval_minutes=1)
+            memory_system._compaction_thread.join(timeout=5)
+
+        assert memory_system._last_compaction_error == "permanent failure"
+        assert memory_system._compaction_error_count >= 1

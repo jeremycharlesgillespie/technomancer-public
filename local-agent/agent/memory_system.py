@@ -14,14 +14,18 @@ Structure in Obsidian vault:
 """
 
 import json
+import logging
 import re
 import threading
 import time
+import traceback
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -87,6 +91,12 @@ class MemorySystem:
         # Background compaction thread
         self._compaction_thread: Optional[threading.Thread] = None
         self._running = False
+
+        # Health-check state
+        self._last_compaction_run: Optional[datetime] = None
+        self._last_compaction_error: Optional[str] = None
+        self._compaction_error_count: int = 0
+        self._compaction_interval_minutes: int = 30
 
     def _load_today(self):
         """Load today's conversations into memory."""
@@ -313,7 +323,7 @@ class MemorySystem:
         try:
             summary = summarizer(prompt)
         except Exception as e:
-            print(f"[Compaction] LLM {tier} summarization failed: {e}")
+            log.error("LLM %s summarization failed: %s", tier, e)
             summary = None
 
         duration = time.time() - start_time
@@ -532,15 +542,26 @@ class MemorySystem:
             return f"Purged {purged} conversation log(s) older than {retention_days} days."
         return "No conversation logs old enough to purge."
 
-    def get_compaction_stats(self) -> list[dict]:
-        """Read compaction stats log."""
+    def get_compaction_stats(self, max_entries: int = 500) -> list[dict]:
+        """Read compaction stats log, capping to a rotating window.
+
+        If the stored entries exceed *max_entries*, the file is truncated
+        on read so it doesn't grow without bound over months of operation.
+        """
         log_path = self.memory_root / "Context" / "compaction_stats.json"
-        if log_path.exists():
+        if not log_path.exists():
+            return []
+        try:
+            entries: list[dict] = json.loads(log_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return []
+        if len(entries) > max_entries:
+            entries = entries[-max_entries:]
             try:
-                return json.loads(log_path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                return []
-        return []
+                log_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+            except OSError:
+                pass  # non-critical — will be capped next cycle
+        return entries
 
     def start_background_compaction(self, interval_minutes: int = 30, summarizer=None):
         """Start background thread for periodic compaction.
@@ -554,31 +575,49 @@ class MemorySystem:
             return
 
         self._running = True
+        self._compaction_interval_minutes = interval_minutes
 
         def compaction_loop():
             hourly_count = 0
             while self._running:
                 time.sleep(interval_minutes * 60)
+                if not self._running:
+                    break
                 try:
                     result = self.compact_hourly(summarizer)
-                    print(f"[Compaction] Hourly: {result}")
+                    log.info("Compaction hourly: %s", result)
 
                     result = self.compact_daily(summarizer)
-                    print(f"[Compaction] Daily: {result}")
+                    log.info("Compaction daily: %s", result)
 
                     # Weekly runs every ~6 hours (12 cycles at 30min)
                     hourly_count += 1
                     if hourly_count % 12 == 0:
                         result = self.compact_weekly(summarizer)
-                        print(f"[Compaction] Weekly: {result}")
+                        log.info("Compaction weekly: %s", result)
 
                         # Purge old conversation logs (already summarized)
                         purge_result = self.purge_old_conversations(retention_days=60)
                         if "Purged" in purge_result:
-                            print(f"[Compaction] {purge_result}")
+                            log.info("Compaction purge: %s", purge_result)
+
+                    self._last_compaction_run = datetime.now()
+                    self._compaction_error_count = 0
+                    self._last_compaction_error = None
 
                 except Exception as e:
-                    print(f"[Compaction] Error: {e}")
+                    self._compaction_error_count += 1
+                    self._last_compaction_error = str(e)
+                    log.error(
+                        "Compaction error (attempt %d): %s\n%s",
+                        self._compaction_error_count,
+                        e,
+                        traceback.format_exc(),
+                    )
+                    # Sleep before retrying — don't exit the loop
+                    retry_delay = min(60 * self._compaction_error_count, 300)
+                    log.info("Compaction retrying in %ds", retry_delay)
+                    time.sleep(retry_delay)
 
         self._compaction_thread = threading.Thread(target=compaction_loop, daemon=True)
         self._compaction_thread.start()
@@ -586,6 +625,36 @@ class MemorySystem:
     def stop_background_compaction(self):
         """Stop background compaction."""
         self._running = False
+
+    def compaction_health(self) -> dict:
+        """Return health status of the compaction thread.
+
+        Designed to be called by task_manager or any background monitor.
+
+        Returns a dict with:
+            running: bool — whether _running flag is set
+            thread_alive: bool — whether the thread object is alive
+            last_run: str | None — ISO timestamp of last successful cycle
+            error_count: int — consecutive errors since last success
+            last_error: str | None — most recent error message
+            healthy: bool — overall health verdict
+        """
+        thread_alive = (
+            self._compaction_thread is not None and self._compaction_thread.is_alive()
+        )
+        last_run_iso = (
+            self._last_compaction_run.isoformat() if self._last_compaction_run else None
+        )
+        # Healthy = thread is alive and not stuck in error loop
+        healthy = self._running and thread_alive and self._compaction_error_count < 5
+        return {
+            "running": self._running,
+            "thread_alive": thread_alive,
+            "last_run": last_run_iso,
+            "error_count": self._compaction_error_count,
+            "last_error": self._last_compaction_error,
+            "healthy": healthy,
+        }
 
 
 # Global instance
