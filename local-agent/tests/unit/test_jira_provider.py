@@ -317,6 +317,87 @@ class TestAppendProgressComment:
 
 
 # ---------------------------------------------------------------------------
+# Rank-ordered reads + fallback
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def reset_rank_fallback_flag():
+    """Reset the once-per-process fallback log flag around each test."""
+    import board.jira_provider as jp
+    jp._rank_fallback_logged = False
+    yield
+    jp._rank_fallback_logged = False
+
+
+class TestRankOrdering:
+    def test_load_all_queries_by_rank_asc(self, provider, mock_api, reset_rank_fallback_flag):
+        mock_api.return_value = _search_response([_issue("TK-1")])
+        provider.load_all()
+
+        jql = mock_api.call_args.kwargs["json"]["jql"]
+        assert "ORDER BY rank ASC, created ASC" in jql
+        assert "ORDER BY created DESC" not in jql
+
+    def test_list_by_state_queries_by_rank_asc(self, provider, mock_api, reset_rank_fallback_flag):
+        mock_api.return_value = _search_response([_issue("TK-1", labels=["cat:quality"])])
+        provider.list_by_state("approved")
+
+        jql = mock_api.call_args.kwargs["json"]["jql"]
+        assert "ORDER BY rank ASC, created ASC" in jql
+        assert 'status = "To Do"' in jql
+
+    def test_rank_400_falls_back_to_created_asc(self, provider, mock_api, reset_rank_fallback_flag):
+        rejected = MagicMock(status_code=400)
+        rejected.text = 'Field \'rank\' does not exist'
+        fallback_ok = _search_response([_issue("TK-7")])
+        mock_api.side_effect = [rejected, fallback_ok]
+
+        items = provider.load_all()
+
+        assert [i.id for i in items] == ["TK-7"]
+        first_jql = mock_api.call_args_list[0].kwargs["json"]["jql"]
+        second_jql = mock_api.call_args_list[1].kwargs["json"]["jql"]
+        assert "ORDER BY rank ASC, created ASC" in first_jql
+        assert "ORDER BY created ASC" in second_jql
+        assert "rank" not in second_jql
+
+    def test_rank_fallback_logged_only_once_per_process(
+        self, provider, mock_api, reset_rank_fallback_flag, caplog
+    ):
+        import logging as _logging
+
+        def _pair():
+            rejected = MagicMock(status_code=400)
+            rejected.text = "rank unsupported"
+            return [rejected, _search_response([])]
+
+        mock_api.side_effect = _pair() + _pair() + _pair()
+
+        with caplog.at_level(_logging.WARNING, logger="board.jira_provider"):
+            provider.load_all()
+            provider.load_all()
+            provider.load_all()
+
+        fallback_messages = [
+            r for r in caplog.records if "ORDER BY rank rejected" in r.getMessage()
+        ]
+        assert len(fallback_messages) == 1
+
+    def test_non_400_error_does_not_trigger_fallback(
+        self, provider, mock_api, reset_rank_fallback_flag
+    ):
+        server_err = MagicMock(status_code=500)
+        server_err.text = "boom"
+        mock_api.return_value = server_err
+
+        items = provider.load_all()
+
+        assert items == []
+        # Should not have retried — only the single rank-ordered call.
+        assert mock_api.call_count == 1
+
+
+# ---------------------------------------------------------------------------
 # Provider interface compliance
 # ---------------------------------------------------------------------------
 
