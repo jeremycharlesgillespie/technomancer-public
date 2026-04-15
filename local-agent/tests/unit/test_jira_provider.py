@@ -397,6 +397,56 @@ class TestRankOrdering:
         assert mock_api.call_count == 1
 
 
+class TestPagination:
+    """Protect against regressing the nextPageToken loop.
+
+    Jira Cloud v3 /search/jql caps per-page at ~100 items regardless of
+    the requested maxResults. Without pagination, load_all for a project
+    with 200+ issues truncated to the first 100 — which, ordered by rank,
+    were all Done. AIM then saw zero approved items and escalated.
+    """
+
+    def test_load_all_follows_next_page_token(self, provider, mock_api, reset_rank_fallback_flag):
+        page1 = MagicMock(status_code=200)
+        page1.json.return_value = {
+            "issues": [_issue(f"TK-{n}") for n in range(100)],
+            "nextPageToken": "page2",
+            "isLast": False,
+        }
+        page2 = MagicMock(status_code=200)
+        page2.json.return_value = {
+            "issues": [_issue(f"TK-{n}") for n in range(100, 150)],
+            "nextPageToken": None,
+            "isLast": True,
+        }
+        mock_api.side_effect = [page1, page2]
+
+        items = provider.load_all()
+
+        assert len(items) == 150
+        assert mock_api.call_count == 2
+        second_call = mock_api.call_args_list[1]
+        assert second_call.kwargs["json"].get("nextPageToken") == "page2"
+
+    def test_pagination_stops_when_max_results_reached(
+        self, provider, mock_api, reset_rank_fallback_flag
+    ):
+        page1 = MagicMock(status_code=200)
+        page1.json.return_value = {
+            "issues": [_issue(f"TK-{n}") for n in range(100)],
+            "nextPageToken": "page2",
+            "isLast": False,
+        }
+        mock_api.return_value = page1
+
+        from board.jira_provider import _search_ranked
+
+        issues = _search_ranked("project = TK", max_results=100)
+        assert len(issues) == 100
+        # Only one call — budget was exhausted before a second page fetch.
+        assert mock_api.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Provider interface compliance
 # ---------------------------------------------------------------------------

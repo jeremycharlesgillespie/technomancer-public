@@ -25,3 +25,4 @@ idea_board/execution_log.json
 # Data directories
 profiling/
 data/
+aim/events.jsonl
