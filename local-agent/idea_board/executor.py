@@ -29,14 +29,31 @@ from typing import Any
 
 from agent.config import settings
 
-from .models import (
-    get_execution_order,
-    get_idea,
-    load_ideas,
-    mark_done,
-    mark_executing,
-    mark_failed,
-)
+from board import get_provider as _get_board_provider
+
+
+def get_idea(idea_id):
+    return _get_board_provider().get(idea_id)
+
+
+def load_ideas():
+    return _get_board_provider().load_all()
+
+
+def mark_executing(idea_id):
+    return _get_board_provider().mark_executing(idea_id)
+
+
+def mark_done(idea_id, execution_log):
+    return _get_board_provider().mark_done(idea_id, execution_log)
+
+
+def mark_failed(idea_id, error):
+    return _get_board_provider().mark_failed(idea_id, error)
+
+
+def get_execution_order(idea_id):
+    return _get_board_provider().get_execution_order(idea_id)
 
 logger = logging.getLogger(__name__)
 

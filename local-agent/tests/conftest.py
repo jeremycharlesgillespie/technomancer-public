@@ -25,6 +25,22 @@ def _block_git_cleanup():
          patch("aim.worker._ensure_git_clean"):
         yield
 
+
+@pytest.fixture(autouse=True)
+def _force_local_board_provider():
+    """Force LocalProvider in tests so Jira API is never hit.
+
+    Production flips to JiraProvider when is_jira_configured() is true.
+    Tests use LocalProvider via existing mocks of idea_board.models.*,
+    so we force that path regardless of the .env state.
+    """
+    from board import reset_provider
+
+    reset_provider()
+    with patch("board.factory.is_jira_configured", return_value=False):
+        yield
+    reset_provider()
+
 # =============================================================================
 # OLLAMA MOCK
 # =============================================================================
