@@ -117,6 +117,24 @@ RULES:
 - Don't suggest things the CODEBASE already has (check the file list below)
 - Each description should be a full paragraph, NOT just 1-2 sentences
 
+SCOPING RULES — architect in the epic, execute in the story:
+
+RULE A (EPIC content): An epic's description carries the complete design:
+problem statement, architecture choices, trade-offs considered,
+constraints, interfaces, failure modes, and a short rationale for each
+major decision. If anything requires judgment, it belongs in the epic
+description — not pushed down into the stories.
+
+RULE B (STORY content): Story titles and standalone-story descriptions
+contain only execution instructions: WHAT to change, in which files /
+functions / data structures, with concrete acceptance criteria (tests
+pass, endpoint returns X, migration applies cleanly). Stories must NOT
+require the executor to design, choose between options, evaluate
+approaches, or research. Disallowed story-title verbs: "design",
+"decide", "evaluate", "choose", "plan", "architect", "research". If a
+story would start with any of those, pull that work up into the parent
+epic's description and restate the story as pure execution.
+
 Output ONLY a JSON array of idea objects. No other text.
 
 --- CODEBASE (files that already exist — don't suggest features we already have) ---

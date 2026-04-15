@@ -46,6 +46,18 @@ class TestIdeaPrompt:
     def test_prompt_mentions_idea_type(self):
         assert "idea_type" in IDEA_PROMPT
 
+    def test_contains_scoping_rules(self):
+        """Prompt must spell out RULE A / RULE B and the disallowed story verbs."""
+        assert "RULE A" in IDEA_PROMPT
+        assert "RULE B" in IDEA_PROMPT
+        # RULE A describes epics carrying the design.
+        assert "EPIC" in IDEA_PROMPT
+        # RULE B describes stories as pure execution.
+        assert "STORY" in IDEA_PROMPT
+        # Disallowed verbs must be listed so the model avoids them in stories.
+        for verb in ("design", "decide", "evaluate", "choose", "plan", "architect", "research"):
+            assert verb in IDEA_PROMPT
+
 
 class TestLoadCodebaseSummary:
     def test_returns_string(self):
