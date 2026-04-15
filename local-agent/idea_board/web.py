@@ -2146,6 +2146,17 @@ def api_aim_status() -> tuple:
     })
 
 
+@app.route("/aim")
+def aim_dashboard() -> str:
+    """Serve the AIM dashboard HTML page.
+
+    Renders a header widget that polls /api/aim/status every 5 seconds
+    and displays worker PID, status (color-coded), current assignment,
+    cycle count, and last decision summary.
+    """
+    return _render_aim_dashboard()
+
+
 @app.route("/api/evolve/status")
 def api_evolve_status() -> tuple:
     """GET /api/evolve/status — get evolve cycle progress.
@@ -2615,6 +2626,227 @@ def _render_errors() -> str:
     }}
     </script>
     <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Generated at {now}</p>
+</body>
+</html>"""
+
+
+AIM_DASHBOARD_CSS = """
+:root {
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --yellow: #ffb74d;
+    --border: #333;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }
+h1 { margin-bottom: 0.5rem; color: var(--accent); }
+.subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }
+a { color: var(--accent); }
+
+#aim-status-widget {
+    background: var(--surface); border-radius: 10px; padding: 1rem 1.2rem;
+    border-left: 4px solid var(--muted); margin-bottom: 1.5rem;
+    transition: border-color 0.3s;
+}
+#aim-status-widget.status-green { border-left-color: var(--green); }
+#aim-status-widget.status-yellow { border-left-color: var(--yellow); }
+#aim-status-widget.status-red { border-left-color: var(--red); }
+
+.widget-row {
+    display: flex; flex-wrap: wrap; gap: 1.5rem 2rem; align-items: baseline;
+}
+.widget-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.widget-label {
+    font-size: 0.7rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.widget-value {
+    font-size: 0.95rem; font-family: 'Cascadia Code', 'Fira Code', monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: 100%;
+}
+.widget-status-pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.85rem; font-weight: 600; text-transform: lowercase;
+    background: var(--border); color: var(--text);
+}
+.widget-status-pill.status-green { background: var(--green); color: #0a1a0a; }
+.widget-status-pill.status-yellow { background: var(--yellow); color: #2a1900; }
+.widget-status-pill.status-red { background: var(--red); color: #1a0000; }
+
+#widget-decision {
+    margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border);
+    font-size: 0.85rem; color: var(--muted);
+}
+#widget-decision .widget-label { margin-bottom: 2px; }
+#widget-decision-summary { color: var(--text); font-family: inherit;
+    white-space: normal; word-break: break-word; }
+#widget-updated {
+    font-size: 0.7rem; color: var(--muted); margin-top: 0.5rem;
+}
+#widget-error {
+    display: none; color: var(--red); font-size: 0.85rem; margin-top: 0.5rem;
+}
+#widget-error.visible { display: block; }
+
+@media (max-width: 600px) {
+    body { padding: 12px; }
+    .widget-row { gap: 0.75rem 1.25rem; }
+    .widget-value { font-size: 0.85rem; }
+}
+"""
+
+
+def _render_aim_dashboard() -> str:
+    """Render the /aim dashboard page with worker status widget."""
+    jira_url = (settings.jira_url or "").rstrip("/")
+    # Expose jira_url to the client-side JS as a JSON-encoded string so
+    # it handles empty, quotes, etc. safely.
+    jira_url_json = json.dumps(jira_url)
+    now = datetime.now().strftime("%H:%M:%S")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AIM Dashboard</title>
+    <style>{AIM_DASHBOARD_CSS}</style>
+</head>
+<body>
+    <h1>AIM Dashboard</h1>
+    <p class="subtitle"><a href="/">&larr; Hub</a> &middot;
+       Live worker status &middot;
+       <a href="/api/aim/status">API: /api/aim/status</a></p>
+
+    <header id="aim-status-widget" aria-live="polite">
+        <div class="widget-row">
+            <div class="widget-field">
+                <span class="widget-label">Status</span>
+                <span id="widget-status" class="widget-status-pill">&mdash;</span>
+            </div>
+            <div class="widget-field">
+                <span class="widget-label">Worker PID</span>
+                <span id="widget-pid" class="widget-value">&mdash;</span>
+            </div>
+            <div class="widget-field">
+                <span class="widget-label">Assignment</span>
+                <span id="widget-assignment" class="widget-value">&mdash;</span>
+            </div>
+            <div class="widget-field">
+                <span class="widget-label">Cycles</span>
+                <span id="widget-cycles" class="widget-value">&mdash;</span>
+            </div>
+        </div>
+        <div id="widget-decision">
+            <span class="widget-label">Last decision</span>
+            <div id="widget-decision-summary">&mdash;</div>
+        </div>
+        <div id="widget-updated">Waiting for status&hellip;</div>
+        <div id="widget-error"></div>
+    </header>
+
+    <script>
+    const JIRA_URL = {jira_url_json};
+    const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\\d+$/;
+    const POLL_MS = 5000;
+
+    function statusColor(status) {{
+        const s = (status || '').toLowerCase();
+        if (s === 'idle' || s === 'watching') return 'green';
+        if (s === 'executing' || s === 'assigned') return 'yellow';
+        if (s === 'stuck' || s === 'dead' || s === 'failed' || s === 'crashed') return 'red';
+        return '';
+    }}
+
+    function renderAssignment(currentIdeaId) {{
+        if (!currentIdeaId) return '—';
+        const el = document.createElement('span');
+        if (JIRA_KEY_RE.test(currentIdeaId) && JIRA_URL) {{
+            const a = document.createElement('a');
+            a.href = JIRA_URL + '/browse/' + encodeURIComponent(currentIdeaId);
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.textContent = currentIdeaId;
+            el.appendChild(a);
+        }} else {{
+            el.textContent = currentIdeaId;
+        }}
+        return el;
+    }}
+
+    function setWidgetClass(color) {{
+        const widget = document.getElementById('aim-status-widget');
+        widget.classList.remove('status-green', 'status-yellow', 'status-red');
+        if (color) widget.classList.add('status-' + color);
+    }}
+
+    function setPillClass(color) {{
+        const pill = document.getElementById('widget-status');
+        pill.classList.remove('status-green', 'status-yellow', 'status-red');
+        if (color) pill.classList.add('status-' + color);
+    }}
+
+    function formatDecision(decision) {{
+        if (!decision) return '—';
+        const data = decision.data || {{}};
+        const ts = (decision.timestamp || '').slice(11, 19);
+        const summary = data.summary || data.decision || data.reason ||
+                        data.description || decision.type || '(no details)';
+        return (ts ? '[' + ts + '] ' : '') + summary;
+    }}
+
+    async function poll() {{
+        const errEl = document.getElementById('widget-error');
+        try {{
+            const resp = await fetch('/api/aim/status', {{ cache: 'no-store' }});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+
+            const worker = data.worker || {{}};
+            const status = worker.status || 'unknown';
+            const color = statusColor(status);
+
+            document.getElementById('widget-status').textContent = status;
+            setWidgetClass(color);
+            setPillClass(color);
+
+            document.getElementById('widget-pid').textContent =
+                worker.pid != null ? String(worker.pid) : '—';
+
+            const assignmentEl = document.getElementById('widget-assignment');
+            assignmentEl.innerHTML = '';
+            const rendered = renderAssignment(data.current_idea_id);
+            if (typeof rendered === 'string') {{
+                assignmentEl.textContent = rendered;
+            }} else {{
+                assignmentEl.appendChild(rendered);
+            }}
+
+            document.getElementById('widget-cycles').textContent =
+                data.cycle_count != null ? String(data.cycle_count) : '—';
+
+            const decisions = data.last_decisions || [];
+            document.getElementById('widget-decision-summary').textContent =
+                formatDecision(decisions[0]);
+
+            document.getElementById('widget-updated').textContent =
+                'Updated ' + new Date().toLocaleTimeString();
+            errEl.classList.remove('visible');
+            errEl.textContent = '';
+        }} catch (e) {{
+            errEl.textContent = 'Status fetch failed: ' + e.message;
+            errEl.classList.add('visible');
+        }}
+    }}
+
+    poll();
+    setInterval(poll, POLL_MS);
+    </script>
+
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">
+        Page loaded at {now} &middot; Polling every 5s
+    </p>
 </body>
 </html>"""
 
