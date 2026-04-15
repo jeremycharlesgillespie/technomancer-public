@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     aim_status_report_interval: int = Field(
         default=20, description="Send Discord status report every N cycles"
     )
+    aim_queue_review_interval: int = Field(
+        default=10, description="Run queue review (dedup + failure detection) every N cycles"
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
