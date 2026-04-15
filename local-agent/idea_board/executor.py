@@ -1667,7 +1667,7 @@ def execute_idea(
 
             full_result = _run_pytest_with_progress(
                 [sys.executable, "-m", "pytest", "-q", "--tb=short",
-                 "-n", "8", "--reruns", "2", "--reruns-delay", "1"],
+                 "--reruns", "2", "--reruns-delay", "1"],
                 cwd=local_agent_dir,
                 state=state,
                 label="tests",

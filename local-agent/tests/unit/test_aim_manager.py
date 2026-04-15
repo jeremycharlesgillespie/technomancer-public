@@ -511,7 +511,8 @@ class TestCleanupOrphanedProcesses:
     def test_kills_orphan_claude_exe(self, state):
         from aim.manager import _cleanup_orphaned_processes
 
-        proc = self._make_proc(55555, "claude.exe", ["claude.exe", "--flag"])
+        # Must be a headless -p process to be considered an orphan
+        proc = self._make_proc(55555, "claude.exe", ["claude.exe", "-p", "--flag"])
 
         with (
             patch("psutil.process_iter", return_value=[proc]),
@@ -536,6 +537,27 @@ class TestCleanupOrphanedProcesses:
 
         proc = self._make_proc(55555, "claude.exe", ["claude.exe"])
         proc.environ.return_value = {"CLAUDECODE": "1"}
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            killed = _cleanup_orphaned_processes(state)
+
+        assert killed == 0
+        mock_run.assert_not_called()
+
+    def test_protects_remote_control(self, state):
+        """remote-control process must never be killed."""
+        from aim.manager import _cleanup_orphaned_processes
+
+        proc = self._make_proc(55555, "claude.exe", ["claude.exe", "remote-control", "--name", "test"])
 
         with (
             patch("psutil.process_iter", return_value=[proc]),
