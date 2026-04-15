@@ -35,22 +35,61 @@ from flask import Flask, Response, jsonify, request
 from agent.config import settings
 
 from .executor import get_execution
-from .models import (
-    Idea,
-    add_comment,
-    add_idea,
-    delete_idea,
-    get_execution_order,
-    get_idea,
-    load_ideas,
-    mark_done,
-    mark_executing,
-    mark_failed,
-    save_ideas,
-    set_epic_context,
-    set_execution_order,
-    vote,
-)
+from .models import Idea, save_ideas
+
+from board import get_provider as _get_board_provider
+
+
+def load_ideas():
+    return _get_board_provider().load_all()
+
+
+def get_idea(idea_id):
+    return _get_board_provider().get(idea_id)
+
+
+def add_idea(title, description, source="llm_analysis", category="feature",
+             idea_type="story", parent_id=None):
+    return _get_board_provider().add(
+        title=title, description=description, source=source,
+        category=category, idea_type=idea_type, parent_id=parent_id,
+    )
+
+
+def vote(idea_id, voter, value):
+    return _get_board_provider().vote(idea_id, voter, value)
+
+
+def add_comment(idea_id, author, text):
+    return _get_board_provider().add_comment(idea_id, author, text)
+
+
+def mark_executing(idea_id):
+    return _get_board_provider().mark_executing(idea_id)
+
+
+def mark_done(idea_id, execution_log):
+    return _get_board_provider().mark_done(idea_id, execution_log)
+
+
+def mark_failed(idea_id, error):
+    return _get_board_provider().mark_failed(idea_id, error)
+
+
+def delete_idea(idea_id):
+    return _get_board_provider().delete(idea_id)
+
+
+def set_execution_order(idea_id, order):
+    return _get_board_provider().set_execution_order(idea_id, order)
+
+
+def get_execution_order(idea_id):
+    return _get_board_provider().get_execution_order(idea_id)
+
+
+def set_epic_context(idea_id, context):
+    return _get_board_provider().set_epic_context(idea_id, context)
 
 logger = logging.getLogger(__name__)
 
@@ -1789,6 +1828,78 @@ def api_log_stream(idea_id: str) -> Response:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+_LIVE_LOG_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Live Log — {item_id}</title>
+<style>
+  body {{ background:#0d1117; color:#c9d1d9; font-family: ui-monospace, Menlo, monospace;
+         margin:0; padding:1rem; line-height:1.4; }}
+  header {{ display:flex; justify-content:space-between; align-items:baseline;
+           border-bottom:1px solid #30363d; padding-bottom:0.5rem; margin-bottom:0.75rem; }}
+  header h1 {{ font-size:1.1rem; margin:0; color:#58a6ff; }}
+  header .status {{ font-size:0.85rem; color:#8b949e; }}
+  header .status.alive {{ color:#3fb950; }}
+  header .status.done  {{ color:#58a6ff; }}
+  header .status.failed {{ color:#f85149; }}
+  #log {{ white-space:pre-wrap; word-break:break-word; font-size:0.8rem; }}
+  .line {{ padding:0.05rem 0; border-left:2px solid transparent; padding-left:0.5rem; }}
+  .line:hover {{ background:#161b22; border-left-color:#30363d; }}
+</style>
+</head>
+<body>
+  <header>
+    <h1>Live Log — {item_id}</h1>
+    <span class="status" id="status">connecting…</span>
+  </header>
+  <div id="log"></div>
+<script>
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const src = new EventSource('/api/ideas/{item_id}/log/stream');
+
+  function appendLines(lines) {{
+    const near = window.innerHeight + window.scrollY + 100 >= document.body.offsetHeight;
+    for (const line of lines) {{
+      const div = document.createElement('div');
+      div.className = 'line';
+      div.textContent = line;
+      logEl.appendChild(div);
+    }}
+    if (near) window.scrollTo(0, document.body.scrollHeight);
+  }}
+
+  src.addEventListener('log', e => appendLines(JSON.parse(e.data).lines || []));
+  src.addEventListener('state', e => {{
+    const d = JSON.parse(e.data);
+    statusEl.textContent = d.is_alive ? 'running (' + (d.elapsed|0) + 's)' : (d.idea_state || 'idle');
+    statusEl.className = 'status ' + (d.is_alive ? 'alive' : (d.idea_state === 'done' ? 'done' : (d.idea_state === 'failed' ? 'failed' : '')));
+  }});
+  src.addEventListener('done', e => {{
+    const d = JSON.parse(e.data);
+    statusEl.textContent = d.idea_state || 'done';
+    statusEl.className = 'status ' + (d.idea_state === 'done' ? 'done' : (d.idea_state === 'failed' ? 'failed' : ''));
+    src.close();
+  }});
+  src.onerror = () => {{ statusEl.textContent = 'disconnected'; statusEl.className = 'status'; }};
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/live/<item_id>")
+def live_log_viewer(item_id: str) -> Response:
+    """Live "look over the shoulder" log viewer for an executing item.
+
+    Works for both local idea IDs (idea-XXX) and Jira keys (TK-XXX).
+    Streams from the existing /api/ideas/<id>/log/stream SSE endpoint.
+    """
+    html = _LIVE_LOG_HTML.format(item_id=item_id)
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/health")

@@ -55,6 +55,26 @@ def mark_failed(idea_id, error):
 def get_execution_order(idea_id):
     return _get_board_provider().get_execution_order(idea_id)
 
+
+def _sync_progress_comment(idea_id, state) -> None:
+    """Push the tail of an execution's log into a single Jira progress comment.
+
+    The provider's ``append_progress_comment`` edits the same comment in
+    place after the first call, so a 30-minute run does not generate 30
+    separate comments. Silently no-op when the provider doesn't support it
+    (e.g. LocalProvider).
+    """
+    try:
+        provider = _get_board_provider()
+        appender = getattr(provider, "append_progress_comment", None)
+        if appender is None:
+            return
+        recent = "\n".join(state.log_lines[-30:])
+        if recent.strip():
+            appender(idea_id, recent)
+    except Exception as exc:
+        logger.debug("[Executor] progress comment sync failed for %s: %s", idea_id, exc)
+
 logger = logging.getLogger(__name__)
 
 # Timeout for Claude Code execution (30 minutes — includes safe_update workflow)
@@ -72,6 +92,11 @@ KNOWN_FAILURES_FILE: Path = Path(__file__).parent / ".known_test_failures.json"
 
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
+
+# Interval between Jira progress-comment updates during a running execution.
+# The provider edits a single per-issue comment in place, so Jira doesn't
+# get spammed with one comment per minute over a 30-minute run.
+JIRA_PROGRESS_INTERVAL: float = 60.0
 
 # Category-specific implementation guidance
 CATEGORY_GUIDANCE: dict[str, str] = {
@@ -1376,6 +1401,7 @@ def execute_idea(
 
             # Stream stdout line-by-line, parsing JSON events as they arrive
             last_discord_time = 0.0
+            last_jira_progress_time = 0.0
             final_result = ""
 
             while True:
@@ -1436,6 +1462,11 @@ def execute_idea(
                             discord_msg += "..."
                         _notify_discord(f"[{idea_id}] {discord_msg}")
                         last_discord_time = now
+
+                    # Periodic Jira progress comment (edit-in-place)
+                    if now - last_jira_progress_time >= JIRA_PROGRESS_INTERVAL:
+                        _sync_progress_comment(idea_id, state)
+                        last_jira_progress_time = now
 
             # Process finished — kill immediately to free resources for Phase 3
             if proc.poll() is None:

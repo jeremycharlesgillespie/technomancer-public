@@ -174,7 +174,7 @@ def _add_execute_comment(jira_key: str, idea_id: str) -> None:
 
     execute_url = f"http://{hub_host}:{hub_port}/execute/{idea_id}"
     view_url = f"http://{hub_host}:{hub_port}/ideas#{idea_id}"
-    log_url = f"http://{hub_host}:{hub_port}/api/ideas/{idea_id}/log/stream"
+    log_url = f"http://{hub_host}:{hub_port}/live/{idea_id}"
 
     comment_adf = {
         "type": "doc",

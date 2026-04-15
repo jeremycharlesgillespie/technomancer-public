@@ -215,9 +215,9 @@ Example output:
 def _load_existing_ideas() -> str:
     """Load existing idea titles for dedup context."""
     try:
-        from .models import load_ideas
+        from board import get_provider
 
-        ideas = load_ideas()
+        ideas = get_provider().load_all()
         if not ideas:
             return "No existing ideas."
         return "\n".join(
@@ -243,7 +243,9 @@ def generate_ideas_from_complaint(complaint: Complaint) -> list[str]:
     """
     import ollama
 
-    from .models import add_comment, add_idea
+    from board import get_provider
+
+    provider = get_provider()
 
     prompt = COMPLAINT_PROMPT.format(
         complaint_text=complaint.text,
@@ -276,17 +278,17 @@ def generate_ideas_from_complaint(complaint: Complaint) -> list[str]:
 
     idea_ids: list[str] = []
     for idea_data in parsed:
-        idea = add_idea(
+        idea = provider.add(
             title=idea_data["title"],
             description=idea_data["description"],
             source="karen",
             category=idea_data.get("category", "feature"),
         )
         # Link complaint to idea via a comment
-        add_comment(
+        provider.add_comment(
             idea.id,
-            author="claude",
-            text=f"Generated from KAREN complaint {complaint.id}: {complaint.text[:200]}",
+            "claude",
+            f"Generated from KAREN complaint {complaint.id}: {complaint.text[:200]}",
         )
         idea_ids.append(idea.id)
 
