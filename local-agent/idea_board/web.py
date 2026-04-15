@@ -2146,6 +2146,63 @@ def api_aim_status() -> tuple:
     })
 
 
+@app.route("/api/aim/events/stream")
+def api_aim_events_stream() -> Response:
+    """GET /api/aim/events/stream — SSE stream of AIM/Worker events.
+
+    Tails ``aim/events.jsonl`` and emits each newly appended line as an
+    ``event``-named SSE frame whose data payload is the raw JSON event.
+    Mirrors the polling pattern used by ``/api/ideas/<id>/log/stream``:
+    open the file, seek to the end, and poll for new lines roughly once
+    per second.
+    """
+
+    def generate():
+        log_path = aim_event_log.LOG_FILE
+        # Wait briefly for the log to exist — a fresh install may not have
+        # one yet.  Yield a heartbeat comment so the client doesn't time
+        # out while waiting.
+        waited = 0.0
+        while not log_path.exists() and waited < 5.0:
+            yield ": waiting for event log\n\n"
+            time.sleep(1)
+            waited += 1.0
+
+        if not log_path.exists():
+            yield ": event log not found\n\n"
+            return
+
+        with log_path.open("r", encoding="utf-8") as f:
+            f.seek(0, 2)  # Seek to end — only stream newly appended lines
+            while True:
+                line = f.readline()
+                if not line:
+                    # Heartbeat comment keeps the connection warm without
+                    # emitting a spurious event.
+                    yield ": keep-alive\n\n"
+                    time.sleep(1)
+                    continue
+
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    json.loads(line)  # Skip malformed lines silently
+                except json.JSONDecodeError:
+                    continue
+
+                yield f"event: event\ndata: {line}\n\n"
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.route("/aim")
 def aim_dashboard() -> str:
     """Serve the AIM dashboard HTML page.
