@@ -124,26 +124,12 @@ class TestHeuristicDecision:
         )
         assert d.action == "RESTART_WORKER"
 
-    def test_assign_prefers_safe_category(self):
+    def test_assign_picks_top_of_list_even_if_feature(self):
+        """Rank wins over category: a feature at position 0 beats a quality later."""
         ideas = [
             {"id": "idea-001", "title": "Feature", "category": "feature"},
-            {"id": "idea-002", "title": "Perf fix", "category": "performance"},
-            {"id": "idea-003", "title": "Test", "category": "test"},
-        ]
-        d = _heuristic_decision(
-            worker_status="idle",
-            approved_ideas=ideas,
-            board_todo=20,
-            hours_since_completion=1,
-        )
-        assert d.action == "ASSIGN"
-        # Should prefer quality, performance, or test over feature
-        assert d.target in ("idea-002", "idea-003")
-
-    def test_assign_quality_first(self):
-        ideas = [
-            {"id": "idea-001", "title": "Quality fix", "category": "quality"},
-            {"id": "idea-002", "title": "Perf fix", "category": "performance"},
+            {"id": "idea-002", "title": "Quality fix", "category": "quality"},
+            {"id": "idea-003", "title": "Perf fix", "category": "performance"},
         ]
         d = _heuristic_decision(
             worker_status="idle",
@@ -154,7 +140,22 @@ class TestHeuristicDecision:
         assert d.action == "ASSIGN"
         assert d.target == "idea-001"
 
-    def test_assign_fallback_to_any(self):
+    def test_assign_picks_first_regardless_of_category_order(self):
+        """Whoever is index 0 wins, even if a 'safer' category comes later."""
+        ideas = [
+            {"id": "idea-001", "title": "Perf fix", "category": "performance"},
+            {"id": "idea-002", "title": "Quality fix", "category": "quality"},
+        ]
+        d = _heuristic_decision(
+            worker_status="idle",
+            approved_ideas=ideas,
+            board_todo=20,
+            hours_since_completion=1,
+        )
+        assert d.action == "ASSIGN"
+        assert d.target == "idea-001"
+
+    def test_assign_single_idea(self):
         ideas = [
             {"id": "idea-001", "title": "Feature", "category": "feature"},
         ]
