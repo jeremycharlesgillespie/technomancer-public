@@ -27,6 +27,16 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr("aim.state._lock", FileLock(str(tmp_path / ".aim_state.lock"), timeout=10))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_event_log(tmp_path, monkeypatch):
+    """Redirect the event log so tests don't pollute the real aim/events.jsonl."""
+    from aim import event_log
+
+    monkeypatch.setattr(event_log, "LOG_DIR", tmp_path)
+    monkeypatch.setattr(event_log, "LOG_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr(event_log, "BACKUP_FILE", tmp_path / "events.1.jsonl")
+
+
 @pytest.fixture
 def state():
     """Provide a fresh AIMState and persist it."""
@@ -626,3 +636,139 @@ class TestCleanupOrphanedProcesses:
             handle_worker_failure(state)
 
         mock_cleanup.assert_called_once_with(state)
+
+
+# ---------------------------------------------------------------------------
+# Event log emits (TK-372)
+# ---------------------------------------------------------------------------
+
+
+class TestEventLogEmits:
+    def test_worker_spawned_event(self, state):
+        from aim import event_log
+        from aim.manager import spawn_worker
+
+        state.worker.pid = None
+
+        with patch("aim.state.is_process_alive", return_value=False), \
+             patch("subprocess.Popen") as mock_popen, \
+             patch("aim.manager._notify_discord"):
+            mock_popen.return_value.pid = 42424
+            spawn_worker(state)
+
+        events = event_log.read_events()
+        spawn_events = [e for e in events if e["type"] == "worker_spawned"]
+        assert len(spawn_events) == 1
+        assert spawn_events[0]["data"] == {"pid": 42424}
+
+    def test_worker_died_event_pid_dead(self, state):
+        from aim import event_log
+        from aim.manager import check_worker_health
+
+        with patch("aim.state.is_process_alive", return_value=False):
+            check_worker_health(state)
+
+        events = event_log.read_events()
+        died_events = [e for e in events if e["type"] == "worker_died"]
+        assert len(died_events) == 1
+        assert died_events[0]["data"]["pid"] == state.worker.pid
+        assert died_events[0]["data"]["cause"] == "pid_dead"
+
+    def test_worker_died_event_stale_heartbeat(self, state):
+        from aim import event_log
+        from aim.manager import check_worker_health
+
+        state.worker.last_heartbeat = "2020-01-01T00:00:00"
+        save_state(state)
+
+        with patch("aim.state.is_process_alive", return_value=True):
+            check_worker_health(state)
+
+        events = event_log.read_events()
+        died_events = [e for e in events if e["type"] == "worker_died"]
+        assert len(died_events) == 1
+        assert died_events[0]["data"]["cause"] == "heartbeat_stale"
+        assert "elapsed_seconds" in died_events[0]["data"]
+
+    def test_escalation_event(self, state):
+        from aim import event_log
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+
+        decision = Decision(
+            action="ESCALATE",
+            target="3h without progress",
+            reason="worker stuck",
+        )
+
+        with patch("aim.manager._notify_discord_throttled"):
+            execute_decision(state, decision, {})
+
+        events = event_log.read_events()
+        esc_events = [e for e in events if e["type"] == "escalation"]
+        assert len(esc_events) == 1
+        assert esc_events[0]["data"]["reason"] == "worker stuck"
+        assert esc_events[0]["data"]["target"] == "3h without progress"
+
+    def test_orphan_cleanup_event(self, state):
+        from aim import event_log
+        from aim.manager import _cleanup_orphaned_processes
+
+        proc = MagicMock()
+        proc.info = {
+            "pid": 55555,
+            "name": "claude.exe",
+            "cmdline": ["claude.exe", "-p", "--flag"],
+        }
+        proc.environ.return_value = {}
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run"),
+            patch("aim.manager._notify_discord_throttled"),
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            _cleanup_orphaned_processes(state)
+
+        events = event_log.read_events()
+        cleanup_events = [e for e in events if e["type"] == "orphan_cleanup"]
+        assert len(cleanup_events) == 1
+        assert cleanup_events[0]["data"]["killed"] == 1
+        assert 55555 in cleanup_events[0]["data"]["pids"]
+
+    def test_orphan_cleanup_silent_when_nothing_killed(self, state):
+        from aim import event_log
+        from aim.manager import _cleanup_orphaned_processes
+
+        with (
+            patch("psutil.process_iter", return_value=[]),
+            patch("psutil.Process") as mock_ps,
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            _cleanup_orphaned_processes(state)
+
+        events = event_log.read_events()
+        assert not [e for e in events if e["type"] == "orphan_cleanup"]
+
+    def test_event_log_failure_does_not_break_flow(self, state):
+        """event_log write failures must not prevent the action from completing."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+
+        decision = Decision(action="ESCALATE", target="x", reason="y")
+
+        with patch("aim.event_log.append_event", side_effect=OSError("disk full")), \
+             patch("aim.manager._notify_discord_throttled") as mock_notify:
+            # Must not raise
+            execute_decision(state, decision, {})
+
+        mock_notify.assert_called_once()
