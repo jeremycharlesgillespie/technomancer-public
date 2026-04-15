@@ -39,6 +39,8 @@ from .models import Idea, save_ideas
 
 from board import get_provider as _get_board_provider
 
+from aim import event_log as aim_event_log, state as aim_state
+
 
 def load_ideas():
     return _get_board_provider().load_all()
@@ -2099,6 +2101,49 @@ def api_errors() -> tuple:
 def errors_page() -> str:
     """Serve the crash log / errors viewer page."""
     return _render_errors()
+
+
+# ============================================================================
+# AIM STATUS SNAPSHOT
+# ============================================================================
+
+
+@app.route("/api/aim/status")
+def api_aim_status() -> tuple:
+    """GET /api/aim/status — point-in-time snapshot of AIM and Worker state.
+
+    Reads the shared state file for manager/worker fields and scans the
+    recent event log for the last few ``decision_made`` events. Intended
+    for the /aim dashboard status widget and external health monitoring.
+    """
+    state = aim_state.load_state()
+    worker = state.worker
+
+    events = aim_event_log.read_events(limit=500)
+    decisions = [e for e in events if e.get("type") == "decision_made"]
+    last_decisions = list(reversed(decisions[-3:]))
+
+    return jsonify({
+        "worker": {
+            "pid": worker.pid,
+            "status": worker.status,
+            "current_idea_id": worker.current_idea_id,
+            "started_at": worker.started_at,
+            "last_heartbeat": worker.last_heartbeat,
+            "last_observation": worker.last_observation,
+            "consecutive_failures": worker.consecutive_failures,
+        },
+        "manager_pid": state.manager_pid,
+        "manager_started_at": state.manager_started_at,
+        "cycle_count": state.cycle_count,
+        "current_idea_id": worker.current_idea_id,
+        "last_cycle": state.last_cycle,
+        "last_completion": state.last_completion,
+        "completions_today": state.completions_today,
+        "last_error": state.last_error,
+        "last_decisions": last_decisions,
+        "snapshot_at": datetime.now().isoformat(timespec="seconds"),
+    })
 
 
 @app.route("/api/evolve/status")
