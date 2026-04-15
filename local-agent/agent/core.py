@@ -196,8 +196,24 @@ try:
 except ImportError:
     raise ImportError("Install ollama: pip install ollama")
 
+from .config import settings as _settings
+
+
+def _build_ollama_client() -> "ollama.Client":
+    """Construct the Ollama client with a configured request timeout.
+
+    Ollama's Python client defaults to an unlimited httpx timeout, which lets
+    a hung server freeze the bot indefinitely (observed p95 = 1464s). Passing
+    a finite timeout ensures hangs surface as exceptions instead.
+    """
+    return ollama.Client(
+        host=_settings.ollama_host,
+        timeout=_settings.ollama_request_timeout,
+    )
+
+
 # Create explicit client to avoid connection issues on Windows
-_ollama_client = ollama.Client(host="http://127.0.0.1:11434")
+_ollama_client = _build_ollama_client()
 
 
 @dataclass

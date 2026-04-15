@@ -62,8 +62,22 @@ class Settings(BaseSettings):
     # Ollama settings
     ollama_host: str = Field(default="http://127.0.0.1:11434", description="Ollama server URL")
     ollama_model: str = Field(default="qwen3.5:9b", description="Default Ollama model for chat")
+    ollama_fast_model: str = Field(
+        default="",
+        description=(
+            "Smaller/faster Ollama model for simple queries (e.g. 'qwen2.5:3b'). "
+            "Empty string falls back to ollama_model."
+        ),
+    )
     ollama_vision_model: str = Field(
         default="llava-llama3", description="Ollama model for vision/image analysis"
+    )
+    ollama_request_timeout: float = Field(
+        default=600.0,
+        description=(
+            "Per-request timeout (seconds) for Ollama HTTP calls. Prevents "
+            "indefinite hangs when the server stalls. Default 600s (10 min)."
+        ),
     )
 
     # Obsidian vault settings

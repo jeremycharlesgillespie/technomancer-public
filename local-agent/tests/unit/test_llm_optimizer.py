@@ -11,6 +11,7 @@ from agent.llm_optimizer import (
     compute_context_decay,
     get_cache_stats,
     get_llm_optimizer_tools,
+    get_model_for_complexity,
     get_usage_dashboard,
     init_cache_db,
     rank_context_by_relevance,
@@ -161,3 +162,44 @@ class TestGetTools:
         names = {t.name for t in tools}
         assert "llm_usage_dashboard" in names
         assert "query_complexity" in names
+
+
+class TestModelRouting:
+    """TK-390: strategic model selection for Ollama calls."""
+
+    def test_simple_uses_fast_model_when_configured(self):
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", "qwen2.5:3b"):
+            assert get_model_for_complexity("simple") == "qwen2.5:3b"
+
+    def test_simple_falls_back_when_fast_unset(self):
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", ""):
+            assert get_model_for_complexity("simple") == "qwen3.5:27b"
+
+    def test_simple_falls_back_when_fast_whitespace(self):
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", "   "):
+            assert get_model_for_complexity("simple") == "qwen3.5:27b"
+
+    def test_moderate_always_uses_default(self):
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", "qwen2.5:3b"):
+            assert get_model_for_complexity("moderate") == "qwen3.5:27b"
+
+    def test_complex_always_uses_default(self):
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", "qwen2.5:3b"):
+            assert get_model_for_complexity("complex") == "qwen3.5:27b"
+
+    def test_unknown_complexity_uses_default(self):
+        """Unknown values don't route to the fast model — safer default."""
+        from agent.config import settings
+        with patch.object(settings, "ollama_model", "qwen3.5:27b"), \
+             patch.object(settings, "ollama_fast_model", "qwen2.5:3b"):
+            assert get_model_for_complexity("garbage-tier") == "qwen3.5:27b"

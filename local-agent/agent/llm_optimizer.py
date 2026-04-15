@@ -213,6 +213,28 @@ def score_query_complexity(query: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Model routing (strategic model selection for TK-390)
+# ---------------------------------------------------------------------------
+
+def get_model_for_complexity(complexity: str) -> str:
+    """Pick the right Ollama model for a query's complexity tier.
+
+    Simple queries get the faster/smaller model when one is configured
+    (`ollama_fast_model`); everything else runs on the default model.
+    Unknown complexity values fall through to the default model so misuse
+    can't break routing.
+    """
+    from .config import settings
+
+    default_model = settings.ollama_model
+    fast_model = (settings.ollama_fast_model or "").strip()
+
+    if complexity == "simple" and fast_model:
+        return fast_model
+    return default_model
+
+
+# ---------------------------------------------------------------------------
 # Context relevance decay (story idea-067)
 # ---------------------------------------------------------------------------
 

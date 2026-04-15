@@ -686,6 +686,49 @@ class TestAgentCompression:
 
 
 # =============================================================================
+# OLLAMA CLIENT TIMEOUT (TK-390)
+# =============================================================================
+
+
+class TestOllamaClientTimeout:
+    """Regression tests: the Ollama client must be built with a finite timeout.
+
+    Without one, a stalled Ollama server can freeze the bot indefinitely
+    (observed p95 latency of 1464s before this fix).
+    """
+
+    def test_build_client_applies_configured_timeout(self):
+        """_build_ollama_client reads the timeout from settings."""
+        from agent import core
+
+        with patch("agent.core._settings.ollama_host", "http://127.0.0.1:11434"), \
+             patch("agent.core._settings.ollama_request_timeout", 42.0):
+            client = core._build_ollama_client()
+
+        # Ollama wraps httpx — the timeout is stored on the underlying client.
+        assert client._client.timeout.connect == 42.0
+        assert client._client.timeout.read == 42.0
+
+    def test_build_client_uses_configured_host(self):
+        from agent import core
+
+        with patch("agent.core._settings.ollama_host", "http://example.com:9999"), \
+             patch("agent.core._settings.ollama_request_timeout", 60.0):
+            client = core._build_ollama_client()
+
+        # Host should be applied to the underlying httpx base_url.
+        assert "example.com" in str(client._client.base_url)
+
+    def test_module_client_has_finite_timeout(self):
+        """The singleton client used at runtime must not have None timeout."""
+        from agent import core
+
+        timeout = core._ollama_client._client.timeout
+        assert timeout.connect is not None
+        assert timeout.read is not None
+
+
+# =============================================================================
 # RESPONSE CACHE INTEGRATION
 # =============================================================================
 

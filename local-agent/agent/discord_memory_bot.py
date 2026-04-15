@@ -1355,12 +1355,14 @@ React like a friend would - you're genuinely interested. Talk about what stands 
             if complexity["complexity"] == "simple" and not message.attachments:
                 log(f"[FastPath] Simple query ({complexity['reasoning']}) — direct Ollama call")
                 from .core import _ollama_client
+                from .llm_optimizer import get_model_for_complexity
+                fast_model = get_model_for_complexity("simple")
                 _fast_start = time.monotonic()
                 try:
                     now_str = datetime.now().strftime("%A, %B %d, %Y at %I:%M %p")
                     fast_resp = await asyncio.to_thread(
                         _ollama_client.chat,
-                        model=settings.ollama_model,
+                        model=fast_model,
                         messages=[
                             {"role": "system", "content": f"Current date/time: {now_str}\nYou are a helpful, concise assistant. Answer in 1-2 sentences."},
                             {"role": "user", "content": full_content},
@@ -1375,7 +1377,7 @@ React like a friend would - you're genuinely interested. Talk about what stands 
                         endpoint="ollama",
                         duration=round(_fast_duration, 3),
                         success=bool(response),
-                        model=settings.ollama_model,
+                        model=fast_model,
                         output_tokens=len(response) // 4,
                     )
                     log(f"[FastPath] Response in {_fast_duration:.1f}s ({len(response)} chars)")
