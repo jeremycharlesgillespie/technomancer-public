@@ -41,6 +41,7 @@ STATE_MAP = {
     "approved": "To Do",
     "executing": "In Progress",
     "done": "Done",
+    "failed": "Failed",
 }
 
 
@@ -295,8 +296,8 @@ def sync_idea_to_jira(idea: Any) -> str | None:
     parent_id = idea.parent_id if hasattr(idea, "parent_id") else idea.get("parent_id")
     category = idea.category if hasattr(idea, "category") else idea.get("category", "")
 
-    # Skip vetoed/failed
-    if state in ("vetoed", "failed"):
+    # Skip vetoed — but still sync failed so Jira reflects actual state
+    if state == "vetoed":
         return None
 
     # Find or create

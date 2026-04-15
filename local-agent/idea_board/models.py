@@ -332,12 +332,13 @@ def add_idea(
     description = _normalize_description(description)
     ideas = load_ideas()
 
-    # Check against all active ideas (not vetoed/done/failed)
+    # Check against ALL ideas including done/failed to prevent regeneration
     for existing in ideas:
-        if existing.state not in ("vetoed", "done", "failed"):
-            if _is_duplicate(title, description, existing):
-                logger.info(f"Duplicate idea detected: '{title}' ≈ '{existing.title}'")
-                return existing
+        if existing.state == "vetoed":
+            continue
+        if _is_duplicate(title, description, existing):
+            logger.info(f"Duplicate idea detected: '{title}' ≈ '{existing.title}' (state={existing.state})")
+            return existing
 
     idea = Idea(
         id=_next_id(ideas),
