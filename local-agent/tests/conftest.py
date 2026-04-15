@@ -350,13 +350,29 @@ def patched_knowledge_gaps(temp_vault, monkeypatch):
 def _block_jira_sync(monkeypatch):
     """Prevent Jira sync from firing during tests.
 
-    Without this, any test that calls add_idea(), mark_done(), etc.
-    would trigger real Jira API calls via _jira_sync_background().
+    Blocks both the background sync thread used by LocalProvider writes
+    AND any direct Jira API call made by JiraProvider, create_jira_issue,
+    or other code paths. If a test needs real Jira-like responses, it
+    must opt in with its own ``patch("...jira_sync._api")`` or
+    ``patch("board.jira_provider._api")``.
+
+    Without the _api guard, tests that exercise JiraProvider code paths
+    without mocking create_jira_issue can accidentally create real Jira
+    issues (we lost TK-364 and TK-365 this way during Phase 2).
     """
     monkeypatch.setattr(
         "idea_board.models._jira_sync_background",
         lambda idea: None,
     )
+
+    def _raise_on_real_jira(*args, **kwargs):
+        raise RuntimeError(
+            "Test attempted a real Jira API call. Mock _api in your test "
+            "(patch 'idea_board.jira_sync._api' and/or 'board.jira_provider._api')."
+        )
+
+    monkeypatch.setattr("idea_board.jira_sync._api", _raise_on_real_jira)
+    monkeypatch.setattr("board.jira_provider._api", _raise_on_real_jira)
 
 
 @pytest.fixture(autouse=True)
