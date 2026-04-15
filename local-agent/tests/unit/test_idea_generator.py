@@ -1267,3 +1267,259 @@ class TestBoardProviderHelpers:
         )
         ig.set_epic_context("id1", "ctx")
         fake_provider.set_epic_context.assert_called_once_with("id1", "ctx")
+
+
+# =============================================================================
+# Error-branch coverage for loader helpers (OSError / ValueError paths)
+# =============================================================================
+
+
+class TestLoaderErrorBranches:
+    """Cover the OSError and ValueError fallbacks in the loader helpers."""
+
+    def test_load_conversations_swallows_oserror(self, tmp_path, monkeypatch):
+        """When HOURLY_CONTEXT exists but is unreadable, returns default."""
+        ctx = tmp_path / "hourly.md"
+        ctx.write_text("some text", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.HOURLY_CONTEXT", ctx)
+
+        def boom(*a, **k):
+            raise OSError("disk fail")
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        from agent.idea_generator import _load_conversations
+
+        assert _load_conversations() == "No recent conversations."
+
+    def test_load_errors_swallows_oserror(self, tmp_path, monkeypatch):
+        """When CRASH_LOG exists but read_text raises, returns default."""
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("crash", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+
+        def boom(*a, **k):
+            raise OSError("read fail")
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        from agent.idea_generator import _load_errors
+
+        assert _load_errors() == "No recent errors."
+
+    def test_load_performance_swallows_oserror(self, tmp_path, monkeypatch):
+        """When PROFILING_FILE exists but read_text raises, returns default."""
+        profile = tmp_path / "requests.jsonl"
+        profile.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.PROFILING_FILE", profile)
+
+        def boom(*a, **k):
+            raise OSError("io fail")
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        from agent.idea_generator import _load_performance
+
+        assert _load_performance() == "No profiling data."
+
+    def test_load_codebase_summary_swallows_oserror(self, monkeypatch):
+        """OSError/ValueError while reading a .py file is ignored per-file."""
+        from agent import idea_generator as ig
+
+        real_read = Path.read_text
+
+        def flaky(self, *a, **k):
+            if self.suffix == ".py":
+                raise OSError("can't read this one")
+            return real_read(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", flaky)
+        out = ig._load_codebase_summary()
+        # Every file should still appear, just without a description suffix
+        assert isinstance(out, str)
+        assert out.count("\n") > 1
+
+    def test_collect_recent_errors_oserror(self, tmp_path, monkeypatch):
+        """Crash log exists but read_text raises → clear error message."""
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("x", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+
+        def boom(*a, **k):
+            raise OSError("locked")
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        from agent.idea_generator import _collect_recent_errors
+
+        assert "Could not read" in _collect_recent_errors()
+
+    def test_collect_recent_errors_invalid_date(self, tmp_path, monkeypatch):
+        """A `## ####-##-## ##:##:##` that isn't a valid calendar date is skipped."""
+        crash = tmp_path / "crash_log.md"
+        # Regex-valid but calendar-invalid timestamp (month 99)
+        crash.write_text("## 2026-99-99 25:61:99\nentry body\n", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _collect_recent_errors
+
+        # Falls through to the "no recent errors" default
+        assert "No errors" in _collect_recent_errors()
+
+
+# =============================================================================
+# Additional parse-error branches — _parse_ideas, _parse_epic_response
+# =============================================================================
+
+
+class TestParseIdeasExtra:
+    def test_non_list_json_returns_empty(self):
+        """A JSON array containing a non-list at the top level returns []."""
+        from agent.idea_generator import _parse_ideas
+
+        # `[]` is a list; need JSON whose regex-extracted content is valid
+        # JSON but not a list. Use an object wrapped in something the
+        # bracket-regex will grab (a [ { … } ] that is valid).
+        # The `not isinstance(ideas, list)` branch requires raw JSON to
+        # parse to a non-list — use code-fenced JSON that's an object.
+        raw = '```json\n["plain-string", 42]\n```'
+        # Both items fail the `isinstance(idea, dict)` check so result is []
+        result = _parse_ideas(raw)
+        assert result == []
+
+    def test_malformed_json_with_brackets(self):
+        """Regex captures `[…]` but its content is not valid JSON → []."""
+        from agent.idea_generator import _parse_ideas
+
+        # Regex finds `[…]`, but json.loads raises — exercises line 663-664
+        raw = "[1, unquoted, 2]"
+        assert _parse_ideas(raw) == []
+
+
+class TestParseEpicResponseExtra:
+    def test_malformed_json_object_returns_none(self):
+        """Object-looking text that is not valid JSON → None."""
+        from agent.idea_generator import _parse_epic_response
+
+        assert _parse_epic_response("{title: unquoted, broken }") is None
+
+    def test_non_list_stories_normalised_to_empty(self):
+        """`stories` field that is not a list is coerced to []."""
+        from agent.idea_generator import _parse_epic_response
+
+        raw = json.dumps({"title": "Epic", "stories": "not a list"})
+        result = _parse_epic_response(raw)
+        assert result is not None
+        assert result["stories"] == []
+
+
+# =============================================================================
+# _collect_recent_changes — empty-line and one-sided output branches
+# =============================================================================
+
+
+class TestCollectRecentChangesBranches:
+    def test_skips_blank_lines(self, monkeypatch):
+        """Blank lines in git output are ignored (line 542 continue)."""
+        output = "\nabc1234 Fix bug\n\nagent/foo.py\n"
+        result = MagicMock(stdout=output)
+        monkeypatch.setattr(
+            "agent.idea_generator.subprocess.run", lambda *a, **k: result
+        )
+        from agent.idea_generator import _collect_recent_changes
+
+        out = _collect_recent_changes()
+        assert "Fix bug" in out
+        assert "agent/foo.py" in out
+
+    def test_commits_only_no_files(self, monkeypatch):
+        """Output with only commit lines (no file paths) → only Commits section."""
+        output = "abc1234 Msg 1\ndef5678 Msg 2\n"
+        result = MagicMock(stdout=output)
+        monkeypatch.setattr(
+            "agent.idea_generator.subprocess.run", lambda *a, **k: result
+        )
+        from agent.idea_generator import _collect_recent_changes
+
+        out = _collect_recent_changes()
+        assert "Commits:" in out
+        assert "Changed files:" not in out
+
+    def test_files_only_no_commits(self, monkeypatch):
+        """Output with only file paths (no commit hashes) → only Changed files."""
+        output = "agent/foo.py\nagent/bar.py\n"
+        result = MagicMock(stdout=output)
+        monkeypatch.setattr(
+            "agent.idea_generator.subprocess.run", lambda *a, **k: result
+        )
+        from agent.idea_generator import _collect_recent_changes
+
+        out = _collect_recent_changes()
+        assert "Changed files:" in out
+        assert "Commits:" not in out
+
+
+# =============================================================================
+# synthesize_epic — empty story title is skipped (line 802)
+# =============================================================================
+
+
+class TestSynthesizeEpicEmptyStoryTitle:
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator.set_execution_order")
+    @patch("agent.idea_generator.set_epic_context")
+    @patch("agent.idea_generator.add_idea")
+    @patch("agent.idea_generator.load_ideas")
+    @patch("agent.idea_generator._load_existing_ideas", return_value="")
+    @patch("agent.idea_generator._load_codebase_summary", return_value="")
+    async def test_empty_story_title_is_skipped(
+        self, mock_cb, mock_ex, mock_load, mock_add, mock_ctx, mock_order
+    ):
+        """A story whose title becomes empty after stripping is skipped."""
+        mock_load.return_value = []
+
+        # Return a new idea for the epic, and would return stories too,
+        # but the empty-title story should never hit add_idea.
+        call_count = [0]
+
+        def fake_add_idea(**kwargs):
+            call_count[0] += 1
+            m = MagicMock()
+            m.id = f"idea-{call_count[0]:03d}"
+            m.title = kwargs["title"]
+            m.state = "proposed"
+            return m
+
+        mock_add.side_effect = fake_add_idea
+
+        # Hand-craft an epic payload where the parsed story list contains
+        # an entry whose `title` becomes empty after the parser strips it.
+        # `_parse_epic_response` drops empty titles, so we need to bypass it.
+        epic_payload = {
+            "title": "Partial Epic",
+            "category": "quality",
+            "source": "conversation_analysis",
+            "stories": [
+                {"title": "Real Story", "description": "Desc"},
+                {"title": "   ", "description": "Whitespace title"},
+            ],
+        }
+        agent = MagicMock()
+        agent.run.return_value = json.dumps(epic_payload)
+
+        # Patch _parse_epic_response to hand back a story list with a
+        # whitespace-only title — this is what exercises line 802.
+        with patch(
+            "agent.idea_generator._parse_epic_response",
+            return_value={
+                "title": "Partial Epic",
+                "category": "quality",
+                "source": "conversation_analysis",
+                "stories": [
+                    {"title": "Real Story", "description": "Desc"},
+                    {"title": "   ", "description": "Whitespace title"},
+                ],
+            },
+        ):
+            from agent.idea_generator import synthesize_epic
+
+            result = await synthesize_epic("signals", agent)
+
+        assert result is not None
+        # Only 2 add_idea calls: 1 epic + 1 real story (whitespace story skipped)
+        assert mock_add.call_count == 2

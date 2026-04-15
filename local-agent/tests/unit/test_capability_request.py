@@ -295,3 +295,98 @@ class TestRequestCapabilityYes:
         # Either SUCCESS or one of the FAILED states — ensures the YES branch
         # is reached and the helper gets exercised
         assert any(kw in result for kw in ("SUCCESS", "FAILED"))
+
+
+# =============================================================================
+# Marker-fallback and no-system-tools-list branches in _implement_capability
+# =============================================================================
+
+
+TOOLS_FILE_WITHOUT_GET_ALL = '''"""Tools module that lacks get_all_tools."""
+
+from .core import Tool, create_tool
+
+
+def existing_tool():
+    return "ok"
+
+
+def get_system_tools() -> list[Tool]:
+    return [
+        create_tool(
+            name="existing",
+            description="",
+            parameters={},
+            function=existing_tool,
+        ),
+    ]
+'''
+
+TOOLS_FILE_WITHOUT_SYSTEM_TOOLS = '''"""Tools module that lacks get_system_tools."""
+
+from .core import Tool, create_tool
+
+
+def existing_tool():
+    return "ok"
+
+
+def get_all_tools() -> list[Tool]:
+    return []
+'''
+
+
+class TestImplementCapabilityMarkerFallbacks:
+    def test_end_marker_missing_appends_to_file(self, tmp_path, monkeypatch):
+        """If `def get_all_tools()` marker is absent, code is appended to the
+        end of the file (line 203 fallback)."""
+        path = tmp_path / "tools.py"
+        path.write_text(TOOLS_FILE_WITHOUT_GET_ALL, encoding="utf-8")
+        monkeypatch.setattr("agent.capability_request.TOOLS_FILE", path)
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+
+        import importlib
+
+        monkeypatch.setattr(importlib, "reload", lambda mod: mod)
+
+        response = (
+            "IMPLEMENT: YES\n"
+            "FUNCTION_CODE:\n```python\ndef appended_tool():\n    return 'a'\n```\n"
+            "REGISTRATION_CODE:\n```python\ncreate_tool(name='appended_tool')\n```\n"
+            "INSERT_AFTER: END\n"
+        )
+        result = _implement_capability(response, "append test")
+        assert "SUCCESS" in result
+        new_content = path.read_text(encoding="utf-8")
+        assert "def appended_tool()" in new_content
+        # Confirm the function was added (appended, since marker was missing)
+        assert new_content.index("def appended_tool()") > new_content.index(
+            "def existing_tool()"
+        )
+
+    def test_missing_system_tools_list_still_succeeds(self, tmp_path, monkeypatch):
+        """If get_system_tools isn't present, the registration block is
+        silently skipped but the function code still lands (branch 223→234)."""
+        path = tmp_path / "tools.py"
+        path.write_text(TOOLS_FILE_WITHOUT_SYSTEM_TOOLS, encoding="utf-8")
+        monkeypatch.setattr("agent.capability_request.TOOLS_FILE", path)
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+
+        import importlib
+
+        monkeypatch.setattr(importlib, "reload", lambda mod: mod)
+
+        response = (
+            "IMPLEMENT: YES\n"
+            "FUNCTION_CODE:\n```python\ndef solo_tool():\n    return 'x'\n```\n"
+            "REGISTRATION_CODE:\n```python\ncreate_tool(name='solo_tool')\n```\n"
+            "INSERT_AFTER: END\n"
+        )
+        result = _implement_capability(response, "no system tools")
+        assert "SUCCESS" in result
+        new_content = path.read_text(encoding="utf-8")
+        assert "def solo_tool()" in new_content
