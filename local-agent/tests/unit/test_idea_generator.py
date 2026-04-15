@@ -690,3 +690,556 @@ class TestStartIdeaGenerator:
 
     def test_offset_constant(self):
         assert OFFSET_AFTER_NEWS_MINUTES == 5
+
+
+# =============================================================================
+# Signal collectors — crash log, perf monitor, conversations, coverage, git
+# =============================================================================
+
+
+class TestLoadConversations:
+    def test_reads_hourly_context_when_present(self, tmp_path, monkeypatch):
+        ctx = tmp_path / "hourly.md"
+        ctx.write_text("Talking about Python tooling", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.HOURLY_CONTEXT", ctx)
+        from agent.idea_generator import _load_conversations
+
+        assert "Python" in _load_conversations()
+
+    def test_returns_default_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.idea_generator.HOURLY_CONTEXT", tmp_path / "no-file.md"
+        )
+        from agent.idea_generator import _load_conversations
+
+        assert _load_conversations() == "No recent conversations."
+
+
+class TestLoadErrorsWithFile:
+    def test_returns_tail_of_crash_log(self, tmp_path, monkeypatch):
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("X" * 3000 + "TAIL", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _load_errors
+
+        out = _load_errors()
+        assert out.endswith("TAIL")
+        assert len(out) == 2000
+
+    def test_small_crash_log_returned_whole(self, tmp_path, monkeypatch):
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("tiny error", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _load_errors
+
+        assert _load_errors() == "tiny error"
+
+
+class TestLoadPerformance:
+    def test_returns_default_when_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.idea_generator.PROFILING_FILE", tmp_path / "missing.jsonl"
+        )
+        from agent.idea_generator import _load_performance
+
+        assert _load_performance() == "No profiling data yet."
+
+    def test_summarises_profile_lines(self, tmp_path, monkeypatch):
+        profile = tmp_path / "requests.jsonl"
+        rec = json.dumps({
+            "total_seconds": 3.2,
+            "llm_summary": {"total_calls": 2},
+            "classification": {"question_type": "technical"},
+            "message": "How do I fix this?",
+        })
+        profile.write_text(rec + "\n" + rec + "\n", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.PROFILING_FILE", profile)
+        from agent.idea_generator import _load_performance
+
+        out = _load_performance()
+        assert "3.2s" in out
+        assert "technical" in out
+
+    def test_skips_malformed_json_lines(self, tmp_path, monkeypatch):
+        profile = tmp_path / "requests.jsonl"
+        profile.write_text("{not json\n", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.PROFILING_FILE", profile)
+        from agent.idea_generator import _load_performance
+
+        assert _load_performance() == "No profiling data."
+
+
+class TestLoadExistingIdeas:
+    @patch("agent.idea_generator.load_ideas")
+    def test_formats_titles(self, mock_load):
+        good = MagicMock(state="proposed", title="Thing A")
+        bad = MagicMock(state="vetoed", title="Skip me")
+        mock_load.return_value = [good, bad]
+        from agent.idea_generator import _load_existing_ideas
+
+        out = _load_existing_ideas()
+        assert "Thing A" in out
+        assert "Skip me" not in out
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_no_ideas_returns_default(self, mock_load):
+        mock_load.return_value = []
+        from agent.idea_generator import _load_existing_ideas
+
+        assert _load_existing_ideas() == "No existing ideas."
+
+    @patch("agent.idea_generator.load_ideas", None)
+    def test_none_load_function_returns_default(self):
+        from agent.idea_generator import _load_existing_ideas
+
+        assert _load_existing_ideas() == "No existing ideas."
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_exception_returns_default(self, mock_load):
+        mock_load.side_effect = RuntimeError("oops")
+        from agent.idea_generator import _load_existing_ideas
+
+        assert _load_existing_ideas() == "No existing ideas."
+
+
+class TestCollectRecentErrors:
+    def test_returns_default_when_no_log(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.idea_generator.CRASH_LOG", tmp_path / "missing.md"
+        )
+        from agent.idea_generator import _collect_recent_errors
+
+        assert "No crash log" in _collect_recent_errors()
+
+    def test_parses_recent_and_filters_old_entries(self, tmp_path, monkeypatch):
+        crash = tmp_path / "crash_log.md"
+        now = datetime.now()
+        recent_ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        old_ts = "2020-01-01 00:00:00"
+        crash.write_text(
+            f"## {recent_ts}\nRecent error details\n\n"
+            f"## {old_ts}\nOld error details\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _collect_recent_errors
+
+        out = _collect_recent_errors()
+        assert "Recent error" in out
+        assert "Old error" not in out
+
+    def test_no_matching_entries_returns_default(self, tmp_path, monkeypatch):
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("## 2020-01-01 00:00:00\nOld\n", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _collect_recent_errors
+
+        assert "No errors" in _collect_recent_errors()
+
+    def test_malformed_timestamp_skipped(self, tmp_path, monkeypatch):
+        crash = tmp_path / "crash_log.md"
+        crash.write_text("## not-a-date\nsomething\n", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.CRASH_LOG", crash)
+        from agent.idea_generator import _collect_recent_errors
+
+        # Entry without a parseable "## YYYY-MM-DD" timestamp is skipped
+        assert "No errors" in _collect_recent_errors()
+
+
+class TestCollectSlowOperations:
+    def test_returns_no_data_when_monitor_empty(self, monkeypatch):
+        fake_monitor = MagicMock()
+        fake_monitor.get_endpoint_stats.return_value = {"calls": 0}
+        monkeypatch.setattr(
+            "agent.idea_generator.get_perf_monitor", lambda: fake_monitor
+        )
+        from agent.idea_generator import _collect_slow_operations
+
+        assert "No performance data" in _collect_slow_operations()
+
+    def test_lists_slow_endpoints(self, monkeypatch):
+        import threading
+
+        fake_monitor = MagicMock()
+        fake_monitor._lock = threading.Lock()
+        fast_record = MagicMock(endpoint="ollama")
+        slow_record = MagicMock(endpoint="claude_api")
+        fake_monitor._records = [fast_record, slow_record]
+
+        def stats(endpoint=None):
+            if endpoint is None:
+                return {"calls": 2}
+            if endpoint == "claude_api":
+                return {
+                    "calls": 5, "failures": 1,
+                    "avg_latency": 8.0, "p95_latency": 12.0,
+                }
+            return {
+                "calls": 5, "failures": 0,
+                "avg_latency": 0.5, "p95_latency": 0.8,
+            }
+
+        fake_monitor.get_endpoint_stats.side_effect = stats
+        monkeypatch.setattr(
+            "agent.idea_generator.get_perf_monitor", lambda: fake_monitor
+        )
+        from agent.idea_generator import _collect_slow_operations
+
+        out = _collect_slow_operations()
+        assert "claude_api" in out
+        assert "p95=12.0s" in out
+
+    def test_no_slow_endpoints(self, monkeypatch):
+        import threading
+
+        fake_monitor = MagicMock()
+        fake_monitor._lock = threading.Lock()
+        fake_monitor._records = [MagicMock(endpoint="ollama")]
+
+        def stats(endpoint=None):
+            if endpoint is None:
+                return {"calls": 1}
+            return {"calls": 1, "failures": 0, "avg_latency": 0.2, "p95_latency": 0.3}
+
+        fake_monitor.get_endpoint_stats.side_effect = stats
+        monkeypatch.setattr(
+            "agent.idea_generator.get_perf_monitor", lambda: fake_monitor
+        )
+        from agent.idea_generator import _collect_slow_operations
+
+        assert "No slow operations" in _collect_slow_operations()
+
+
+class TestCollectConversationTopics:
+    def test_returns_default_when_memory_unavailable(self, monkeypatch):
+        def boom():
+            raise RuntimeError("not initialised")
+
+        monkeypatch.setattr("agent.idea_generator.get_memory_system", boom)
+        from agent.idea_generator import _collect_conversation_topics
+
+        assert "not available" in _collect_conversation_topics()
+
+    def test_lists_recent_entries(self, monkeypatch):
+        now = datetime.now()
+
+        class FakeEntry:
+            def __init__(self, user, message, ts):
+                self.user = user
+                self.message = message
+                self.timestamp = ts
+
+        fresh = FakeEntry("alice", "Running into an error", now)
+        stale = FakeEntry("bob", "Old thing", now - timedelta(hours=3))
+
+        fake_mem = MagicMock()
+        fake_mem.recent_conversations = [fresh, stale]
+        monkeypatch.setattr(
+            "agent.idea_generator.get_memory_system", lambda: fake_mem
+        )
+        from agent.idea_generator import _collect_conversation_topics
+
+        out = _collect_conversation_topics()
+        assert "alice" in out
+        assert "bob" not in out
+
+    def test_no_recent_returns_default(self, monkeypatch):
+        fake_mem = MagicMock()
+        fake_mem.recent_conversations = []
+        monkeypatch.setattr(
+            "agent.idea_generator.get_memory_system", lambda: fake_mem
+        )
+        from agent.idea_generator import _collect_conversation_topics
+
+        assert "No conversations" in _collect_conversation_topics()
+
+
+class TestCollectCoverageGaps:
+    def test_returns_default_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "agent.idea_generator.COVERAGE_FILE", tmp_path / "no-coverage.json"
+        )
+        from agent.idea_generator import _collect_coverage_gaps
+
+        assert "No coverage data" in _collect_coverage_gaps()
+
+    def test_lists_low_coverage_modules(self, tmp_path, monkeypatch):
+        cov = tmp_path / "coverage.json"
+        cov.write_text(json.dumps({
+            "files": {
+                "agent/foo.py": {
+                    "summary": {"percent_covered": 20, "num_statements": 50},
+                },
+                "agent/bar.py": {
+                    "summary": {"percent_covered": 95, "num_statements": 30},
+                },
+            }
+        }), encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.COVERAGE_FILE", cov)
+        from agent.idea_generator import _collect_coverage_gaps
+
+        out = _collect_coverage_gaps()
+        assert "foo.py" in out
+        assert "bar.py" not in out
+
+    def test_all_modules_above_threshold(self, tmp_path, monkeypatch):
+        cov = tmp_path / "coverage.json"
+        cov.write_text(json.dumps({
+            "files": {
+                "agent/good.py": {
+                    "summary": {"percent_covered": 80, "num_statements": 50},
+                },
+            }
+        }), encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.COVERAGE_FILE", cov)
+        from agent.idea_generator import _collect_coverage_gaps
+
+        assert "above 50%" in _collect_coverage_gaps()
+
+    def test_empty_files_dict(self, tmp_path, monkeypatch):
+        cov = tmp_path / "coverage.json"
+        cov.write_text(json.dumps({"files": {}}), encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.COVERAGE_FILE", cov)
+        from agent.idea_generator import _collect_coverage_gaps
+
+        assert "No per-file coverage data" in _collect_coverage_gaps()
+
+    def test_invalid_json_returns_default(self, tmp_path, monkeypatch):
+        cov = tmp_path / "coverage.json"
+        cov.write_text("{not json", encoding="utf-8")
+        monkeypatch.setattr("agent.idea_generator.COVERAGE_FILE", cov)
+        from agent.idea_generator import _collect_coverage_gaps
+
+        assert "Could not parse" in _collect_coverage_gaps()
+
+
+class TestCollectRecentChanges:
+    def test_git_error_returns_default(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("git missing")
+
+        monkeypatch.setattr("agent.idea_generator.subprocess.run", boom)
+        from agent.idea_generator import _collect_recent_changes
+
+        assert "Could not read" in _collect_recent_changes()
+
+    def test_empty_output(self, monkeypatch):
+        result = MagicMock(stdout="")
+        monkeypatch.setattr(
+            "agent.idea_generator.subprocess.run", lambda *a, **k: result
+        )
+        from agent.idea_generator import _collect_recent_changes
+
+        assert "No commits" in _collect_recent_changes()
+
+    def test_parses_commits_and_files(self, monkeypatch):
+        output = "abc1234 Fix bug\nagent/foo.py\nagent/bar.py\ndef5678 Another\nagent/foo.py\n"
+        result = MagicMock(stdout=output)
+        monkeypatch.setattr(
+            "agent.idea_generator.subprocess.run", lambda *a, **k: result
+        )
+        from agent.idea_generator import _collect_recent_changes
+
+        out = _collect_recent_changes()
+        assert "Fix bug" in out
+        assert "agent/foo.py" in out
+        # File paths should be deduplicated
+        assert out.count("agent/foo.py") == 1
+
+
+class TestCollectPendingIdeas:
+    @patch("agent.idea_generator.load_ideas", None)
+    def test_none_load_function(self):
+        from agent.idea_generator import _collect_pending_ideas
+
+        assert "Could not load" in _collect_pending_ideas()
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_exception_returns_default(self, mock_load):
+        mock_load.side_effect = RuntimeError("err")
+        from agent.idea_generator import _collect_pending_ideas
+
+        assert "Could not load" in _collect_pending_ideas()
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_empty_board(self, mock_load):
+        mock_load.return_value = []
+        from agent.idea_generator import _collect_pending_ideas
+
+        assert "empty" in _collect_pending_ideas()
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_no_pending(self, mock_load):
+        mock_load.return_value = [
+            MagicMock(state="done", id="1", title="done thing"),
+            MagicMock(state="proposed", id="2", title="proposed thing"),
+        ]
+        from agent.idea_generator import _collect_pending_ideas
+
+        assert "No approved" in _collect_pending_ideas()
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_lists_approved_and_executing(self, mock_load):
+        mock_load.return_value = [
+            MagicMock(state="approved", id="a1", title="Approved thing"),
+            MagicMock(state="executing", id="a2", title="Running thing"),
+        ]
+        from agent.idea_generator import _collect_pending_ideas
+
+        out = _collect_pending_ideas()
+        assert "Approved thing" in out
+        assert "Running thing" in out
+
+
+class TestCollectSignals:
+    @patch("agent.idea_generator._collect_pending_ideas", return_value="pending")
+    @patch("agent.idea_generator._collect_recent_changes", return_value="changes")
+    @patch("agent.idea_generator._collect_coverage_gaps", return_value="coverage")
+    @patch(
+        "agent.idea_generator._collect_conversation_topics", return_value="convos"
+    )
+    @patch("agent.idea_generator._collect_slow_operations", return_value="slow")
+    @patch("agent.idea_generator._collect_recent_errors", return_value="errors")
+    def test_aggregates_all_sections(self, *_mocks):
+        from agent.idea_generator import collect_signals
+
+        out = collect_signals()
+        for section in (
+            "RECENT ERRORS",
+            "SLOW OPERATIONS",
+            "CONVERSATION TOPICS",
+            "TEST COVERAGE GAPS",
+            "RECENTLY CHANGED FILES",
+            "PENDING IDEAS",
+        ):
+            assert section in out
+
+
+class TestLoadNewsArticles:
+    @pytest.mark.asyncio
+    async def test_formats_articles(self, monkeypatch):
+        async def fake_fetch():
+            return [
+                {"source": "src1", "title": "Hello", "summary": "world"},
+                {"source": "src2", "title": "Another", "summary": ""},
+            ]
+
+        # Patch the imported symbol inside news_digest
+        import agent.news_digest as news
+
+        monkeypatch.setattr(news, "fetch_all_news", fake_fetch, raising=False)
+        from agent.idea_generator import _load_news_articles
+
+        out = await _load_news_articles()
+        assert "Hello" in out
+        assert "Another" in out
+
+    @pytest.mark.asyncio
+    async def test_empty_returns_default(self, monkeypatch):
+        async def fake_fetch():
+            return []
+
+        import agent.news_digest as news
+
+        monkeypatch.setattr(news, "fetch_all_news", fake_fetch, raising=False)
+        from agent.idea_generator import _load_news_articles
+
+        assert "No recent news" in await _load_news_articles()
+
+    @pytest.mark.asyncio
+    async def test_exception_returns_unavailable(self, monkeypatch):
+        async def fake_fetch():
+            raise RuntimeError("network down")
+
+        import agent.news_digest as news
+
+        monkeypatch.setattr(news, "fetch_all_news", fake_fetch, raising=False)
+        from agent.idea_generator import _load_news_articles
+
+        assert "unavailable" in await _load_news_articles()
+
+
+# =============================================================================
+# generate_ideas — integration with mocked synthesize_epic
+# =============================================================================
+
+
+class TestGenerateIdeas:
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator.synthesize_epic", new_callable=AsyncMock)
+    @patch("agent.idea_generator.collect_signals", return_value="signals")
+    async def test_returns_empty_when_nothing_created(self, _sig, mock_synth):
+        from agent.idea_generator import generate_ideas
+
+        mock_synth.return_value = None
+        assert await generate_ideas(agent=MagicMock()) == []
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator.synthesize_epic", new_callable=AsyncMock)
+    @patch("agent.idea_generator.collect_signals", return_value="signals")
+    async def test_returns_summary_when_epic_created(self, _sig, mock_synth):
+        mock_synth.return_value = {
+            "epic_id": "idea-001",
+            "epic_title": "Better Error Recovery",
+            "story_ids": ["idea-002", "idea-003"],
+            "category": "quality",
+            "source": "error_analysis",
+        }
+        from agent.idea_generator import generate_ideas
+
+        out = await generate_ideas(agent=MagicMock())
+        assert len(out) == 1
+        assert out[0]["title"] == "Better Error Recovery"
+        assert out[0]["story_count"] == 2
+
+
+# =============================================================================
+# Board provider wrappers — exercise the thin helper functions
+# =============================================================================
+
+
+class TestBoardProviderHelpers:
+    """The wrappers in idea_generator.py delegate to a board provider singleton
+    captured at import time as _get_board_provider. Patching that symbol
+    directly on the module makes the thin delegates call our fake."""
+
+    def test_load_ideas_calls_provider(self, monkeypatch):
+        from agent import idea_generator as ig
+
+        fake_provider = MagicMock()
+        fake_provider.load_all.return_value = ["a", "b"]
+        monkeypatch.setattr(
+            ig, "_get_board_provider", lambda: fake_provider, raising=False
+        )
+        assert ig.load_ideas() == ["a", "b"]
+
+    def test_add_idea_calls_provider(self, monkeypatch):
+        from agent import idea_generator as ig
+
+        fake_provider = MagicMock()
+        fake_provider.add.return_value = "added"
+        monkeypatch.setattr(
+            ig, "_get_board_provider", lambda: fake_provider, raising=False
+        )
+        assert ig.add_idea("T", "D", source="s", category="c") == "added"
+        fake_provider.add.assert_called_once()
+
+    def test_set_execution_order_calls_provider(self, monkeypatch):
+        from agent import idea_generator as ig
+
+        fake_provider = MagicMock()
+        monkeypatch.setattr(
+            ig, "_get_board_provider", lambda: fake_provider, raising=False
+        )
+        ig.set_execution_order("id1", ["a", "b"])
+        fake_provider.set_execution_order.assert_called_once_with("id1", ["a", "b"])
+
+    def test_set_epic_context_calls_provider(self, monkeypatch):
+        from agent import idea_generator as ig
+
+        fake_provider = MagicMock()
+        monkeypatch.setattr(
+            ig, "_get_board_provider", lambda: fake_provider, raising=False
+        )
+        ig.set_epic_context("id1", "ctx")
+        fake_provider.set_epic_context.assert_called_once_with("id1", "ctx")
