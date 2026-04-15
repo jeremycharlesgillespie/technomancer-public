@@ -1879,12 +1879,24 @@ def cancel_execution(idea_id: str) -> bool:
 
     state.cancelled = True
 
-    # Also try to kill the process directly
+    # Kill the process tree (taskkill /F /T on Windows for reliable tree kill)
     if state.pid and state.is_alive:
         try:
-            os.kill(state.pid, signal.SIGTERM)
-            logger.info(f"[Executor] Sent SIGTERM to PID {state.pid} for {idea_id}")
-        except (OSError, ProcessLookupError):
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(state.pid)],
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.info(
+                    f"[Executor] Killed process tree for PID {state.pid} ({idea_id})"
+                )
+            else:
+                os.kill(state.pid, signal.SIGTERM)
+                logger.info(
+                    f"[Executor] Sent SIGTERM to PID {state.pid} for {idea_id}"
+                )
+        except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
             pass
 
     return True

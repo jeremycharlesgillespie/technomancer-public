@@ -489,3 +489,118 @@ class TestKillWorker:
 
         state.worker.pid = None
         kill_worker(state)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Orphaned process cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOrphanedProcesses:
+    def _make_proc(self, pid, name, cmdline=None, environ=None):
+        """Create a mock psutil process info entry."""
+        m = MagicMock()
+        m.info = {
+            "pid": pid,
+            "name": name,
+            "cmdline": cmdline or [],
+        }
+        m.environ.return_value = environ or {}
+        return m
+
+    def test_kills_orphan_claude_exe(self, state):
+        from aim.manager import _cleanup_orphaned_processes
+
+        proc = self._make_proc(55555, "claude.exe", ["claude.exe", "--flag"])
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run") as mock_run,
+            patch("aim.manager._notify_discord_throttled"),
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            killed = _cleanup_orphaned_processes(state)
+
+        assert killed == 1
+        args = mock_run.call_args[0][0]
+        assert "/T" in args
+        assert "55555" in args
+
+    def test_protects_claudecode_session(self, state):
+        from aim.manager import _cleanup_orphaned_processes
+
+        proc = self._make_proc(55555, "claude.exe", ["claude.exe"])
+        proc.environ.return_value = {"CLAUDECODE": "1"}
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            killed = _cleanup_orphaned_processes(state)
+
+        assert killed == 0
+        mock_run.assert_not_called()
+
+    def test_protects_worker_pid(self, state):
+        from aim.manager import _cleanup_orphaned_processes
+
+        state.worker.pid = 55555
+        proc = self._make_proc(55555, "python.exe", ["python", "-m", "aim.worker"])
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            killed = _cleanup_orphaned_processes(state)
+
+        assert killed == 0
+        mock_run.assert_not_called()
+
+    def test_ignores_unrelated_python(self, state):
+        from aim.manager import _cleanup_orphaned_processes
+
+        proc = self._make_proc(55555, "python.exe", ["python", "my_script.py"])
+
+        with (
+            patch("psutil.process_iter", return_value=[proc]),
+            patch("psutil.Process") as mock_ps,
+            patch("subprocess.run") as mock_run,
+        ):
+            mock_self = MagicMock()
+            mock_self.pid = os.getpid()
+            mock_self.parent.return_value = None
+            mock_ps.return_value = mock_self
+
+            killed = _cleanup_orphaned_processes(state)
+
+        assert killed == 0
+        mock_run.assert_not_called()
+
+    def test_calls_orphan_cleanup_on_worker_failure(self, state):
+        from aim.manager import handle_worker_failure
+
+        with (
+            patch("aim.manager.kill_worker"),
+            patch("aim.manager.spawn_worker"),
+            patch("aim.manager._cleanup_orphaned_processes") as mock_cleanup,
+        ):
+            handle_worker_failure(state)
+
+        mock_cleanup.assert_called_once_with(state)
