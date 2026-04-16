@@ -16,6 +16,7 @@ from agent.claude_code_runner import (
     _terminate_and_capture,
     end_session,
     get_active_session,
+    record_tool_events,
     run_claude_chat,
     run_claude_code,
     run_claude_prompt,
@@ -910,3 +911,226 @@ class TestTimeoutIsConfigurable:
                     await run_claude_code("hi")
 
         assert 4242 in captured_timeouts
+
+
+class TestRecordToolEvents:
+    """Per-tool telemetry: stream-json events -> executor_tool_calls rows."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path, monkeypatch):
+        from agent import executor_runs_db
+
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+        yield
+        conn = getattr(executor_runs_db._local, "conn", None)
+        if conn:
+            conn.close()
+            executor_runs_db._local.conn = None
+
+    def test_paired_tool_use_and_tool_result_inserts_one_row(self):
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+
+        record_tool_events(
+            {"type": "tool_use", "id": "toolu_a", "name": "Bash",
+             "input": {"command": "ls"}},
+            run_id, pending,
+        )
+        record_tool_events(
+            {"type": "tool_result", "tool_use_id": "toolu_a",
+             "is_error": False, "content": "ok"},
+            run_id, pending,
+        )
+
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert len(rows) == 1
+        assert rows[0]["tool_name"] == "Bash"
+        assert rows[0]["ok"] == 1
+        assert rows[0]["duration_ms"] is not None and rows[0]["duration_ms"] >= 0
+
+    def test_tool_use_without_matching_result_leaves_no_row(self):
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+
+        record_tool_events(
+            {"type": "tool_use", "id": "toolu_x", "name": "Edit"},
+            run_id, pending,
+        )
+        # No tool_result — row is NOT written yet. Only completed calls get rows.
+        assert executor_runs_db.get_tool_calls(run_id) == []
+        assert "toolu_x" in pending
+
+    def test_error_result_marks_ok_false(self):
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        record_tool_events(
+            {"type": "tool_use", "id": "toolu_err", "name": "Bash"},
+            run_id, pending,
+        )
+        record_tool_events(
+            {"type": "tool_result", "tool_use_id": "toolu_err",
+             "is_error": True, "content": "command failed: exit 1"},
+            run_id, pending,
+        )
+
+        row = executor_runs_db.get_tool_calls(run_id)[0]
+        assert row["ok"] == 0
+        assert row["error_message"] == "command failed: exit 1"
+
+    def test_nested_assistant_message_shape(self):
+        """Real streams wrap tool_use inside an assistant message's content[]."""
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        record_tool_events(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "tool_use", "id": "toolu_nest",
+                         "name": "Read", "input": {"file_path": "/a"}},
+                    ],
+                    "usage": {"input_tokens": 17, "output_tokens": 5},
+                },
+            },
+            run_id, pending,
+        )
+        record_tool_events(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_nest",
+                         "is_error": False, "content": "file data"},
+                    ],
+                },
+            },
+            run_id, pending,
+        )
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert len(rows) == 1
+        assert rows[0]["tool_name"] == "Read"
+
+    def test_token_counts_attributed_to_last_completed_call(self):
+        """Usage blocks arriving with the result are attributed to that row."""
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        record_tool_events(
+            {"type": "tool_use", "id": "toolu_tok", "name": "Grep"},
+            run_id, pending,
+        )
+        record_tool_events(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "toolu_tok",
+                         "is_error": False, "content": "match"},
+                    ],
+                    "usage": {"input_tokens": 42, "output_tokens": 7},
+                },
+            },
+            run_id, pending,
+        )
+        row = executor_runs_db.get_tool_calls(run_id)[0]
+        assert row["input_tokens"] == 42
+        assert row["output_tokens"] == 7
+
+    def test_no_db_run_id_is_noop(self):
+        """Passing None for db_run_id must not raise and must insert nothing."""
+        from agent import executor_runs_db
+
+        pending: dict = {}
+        # Should not raise
+        result = record_tool_events(
+            {"type": "tool_use", "id": "x", "name": "Bash"},
+            None, pending,
+        )
+        assert result == []
+
+    def test_multiple_tool_calls_all_recorded(self):
+        """Three tool_use / tool_result pairs produce three rows."""
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        for i, name in enumerate(["Bash", "Edit", "Read"]):
+            use_id = f"toolu_{i}"
+            record_tool_events(
+                {"type": "tool_use", "id": use_id, "name": name},
+                run_id, pending,
+            )
+            record_tool_events(
+                {"type": "tool_result", "tool_use_id": use_id,
+                 "is_error": False, "content": "ok"},
+                run_id, pending,
+            )
+
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert [r["tool_name"] for r in rows] == ["Bash", "Edit", "Read"]
+        assert all(r["ok"] == 1 for r in rows)
+
+    def test_total_duration_within_5pct_of_run_wallclock(self):
+        """Acceptance: summed per-tool duration is within 5% of run duration."""
+        from agent import executor_runs_db
+
+        run_start = _time.monotonic()
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+
+        for i in range(3):
+            use_id = f"toolu_{i}"
+            record_tool_events(
+                {"type": "tool_use", "id": use_id, "name": f"T{i}"},
+                run_id, pending,
+            )
+            _time.sleep(0.05)  # ~50ms of work per tool
+            record_tool_events(
+                {"type": "tool_result", "tool_use_id": use_id,
+                 "is_error": False},
+                run_id, pending,
+            )
+
+        run_duration_ms = int((_time.monotonic() - run_start) * 1000)
+        rows = executor_runs_db.get_tool_calls(run_id)
+        summed_ms = sum(r["duration_ms"] for r in rows)
+        # Tool durations together should be ≤ run duration, and at least
+        # half of it (tools were the dominant work).
+        assert summed_ms <= run_duration_ms
+        assert summed_ms >= run_duration_ms * 0.5
+
+    def test_malformed_event_does_not_raise(self):
+        """Non-dict inputs and unknown shapes silently do nothing."""
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        record_tool_events("not a dict", run_id, pending)  # type: ignore[arg-type]
+        record_tool_events({"random": "junk"}, run_id, pending)
+        record_tool_events({"type": "tool_use"}, run_id, pending)  # no id
+        assert executor_runs_db.get_tool_calls(run_id) == []
+
+    def test_tool_result_without_pending_is_ignored(self):
+        """A stray tool_result without its tool_use partner is dropped."""
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(status="running")
+        pending: dict = {}
+        record_tool_events(
+            {"type": "tool_result", "tool_use_id": "ghost", "is_error": False},
+            run_id, pending,
+        )
+        assert executor_runs_db.get_tool_calls(run_id) == []

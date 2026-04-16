@@ -1,6 +1,6 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-3025-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.7%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-77-blue) ![lines](https://img.shields.io/badge/lines-32k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-3052-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.7%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-77-blue) ![lines](https://img.shields.io/badge/lines-33k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 Technomancer is an **autonomous AI dev team** wrapped around an Ollama-powered
 Discord bot. A human drags a story to the top of a Jira board; a daemon picks
@@ -104,8 +104,8 @@ While a Worker is running, anyone with the link can watch in real time:
 
 ## Highlights
 
-- **3025 automated tests** with 78.7% code coverage
-- **77 Python modules** across 32,938 lines of code
+- **3052 automated tests** with 78.7% code coverage
+- **77 Python modules** across 33,278 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -206,7 +206,7 @@ python safe_update.py continue          # test, merge, restart, publish
 Every code change passes through multiple quality gates before deployment:
 
 ```bash
-pytest                        # Run all 3025 tests
+pytest                        # Run all 3052 tests
 pytest --cov=agent            # With coverage report
 pytest tests/unit/            # Unit tests only
 python validate.py startup    # Full pre-commit validation (5 levels)
@@ -232,7 +232,7 @@ Every change follows the same branch → test → merge → restart flow:
 safe_update.py <name>      →  Create isolated branch
 validate.py startup        →  5-level validation (mandatory before commit)
 git commit                 →  Pre-commit hooks (black, ruff, trailing whitespace)
-safe_update.py continue    →  pytest (all 3025 tests) → mypy → merge → restart bot → quality tests → publish
+safe_update.py continue    →  pytest (all 3052 tests) → mypy → merge → restart bot → quality tests → publish
 ```
 
 No code reaches `main` without passing **all** of: pre-commit hooks, 5-level validation, the full test suite, type checking, and post-deploy quality tests.
@@ -283,11 +283,11 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 
 | Metric | Value |
 |--------|-------|
-| Test count | 3025 |
+| Test count | 3052 |
 | Code coverage | 78.7% |
 | Python modules | 77 |
-| Lines of code | 32,938 |
-| Test files | 106 |
+| Lines of code | 33,278 |
+| Test files | 107 |
 
 ## License
 

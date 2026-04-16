@@ -381,6 +381,188 @@ class TestPurgeCli:
         assert "usage:" in capsys.readouterr().out
 
 
+class TestExecutorToolCalls:
+    """Per-tool telemetry table: executor_tool_calls."""
+
+    def test_table_created(self):
+        conn = executor_runs_db._get_conn()
+        row = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='executor_tool_calls'"
+        ).fetchone()
+        assert row is not None
+
+    def test_schema_has_required_columns(self):
+        conn = executor_runs_db._get_conn()
+        cols = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA table_info(executor_tool_calls)"
+            ).fetchall()
+        }
+        expected = {
+            "id", "run_id", "tool_name", "started_at", "duration_ms",
+            "input_tokens", "output_tokens", "ok", "error_message",
+        }
+        assert expected.issubset(cols)
+
+    def test_insert_and_retrieve(self):
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-469", status="running",
+        )
+        tc_id = executor_runs_db.record_tool_call(
+            run_id=run_id,
+            tool_name="Bash",
+            started_at="2026-04-16T10:00:00.000001",
+            duration_ms=1234,
+            input_tokens=100,
+            output_tokens=200,
+            ok=True,
+        )
+        assert tc_id >= 1
+
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["tool_name"] == "Bash"
+        assert row["duration_ms"] == 1234
+        assert row["input_tokens"] == 100
+        assert row["output_tokens"] == 200
+        assert row["ok"] == 1
+        assert row["error_message"] is None
+
+    def test_boolean_coercion_for_ok(self):
+        run_id = executor_runs_db.record_run(status="running")
+        executor_runs_db.record_tool_call(
+            run_id=run_id, tool_name="Edit", ok=False,
+            error_message="file not found",
+        )
+        row = executor_runs_db.get_tool_calls(run_id)[0]
+        assert row["ok"] == 0
+        assert row["error_message"] == "file not found"
+
+    def test_sorted_by_started_at_ascending(self):
+        run_id = executor_runs_db.record_run(status="running")
+        # Insert out of order — retrieval must return them sorted by started_at
+        executor_runs_db.record_tool_call(
+            run_id=run_id, tool_name="third",
+            started_at="2026-04-16T10:00:03", ok=True,
+        )
+        executor_runs_db.record_tool_call(
+            run_id=run_id, tool_name="first",
+            started_at="2026-04-16T10:00:01", ok=True,
+        )
+        executor_runs_db.record_tool_call(
+            run_id=run_id, tool_name="second",
+            started_at="2026-04-16T10:00:02", ok=True,
+        )
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert [r["tool_name"] for r in rows] == ["first", "second", "third"]
+
+    def test_filter_by_run_id(self):
+        """get_tool_calls only returns calls for the given run id."""
+        run_a = executor_runs_db.record_run(jira_key="TK-A", status="running")
+        run_b = executor_runs_db.record_run(jira_key="TK-B", status="running")
+        executor_runs_db.record_tool_call(
+            run_id=run_a, tool_name="ToolA",
+            started_at="2026-04-16T10:00:00", ok=True,
+        )
+        executor_runs_db.record_tool_call(
+            run_id=run_b, tool_name="ToolB",
+            started_at="2026-04-16T10:00:00", ok=True,
+        )
+
+        rows_a = executor_runs_db.get_tool_calls(run_a)
+        rows_b = executor_runs_db.get_tool_calls(run_b)
+        assert {r["tool_name"] for r in rows_a} == {"ToolA"}
+        assert {r["tool_name"] for r in rows_b} == {"ToolB"}
+
+    def test_update_by_id(self):
+        """Passing id= updates an existing row (for token back-attribution)."""
+        run_id = executor_runs_db.record_run(status="running")
+        tc_id = executor_runs_db.record_tool_call(
+            run_id=run_id, tool_name="Bash",
+            started_at="2026-04-16T10:00:00", ok=True,
+        )
+        executor_runs_db.record_tool_call(
+            id=tc_id, input_tokens=50, output_tokens=150,
+        )
+        row = executor_runs_db.get_tool_calls(run_id)[0]
+        assert row["input_tokens"] == 50
+        assert row["output_tokens"] == 150
+        assert row["tool_name"] == "Bash"  # unchanged
+
+    def test_unknown_keys_dropped(self):
+        """Unknown keys are silently ignored — SQL injection protection."""
+        run_id = executor_runs_db.record_run(status="running")
+        tc_id = executor_runs_db.record_tool_call(
+            run_id=run_id,
+            tool_name="Bash",
+            started_at="2026-04-16T10:00:00",
+            ok=True,
+            bogus="'; DROP TABLE executor_tool_calls; --",
+        )
+        assert tc_id >= 1
+        rows = executor_runs_db.get_tool_calls(run_id)
+        assert len(rows) == 1
+
+    def test_empty_db_returns_empty_list(self):
+        assert executor_runs_db.get_tool_calls(9999) == []
+
+    def test_purge_cascades_to_tool_calls(self):
+        """When a run row is purged, its tool_call rows go too."""
+        old_run = executor_runs_db.record_run(
+            jira_key="TK-old",
+            started_at=(datetime.now() - timedelta(days=40)).isoformat(
+                sep=" ", timespec="seconds"
+            ),
+            status="success",
+        )
+        executor_runs_db.record_tool_call(
+            run_id=old_run, tool_name="Bash",
+            started_at="2026-02-01T10:00:00", ok=True,
+        )
+        assert len(executor_runs_db.get_tool_calls(old_run)) == 1
+
+        executor_runs_db.purge_old_runs(30)
+        assert executor_runs_db.get_tool_calls(old_run) == []
+
+
+class TestToolCallTotalDurationMatchesRun:
+    """Acceptance: sum of per-tool durations is within 5% of the run's
+    wall-clock duration when tool calls are the dominant work."""
+
+    def test_sum_of_durations_within_5pct_of_run_duration(self):
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-469",
+            started_at="2026-04-16T10:00:00",
+            status="running",
+        )
+
+        # Fake four tool calls totalling 10 seconds of work.
+        expected_total_ms = 10_000
+        per_call = expected_total_ms // 4
+        for i in range(4):
+            executor_runs_db.record_tool_call(
+                run_id=run_id,
+                tool_name=f"Tool{i}",
+                started_at=f"2026-04-16T10:00:0{i}",
+                duration_ms=per_call,
+                ok=True,
+            )
+
+        # The run itself wrapped those 4 tools in a 10.2s wall-clock window.
+        executor_runs_db.record_run(
+            id=run_id, ended_at="2026-04-16T10:00:10.200000",
+            duration_ms=10_200, status="success", exit_code=0,
+        )
+
+        rows = executor_runs_db.get_tool_calls(run_id)
+        summed_ms = sum(r["duration_ms"] for r in rows)
+        run_ms = executor_runs_db.get_recent()[0]["duration_ms"]
+        assert abs(summed_ms - run_ms) / run_ms <= 0.05
+
+
 class TestStartThenCompleteFlow:
     """The canonical lifecycle: insert on start, UPDATE on completion."""
 

@@ -144,6 +144,237 @@ def _safe_record(**fields: Any) -> int | None:
         return None
 
 
+def _safe_record_tool_call(**fields: Any) -> int | None:
+    """Record an executor_tool_calls row, swallowing all DB errors."""
+    try:
+        return executor_runs_db.record_tool_call(**fields)
+    except Exception:
+        logger.debug("executor_runs_db.record_tool_call failed", exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Per-tool telemetry from stream-json events
+# ---------------------------------------------------------------------------
+#
+# Claude Code's ``--output-format stream-json`` emits events for every tool
+# call the assistant makes. Two events bracket each invocation:
+#
+#   {"type": "tool_use",    "tool_use_id": "toolu_abc", "name": "Bash", ...}
+#   {"type": "tool_result", "tool_use_id": "toolu_abc", "content": ..., "is_error": false, ...}
+#
+# Real streams also wrap these inside an "assistant" / "user" message with a
+# ``content`` array of blocks. The extractor below handles both shapes.
+#
+# Usage — pass a fresh ``pending`` dict and a known ``db_run_id``:
+#
+#     pending: dict[str, dict[str, Any]] = {}
+#     for line in stream:
+#         event = json.loads(line)
+#         record_tool_events(event, db_run_id, pending)
+
+
+def _iter_tool_blocks(event: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Return ``(block_type, block)`` tuples from any event shape.
+
+    Accepts the three common shapes seen in real Claude Code streams:
+
+    * flat: ``{"type": "tool_use", ...}``
+    * nested message: ``{"type": "assistant", "message": {"content": [blocks]}}``
+    * result bundle: ``{"type": "result", "messages": [{"content": [blocks]}, ...]}``
+
+    Unknown shapes return an empty list so the caller can safely ignore them.
+    """
+    if not isinstance(event, dict):
+        return []
+
+    evt_type = event.get("type", "")
+    out: list[tuple[str, dict[str, Any]]] = []
+
+    # Flat tool_use / tool_result — treat the event itself as the block.
+    if evt_type in ("tool_use", "tool_result"):
+        out.append((evt_type, event))
+        return out
+
+    # Nested: event.message.content = [blocks]
+    message = event.get("message")
+    if isinstance(message, dict):
+        for block in message.get("content") or []:
+            if isinstance(block, dict):
+                bt = block.get("type", "")
+                if bt in ("tool_use", "tool_result"):
+                    out.append((bt, block))
+
+    # Nested: event.content = [blocks]  (some stream variants)
+    for block in event.get("content") or []:
+        if isinstance(block, dict):
+            bt = block.get("type", "")
+            if bt in ("tool_use", "tool_result"):
+                out.append((bt, block))
+
+    return out
+
+
+def _extract_tool_use_id(block: dict[str, Any]) -> str | None:
+    """Find the id for a tool_use or tool_result block.
+
+    Claude Code has used several field names across versions:
+    ``tool_use_id`` (tool_result), ``id`` (tool_use), and nested
+    ``tool.id`` / ``tool.use_id``.
+    """
+    for key in ("tool_use_id", "id"):
+        val = block.get(key)
+        if isinstance(val, str) and val:
+            return val
+    tool = block.get("tool")
+    if isinstance(tool, dict):
+        for key in ("id", "use_id", "tool_use_id"):
+            val = tool.get(key)
+            if isinstance(val, str) and val:
+                return val
+    return None
+
+
+def _extract_tool_name(block: dict[str, Any]) -> str:
+    """Best-effort extract of the tool name from a tool_use block."""
+    name = block.get("name")
+    if isinstance(name, str) and name:
+        return name
+    tool = block.get("tool")
+    if isinstance(tool, dict):
+        name = tool.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return "unknown"
+
+
+def _extract_token_counts(event: dict[str, Any]) -> tuple[int | None, int | None]:
+    """Pull input/output token counts from an event's ``usage`` block.
+
+    Returns ``(None, None)`` if no usage info is present. Callers attribute
+    those to the most recently completed tool call so we surface the cost of
+    the Claude turn that issued each tool invocation.
+    """
+    usage = None
+    if isinstance(event, dict):
+        usage = event.get("usage")
+        if usage is None:
+            message = event.get("message")
+            if isinstance(message, dict):
+                usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return (None, None)
+    in_tokens = usage.get("input_tokens")
+    out_tokens = usage.get("output_tokens")
+    return (
+        int(in_tokens) if isinstance(in_tokens, int) else None,
+        int(out_tokens) if isinstance(out_tokens, int) else None,
+    )
+
+
+def _extract_error(block: dict[str, Any]) -> tuple[bool, str | None]:
+    """Return ``(ok, error_message)`` for a tool_result block.
+
+    A tool call is ``ok`` when ``is_error`` is absent or false. When an
+    error is present, pull a short string from the content for the DB.
+    """
+    is_error = bool(block.get("is_error"))
+    if not is_error:
+        return (True, None)
+
+    content = block.get("content")
+    msg: str | None = None
+    if isinstance(content, str):
+        msg = content
+    elif isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        msg = "\n".join(parts) if parts else None
+    if msg is not None:
+        msg = msg.strip()[:2000] or None
+    return (False, msg)
+
+
+def record_tool_events(
+    event: dict[str, Any],
+    db_run_id: int | None,
+    pending: dict[str, dict[str, Any]],
+) -> list[int]:
+    """Process one Claude Code stream-json event, emit DB rows for tool calls.
+
+    Maintains a ``pending`` dict mapping ``tool_use_id`` -> start metadata so
+    a later ``tool_result`` event can be paired up and the full
+    ``executor_tool_calls`` row inserted in one go. The caller owns
+    ``pending`` and should reuse it across a single run.
+
+    Usage-token blocks are attributed to the most recently *completed* tool
+    call when they arrive, so operators can see both the latency and the
+    Claude API spend that each tool invocation caused.
+
+    Args:
+        event: One parsed JSON event from Claude Code's stream-json output.
+        db_run_id: Parent ``executor_runs.id`` — tool_call rows FK here.
+            ``None`` short-circuits the function (nothing gets recorded).
+        pending: State carried between events. Initialise to ``{}``.
+
+    Returns:
+        List of row ids that were inserted into ``executor_tool_calls`` by
+        this event. Empty when the event didn't complete any tool calls.
+    """
+    if db_run_id is None or not isinstance(event, dict):
+        return []
+
+    inserted: list[int] = []
+    for block_type, block in _iter_tool_blocks(event):
+        if block_type == "tool_use":
+            use_id = _extract_tool_use_id(block)
+            if not use_id:
+                continue
+            pending[use_id] = {
+                "tool_name": _extract_tool_name(block),
+                "started_at_iso": datetime.now().isoformat(),
+                "started_monotonic": time.monotonic(),
+            }
+        elif block_type == "tool_result":
+            use_id = _extract_tool_use_id(block)
+            if not use_id or use_id not in pending:
+                continue
+            start = pending.pop(use_id)
+            duration_ms = int((time.monotonic() - start["started_monotonic"]) * 1000)
+            ok, err_msg = _extract_error(block)
+            row_id = _safe_record_tool_call(
+                run_id=db_run_id,
+                tool_name=start["tool_name"],
+                started_at=start["started_at_iso"],
+                duration_ms=max(duration_ms, 0),
+                ok=ok,
+                error_message=err_msg,
+            )
+            if row_id is not None:
+                inserted.append(row_id)
+                pending["__last_row_id__"] = {"row_id": row_id}
+
+    # Attribute usage tokens to the most recently completed row. Usage blocks
+    # typically arrive on the same event that contains the tool_result, so
+    # pairing them is straightforward here.
+    in_tokens, out_tokens = _extract_token_counts(event)
+    last = pending.get("__last_row_id__")
+    if last and (in_tokens is not None or out_tokens is not None):
+        updates: dict[str, Any] = {"id": last["row_id"]}
+        if in_tokens is not None:
+            updates["input_tokens"] = in_tokens
+        if out_tokens is not None:
+            updates["output_tokens"] = out_tokens
+        _safe_record_tool_call(**updates)
+    return inserted
+
+
 def _make_run_id(jira_key: str | None) -> str:
     """Build the sortable, greppable run_id used for artifact archive dirs.
 

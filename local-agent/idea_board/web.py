@@ -17,6 +17,7 @@ Routes:
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
+    GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
 """
 
 from __future__ import annotations
@@ -2596,6 +2597,24 @@ def api_embeddings_stats() -> Response:
     from agent import embedding_store
 
     return jsonify(embedding_store.get_stats())
+
+
+@app.route("/api/executor/run/<int:run_id>/tools")
+def api_executor_run_tools(run_id: int) -> Response:
+    """GET /api/executor/run/<id>/tools — per-tool telemetry for one run.
+
+    Returns ``{"run_id": N, "tool_calls": [...]}`` with one entry per tool
+    invocation recorded during the executor run, sorted by ``started_at``.
+    When a run has no recorded tool calls the list is empty and the status
+    is still 200 — callers can distinguish "no tools" from "unknown run" by
+    checking whether a run row exists via /api/aim/status or logs.
+    """
+    from agent import executor_runs_db
+
+    return jsonify({
+        "run_id": run_id,
+        "tool_calls": executor_runs_db.get_tool_calls(run_id),
+    })
 
 
 @app.route("/aim")

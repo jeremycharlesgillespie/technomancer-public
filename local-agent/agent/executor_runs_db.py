@@ -68,6 +68,19 @@ _COLUMNS: frozenset[str] = frozenset({
     "artifacts_path",
 })
 
+# Whitelist of legal column names for the executor_tool_calls table.
+_TOOL_COLUMNS: frozenset[str] = frozenset({
+    "id",
+    "run_id",
+    "tool_name",
+    "started_at",
+    "duration_ms",
+    "input_tokens",
+    "output_tokens",
+    "ok",
+    "error_message",
+})
+
 
 def _get_conn() -> sqlite3.Connection:
     """Per-thread SQLite connection (created on first use)."""
@@ -123,6 +136,23 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_executor_runs_run_id
         ON executor_runs (run_id)
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS executor_tool_calls (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id         INTEGER NOT NULL,
+            tool_name      TEXT,
+            started_at     TEXT,
+            duration_ms    INTEGER,
+            input_tokens   INTEGER,
+            output_tokens  INTEGER,
+            ok             INTEGER,
+            error_message  TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executor_tool_calls_run_id
+        ON executor_tool_calls (run_id, started_at)
+    """)
     conn.commit()
 
 
@@ -175,6 +205,74 @@ def record_run(**fields: Any) -> int:
     )
     conn.commit()
     return int(cursor.lastrowid or 0)
+
+
+def _coerce_tool(key: str, value: Any) -> Any:
+    """Coerce booleans to 0/1 for INTEGER columns on the tool-call table."""
+    if key == "ok" and isinstance(value, bool):
+        return 1 if value else 0
+    return value
+
+
+def record_tool_call(**fields: Any) -> int:
+    """Insert or update one row in ``executor_tool_calls``.
+
+    Pass ``id=`` to update an existing row (for two-phase start/complete
+    writes — the event stream parser currently writes a single row per
+    tool_result so this is mostly used for direct inserts).
+
+    Unknown keys are silently dropped so callers can pass extra metadata
+    without crashing. Returns the row id of the inserted or updated row.
+    """
+    init_db()
+    conn = _get_conn()
+
+    safe_fields = {
+        k: _coerce_tool(k, v) for k, v in fields.items() if k in _TOOL_COLUMNS
+    }
+    row_id = safe_fields.pop("id", None)
+
+    if row_id is not None:
+        if safe_fields:
+            set_clause = ", ".join(f"{k} = ?" for k in safe_fields)
+            params = list(safe_fields.values()) + [row_id]
+            conn.execute(
+                f"UPDATE executor_tool_calls SET {set_clause} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+        return int(row_id)
+
+    if "started_at" not in safe_fields:
+        safe_fields["started_at"] = datetime.now().isoformat()
+
+    columns = ", ".join(safe_fields.keys())
+    placeholders = ", ".join("?" * len(safe_fields))
+    cursor = conn.execute(
+        f"INSERT INTO executor_tool_calls ({columns}) VALUES ({placeholders})",
+        list(safe_fields.values()),
+    )
+    conn.commit()
+    return int(cursor.lastrowid or 0)
+
+
+def get_tool_calls(run_id: int) -> list[dict[str, Any]]:
+    """Return all tool-call rows for a run, oldest first (by started_at).
+
+    Args:
+        run_id: ``executor_runs.id`` to look up calls for.
+    """
+    init_db()
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, run_id, tool_name, started_at, duration_ms,
+                  input_tokens, output_tokens, ok, error_message
+           FROM executor_tool_calls
+           WHERE run_id = ?
+           ORDER BY started_at ASC, id ASC""",
+        (int(run_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_recent(limit: int = 20) -> list[dict[str, Any]]:
@@ -400,6 +498,17 @@ def purge_old_runs(days: int) -> int:
     # UTC offset.
     cutoff = (datetime.now() - timedelta(days=days)).isoformat(
         sep=" ", timespec="seconds"
+    )
+    # Purge child tool_call rows first — no FK cascade in SQLite, but keeping
+    # orphaned tool calls around would defeat the retention goal.
+    conn.execute(
+        "DELETE FROM executor_tool_calls "
+        "WHERE run_id IN ("
+        "  SELECT id FROM executor_runs "
+        "  WHERE started_at IS NOT NULL "
+        "  AND datetime(started_at) < datetime(?)"
+        ")",
+        (cutoff,),
     )
     cursor = conn.execute(
         "DELETE FROM executor_runs "
