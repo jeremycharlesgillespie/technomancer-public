@@ -213,6 +213,30 @@ class TestAssessBoard:
         assert board["in_progress"] == 1
         assert len(board["approved_ideas"]) == 2
 
+    def test_vetoed_items_excluded_from_approved_ideas(self, state):
+        from aim.manager import assess_board
+
+        @dataclass
+        class FakeIdea:
+            id: str
+            title: str
+            state: str
+            category: str = "quality"
+            created: str = "2026-04-14T10:00:00"
+
+        ideas = [
+            FakeIdea(id="TK-1", title="Good", state="approved"),
+            FakeIdea(id="TK-2", title="Vetoed", state="vetoed"),
+            FakeIdea(id="TK-3", title="Failed", state="failed"),
+        ]
+
+        with patch("aim.jira_reader.get_board_summary", side_effect=Exception("No Jira")), \
+             patch("idea_board.models.load_ideas", return_value=ideas):
+            board = assess_board(state)
+
+        assert len(board["approved_ideas"]) == 1
+        assert board["approved_ideas"][0]["id"] == "TK-1"
+
 
 # ---------------------------------------------------------------------------
 # Decision execution
@@ -387,6 +411,78 @@ class TestCreateNewWork:
             _create_new_work(state, {"todo": 150})
 
         mock_gen.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Queue review — vetoed exclusion
+# ---------------------------------------------------------------------------
+
+class TestReviewQueueVetoedExclusion:
+    def test_vetoed_items_excluded_from_active_and_failed(self, state):
+        """review_queue must never process vetoed items as active or failed."""
+        from aim.manager import review_queue
+
+        @dataclass
+        class FakeIdea:
+            id: str
+            title: str
+            state: str
+            description: str = ""
+            category: str = "quality"
+            created: str = "2026-04-14T10:00:00"
+            execution_log: str = ""
+
+        ideas = [
+            FakeIdea(id="TK-1", title="Good idea", state="approved"),
+            FakeIdea(id="TK-2", title="Vetoed idea", state="vetoed"),
+            FakeIdea(id="TK-3", title="Failed idea", state="failed",
+                     execution_log="test failure"),
+        ]
+
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = ideas
+
+        with patch("board.get_provider", return_value=mock_provider), \
+             patch("aim.manager._notify_discord"):
+            review_queue(state)
+
+        # The vetoed item should never be voted on or touched
+        for c in mock_provider.vote.call_args_list:
+            assert c[0][0] != "TK-2", "vetoed item must not be re-voted"
+
+    def test_review_queue_veto_does_not_move_to_todo(self, state):
+        """When review_queue auto-vetoes, it calls provider.vote(id, 'owner', 'veto')
+        which should transition to Failed (not To Do)."""
+        from aim.manager import review_queue
+
+        @dataclass
+        class FakeIdea:
+            id: str
+            title: str
+            state: str
+            description: str = ""
+            category: str = "quality"
+            created: str = "2026-04-14T10:00:00"
+            execution_log: str = ""
+
+        ideas = [
+            # This idea matches 2 failures — should be auto-vetoed
+            FakeIdea(id="TK-10", title="Add caching layer", state="proposed"),
+            FakeIdea(id="TK-11", title="Add caching layer v1", state="failed",
+                     execution_log="test failure"),
+            FakeIdea(id="TK-12", title="Add caching layer v2", state="failed",
+                     execution_log="test failure"),
+        ]
+
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = ideas
+
+        with patch("board.get_provider", return_value=mock_provider), \
+             patch("aim.manager._notify_discord"):
+            review_queue(state)
+
+        # The matching proposed idea should be vetoed (not moved to To Do)
+        mock_provider.vote.assert_called_once_with("TK-10", "owner", "veto")
 
 
 # ---------------------------------------------------------------------------
@@ -829,6 +925,40 @@ class TestRecoverOrphanInProgress:
             _recover_orphan_in_progress(state)
 
         mock_transition.assert_not_called()
+
+    def test_skips_vetoed_issue_during_recovery(self, state):
+        """Orphan recovery must never move a vetoed issue back to To Do."""
+        from aim.manager import _recover_orphan_in_progress
+
+        state.worker.current_idea_id = None
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            'issues': [
+                {
+                    'key': 'TK-500',
+                    'fields': {
+                        'summary': 'vetoed idea',
+                        'labels': ['vetoed', 'cat:quality'],
+                    },
+                },
+                {
+                    'key': 'TK-501',
+                    'fields': {
+                        'summary': 'real orphan',
+                        'labels': ['cat:feature'],
+                    },
+                },
+            ]
+        }
+
+        with patch('idea_board.jira_sync.is_jira_configured', return_value=True), \
+             patch('idea_board.jira_sync._api', return_value=resp), \
+             patch('idea_board.jira_sync.transition_jira_issue', return_value=True) as mock_transition, \
+             patch('aim.manager._notify_discord'):
+            _recover_orphan_in_progress(state)
+
+        # Only the non-vetoed issue should be transitioned
+        mock_transition.assert_called_once_with('TK-501', 'To Do')
 
     def test_no_op_when_jira_not_configured(self, state):
         from aim.manager import _recover_orphan_in_progress

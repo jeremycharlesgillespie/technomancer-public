@@ -82,6 +82,21 @@ class TestStateDerivation:
         from board.jira_provider import _jira_status_to_state
         assert _jira_status_to_state("To Do", ["pending-approval"]) == "proposed"
 
+    def test_failed_with_vetoed_label_is_vetoed(self):
+        from board.jira_provider import _jira_status_to_state
+        assert _jira_status_to_state("Failed", ["vetoed"]) == "vetoed"
+
+    def test_failed_without_vetoed_label_is_failed(self):
+        from board.jira_provider import _jira_status_to_state
+        assert _jira_status_to_state("Failed", ["cat:quality"]) == "failed"
+
+    def test_is_vetoed_helper(self):
+        from board.jira_provider import _is_vetoed
+        assert _is_vetoed("Failed", ["vetoed"]) is True
+        assert _is_vetoed("Failed", ["cat:quality"]) is False
+        assert _is_vetoed("To Do", ["vetoed"]) is False
+        assert _is_vetoed("In Progress", ["vetoed"]) is False
+
 
 # ---------------------------------------------------------------------------
 # Issue → BoardItem
@@ -113,6 +128,11 @@ class TestIssueToItem:
         item = _issue_to_item(_issue(parent="TK-5"))
         assert item.parent_id == "TK-5"
 
+    def test_vetoed_issue_has_vetoed_state(self):
+        from board.jira_provider import _issue_to_item
+        item = _issue_to_item(_issue(status="Failed", labels=["vetoed", "cat:quality"]))
+        assert item.state == "vetoed"
+
 
 # ---------------------------------------------------------------------------
 # Reads
@@ -138,6 +158,22 @@ class TestReads:
             _issue("TK-2", labels=["cat:feature", "pending-approval"]),
         ])
         items = provider.list_by_state("proposed")
+        assert [i.id for i in items] == ["TK-2"]
+
+    def test_list_by_state_vetoed_filters_to_vetoed_label(self, provider, mock_api):
+        mock_api.return_value = _search_response([
+            _issue("TK-1", status="Failed", labels=["vetoed", "cat:quality"]),
+            _issue("TK-2", status="Failed", labels=["cat:feature"]),
+        ])
+        items = provider.list_by_state("vetoed")
+        assert [i.id for i in items] == ["TK-1"]
+
+    def test_list_by_state_failed_excludes_vetoed(self, provider, mock_api):
+        mock_api.return_value = _search_response([
+            _issue("TK-1", status="Failed", labels=["vetoed", "cat:quality"]),
+            _issue("TK-2", status="Failed", labels=["cat:feature"]),
+        ])
+        items = provider.list_by_state("failed")
         assert [i.id for i in items] == ["TK-2"]
 
     def test_get_returns_board_item_on_200(self, provider, mock_api):
