@@ -42,6 +42,7 @@ from flask import Flask, Response, jsonify, request
 
 from agent import fn_profiler
 from agent.config import settings
+from agent.run_context import with_run_context
 
 from .executor import EXECUTION_LOGS_DIR, get_execution
 from .models import Idea, save_ideas
@@ -1504,23 +1505,34 @@ def api_execute(idea_id: str) -> tuple:
 
     For epics with child stories, uses execute_epic() to run stories
     sequentially. For stories/tasks, uses execute_idea() directly.
+
+    A run-context is bound around the whole handler so that pre-executor
+    log lines (validation, branch setup inside execute_idea before the
+    background thread spawns) carry the correlation id for this run.
     """
-    idea = get_idea(idea_id)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
+    run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{idea_id or 'unknown'}"
+    with with_run_context(run_id=run_id, idea_key=idea_id):
+        idea = get_idea(idea_id)
+        if not idea:
+            logger.info("[Executor] Unknown idea %s — nothing to execute", idea_id)
+            return jsonify({"error": "Idea not found"}), 404
 
-    if idea.idea_type == "epic":
-        from .executor import execute_epic
+        logger.info(
+            "[Executor] Starting run for %s (type=%s)", idea_id, idea.idea_type
+        )
+        if idea.idea_type == "epic":
+            from .executor import execute_epic
 
-        state = execute_epic(idea_id)
-    else:
-        from .executor import execute_idea
+            state = execute_epic(idea_id)
+        else:
+            from .executor import execute_idea
 
-        state = execute_idea(idea_id)
+            state = execute_idea(idea_id)
 
-    if not state:
-        return jsonify({"error": "Failed to start execution"}), 500
-    return jsonify({"status": "executing", "idea_id": idea_id, "pid": state.pid})
+        if not state:
+            logger.warning("[Executor] Failed to start execution for %s", idea_id)
+            return jsonify({"error": "Failed to start execution"}), 500
+        return jsonify({"status": "executing", "idea_id": idea_id, "pid": state.pid})
 
 
 @app.route("/execute/<idea_id>")
