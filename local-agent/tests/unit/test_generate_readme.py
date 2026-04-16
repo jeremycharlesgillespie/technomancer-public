@@ -1,5 +1,7 @@
 """Tests for generate_readme.py idempotent-write behavior."""
 
+from unittest.mock import patch
+
 import generate_readme
 
 
@@ -54,3 +56,43 @@ class TestGeneratedReadmeHasNoTimestamp:
         first = generate_readme.generate_readme(test_stats, code_stats)
         second = generate_readme.generate_readme(test_stats, code_stats)
         assert first == second
+
+
+class TestMainIdempotent:
+    """End-to-end: two consecutive main() calls must leave the file untouched.
+
+    This is the real acceptance criterion from the epic — the working tree
+    must stay clean between runs when no stats have changed, so the next
+    worker's 'clean main' safety check doesn't trip.
+    """
+
+    def test_second_main_call_does_not_touch_files(self, tmp_path):
+        stats_test = {"test_count": 100, "coverage_pct": 75.0}
+        stats_code = {
+            "module_count": 20,
+            "total_lines": 5000,
+            "test_file_count": 15,
+            "categories": {"Core": ["core"]},
+        }
+
+        local_readme = tmp_path / "README.md"
+        root_readme = tmp_path / "parent_README.md"
+
+        with patch.object(generate_readme, "README_PATH", local_readme), \
+             patch.object(generate_readme, "ROOT_README_PATH", root_readme), \
+             patch.object(generate_readme, "collect_test_stats", return_value=stats_test), \
+             patch.object(generate_readme, "collect_code_stats", return_value=stats_code), \
+             patch.object(generate_readme.sys, "argv", ["generate_readme.py"]):
+            generate_readme.main()
+
+            assert local_readme.exists()
+            assert root_readme.exists()
+            first_local_mtime = local_readme.stat().st_mtime_ns
+            first_root_mtime = root_readme.stat().st_mtime_ns
+
+            generate_readme.main()
+
+            # If main() re-wrote either file, mtime would change — which is
+            # exactly what git diff detects and what dirties the tree.
+            assert local_readme.stat().st_mtime_ns == first_local_mtime
+            assert root_readme.stat().st_mtime_ns == first_root_mtime
