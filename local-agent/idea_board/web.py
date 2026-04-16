@@ -2698,6 +2698,31 @@ section { margin-bottom: 1.25rem; }
                      font-size: 0.72rem; margin-top: 0.15rem; }
 .commit-empty { color: var(--muted); font-style: italic; font-size: 0.85rem; }
 
+/* Band 5: Function hotspots */
+#fn-hotspots {
+  background: var(--surface); border-radius: 10px; padding: 1rem;
+}
+#fn-hotspots-table {
+  width: 100%; border-collapse: collapse;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.8rem;
+}
+#fn-hotspots-table thead th {
+  text-align: left; color: var(--muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.7rem;
+  padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border);
+}
+#fn-hotspots-table thead th.num { text-align: right; }
+#fn-hotspots-table tbody td {
+  padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border);
+  color: var(--text); word-break: break-word;
+}
+#fn-hotspots-table tbody td.num {
+  text-align: right; color: var(--accent);
+}
+#fn-hotspots-table tbody tr:last-child td { border-bottom: none; }
+.fn-empty { color: var(--muted); font-style: italic; font-size: 0.85rem; }
+
 #footer-status {
   margin-top: 1rem; color: var(--muted); font-size: 0.75rem;
 }
@@ -2706,6 +2731,7 @@ section { margin-bottom: 1.25rem; }
   #charts, #commits { grid-template-columns: 1fr; }
   #backlog-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .count-tile .count-value { font-size: 1.4rem; }
+  #fn-hotspots-table { font-size: 0.72rem; }
 }
 @media (max-width: 520px) {
   body { padding: 12px; }
@@ -2785,9 +2811,28 @@ section { margin-bottom: 1.25rem; }
     </div>
   </section>
 
+  <section id="fn-hotspots" aria-label="Function hotspots">
+    <h3>Function hotspots</h3>
+    <table id="fn-hotspots-table">
+      <thead>
+        <tr>
+          <th>Function</th>
+          <th class="num">Calls</th>
+          <th class="num">Total (s)</th>
+          <th class="num">p50 (s)</th>
+          <th class="num">p95 (s)</th>
+          <th class="num">Stddev (s)</th>
+        </tr>
+      </thead>
+      <tbody id="fn-hotspots-body">
+        <tr><td colspan="6" class="fn-empty">loading&hellip;</td></tr>
+      </tbody>
+    </table>
+  </section>
+
   <div id="footer-status">
-    Polling: backlog 10s &middot; commits 30s &middot; metrics 60s.
-    Endpoints: /api/aim/backlog, /api/aim/commits, /api/aim/metrics.
+    Polling: backlog 10s &middot; commits 30s &middot; metrics 60s &middot; hotspots 60s.
+    Endpoints: /api/aim/backlog, /api/aim/commits, /api/aim/metrics, /api/perf/functions.
   </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -2799,6 +2844,8 @@ section { margin-bottom: 1.25rem; }
   const BACKLOG_POLL_MS = 10000;
   const COMMITS_POLL_MS = 30000;
   const METRICS_POLL_MS = 60000;
+  const FN_HOTSPOTS_POLL_MS = 60000;
+  const FN_HOTSPOTS_LIMIT = 10;
 
   let currentHours = 24;
   let completionsChart = null;
@@ -3040,6 +3087,69 @@ section { margin-bottom: 1.25rem; }
   }
 
   // ------------------------------------------------------------------
+  // Band 5: function hotspots (polled every 60s)
+  // ------------------------------------------------------------------
+
+  function formatSeconds(v) {
+    if (v == null || isNaN(v)) return '—';
+    if (v >= 100) return v.toFixed(0);
+    if (v >= 10) return v.toFixed(1);
+    if (v >= 1) return v.toFixed(2);
+    if (v >= 0.001) return v.toFixed(3);
+    return v.toExponential(1);
+  }
+
+  function renderHotspots(items) {
+    const tbody = document.getElementById('fn-hotspots-body');
+    tbody.innerHTML = '';
+    if (!items || items.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.className = 'fn-empty';
+      td.textContent = 'no data yet — waiting for profiled calls';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    items.forEach(item => {
+      const tr = document.createElement('tr');
+      const nameTd = document.createElement('td');
+      nameTd.textContent = item.name;
+      tr.appendChild(nameTd);
+      const cells = [
+        item.call_count,
+        formatSeconds(item.total_seconds),
+        formatSeconds(item.p50_seconds),
+        formatSeconds(item.p95_seconds),
+        formatSeconds(item.stddev_seconds),
+      ];
+      cells.forEach(v => {
+        const td = document.createElement('td');
+        td.className = 'num';
+        td.textContent = v;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function fetchHotspots() {
+    try {
+      const r = await fetch('/api/perf/functions?limit=' + FN_HOTSPOTS_LIMIT);
+      const data = await r.json();
+      // Story scope: client-side sort by total_seconds only (already
+      // ordered by the endpoint, but guard against future changes).
+      const items = (data.by_total_time || []).slice().sort(
+        (a, b) => (b.total_seconds || 0) - (a.total_seconds || 0)
+      );
+      renderHotspots(items);
+    } catch (e) {
+      // Leave previous values on transient error.
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Window selector
   // ------------------------------------------------------------------
 
@@ -3064,9 +3174,11 @@ section { margin-bottom: 1.25rem; }
     fetchBacklog();
     fetchCommits();
     fetchMetrics();
+    fetchHotspots();
     setInterval(fetchBacklog, BACKLOG_POLL_MS);
     setInterval(fetchCommits, COMMITS_POLL_MS);
     setInterval(fetchMetrics, METRICS_POLL_MS);
+    setInterval(fetchHotspots, FN_HOTSPOTS_POLL_MS);
   }
 
   if (document.readyState === 'loading') {

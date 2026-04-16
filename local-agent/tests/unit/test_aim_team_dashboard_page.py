@@ -128,3 +128,56 @@ class TestCurrentWorkLinksToLive:
     def test_links_in_progress_key_to_live_log(self, body):
         # Clicking the current-work key drills into the live log viewer.
         assert "'/live/' + encodeURIComponent(inProgress.key)" in body
+
+
+class TestFunctionHotspotsPanel:
+    """TK-436: top-N-by-time function hotspots table at the bottom of the page."""
+
+    def test_panel_section_rendered(self, body):
+        assert 'id="fn-hotspots"' in body
+
+    def test_panel_title_present(self, body):
+        assert "Function hotspots" in body
+
+    def test_table_container_rendered(self, body):
+        assert 'id="fn-hotspots-table"' in body
+        assert 'id="fn-hotspots-body"' in body
+
+    def test_table_column_headers_present(self, body):
+        # Story spec columns: name, call_count, total_seconds, p50, p95, stddev
+        assert ">Function<" in body
+        assert ">Calls<" in body
+        assert ">Total (s)<" in body
+        assert ">p50 (s)<" in body
+        assert ">p95 (s)<" in body
+        assert ">Stddev (s)<" in body
+
+    def test_references_perf_functions_endpoint(self, body):
+        assert "/api/perf/functions" in body
+
+    def test_polls_every_60_seconds(self, body):
+        assert "FN_HOTSPOTS_POLL_MS = 60000" in body
+
+    def test_limit_is_ten(self, body):
+        assert "FN_HOTSPOTS_LIMIT = 10" in body
+
+    def test_panel_appears_after_commits(self, body):
+        # Panel sits naturally at the bottom, below the existing commit columns.
+        commits_idx = body.find('id="commits"')
+        hotspots_idx = body.find('id="fn-hotspots"')
+        assert commits_idx != -1 and hotspots_idx != -1
+        assert hotspots_idx > commits_idx
+
+    def test_dark_mode_styling_inherits_surface(self, body):
+        # Reuses the existing --surface token instead of a new palette.
+        assert "#fn-hotspots" in body
+        assert "background: var(--surface)" in body
+
+    def test_no_chart_js_dependency_for_panel(self, body):
+        # Story explicitly forbids Chart.js for this panel — plain table only.
+        hotspots_idx = body.find('id="fn-hotspots"')
+        footer_idx = body.find('id="footer-status"')
+        assert hotspots_idx != -1 and footer_idx != -1
+        panel_slice = body[hotspots_idx:footer_idx]
+        assert "<canvas" not in panel_slice
+        assert "new Chart" not in panel_slice
