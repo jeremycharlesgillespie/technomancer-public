@@ -9,6 +9,7 @@ Features:
 """
 
 import re
+import threading
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -35,6 +36,69 @@ PRICING = {
     "cache_read": 0.30,  # $0.30 per 1M cached tokens (90% discount)
     "cache_write": 3.75,  # $3.75 per 1M cache write tokens (25% premium)
 }
+
+# =============================================================================
+# PROCESS-WIDE PROMPT-CACHE STATS
+# =============================================================================
+# Cumulative counters for every Anthropic response processed by this module.
+# Reset only on process restart. Guarded by a lock so concurrent ask() /
+# ask_with_tools() callers do not drop increments.
+
+_cache_stats_lock = threading.Lock()
+_cache_stats: dict[str, int] = {
+    "calls": 0,
+    "input_tokens": 0,
+    "cache_read_tokens": 0,
+    "cache_creation_tokens": 0,
+}
+
+
+def _record_cache_stats(usage: Any) -> None:
+    """Accumulate token counts from one Anthropic ``usage`` block."""
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    with _cache_stats_lock:
+        _cache_stats["calls"] += 1
+        _cache_stats["input_tokens"] += int(input_tokens)
+        _cache_stats["cache_read_tokens"] += int(cache_read)
+        _cache_stats["cache_creation_tokens"] += int(cache_creation)
+
+
+def _reset_cache_stats() -> None:
+    """Zero out the process-wide counters. For tests only."""
+    with _cache_stats_lock:
+        _cache_stats["calls"] = 0
+        _cache_stats["input_tokens"] = 0
+        _cache_stats["cache_read_tokens"] = 0
+        _cache_stats["cache_creation_tokens"] = 0
+
+
+def get_cache_stats() -> dict[str, Any]:
+    """Return cumulative prompt-cache stats for the process lifetime.
+
+    Keys:
+        calls — number of Anthropic responses observed
+        input_tokens — sum of ``input_tokens``
+        cache_read_tokens — sum of ``cache_read_input_tokens``
+        cache_creation_tokens — sum of ``cache_creation_input_tokens``
+        cache_hit_rate — cache_read_tokens / (cache_read + cache_creation +
+            input_tokens); 0.0 when the denominator is 0
+    """
+    with _cache_stats_lock:
+        calls = _cache_stats["calls"]
+        input_tokens = _cache_stats["input_tokens"]
+        cache_read = _cache_stats["cache_read_tokens"]
+        cache_creation = _cache_stats["cache_creation_tokens"]
+    denom = cache_read + cache_creation + input_tokens
+    hit_rate = (cache_read / denom) if denom else 0.0
+    return {
+        "calls": calls,
+        "input_tokens": input_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
+        "cache_hit_rate": hit_rate,
+    }
 
 
 # =============================================================================
@@ -508,6 +572,9 @@ class ClaudeVaultSession:
         self.total_cache_write_tokens += self.last_cache_write_tokens
         self.total_input_tokens += self.last_input_tokens
         self.total_output_tokens += self.last_output_tokens
+
+        # Process-wide cache stats (for /api/claude_vault/stats)
+        _record_cache_stats(usage)
 
     def ask(
         self,

@@ -15,6 +15,7 @@ Routes:
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
+    GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
 """
 
 from __future__ import annotations
@@ -2566,6 +2567,20 @@ def api_perf_functions() -> Response:
             "limit": limit,
         },
     })
+
+
+@app.route("/api/claude_vault/stats")
+def api_claude_vault_stats() -> Response:
+    """GET /api/claude_vault/stats — process-wide prompt-cache stats.
+
+    Returns JSON with cumulative token counts and cache hit rate from every
+    claude_vault Anthropic call since the bot started. Lets regressions in
+    prompt caching (CLAUDE.md claims ~84% savings) be spotted within minutes
+    after model, prompt, or TTL changes.
+    """
+    from agent.claude_vault import get_cache_stats
+
+    return jsonify(get_cache_stats())
 
 
 @app.route("/aim")

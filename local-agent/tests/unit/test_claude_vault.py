@@ -752,3 +752,81 @@ class TestEphemeralCaching:
         sys1 = mock_anthropic_with_cache.messages.call_history[0]["system"]
         sys2 = mock_anthropic_with_cache.messages.call_history[1]["system"]
         assert sys1 is sys2 or sys1 == sys2
+
+
+# =============================================================================
+# TESTS: PROCESS-WIDE PROMPT-CACHE STATS (TK-443)
+# =============================================================================
+
+
+class TestCacheStats:
+    """Tests for get_cache_stats and the /api/claude_vault/stats endpoint."""
+
+    def _make_usage(self, input_tokens=100, cache_read=900, cache_creation=0):
+        """Build an Anthropic-like usage object for _record_cache_stats."""
+        usage = MagicMock()
+        usage.input_tokens = input_tokens
+        usage.cache_read_input_tokens = cache_read
+        usage.cache_creation_input_tokens = cache_creation
+        usage.output_tokens = 50
+        return usage
+
+    def test_three_calls_yield_expected_totals_and_hit_rate(self):
+        """Three usage entries sum correctly and produce 0.9 hit rate."""
+        from agent.claude_vault import (
+            _record_cache_stats,
+            _reset_cache_stats,
+            get_cache_stats,
+        )
+
+        _reset_cache_stats()
+        for _ in range(3):
+            _record_cache_stats(
+                self._make_usage(input_tokens=100, cache_read=900, cache_creation=0)
+            )
+
+        stats = get_cache_stats()
+        assert stats["calls"] == 3
+        assert stats["input_tokens"] == 300
+        assert stats["cache_read_tokens"] == 2700
+        assert stats["cache_creation_tokens"] == 0
+        assert stats["cache_hit_rate"] == pytest.approx(0.9)
+
+    def test_zero_state_before_any_calls(self):
+        """Before any calls, counters are 0 and hit rate is 0.0 (no div-by-zero)."""
+        from agent.claude_vault import _reset_cache_stats, get_cache_stats
+
+        _reset_cache_stats()
+
+        stats = get_cache_stats()
+        assert stats == {
+            "calls": 0,
+            "input_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cache_hit_rate": 0.0,
+        }
+
+    def test_api_endpoint_returns_stats_as_json(self):
+        """GET /api/claude_vault/stats returns 200 with the same dict as JSON."""
+        from agent.claude_vault import (
+            _record_cache_stats,
+            _reset_cache_stats,
+            get_cache_stats,
+        )
+        from idea_board.web import app
+
+        _reset_cache_stats()
+        _record_cache_stats(
+            self._make_usage(input_tokens=100, cache_read=900, cache_creation=0)
+        )
+
+        app.config["TESTING"] = True
+        with app.test_client() as client:
+            resp = client.get("/api/claude_vault/stats")
+
+        assert resp.status_code == 200
+        payload = resp.get_json()
+        assert payload == get_cache_stats()
+        assert payload["calls"] == 1
+        assert payload["cache_hit_rate"] == pytest.approx(0.9)
