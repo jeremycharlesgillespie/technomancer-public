@@ -11,6 +11,38 @@ import safe_update
 
 
 # ---------------------------------------------------------------------------
+# _extract_story_id
+# ---------------------------------------------------------------------------
+
+
+class TestExtractStoryId:
+    """Tests for extracting story ID from branch names."""
+
+    def test_extracts_tk_id_from_executor_branch(self):
+        assert safe_update._extract_story_id("2026-04-15-221820-TK-409") == "TK-409"
+
+    def test_extracts_tk_id_with_large_number(self):
+        assert safe_update._extract_story_id("2026-04-15-143022-TK-42") == "TK-42"
+
+    def test_returns_empty_for_non_story_branch(self):
+        assert safe_update._extract_story_id("2026-04-15-143022-fix-bug") == ""
+
+    def test_case_insensitive(self):
+        result = safe_update._extract_story_id("2026-04-15-221820-tk-100")
+        assert result == "tk-100"
+
+    def test_returns_first_match_when_multiple(self):
+        result = safe_update._extract_story_id("2026-04-15-TK-100-rebased-TK-200")
+        assert result == "TK-100"
+
+    def test_returns_empty_for_empty_string(self):
+        assert safe_update._extract_story_id("") == ""
+
+    def test_extracts_from_branch_with_extra_suffix(self):
+        assert safe_update._extract_story_id("2026-04-15-221820-TK-409-retry") == "TK-409"
+
+
+# ---------------------------------------------------------------------------
 # check_bot_running
 # ---------------------------------------------------------------------------
 
@@ -363,3 +395,178 @@ class TestContinueWorkflowHealthCheck:
         mock_health.assert_not_called()
         # Rollback MUST be triggered
         mock_rollback.assert_called_once_with(reverted_branch="2026-04-13-test-branch")
+
+
+# ---------------------------------------------------------------------------
+# README commit message includes story ID
+# ---------------------------------------------------------------------------
+
+
+class TestReadmeCommitMessage:
+    """Test that README auto-commit uses story ID from branch name."""
+
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.run_quality_tests", return_value=True)
+    @patch("safe_update.push_to_remote", return_value=True)
+    @patch("safe_update.post_deploy_health_check", return_value=True)
+    @patch("safe_update.restart_bot", return_value=True)
+    @patch("safe_update.delete_branch")
+    @patch("safe_update.merge_to_main", return_value=True)
+    @patch("safe_update.run_tests", return_value=(True, "10 passed"))
+    @patch("safe_update.verify_clean_state", return_value=True)
+    @patch("safe_update.get_current_branch", return_value="2026-04-15-221820-TK-409")
+    @patch("safe_update.load_state", return_value="2026-04-15-221820-TK-409")
+    @patch("safe_update.clear_state")
+    @patch("safe_update.os.environ", {})
+    def test_readme_commit_includes_story_id(
+        self,
+        mock_clear,
+        mock_load,
+        mock_branch,
+        mock_clean,
+        mock_tests,
+        mock_merge,
+        mock_delete,
+        mock_restart,
+        mock_health,
+        mock_push,
+        mock_qa,
+        mock_subprocess,
+    ):
+        """README commit message should contain [TK-409] when branch has story ID."""
+        # generate_readme.py exists, and git diff says READMEs changed
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            # git diff --quiet returns 1 = file changed
+            if isinstance(cmd, list) and "diff" in cmd and "--quiet" in cmd:
+                result.returncode = 1
+            return result
+
+        mock_subprocess.side_effect = subprocess_side_effect
+
+        safe_update.continue_workflow()
+
+        # Find the git commit call and verify message contains story ID
+        commit_calls = [
+            c for c in mock_subprocess.call_args_list
+            if isinstance(c[0][0], list) and "commit" in c[0][0]
+        ]
+        # Should have at least one commit call with the story ID
+        commit_messages = [
+            c[0][0][c[0][0].index("-m") + 1]
+            for c in commit_calls
+            if "-m" in c[0][0]
+        ]
+        assert any("[TK-409]" in msg for msg in commit_messages), (
+            f"Expected a commit message with [TK-409], got: {commit_messages}"
+        )
+        # The generic message should NOT appear
+        assert not any(
+            "Update README with latest stats [auto]" in msg for msg in commit_messages
+        ), "Generic README commit message should not appear for story branches"
+
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.run_quality_tests", return_value=True)
+    @patch("safe_update.push_to_remote", return_value=True)
+    @patch("safe_update.post_deploy_health_check", return_value=True)
+    @patch("safe_update.restart_bot", return_value=True)
+    @patch("safe_update.delete_branch")
+    @patch("safe_update.merge_to_main", return_value=True)
+    @patch("safe_update.run_tests", return_value=(True, "10 passed"))
+    @patch("safe_update.verify_clean_state", return_value=True)
+    @patch("safe_update.get_current_branch", return_value="2026-04-13-fix-typo")
+    @patch("safe_update.load_state", return_value="2026-04-13-fix-typo")
+    @patch("safe_update.clear_state")
+    @patch("safe_update.os.environ", {})
+    def test_readme_commit_falls_back_for_non_story_branch(
+        self,
+        mock_clear,
+        mock_load,
+        mock_branch,
+        mock_clean,
+        mock_tests,
+        mock_merge,
+        mock_delete,
+        mock_restart,
+        mock_health,
+        mock_push,
+        mock_qa,
+        mock_subprocess,
+    ):
+        """Non-story branches fall back to generic README message."""
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            if isinstance(cmd, list) and "diff" in cmd and "--quiet" in cmd:
+                result.returncode = 1
+            return result
+
+        mock_subprocess.side_effect = subprocess_side_effect
+
+        safe_update.continue_workflow()
+
+        commit_calls = [
+            c for c in mock_subprocess.call_args_list
+            if isinstance(c[0][0], list) and "commit" in c[0][0]
+        ]
+        commit_messages = [
+            c[0][0][c[0][0].index("-m") + 1]
+            for c in commit_calls
+            if "-m" in c[0][0]
+        ]
+        assert any(
+            "Update README with latest stats [auto]" in msg for msg in commit_messages
+        ), f"Expected generic fallback message, got: {commit_messages}"
+
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.run_quality_tests", return_value=True)
+    @patch("safe_update.push_to_remote", return_value=True)
+    @patch("safe_update.post_deploy_health_check", return_value=True)
+    @patch("safe_update.restart_bot", return_value=True)
+    @patch("safe_update.delete_branch")
+    @patch("safe_update.merge_to_main", return_value=True)
+    @patch("safe_update.run_tests", return_value=(True, "10 passed"))
+    @patch("safe_update.verify_clean_state", return_value=True)
+    @patch("safe_update.get_current_branch", return_value="2026-04-15-221820-TK-409")
+    @patch("safe_update.load_state", return_value="2026-04-15-221820-TK-409")
+    @patch("safe_update.clear_state")
+    @patch("safe_update.os.environ", {})
+    def test_readme_skips_commit_when_unchanged(
+        self,
+        mock_clear,
+        mock_load,
+        mock_branch,
+        mock_clean,
+        mock_tests,
+        mock_merge,
+        mock_delete,
+        mock_restart,
+        mock_health,
+        mock_push,
+        mock_qa,
+        mock_subprocess,
+    ):
+        """When README is unchanged, no commit is created (idempotency)."""
+        # git diff --quiet returns 0 = no changes
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        safe_update.continue_workflow()
+
+        # No git commit calls should have been made for README
+        commit_calls = [
+            c for c in mock_subprocess.call_args_list
+            if isinstance(c[0][0], list) and "commit" in c[0][0]
+        ]
+        # There should be zero README commit calls
+        readme_commits = [
+            c for c in commit_calls
+            if "-m" in c[0][0]
+            and any(
+                kw in c[0][0][c[0][0].index("-m") + 1]
+                for kw in ["Deploy + update stats", "Update README"]
+            )
+        ]
+        assert readme_commits == [], (
+            f"Expected no README commit when unchanged, got: {readme_commits}"
+        )

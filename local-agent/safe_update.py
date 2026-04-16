@@ -17,6 +17,7 @@ Examples:
 """
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -40,6 +41,18 @@ class SafeUpdateError(Exception):
     """Custom exception for workflow errors."""
 
     pass
+
+
+def _extract_story_id(branch_name: str) -> str:
+    """Extract a story ID (e.g. TK-409) from a branch name.
+
+    Branch names follow the pattern: YYYY-MM-DD-HHMMSS-<short-name>
+    where short-name may contain a Jira ticket ID like TK-409.
+
+    Returns the first TK-NNN match, or empty string if none found.
+    """
+    match = re.search(r"(TK-\d+)", branch_name, re.IGNORECASE)
+    return match.group(1) if match else ""
 
 
 def log(msg: str, level: str = "INFO"):
@@ -720,7 +733,12 @@ def continue_workflow():
                         if root_diff.returncode != 0:
                             run_git(["add", root_readme_rel], check=False)
                         try:
-                            run_git(["commit", "-m", "Update README with latest stats [auto]"])
+                            story_id = _extract_story_id(branch_name)
+                            if story_id:
+                                readme_msg = f"[{story_id}] Deploy + update stats"
+                            else:
+                                readme_msg = "Update README with latest stats [auto]"
+                            run_git(["commit", "-m", readme_msg])
                             run_git(["push", "origin", MAIN_BRANCH], check=False)
                             log("README updated with latest stats")
                         except Exception:

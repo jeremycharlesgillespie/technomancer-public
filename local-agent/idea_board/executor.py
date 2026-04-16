@@ -1898,23 +1898,44 @@ def execute_idea(
                             capture_output=True, text=True, timeout=60,
                             cwd=local_agent_dir,
                         )
-                        subprocess.run(
-                            ["git", "add", "-A"],
-                            capture_output=True, timeout=10,
-                            cwd=project_root,
+                        # Check if README files actually changed (idempotency)
+                        local_readme = "local-agent/README.md"
+                        root_readme = "README.md"
+                        local_diff = subprocess.run(
+                            ["git", "diff", "--quiet", "--", local_readme],
+                            capture_output=True, cwd=project_root,
                         )
-                        subprocess.run(
-                            ["git", "commit", "-m",
-                             "Update README with latest stats [auto]"],
-                            capture_output=True, timeout=10,
-                            cwd=project_root,
+                        root_diff = subprocess.run(
+                            ["git", "diff", "--quiet", "--", root_readme],
+                            capture_output=True, cwd=project_root,
                         )
-                        subprocess.run(
-                            ["git", "push", "origin", "main"],
-                            capture_output=True, timeout=30,
-                            cwd=project_root,
-                        )
-                        state.log("README updated")
+                        if local_diff.returncode == 0 and root_diff.returncode == 0:
+                            state.log("README unchanged — skipping auto-commit")
+                        else:
+                            if local_diff.returncode != 0:
+                                subprocess.run(
+                                    ["git", "add", local_readme],
+                                    capture_output=True, timeout=10,
+                                    cwd=project_root,
+                                )
+                            if root_diff.returncode != 0:
+                                subprocess.run(
+                                    ["git", "add", root_readme],
+                                    capture_output=True, timeout=10,
+                                    cwd=project_root,
+                                )
+                            subprocess.run(
+                                ["git", "commit", "-m",
+                                 f"[{idea_id}] Deploy + update stats"],
+                                capture_output=True, timeout=10,
+                                cwd=project_root,
+                            )
+                            subprocess.run(
+                                ["git", "push", "origin", "main"],
+                                capture_output=True, timeout=30,
+                                cwd=project_root,
+                            )
+                            state.log("README updated")
                 except Exception as e:
                     state.log(f"README error (non-blocking): {e}")
 
