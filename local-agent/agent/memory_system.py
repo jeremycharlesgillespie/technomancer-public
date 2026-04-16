@@ -28,7 +28,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from filelock import FileLock, Timeout
+
 from . import notifications
+
+# Seconds to wait when acquiring a per-target compaction lock before giving up.
+# Compaction runs at most every 30 minutes and writes a small file; a >5s wait
+# implies another writer is pathologically stuck and we should skip cleanly
+# rather than pile on and risk deadlock.
+COMPACTION_LOCK_TIMEOUT_SECONDS = 5
 
 # Number of compaction snapshots to retain in <vault>/Backups/memory/
 # before pruning the oldest. Compaction is LLM-driven and destructive;
@@ -74,6 +82,94 @@ def atomic_write(target: Path, data: bytes) -> None:
 def _backups_root(vault_path: Path) -> Path:
     """Return the root directory that holds compaction snapshots."""
     return Path(vault_path) / "Backups" / "memory"
+
+
+def rotate_backup(vault_path: Path, target: Path) -> Optional[Path]:
+    """Snapshot a single live memory file into a timestamped backup dir.
+
+    Unlike ``_snapshot_before_compaction`` (which copies every compaction
+    target in one dir), this helper backs up *target* alone — the per-path
+    write flow calls it right before overwriting the file so the newest
+    backup always contains the pre-write content of that specific file.
+
+    Prunes ``<vault>/Backups/memory/`` to ``MAX_COMPACTION_SNAPSHOTS`` most
+    recent snapshot dirs.
+
+    Returns the new snapshot directory, or ``None`` if *target* does not
+    exist (nothing to back up — first-time write).
+    """
+    target = Path(target)
+    if not target.exists():
+        return None
+
+    backups_dir = _backups_root(Path(vault_path))
+    backups_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collision handling mirrors _snapshot_before_compaction: multiple calls
+    # in the same second (tests or back-to-back hourly+daily writes) append
+    # -1, -2, ... to guarantee distinct directories.
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    snapshot_dir = backups_dir / ts
+    counter = 1
+    while snapshot_dir.exists():
+        snapshot_dir = backups_dir / f"{ts}-{counter}"
+        counter += 1
+    snapshot_dir.mkdir(parents=True)
+
+    try:
+        shutil.copy2(target, snapshot_dir / target.name)
+    except OSError as e:
+        log.warning("rotate_backup copy failed for %s: %s", target, e)
+
+    snapshots = sorted(
+        (d for d in backups_dir.iterdir() if d.is_dir()),
+        key=lambda p: p.name,
+    )
+    while len(snapshots) > MAX_COMPACTION_SNAPSHOTS:
+        oldest = snapshots.pop(0)
+        try:
+            shutil.rmtree(oldest)
+        except OSError as e:
+            log.warning("rotate_backup prune failed for %s: %s", oldest, e)
+
+    return snapshot_dir
+
+
+def verify_memory_file(path: Path) -> bool:
+    """Check that *path* exists, is non-empty, and decodes as UTF-8.
+
+    Called after every compaction write to catch partial/corrupted writes
+    before the bad content is the only copy left. Returns ``True`` when the
+    file looks healthy, ``False`` otherwise (missing, empty, unreadable, or
+    not valid UTF-8).
+    """
+    path = Path(path)
+    try:
+        if not path.exists():
+            return False
+        if path.stat().st_size == 0:
+            return False
+        path.read_text(encoding="utf-8")
+        return True
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def _append_compaction_crash_entry(vault_path: Path, message: str) -> None:
+    """Append a short recovery note to ``Permanent/crash_log.md``.
+
+    Best-effort — any error here is swallowed so it cannot further corrupt
+    the compaction path. The note is useful when diagnosing why a backup
+    was restored overnight.
+    """
+    try:
+        crash_file = Path(vault_path) / "LLM Memory" / "Permanent" / "crash_log.md"
+        crash_file.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(crash_file, "a", encoding="utf-8") as fh:
+            fh.write(f"\n## {ts} — Compaction recovery\n{message}\n")
+    except OSError as e:
+        log.warning("Could not append compaction crash entry: %s", e)
 
 
 def _resolve_target_path(vault_path: Path, filename: str) -> Path:
@@ -469,6 +565,107 @@ class MemorySystem:
 
         return snapshot_dir
 
+    def _safe_write_compaction(
+        self,
+        target: Path,
+        content: str,
+        tier: str,
+    ) -> str:
+        """Rotate a per-path backup, write atomically, and verify.
+
+        Acquires a filelock on *target* (5-second timeout), rotates a
+        per-path backup, writes the new content atomically, and runs
+        ``verify_memory_file``. If verify fails, the newest backup is
+        restored, a Discord notification fires, and a recovery line is
+        appended to ``crash_log.md``.
+
+        Returns one of three sentinel strings the callers surface to the
+        background compaction loop:
+            - ``"ok"``             — write succeeded and verified
+            - ``"lock_timeout"``   — skipped because another writer holds
+                                      the lock; caller should short-circuit
+            - ``"restored"``       — write produced invalid content and
+                                      the previous snapshot was rolled back
+            - ``"restore_failed"`` — verify failed AND no backup could be
+                                      restored (either no prior snapshot or
+                                      the restore itself errored)
+        """
+        target = Path(target)
+        lock_path = target.parent / (target.name + ".lock")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(lock_path), timeout=COMPACTION_LOCK_TIMEOUT_SECONDS)
+
+        try:
+            lock.acquire()
+        except Timeout:
+            log.warning(
+                "Compaction %s skipped — could not acquire lock on %s within %ds",
+                tier,
+                target,
+                COMPACTION_LOCK_TIMEOUT_SECONDS,
+            )
+            return "lock_timeout"
+
+        try:
+            rotate_backup(self.vault_path, target)
+            atomic_write(target, content.encode("utf-8"))
+            if verify_memory_file(target):
+                return "ok"
+
+            # Verify failed: attempt rollback.
+            filename = target.name
+            snapshots = list_backups(self.vault_path, filename=filename)
+            if not snapshots:
+                log.error(
+                    "Compaction %s verify failed for %s and no backup available",
+                    tier,
+                    filename,
+                )
+                _append_compaction_crash_entry(
+                    self.vault_path,
+                    f"Compaction {tier}: verify_memory_file failed for {filename} "
+                    "and no backup was available to restore.",
+                )
+                return "restore_failed"
+
+            backup_name = snapshots[0].name
+            try:
+                restored_path = restore_backup(
+                    self.vault_path, filename, backup_name=backup_name
+                )
+            except (FileNotFoundError, OSError) as e:
+                log.error(
+                    "Compaction %s verify failed for %s; restore also failed: %s",
+                    tier,
+                    filename,
+                    e,
+                )
+                _append_compaction_crash_entry(
+                    self.vault_path,
+                    f"Compaction {tier}: verify_memory_file failed for {filename}; "
+                    f"restore from {backup_name} also failed: {e}",
+                )
+                return "restore_failed"
+
+            log.error(
+                "Compaction %s verify failed for %s; restored from %s",
+                tier,
+                filename,
+                backup_name,
+            )
+            _append_compaction_crash_entry(
+                self.vault_path,
+                f"Compaction {tier}: verify_memory_file failed for {filename}; "
+                f"restored {restored_path} from backup {backup_name}.",
+            )
+            notify_auto_restored(filename, backup_name)
+            return "restored"
+        finally:
+            try:
+                lock.release()
+            except Exception:  # noqa: BLE001 — release must never raise out
+                pass
+
     def _llm_summarize(self, summarizer, text: str, tier: str) -> tuple[str, dict]:
         """Run LLM summarization and track cost/time.
 
@@ -579,10 +776,16 @@ class MemorySystem:
 
         self._log_compaction_stats(stats)
 
-        # Write to hourly context
+        # Write to hourly context via the locked rotate → atomic_write → verify flow.
         hourly_path = self.memory_root / "Context" / "hourly.md"
         content = f"# Hourly Context\n\nLast updated: {now.strftime('%Y-%m-%d %H:%M')}\n\n{summary}"
-        hourly_path.write_text(content, encoding="utf-8")
+        status = self._safe_write_compaction(hourly_path, content, "hourly")
+        if status == "lock_timeout":
+            return "Hourly compaction skipped: lock contention."
+        if status == "restored":
+            return "Hourly compaction verify failed — restored previous hourly.md from backup."
+        if status == "restore_failed":
+            return "Hourly compaction verify failed and no backup could be restored."
 
         tier_info = f" (LLM, {stats['duration_seconds']}s)" if summarizer and stats.get("success") else ""
         return f"Compacted {len(old_convos)} conversations into hourly summary{tier_info}."
@@ -626,7 +829,13 @@ class MemorySystem:
         self._log_compaction_stats(stats)
 
         header = f"# Daily Context\n\nDate: {now.strftime('%Y-%m-%d')}\n\n"
-        daily_path.write_text(header + summary, encoding="utf-8")
+        status = self._safe_write_compaction(daily_path, header + summary, "daily")
+        if status == "lock_timeout":
+            return "Daily compaction skipped: lock contention."
+        if status == "restored":
+            return "Daily compaction verify failed — restored previous daily.md from backup."
+        if status == "restore_failed":
+            return "Daily compaction verify failed and no backup could be restored."
 
         tier_info = f" (LLM, {stats['duration_seconds']}s)" if summarizer and stats.get("success") else ""
         return f"Updated daily context{tier_info}."
