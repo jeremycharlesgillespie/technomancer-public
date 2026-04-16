@@ -177,6 +177,20 @@ class Settings(BaseSettings):
         default=True, description="Enable/disable the daily briefing"
     )
 
+    # Multi-project settings (defaults = Technomancer, backward compatible)
+    project_name: str = Field(
+        default="technomancer", description="Active project name for AIM/Worker context"
+    )
+    project_root: str = Field(
+        default="", description="Root directory of the target project repo (empty = auto-detect)"
+    )
+    deploy_cmd: str = Field(
+        default="", description="Deploy command for external projects (empty = safe_update workflow)"
+    )
+    aim_state_dir: str = Field(
+        default="", description="Directory for AIM state/lock/pid files (empty = aim/ default)"
+    )
+
     # AIM (AI Manager) settings
     aim_cycle_interval: int = Field(
         default=180, description="Seconds between AIM decision cycles"

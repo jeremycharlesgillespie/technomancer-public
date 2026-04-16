@@ -895,8 +895,19 @@ def _get_category_guidance(category: str) -> str:
     return f"\n## Category Guidance ({category})\n{guidance}"
 
 
+def _is_external_project() -> bool:
+    """Return True if AIM is running against a non-Technomancer project."""
+    try:
+        from agent.config import settings
+        return settings.project_name != "technomancer"
+    except Exception:
+        return False
+
+
 def _build_workflow_section(idea: Any) -> str:
     """Build the mandatory workflow and completion instructions."""
+    if _is_external_project():
+        return _build_workflow_section_external(idea)
     return (
         "\n## MANDATORY WORKFLOW\n"
         "The branch has ALREADY been created for you. You are already on it.\n\n"
@@ -939,6 +950,27 @@ def _build_workflow_section(idea: Any) -> str:
         "6. **StopIteration in async (Python 3.14).** Raising StopIteration inside\n"
         "   a coroutine becomes RuntimeError. Use KeyboardInterrupt or a custom\n"
         "   exception to break async loops in tests.\n"
+    )
+
+
+def _build_workflow_section_external(idea: Any) -> str:
+    """Generic workflow for non-Technomancer projects.
+
+    Defers all project-specific conventions to the target repo's CLAUDE.md.
+    No hardcoded tool names, test frameworks, or deployment commands.
+    """
+    return (
+        "\n## MANDATORY WORKFLOW\n"
+        "The branch has ALREADY been created for you. You are already on it.\n\n"
+        "Follow these steps EXACTLY:\n"
+        "1. Read CLAUDE.md in the project root for conventions, architecture, "
+        "and test instructions\n"
+        "2. Implement the story (code + tests as described in CLAUDE.md)\n"
+        f"3. `git add <files>` && `git commit -m '[{idea.id}] description'`\n"
+        f"\n**Every commit message MUST start with `[{idea.id}]`.**\n"
+        "\n**YOUR JOB IS DONE AFTER COMMITTING.**\n"
+        "\nDo NOT try to deploy, merge, push, or restart anything.\n"
+        "Just write code, write tests, and commit. The executor handles the rest.\n"
     )
 
 
@@ -1436,7 +1468,14 @@ def execute_idea(
         env.pop("CLAUDECODE", None)
         env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
         env["EXECUTOR_MODE"] = "1"  # Blocks safe_update.py continue
-        project_root = Path(__file__).parent.parent.parent
+
+        # Multi-project: project_root comes from settings if configured,
+        # otherwise auto-detect from this file's location (Technomancer default).
+        from agent.config import settings as _settings
+        if _settings.project_root:
+            project_root = Path(_settings.project_root)
+        else:
+            project_root = Path(__file__).parent.parent.parent
         local_agent_dir = str(Path(__file__).parent.parent)
 
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
