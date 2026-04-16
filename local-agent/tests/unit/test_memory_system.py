@@ -7,12 +7,20 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from agent.memory_system import (
     ConversationEntry,
     MemorySystem,
+    atomic_write,
     get_memory_tools,
+    list_backups,
+    main as memory_cli_main,
+    notify_auto_restored,
+    restore_backup,
 )
 
 
@@ -685,3 +693,209 @@ class TestCompactionThreadResilience:
 
         assert memory_system._last_compaction_error == "permanent failure"
         assert memory_system._compaction_error_count >= 1
+
+
+# =============================================================================
+# RESTORE CLI + NOTIFICATION
+# =============================================================================
+
+
+def _seed_backup(vault_root: Path, stamp: str, files: dict[str, str]) -> Path:
+    """Create a snapshot dir under Backups/memory/<stamp> with the given files."""
+    snap = vault_root / "Backups" / "memory" / stamp
+    snap.mkdir(parents=True, exist_ok=True)
+    for name, body in files.items():
+        (snap / name).write_text(body, encoding="utf-8")
+    return snap
+
+
+def _seed_live_files(vault_root: Path) -> None:
+    """Create the LLM Memory tree the CLI restores into."""
+    memory_root = vault_root / "LLM Memory"
+    (memory_root / "Context").mkdir(parents=True, exist_ok=True)
+    (memory_root / "Permanent").mkdir(parents=True, exist_ok=True)
+
+
+@pytest.fixture
+def cli_vault(tmp_path, monkeypatch):
+    """Vault root pointed at by settings.vault_path for CLI tests."""
+    import agent.config as config_module
+
+    _seed_live_files(tmp_path)
+    monkeypatch.setattr(config_module.settings, "vault_path", tmp_path)
+    return tmp_path
+
+
+class TestAtomicWrite:
+    """atomic_write must not truncate the target on crash."""
+
+    def test_replaces_existing_file(self, tmp_path):
+        target = tmp_path / "file.md"
+        target.write_text("old", encoding="utf-8")
+        atomic_write(target, b"new content")
+        assert target.read_text(encoding="utf-8") == "new content"
+
+    def test_creates_parent_dir(self, tmp_path):
+        target = tmp_path / "sub" / "file.md"
+        atomic_write(target, b"hello")
+        assert target.read_text(encoding="utf-8") == "hello"
+
+    def test_cleans_tmp_on_failure(self, tmp_path, monkeypatch):
+        target = tmp_path / "file.md"
+        target.write_text("original", encoding="utf-8")
+
+        def boom(src, dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("agent.memory_system.os.replace", boom)
+        with pytest.raises(OSError):
+            atomic_write(target, b"new")
+
+        # Live file left intact; no stray .tmp files linger next to it.
+        assert target.read_text(encoding="utf-8") == "original"
+        leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == []
+
+
+class TestRestoreCliList:
+    """`restore <file>` with no --backup lists available backups."""
+
+    def test_list_backups_newest_first(self, cli_vault, capsys):
+        _seed_backup(cli_vault, "20260101-000000", {"hourly.md": "old"})
+        _seed_backup(cli_vault, "20260201-120000", {"hourly.md": "mid"})
+        _seed_backup(cli_vault, "20260301-083000", {"hourly.md": "new"})
+
+        rc = memory_cli_main(["restore", "hourly.md"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln.strip().startswith("2026")]
+        stamps = [ln.split()[0] for ln in lines]
+        assert stamps == ["20260301-083000", "20260201-120000", "20260101-000000"]
+
+    def test_list_skips_snapshots_missing_file(self, cli_vault, capsys):
+        _seed_backup(cli_vault, "20260101-000000", {"hourly.md": "h"})
+        _seed_backup(cli_vault, "20260102-000000", {"daily.md": "d"})  # no hourly
+
+        rc = memory_cli_main(["restore", "hourly.md"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "20260101-000000" in out
+        assert "20260102-000000" not in out
+
+    def test_list_empty_exits_nonzero(self, cli_vault, capsys):
+        rc = memory_cli_main(["restore", "hourly.md"])
+        assert rc == 1
+        assert "No backups" in capsys.readouterr().out
+
+
+class TestRestoreCliLatest:
+    """`restore <file> --backup latest` restores the newest snapshot."""
+
+    def test_restore_latest_overwrites_live_file(self, cli_vault, capsys):
+        _seed_backup(cli_vault, "20260101-000000", {"hourly.md": "OLD snapshot"})
+        _seed_backup(cli_vault, "20260301-083000", {"hourly.md": "NEW snapshot"})
+
+        live = cli_vault / "LLM Memory" / "Context" / "hourly.md"
+        live.write_text("corrupted live file", encoding="utf-8")
+
+        rc = memory_cli_main(["restore", "hourly.md", "--backup", "latest"])
+        assert rc == 0
+        assert live.read_text(encoding="utf-8") == "NEW snapshot"
+
+        out = capsys.readouterr().out
+        assert "20260301-083000" in out
+        assert "hourly.md" in out
+
+    def test_restore_latest_no_backups_errors(self, cli_vault, capsys):
+        rc = memory_cli_main(["restore", "hourly.md", "--backup", "latest"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "No backups" in err
+
+
+class TestRestoreCliNamedBackup:
+    """`restore <file> --backup <name>` restores a specific snapshot."""
+
+    def test_restore_named_backup(self, cli_vault, capsys):
+        _seed_backup(cli_vault, "20260101-000000", {"memories.md": "V1 memories"})
+        _seed_backup(cli_vault, "20260201-000000", {"memories.md": "V2 memories"})
+        _seed_backup(cli_vault, "20260301-000000", {"memories.md": "V3 memories"})
+
+        live = cli_vault / "LLM Memory" / "Permanent" / "memories.md"
+        live.write_text("garbage", encoding="utf-8")
+
+        rc = memory_cli_main(
+            ["restore", "memories.md", "--backup", "20260201-000000"]
+        )
+        assert rc == 0
+        assert live.read_text(encoding="utf-8") == "V2 memories"
+        assert "20260201-000000" in capsys.readouterr().out
+
+    def test_restore_named_backup_missing_errors(self, cli_vault, capsys):
+        _seed_backup(cli_vault, "20260101-000000", {"hourly.md": "x"})
+
+        rc = memory_cli_main(["restore", "hourly.md", "--backup", "does-not-exist"])
+        assert rc == 2
+        assert "Backup not found" in capsys.readouterr().err
+
+    def test_restore_unknown_filename_errors(self, cli_vault, capsys):
+        rc = memory_cli_main(["restore", "garbage.md", "--backup", "latest"])
+        assert rc == 2
+        assert "Unknown target file" in capsys.readouterr().err
+
+
+class TestListBackupsApi:
+    """Direct exercise of list_backups() independent of CLI."""
+
+    def test_filters_by_filename(self, tmp_path):
+        _seed_backup(tmp_path, "20260101-000000", {"hourly.md": "a"})
+        _seed_backup(tmp_path, "20260102-000000", {"daily.md": "b"})
+
+        hourly = list_backups(tmp_path, filename="hourly.md")
+        assert [p.name for p in hourly] == ["20260101-000000"]
+
+        daily = list_backups(tmp_path, filename="daily.md")
+        assert [p.name for p in daily] == ["20260102-000000"]
+
+    def test_empty_when_backups_dir_missing(self, tmp_path):
+        assert list_backups(tmp_path, filename="hourly.md") == []
+
+
+class TestRestoreBackupApi:
+    """Direct exercise of restore_backup() (used by auto-recover path)."""
+
+    def test_restore_backup_uses_atomic_write(self, tmp_path):
+        _seed_live_files(tmp_path)
+        _seed_backup(tmp_path, "20260401-120000", {"hourly.md": "snapshot body"})
+        target = tmp_path / "LLM Memory" / "Context" / "hourly.md"
+        target.write_text("stale", encoding="utf-8")
+
+        result = restore_backup(tmp_path, "hourly.md", backup_name="20260401-120000")
+
+        assert result == target
+        assert target.read_text(encoding="utf-8") == "snapshot body"
+
+
+class TestAutoRestoreNotification:
+    """notify_auto_restored() posts via notifications.discord_send().
+
+    This is the hook that the auto-recover compaction path (sibling story)
+    will call; the test asserts it forwards to the Discord webhook helper.
+    """
+
+    def test_calls_discord_send_once(self):
+        with patch("agent.memory_system.notifications.discord_send") as mock_send:
+            notify_auto_restored("hourly.md", "20260401-120000")
+
+        assert mock_send.call_count == 1
+        msg = mock_send.call_args.args[0]
+        assert "hourly.md" in msg
+        assert "20260401-120000" in msg
+
+    def test_swallows_webhook_errors(self):
+        with patch(
+            "agent.memory_system.notifications.discord_send",
+            side_effect=RuntimeError("webhook down"),
+        ):
+            # Must not propagate — compaction thread should keep running.
+            notify_auto_restored("daily.md", "20260401-120000")

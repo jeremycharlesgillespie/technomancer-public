@@ -15,8 +15,10 @@ Structure in Obsidian vault:
 
 import json
 import logging
+import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import traceback
@@ -26,12 +28,136 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from . import notifications
+
 # Number of compaction snapshots to retain in <vault>/Backups/memory/
 # before pruning the oldest. Compaction is LLM-driven and destructive;
 # 10 snapshots gives ~5 hours of recovery window at the default 30-min cadence.
 MAX_COMPACTION_SNAPSHOTS = 10
 
+# Maps a backup filename to its live location under <vault>/LLM Memory/.
+# Backup dirs store files by basename only — these entries let the CLI
+# and auto-restore path find the corresponding target to overwrite.
+TARGET_FILE_LOCATIONS: dict[str, tuple[str, ...]] = {
+    "hourly.md": ("Context", "hourly.md"),
+    "daily.md": ("Context", "daily.md"),
+    "memories.md": ("Permanent", "memories.md"),
+}
+
 log = logging.getLogger(__name__)
+
+
+def atomic_write(target: Path, data: bytes) -> None:
+    """Write *data* to *target* atomically.
+
+    Uses a temp file in the target's directory + os.replace so partial
+    writes never leave the live file truncated or corrupted. Callers that
+    pass text should encode first.
+    """
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _backups_root(vault_path: Path) -> Path:
+    """Return the root directory that holds compaction snapshots."""
+    return Path(vault_path) / "Backups" / "memory"
+
+
+def _resolve_target_path(vault_path: Path, filename: str) -> Path:
+    """Return the live path for a known backup filename under the vault."""
+    try:
+        parts = TARGET_FILE_LOCATIONS[filename]
+    except KeyError as e:
+        raise ValueError(
+            f"Unknown target file {filename!r}. "
+            f"Known files: {sorted(TARGET_FILE_LOCATIONS)}"
+        ) from e
+    return Path(vault_path) / "LLM Memory" / Path(*parts)
+
+
+def list_backups(vault_path: Path, filename: Optional[str] = None) -> list[Path]:
+    """List snapshot directories, newest first.
+
+    If *filename* is given, only return snapshots that actually contain
+    that file. Directory names are fixed-width timestamps so reverse
+    lexicographic sort matches chronological order.
+    """
+    root = _backups_root(vault_path)
+    if not root.exists():
+        return []
+    snapshots = [d for d in root.iterdir() if d.is_dir()]
+    if filename:
+        snapshots = [d for d in snapshots if (d / filename).exists()]
+    snapshots.sort(key=lambda p: p.name, reverse=True)
+    return snapshots
+
+
+def restore_backup(
+    vault_path: Path,
+    filename: str,
+    backup_name: Optional[str] = None,
+) -> Path:
+    """Copy a snapshotted file over its live location atomically.
+
+    Args:
+        vault_path: Vault root (parent of ``LLM Memory`` and ``Backups``).
+        filename: Basename of the file being restored (e.g. ``hourly.md``).
+        backup_name: Snapshot directory name under ``Backups/memory/``.
+            Pass ``"latest"`` (or ``None``) to restore from the newest
+            snapshot that contains *filename*.
+
+    Returns:
+        The live target path that was overwritten.
+    """
+    target = _resolve_target_path(vault_path, filename)
+
+    if backup_name in (None, "latest"):
+        snapshots = list_backups(vault_path, filename=filename)
+        if not snapshots:
+            raise FileNotFoundError(
+                f"No backups found for {filename} under {_backups_root(vault_path)}"
+            )
+        source_dir = snapshots[0]
+    else:
+        source_dir = _backups_root(vault_path) / backup_name
+        if not source_dir.is_dir():
+            raise FileNotFoundError(f"Backup not found: {source_dir}")
+
+    source = source_dir / filename
+    if not source.exists():
+        raise FileNotFoundError(f"Backup does not contain {filename}: {source}")
+
+    atomic_write(target, source.read_bytes())
+    return target
+
+
+def notify_auto_restored(filename: str, backup_name: str) -> None:
+    """Post a one-line Discord notification that an auto-restore happened.
+
+    Called from the compaction path when a failed summarization triggers
+    a rollback to the last good snapshot. Errors in the webhook path are
+    swallowed — a silent notification is preferable to crashing the
+    compaction thread.
+    """
+    try:
+        notifications.discord_send(
+            f":recycle: Auto-restored `{filename}` from backup `{backup_name}`."
+        )
+    except Exception as e:  # noqa: BLE001 — defensive; webhook is best-effort
+        log.warning("Auto-restore notification failed: %s", e)
 
 
 @dataclass
@@ -991,3 +1117,95 @@ def get_memory_tools(vault_path: str = None):
             get_full_profile,
         ),
     ]
+
+
+# =============================================================================
+# CLI — python -m agent.memory_system restore <file> [--backup <name>]
+# =============================================================================
+
+
+def _cli_format_backup_row(snap_dir: Path, filename: str) -> str:
+    """One-line listing entry for a snapshot directory."""
+    size = (snap_dir / filename).stat().st_size
+    return f"  {snap_dir.name}  ({size:,} bytes)"
+
+
+def _cli_restore(args, vault_path: Path, out) -> int:
+    """Implementation of the `restore` subcommand. Returns an exit code."""
+    filename = args.file
+
+    if args.backup is None:
+        # List mode
+        snapshots = list_backups(vault_path, filename=filename)
+        if not snapshots:
+            print(
+                f"No backups found for {filename} under {_backups_root(vault_path)}",
+                file=out,
+            )
+            return 1
+        print(f"Backups containing {filename} (newest first):", file=out)
+        for snap in snapshots:
+            print(_cli_format_backup_row(snap, filename), file=out)
+        return 0
+
+    # Restore mode
+    target = restore_backup(vault_path, filename, backup_name=args.backup)
+    chosen = args.backup if args.backup != "latest" else list_backups(
+        vault_path, filename=filename
+    )[0].name
+    print(f"Restored {filename} from {chosen} → {target}", file=out)
+    return 0
+
+
+def _build_cli_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m agent.memory_system",
+        description="Memory-system maintenance commands.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    restore_p = sub.add_parser(
+        "restore",
+        help="Restore a memory file from a compaction snapshot.",
+    )
+    restore_p.add_argument(
+        "file",
+        help=f"Filename to restore ({', '.join(sorted(TARGET_FILE_LOCATIONS))}).",
+    )
+    restore_p.add_argument(
+        "--backup",
+        default=None,
+        help=(
+            "Snapshot directory name (e.g. 20260416-120000), or 'latest' "
+            "for the most recent. Omit to list available backups."
+        ),
+    )
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    """Entry point for `python -m agent.memory_system ...`."""
+    import sys
+
+    from .config import settings
+
+    parser = _build_cli_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "restore":
+        try:
+            return _cli_restore(args, Path(settings.vault_path), sys.stdout)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main())
