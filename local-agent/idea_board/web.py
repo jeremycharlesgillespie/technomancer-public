@@ -2295,6 +2295,89 @@ def api_aim_backlog() -> tuple:
     })
 
 
+# Repo paths for /api/aim/commits — mirror publish.py layout.
+# web.py lives at technomancer/local-agent/idea_board/web.py, so the
+# technomancer root is three parents up.
+_PRIVATE_REPO_PATH = Path(__file__).parent.parent.parent
+_PUBLIC_REPO_PATH = (
+    Path(__file__).parent.parent.parent.parent / "technomancer-public"
+)
+
+
+def _read_git_commits(repo_path: Path, limit: int) -> list[dict[str, str]]:
+    """Return the last ``limit`` commits in ``repo_path`` as dicts.
+
+    Uses NUL-delimited ``--pretty=format`` so commit subjects with special
+    characters parse cleanly. Raises ``RuntimeError`` when git fails so
+    the caller can map the failure onto a 500 response.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "log",
+            f"-{limit}",
+            "--pretty=format:%h%x00%s%x00%aN%x00%aI",
+        ],
+        cwd=str(repo_path),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            (result.stderr or "").strip() or "git log failed"
+        )
+
+    commits: list[dict[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line:
+            continue
+        parts = line.split("\x00")
+        if len(parts) != 4:
+            continue
+        sha, subject, author, timestamp = parts
+        commits.append({
+            "sha": sha,
+            "subject": subject,
+            "author": author,
+            "timestamp": timestamp,
+        })
+    return commits
+
+
+@app.route("/api/aim/commits")
+def api_aim_commits() -> tuple:
+    """GET /api/aim/commits?limit=N&repo=private|public|both — recent commits.
+
+    Shells out to ``git log`` on the selected repo(s) and returns a JSON
+    list of commits with short SHA, subject, author, and ISO timestamp.
+    When ``repo=both`` (default), returns ``{"private": [...], "public":
+    [...]}``. ``limit`` defaults to 10 and is clamped to ``[1, 50]``. On
+    git error, returns 500 with ``{"error": "..."}``.
+    """
+    try:
+        limit = int(request.args.get("limit", "10"))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 50))
+
+    repo = (request.args.get("repo") or "both").lower()
+    if repo not in ("private", "public", "both"):
+        repo = "both"
+
+    try:
+        if repo == "private":
+            return jsonify(_read_git_commits(_PRIVATE_REPO_PATH, limit))
+        if repo == "public":
+            return jsonify(_read_git_commits(_PUBLIC_REPO_PATH, limit))
+        return jsonify({
+            "private": _read_git_commits(_PRIVATE_REPO_PATH, limit),
+            "public": _read_git_commits(_PUBLIC_REPO_PATH, limit),
+        })
+    except (subprocess.SubprocessError, RuntimeError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/api/aim/events/stream")
 def api_aim_events_stream() -> Response:
     """GET /api/aim/events/stream — SSE stream of AIM/Worker events.
