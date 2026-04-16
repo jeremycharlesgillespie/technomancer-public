@@ -1,6 +1,8 @@
 """Tests for idea_board.executor — pytest baseline, failure diffing, test targeting, and epic execution."""
 
+import re
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,7 @@ from idea_board.executor import (
     _find_related_tests,
     _format_injected_epic_context,
     _parse_pytest_failures,
+    _post_deploy_comment,
     execute_epic,
 )
 
@@ -1027,3 +1030,74 @@ class TestBuildStoryPromptPriorFailure:
         assert prompt.index("## Prior Failure Context") < prompt.index(
             "CODEBASE_SUMMARY_SENTINEL"
         )
+
+
+# ---------------------------------------------------------------------------
+# _post_deploy_comment — [Deployed] SHA + timestamp comment on successful deploy
+# ---------------------------------------------------------------------------
+
+
+class TestPostDeployComment:
+    """Verify the [Deployed] comment posted after a successful merge."""
+
+    def test_posts_comment_with_expected_format(self):
+        """Comment is posted via provider.add_comment with the documented format."""
+        provider = MagicMock()
+        fake_now = datetime(2026, 4, 15, 20, 30, 45, tzinfo=timezone.utc)
+        fake_datetime = MagicMock()
+        fake_datetime.now.return_value = fake_now
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.datetime", fake_datetime):
+            _post_deploy_comment("TK-400", "abc1234")
+
+        provider.add_comment.assert_called_once()
+        args, kwargs = provider.add_comment.call_args
+        assert args[0] == "TK-400"
+        assert kwargs["author"] == "executor"
+        assert kwargs["text"] == "[Deployed] abc1234 at 2026-04-15T20:30:45+00:00"
+        fake_datetime.now.assert_called_once_with(timezone.utc)
+
+    def test_timestamp_is_iso8601_utc_seconds(self):
+        """Generated timestamp matches ISO-8601 UTC with second precision."""
+        provider = MagicMock()
+        with patch("idea_board.executor._get_board_provider", return_value=provider):
+            _post_deploy_comment("TK-401", "deadbee")
+
+        text = provider.add_comment.call_args.kwargs["text"]
+        # Format: [Deployed] <7-char sha> at <YYYY-MM-DDTHH:MM:SS+00:00>
+        pattern = r"^\[Deployed\] [0-9a-f]{7} at \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$"
+        assert re.match(pattern, text), f"text does not match expected format: {text!r}"
+
+    def test_swallows_provider_errors_and_logs(self, caplog):
+        """A failing provider doesn't propagate — it's logged as a warning."""
+        provider = MagicMock()
+        provider.add_comment.side_effect = RuntimeError("jira 500")
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider):
+            with caplog.at_level("WARNING", logger="idea_board.executor"):
+                _post_deploy_comment("TK-402", "1234567")  # must not raise
+
+        provider.add_comment.assert_called_once()
+        messages = [rec.getMessage() for rec in caplog.records]
+        assert any(
+            "deploy comment" in m.lower() and "TK-402" in m for m in messages
+        )
+
+    def test_swallows_provider_factory_errors(self):
+        """An error fetching the provider is swallowed too (belt-and-braces)."""
+        with patch(
+            "idea_board.executor._get_board_provider",
+            side_effect=RuntimeError("no provider"),
+        ):
+            # Should not raise
+            _post_deploy_comment("TK-403", "abcdef1")
+
+    def test_passes_short_sha_through_as_given(self):
+        """Shortening SHAs is the caller's responsibility — we pass through."""
+        provider = MagicMock()
+        with patch("idea_board.executor._get_board_provider", return_value=provider):
+            _post_deploy_comment("TK-404", "feedface")  # 8 chars on purpose
+
+        text = provider.add_comment.call_args.kwargs["text"]
+        assert "feedface" in text

@@ -24,6 +24,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,27 @@ def mark_failed(idea_id, error):
 
 def get_execution_order(idea_id):
     return _get_board_provider().get_execution_order(idea_id)
+
+
+def _post_deploy_comment(idea_id: str, short_sha: str) -> None:
+    """Post a ``[Deployed] <sha> at <timestamp>`` comment on the board item.
+
+    Called after a successful merge lands on main so the Jira issue records
+    which commit shipped and when — separate from the Jira status transition
+    time (which can lag). Sits alongside the existing ``[Execution Log]``
+    comment that ``mark_done`` already posts.
+
+    Failure-safe: a Jira hiccup (401, timeout, etc.) is logged as a warning
+    and swallowed so the deploy still reports success.
+    """
+    try:
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        text = f"[Deployed] {short_sha} at {timestamp}"
+        _get_board_provider().add_comment(idea_id, author="executor", text=text)
+    except Exception as exc:
+        logger.warning(
+            "[Executor] Failed to post deploy comment for %s: %s", idea_id, exc
+        )
 
 
 def _sync_progress_comment(idea_id, state) -> None:
@@ -1828,6 +1850,15 @@ def execute_idea(
                     _notify_discord(f"Idea {idea_id} merge failed: {idea.title}")
                     return
 
+                # Capture the merge commit SHA for the [Deployed] comment
+                sha_result = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+                deploy_sha = ""
+                if sha_result.returncode == 0:
+                    deploy_sha = sha_result.stdout.strip()[:7]
+
                 # Step 3c: Delete branch
                 subprocess.run(
                     ["git", "branch", "-d", branch],
@@ -1916,6 +1947,8 @@ def execute_idea(
                     f"Deploy complete ({state.elapsed:.0f}s total). "
                     f"Bot restart needed — run: python bot_service.py start"
                 )
+                if deploy_sha:
+                    _post_deploy_comment(idea_id, deploy_sha)
                 mark_done(idea_id, state.log_text[-5000:])
                 _notify_discord(
                     f"Idea {idea_id} deployed ({state.elapsed:.0f}s): "
