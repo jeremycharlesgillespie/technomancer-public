@@ -13,6 +13,7 @@ Routes:
     GET  /api/ideas/<id>/log/stream — SSE stream for live execution log
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
+    POST /api/jira/create         — Create a Jira story/epic via BoardProvider
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from typing import Any
 
 import time
 
+import requests as _requests_lib
+
 from flask import Flask, Response, jsonify, request
 
 from agent.config import settings
@@ -38,6 +41,7 @@ from .executor import get_execution
 from .models import Idea, save_ideas
 
 from board import get_provider as _get_board_provider
+from idea_board.jira_sync import is_jira_configured, _api as _jira_api
 
 from aim import event_log as aim_event_log, state as aim_state
 
@@ -2345,6 +2349,157 @@ def api_action_github_sync() -> tuple:
         })
     except Exception as e:
         return jsonify({"action": "github-sync", "success": False, "output": str(e)}), 500
+
+
+# ============================================================================
+# JIRA STORY CREATION
+# ============================================================================
+
+
+def _rank_issue(jira_key: str, rank_position: str) -> str | None:
+    """Rank a Jira issue using the Agile REST API.
+
+    Args:
+        jira_key: The issue key to rank (e.g. "TK-123").
+        rank_position: Either "top" (rank before the current top To Do item)
+            or "after:<KEY>" (rank after a specific issue).
+
+    Returns:
+        None on success, or an error message string on failure.
+    """
+    if not is_jira_configured():
+        return "Jira not configured"
+
+    base_url = f"{settings.jira_url}/rest/agile/1.0"
+    auth = (settings.jira_email, settings.jira_api_token)
+
+    if rank_position == "top":
+        # Find the current top To Do item to rank before it.
+        try:
+            resp = _jira_api(
+                "post",
+                "/search/jql",
+                json={
+                    "jql": (
+                        f"project = {settings.jira_project_key} "
+                        f'AND status = "To Do" ORDER BY rank ASC'
+                    ),
+                    "maxResults": 1,
+                    "fields": ["summary"],
+                },
+            )
+            if resp.status_code != 200:
+                return f"Failed to find top To Do item ({resp.status_code})"
+            issues = resp.json().get("issues", [])
+            if not issues:
+                return None  # No To Do items — nothing to rank against
+            top_key = issues[0]["key"]
+            if top_key == jira_key:
+                return None  # Already at the top
+        except Exception as exc:
+            return f"Search for top item failed: {exc}"
+
+        try:
+            resp = _requests_lib.put(
+                f"{base_url}/issue/rank",
+                json={"issues": [jira_key], "rankBeforeIssue": top_key},
+                auth=auth,
+                timeout=15,
+            )
+            if resp.status_code not in (200, 204):
+                return f"Rank API returned {resp.status_code}: {resp.text[:200]}"
+        except Exception as exc:
+            return f"Rank API call failed: {exc}"
+
+    elif rank_position.startswith("after:"):
+        after_key = rank_position[6:].strip()
+        if not after_key:
+            return "rank_position 'after:' requires a Jira key"
+        try:
+            resp = _requests_lib.put(
+                f"{base_url}/issue/rank",
+                json={"issues": [jira_key], "rankAfterIssue": after_key},
+                auth=auth,
+                timeout=15,
+            )
+            if resp.status_code not in (200, 204):
+                return f"Rank API returned {resp.status_code}: {resp.text[:200]}"
+        except Exception as exc:
+            return f"Rank API call failed: {exc}"
+    else:
+        return f"Invalid rank_position: {rank_position!r} (use 'top' or 'after:<KEY>')"
+
+    return None
+
+
+@app.route("/api/jira/create", methods=["POST"])
+def api_jira_create() -> tuple:
+    """POST /api/jira/create — create a Jira story or epic via BoardProvider.
+
+    Accepts JSON:
+        title (required): Short descriptive title.
+        description (required): Technical rationale / body text.
+        category (optional, default "quality"): e.g. quality, feature, performance.
+        source (optional, default "planning"): What prompted the idea.
+        idea_type (optional, default "story"): "story" or "epic".
+        parent_key (optional): Jira key of parent epic (e.g. "TK-10").
+        rank_position (optional): "top" or "after:<KEY>" for backlog ordering.
+
+    Returns 201 JSON: {key, title, state, url, rank_result?}
+    """
+    data = request.get_json(silent=True) or {}
+
+    title = (data.get("title") or "").strip()
+    description = (data.get("description") or "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    if not description:
+        return jsonify({"error": "description is required"}), 400
+
+    category = (data.get("category") or "quality").strip().lower()
+    source = (data.get("source") or "planning").strip().lower()
+    idea_type = (data.get("idea_type") or "story").strip().lower()
+    parent_key = (data.get("parent_key") or "").strip() or None
+    rank_position = (data.get("rank_position") or "").strip() or None
+
+    if idea_type not in ("story", "epic"):
+        return jsonify({"error": "idea_type must be 'story' or 'epic'"}), 400
+
+    try:
+        provider = _get_board_provider()
+        item = provider.add(
+            title=title,
+            description=description,
+            source=source,
+            category=category,
+            idea_type=idea_type,
+            parent_id=parent_key,
+        )
+    except Exception as exc:
+        logger.error("[JiraCreate] provider.add failed: %s", exc)
+        return jsonify({"error": f"Failed to create issue: {exc}"}), 500
+
+    # Build browse URL (works for both Jira keys and local IDs).
+    browse_url = ""
+    if settings.jira_url and item.id.startswith(settings.jira_project_key or ""):
+        browse_url = f"{settings.jira_url}/browse/{item.id}"
+
+    result: dict[str, Any] = {
+        "key": item.id,
+        "title": item.title,
+        "state": item.state,
+        "url": browse_url,
+    }
+
+    # Optional ranking (Jira-only, best-effort).
+    if rank_position:
+        rank_err = _rank_issue(item.id, rank_position)
+        if rank_err:
+            result["rank_result"] = f"warning: {rank_err}"
+        else:
+            result["rank_result"] = "ok"
+
+    return jsonify(result), 201
 
 
 # ============================================================================

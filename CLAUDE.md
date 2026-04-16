@@ -435,6 +435,45 @@ Before reporting success on file/memory operations:
 2. Only confirm if "VERIFIED" returned
 3. If verification fails, report the failure
 
+### Creating Jira Stories from Claude Code Sessions
+Use the hub's `POST /api/jira/create` endpoint (port 8322) instead of writing throwaway scripts. It handles label conventions (`cat:`, `src:`, `type:`, `pending-approval` gate) and optional backlog ranking in one call.
+
+**curl example:**
+```bash
+curl -X POST http://localhost:8322/api/jira/create \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Add retry logic to webhook delivery",
+    "description": "WHAT: Add exponential backoff...",
+    "category": "quality",
+    "source": "planning",
+    "idea_type": "story",
+    "rank_position": "top"
+  }'
+```
+
+**Python requests example:**
+```python
+import requests
+resp = requests.post("http://localhost:8322/api/jira/create", json={
+    "title": "Add retry logic to webhook delivery",
+    "description": "WHAT: Add exponential backoff...",
+    "category": "quality",
+})
+print(resp.json())  # {"key": "TK-NNN", "title": "...", "state": "...", "url": "..."}
+```
+
+**Fields:**
+- `title` (required): Short descriptive title
+- `description` (required): Technical rationale / body text
+- `category` (optional, default `"quality"`): quality, feature, performance, security, ux
+- `source` (optional, default `"planning"`): What prompted the idea
+- `idea_type` (optional, default `"story"`): `"story"` or `"epic"`
+- `parent_key` (optional): Jira key of parent epic (e.g. `"TK-10"`)
+- `rank_position` (optional): `"top"` or `"after:TK-42"` for backlog ordering
+
+Returns 201 with `{key, title, state, url}`. Non-safe categories (`feature`, `security`, `ux`) get the `pending-approval` label automatically.
+
 ## External Dependencies
 
 - **Ollama**: Must be running at `http://127.0.0.1:11434` with models:
