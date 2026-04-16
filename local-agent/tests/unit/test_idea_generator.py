@@ -1674,3 +1674,73 @@ class TestSynthesizeEpicEmptyStoryTitle:
         assert result is not None
         # Only 2 add_idea calls: 1 epic + 1 real story (whitespace story skipped)
         assert mock_add.call_count == 2
+
+
+# =============================================================================
+# @profile_fn instrumentation on idea_generator entry points (TK-440)
+# =============================================================================
+
+
+class TestProfileFnInstrumentation:
+    """Verify idea_generator entry points are wrapped by @profile_fn.
+
+    profile_fn sets a ``__wrapped_fn_name__`` attribute on the returned
+    wrapper, so checking that attribute confirms the decorator is applied
+    without needing to invoke the function. Whole-cycle timing here is the
+    most useful starting signal because idea_generator runs with the
+    largest single prompt (~5K tokens).
+    """
+
+    @pytest.mark.parametrize(
+        "fn_name",
+        ["generate_ideas", "synthesize_epic"],
+    )
+    def test_entry_point_is_profiled(self, fn_name):
+        import agent.idea_generator as ig
+
+        fn = getattr(ig, fn_name)
+        expected = f"agent.idea_generator.{fn_name}"
+        assert getattr(fn, "__wrapped_fn_name__", None) == expected
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator.synthesize_epic", new_callable=AsyncMock)
+    async def test_generate_ideas_records_registry_on_call(self, mock_synth):
+        """Calling generate_ideas should populate the fn_profiler registry."""
+        import agent.fn_profiler as fp
+        from agent.idea_generator import generate_ideas
+
+        fp.reset_registry()
+        mock_synth.return_value = None
+
+        await generate_ideas(agent=MagicMock())
+
+        stats = fp.get_stats("agent.idea_generator.generate_ideas")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._load_existing_ideas", return_value="")
+    @patch("agent.idea_generator._load_codebase_summary", return_value="")
+    async def test_synthesize_epic_records_registry_on_call(
+        self, mock_cb, mock_existing
+    ):
+        """Calling synthesize_epic should populate the fn_profiler registry.
+
+        The agent.run raises so synthesize_epic exits early — still enough
+        to exercise the decorator since it records in its finally block.
+        """
+        import agent.fn_profiler as fp
+        from agent.idea_generator import synthesize_epic
+
+        fp.reset_registry()
+        agent = MagicMock()
+        agent.run.side_effect = RuntimeError("boom")
+
+        result = await synthesize_epic("signals", agent)
+
+        assert result is None
+        stats = fp.get_stats("agent.idea_generator.synthesize_epic")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()

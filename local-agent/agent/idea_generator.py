@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Paths for input data
 from .config import settings
+from .fn_profiler import profile_fn
 from .memory_system import get_memory_system
 from .perf_monitor import get_monitor as get_perf_monitor
 
@@ -718,6 +719,7 @@ def _parse_epic_response(response: str) -> dict[str, Any] | None:
     return epic
 
 
+@profile_fn
 async def synthesize_epic(signals: str, agent: Any) -> dict[str, Any] | None:
     """Synthesize one epic with stories from collected signals using the LLM.
 
@@ -833,6 +835,7 @@ async def synthesize_epic(signals: str, agent: Any) -> dict[str, Any] | None:
     }
 
 
+@profile_fn
 async def generate_ideas(agent: Any) -> list[dict[str, str]]:
     """Run one idea generation cycle using the provided agent.
 
