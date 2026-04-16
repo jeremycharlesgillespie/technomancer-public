@@ -491,3 +491,4 @@ Returns 201 with `{key, title, state, url}`. Non-safe categories (`feature`, `se
 - **PyPDF2**: For PDF processing (`pip install PyPDF2`)
 - **python-docx**: For Word doc processing (`pip install python-docx`)
 - **pytest**: For running tests (`pip install pytest` or included in dev dependencies)
+<!-- Autonomous run verification: 2026-04-15 -->
