@@ -3637,6 +3637,11 @@ def api_jira_create() -> tuple:
 
     try:
         provider = _get_board_provider()
+        # Snapshot existing ids so we can detect when provider.add returns an
+        # existing item instead of creating a new one (TK-441 regression:
+        # near-duplicate Ollama-performance ideas were silently accepted as
+        # 201 Created, polluting the backlog).
+        existing_ids = {i.id for i in provider.load_all()}
         item = provider.add(
             title=title,
             description=description,
@@ -3653,6 +3658,17 @@ def api_jira_create() -> tuple:
     browse_url = ""
     if settings.jira_url and item.id.startswith(settings.jira_project_key or ""):
         browse_url = f"{settings.jira_url}/browse/{item.id}"
+
+    # Provider-level dedup returned an existing item — surface it as 409 so
+    # clients can distinguish "we created this" from "this already existed".
+    if item.id in existing_ids:
+        return jsonify({
+            "error": "Duplicate idea detected",
+            "key": item.id,
+            "title": item.title,
+            "state": item.state,
+            "url": browse_url,
+        }), 409
 
     result: dict[str, Any] = {
         "key": item.id,
