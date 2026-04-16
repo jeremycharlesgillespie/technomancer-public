@@ -701,21 +701,30 @@ def continue_workflow():
                     cwd=Path(__file__).parent,
                 )
                 if result.returncode == 0:
-                    # Commit the updated READMEs (local-agent + repo root)
-                    run_git(["add", "README.md"], check=False)
-                    root_readme = Path(__file__).parent.parent / "README.md"
-                    if root_readme.exists():
-                        subprocess.run(
-                            ["git", "add", str(root_readme)],
-                            capture_output=True, text=True, timeout=10,
-                            cwd=Path(__file__).parent.parent,
-                        )
-                    try:
-                        run_git(["commit", "-m", "Update README with latest stats [auto]"])
-                        run_git(["push", "origin", MAIN_BRANCH], check=False)
-                        log("README updated with latest stats")
-                    except Exception:
-                        log("README unchanged (no new stats)")
+                    # Skip the commit entirely when generate_readme didn't
+                    # change the file — otherwise we produce an empty commit
+                    # and dirty the tree for the next worker run.
+                    local_readme = "local-agent/README.md"
+                    root_readme_rel = "README.md"
+                    local_diff = run_git(
+                        ["diff", "--quiet", "--", local_readme], check=False,
+                    )
+                    root_diff = run_git(
+                        ["diff", "--quiet", "--", root_readme_rel], check=False,
+                    )
+                    if local_diff.returncode == 0 and root_diff.returncode == 0:
+                        log("README unchanged - skipping auto-commit")
+                    else:
+                        if local_diff.returncode != 0:
+                            run_git(["add", local_readme], check=False)
+                        if root_diff.returncode != 0:
+                            run_git(["add", root_readme_rel], check=False)
+                        try:
+                            run_git(["commit", "-m", "Update README with latest stats [auto]"])
+                            run_git(["push", "origin", MAIN_BRANCH], check=False)
+                            log("README updated with latest stats")
+                        except Exception:
+                            log("README unchanged (no new stats)")
                 else:
                     log(f"README generation failed: {result.stderr[:200]}")
             except Exception as e:

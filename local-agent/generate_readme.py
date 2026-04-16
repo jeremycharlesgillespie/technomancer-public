@@ -13,7 +13,6 @@ Can also be run standalone: python generate_readme.py
 import json
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -126,7 +125,6 @@ def generate_badge(label: str, value: str, color: str) -> str:
 
 def generate_readme(test_stats: dict, code_stats: dict) -> str:
     """Generate the full README.md content."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
     tests = test_stats["test_count"]
     coverage = test_stats["coverage_pct"]
     modules = code_stats["module_count"]
@@ -167,7 +165,7 @@ Obsidian vault integration, Claude API escalation, and a self-improving
 knowledge base. Built for a Senior Software Engineer's daily workflow.
 
 > **Auto-generated** — This README is updated automatically on every deployment
-> via `safe_update.py`. Last updated: {now}
+> via `safe_update.py`.
 
 ## Highlights
 
@@ -355,6 +353,27 @@ MIT
 """
 
 
+def write_if_changed(path: Path, content: str) -> bool:
+    """Write content to path only if it differs from what's already there.
+
+    Returns True when the file was written, False when the existing content
+    matched and the write was skipped. Skipping keeps the working tree clean
+    so safe_update.py doesn't produce a no-op README commit on every deploy.
+    """
+    if path.exists():
+        try:
+            existing = path.read_text(encoding="utf-8")
+        except Exception:
+            existing = None
+        if existing == content:
+            print(f"[README] {path} unchanged - skipping write")
+            return False
+
+    path.write_text(content, encoding="utf-8")
+    print(f"[README] Written to {path}")
+    return True
+
+
 def main():
     # Accept --test-count N to skip running pytest
     known_count = None
@@ -379,13 +398,11 @@ def main():
 
     print("[README] Generating README.md...")
     readme = generate_readme(test_stats, code_stats)
-    README_PATH.write_text(readme, encoding="utf-8")
-    print(f"[README] Written to {README_PATH}")
+    write_if_changed(README_PATH, readme)
 
     # Also write to repo root so GitHub shows badges on the main page
     if ROOT_README_PATH.parent.exists():
-        ROOT_README_PATH.write_text(readme, encoding="utf-8")
-        print(f"[README] Also written to {ROOT_README_PATH}")
+        write_if_changed(ROOT_README_PATH, readme)
 
 
 if __name__ == "__main__":
