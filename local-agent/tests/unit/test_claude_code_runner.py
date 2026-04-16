@@ -12,6 +12,10 @@ import pytest
 from agent.claude_code_runner import (
     ChatSession,
     ChatResult,
+    DEFAULT_EXECUTOR_MODEL,
+    MODEL_RATES,
+    _calculate_cost_usd,
+    _cost_from_usage_dict,
     _find_claude_binary,
     _terminate_and_capture,
     end_session,
@@ -21,6 +25,7 @@ from agent.claude_code_runner import (
     run_claude_code,
     run_claude_prompt,
     run_claude_prompt_async,
+    sum_turn_costs,
     _active_sessions,
 )
 
@@ -1134,3 +1139,347 @@ class TestRecordToolEvents:
             run_id, pending,
         )
         assert executor_runs_db.get_tool_calls(run_id) == []
+
+
+# =============================================================================
+# TK-442 — Cost and duration recorded on every executor run
+# =============================================================================
+
+
+class TestCostCalculation:
+    """Unit-level: the rate table produces the expected USD figures."""
+
+    def test_rates_for_all_required_models(self):
+        """Three model ids named in the spec must be in MODEL_RATES."""
+        for model in (
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5-20251001",
+        ):
+            assert model in MODEL_RATES
+            rates = MODEL_RATES[model]
+            for key in ("input", "output", "cache_read", "cache_write"):
+                assert key in rates
+                assert rates[key] > 0
+
+    def test_calculate_cost_sonnet(self):
+        """Hand-computed Sonnet check — $3/M in + $15/M out."""
+        # 1,000,000 input + 500,000 output → $3 + $7.50 = $10.50
+        cost = _calculate_cost_usd(
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            model="claude-sonnet-4-6",
+        )
+        assert cost == pytest.approx(10.50, abs=1e-9)
+
+    def test_calculate_cost_with_cache(self):
+        """Cache read ($0.30/M) and cache write ($3.75/M) on Sonnet."""
+        cost = _calculate_cost_usd(
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+            model="claude-sonnet-4-6",
+        )
+        assert cost == pytest.approx(4.05, abs=1e-9)
+
+    def test_unknown_model_falls_back_to_default(self):
+        """Unknown model uses the default rate — never NaN or crash."""
+        unknown = _calculate_cost_usd(
+            input_tokens=1_000_000, model="future-model-xyz"
+        )
+        default = _calculate_cost_usd(
+            input_tokens=1_000_000, model=DEFAULT_EXECUTOR_MODEL
+        )
+        assert unknown == default
+
+    def test_cost_from_usage_dict_claude_code_fields(self):
+        """Pricing pulls from Anthropic's canonical usage field names."""
+        usage = {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 200,
+            "cache_creation_input_tokens": 30,
+        }
+        expected = _calculate_cost_usd(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=200,
+            cache_write_tokens=30,
+            model="claude-sonnet-4-6",
+        )
+        assert _cost_from_usage_dict(usage, "claude-sonnet-4-6") == pytest.approx(
+            expected, abs=1e-12
+        )
+
+    def test_cost_from_usage_dict_missing_fields_treated_as_zero(self):
+        """Partial usage dicts (some keys missing) default missing to 0."""
+        cost = _cost_from_usage_dict({"input_tokens": 100}, "claude-sonnet-4-6")
+        # Only input_tokens contributes — 100 * 3.00 / 1_000_000
+        assert cost == pytest.approx(100 * 3.00 / 1_000_000, abs=1e-12)
+
+    def test_cost_from_usage_dict_non_dict_returns_zero(self):
+        """Non-dict input must not raise — critical for timeout/error paths."""
+        assert _cost_from_usage_dict(None) == 0.0
+        assert _cost_from_usage_dict("a string") == 0.0
+        assert _cost_from_usage_dict(42) == 0.0
+
+    def test_sum_turn_costs_multiple_turns(self):
+        """sum_turn_costs adds per-turn dicts into a single total."""
+        turns = [
+            {"input_tokens": 100, "output_tokens": 50},
+            {"input_tokens": 200, "output_tokens": 75},
+        ]
+        total = sum_turn_costs(turns, "claude-sonnet-4-6")
+        # Turn 1: (100*3 + 50*15) / 1M = 1050 / 1M
+        # Turn 2: (200*3 + 75*15) / 1M = 1725 / 1M
+        expected = (100 * 3.00 + 50 * 15.00 + 200 * 3.00 + 75 * 15.00) / 1_000_000
+        assert total == pytest.approx(expected, abs=1e-12)
+
+    def test_sum_turn_costs_empty_list(self):
+        assert sum_turn_costs([]) == 0.0
+
+
+class TestRunClaudeCodeRecordsCostAndDuration:
+    """Integration-ish: mock subprocess, verify DB fields land correctly."""
+
+    @pytest.mark.asyncio
+    async def test_two_turn_run_stores_expected_cost(self, monkeypatch):
+        """A two-turn run with known tokens produces the expected dollar cost.
+
+        Claude Code's ``--output-format json`` aggregates per-turn usage into
+        one block. The test feeds token counts that represent a two-turn run
+        (first turn: cached read + small output; second turn: new input +
+        larger output) and asserts the recorded cost sums per our rate table.
+        """
+        import agent.claude_code_runner as runner
+
+        db_records: list[dict] = []
+
+        def fake_record(**fields):
+            db_records.append(dict(fields))
+            return 1
+
+        monkeypatch.setattr(runner.executor_runs_db, "record_run", fake_record)
+        monkeypatch.setattr(runner.executor_runs_db, "archive_run",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(runner, "_detect_branch", lambda cwd: "test-branch")
+
+        # Two turns aggregated. Individual turns for pedagogy:
+        #   Turn 1: in=100, out=50,  cache_read=1_000, cache_write=0
+        #   Turn 2: in=300, out=250, cache_read=0,     cache_write=500
+        # Aggregated: in=400, out=300, cache_read=1_000, cache_write=500
+        aggregated_usage = {
+            "input_tokens": 400,
+            "output_tokens": 300,
+            "cache_read_input_tokens": 1_000,
+            "cache_creation_input_tokens": 500,
+        }
+        payload = json.dumps({
+            "result": "task done",
+            "session_id": "s-1",
+            "num_turns": 2,
+            "model": "claude-sonnet-4-6",
+            "total_cost_usd": 0.99,  # Claude's estimate — we compute our own
+            "usage": aggregated_usage,
+        }).encode("utf-8")
+
+        proc = _make_async_proc(returncode=0, stdout=payload)
+        with patch(
+            "agent.claude_code_runner._find_claude_binary",
+            return_value=Path("/fake/claude"),
+        ):
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+                success, output, duration = await runner.run_claude_code(
+                    "do two things", jira_key="TK-442"
+                )
+
+        assert success is True
+        assert output == "task done"
+
+        # Expected cost via Sonnet rates:
+        #   (400*3 + 300*15 + 1000*0.30 + 500*3.75) / 1_000_000
+        #   = (1200 + 4500 + 300 + 1875) / 1_000_000
+        #   = 7875 / 1_000_000 = 0.007875
+        # This is equivalent to summing per-turn costs:
+        turn_1 = _calculate_cost_usd(
+            input_tokens=100, output_tokens=50,
+            cache_read_tokens=1_000, cache_write_tokens=0,
+            model="claude-sonnet-4-6",
+        )
+        turn_2 = _calculate_cost_usd(
+            input_tokens=300, output_tokens=250,
+            cache_read_tokens=0, cache_write_tokens=500,
+            model="claude-sonnet-4-6",
+        )
+        expected_sum = turn_1 + turn_2
+
+        success_rows = [r for r in db_records if r.get("status") == "success"]
+        assert len(success_rows) == 1
+        assert success_rows[0]["cost_usd"] == pytest.approx(expected_sum, abs=1e-6)
+        assert success_rows[0]["duration_ms"] is not None
+        assert success_rows[0]["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_mid_execution_exception_records_duration_and_cost(
+        self, monkeypatch
+    ):
+        """If spawn raises, duration_ms and cost_usd (=0) are still recorded."""
+        import agent.claude_code_runner as runner
+
+        db_records: list[dict] = []
+
+        def fake_record(**fields):
+            db_records.append(dict(fields))
+            return 1
+
+        monkeypatch.setattr(runner.executor_runs_db, "record_run", fake_record)
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary",
+            return_value=Path("/fake/claude"),
+        ):
+            with patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(side_effect=RuntimeError("boom mid-run")),
+            ):
+                success, output, duration = await runner.run_claude_code(
+                    "explode", jira_key="TK-442"
+                )
+
+        assert success is False
+        assert "boom mid-run" in output
+
+        error_rows = [r for r in db_records if r.get("status") == "error"]
+        assert len(error_rows) == 1
+        # Both fields populated — not null
+        assert "cost_usd" in error_rows[0]
+        assert error_rows[0]["cost_usd"] == pytest.approx(0.0)
+        assert "duration_ms" in error_rows[0]
+        assert error_rows[0]["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_failure_path_still_records_cost_and_duration(
+        self, monkeypatch
+    ):
+        """A non-zero exit code still gets cost_usd + duration_ms."""
+        import agent.claude_code_runner as runner
+
+        db_records: list[dict] = []
+
+        def fake_record(**fields):
+            db_records.append(dict(fields))
+            return 1
+
+        monkeypatch.setattr(runner.executor_runs_db, "record_run", fake_record)
+        monkeypatch.setattr(runner.executor_runs_db, "archive_run",
+                            lambda *a, **k: None)
+        monkeypatch.setattr(runner, "_detect_branch", lambda cwd: None)
+
+        payload = json.dumps({
+            "result": "partial",
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 50, "output_tokens": 25},
+        }).encode("utf-8")
+        proc = _make_async_proc(returncode=3, stdout=payload, stderr=b"fail")
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary",
+            return_value=Path("/fake/claude"),
+        ):
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+                success, output, duration = await runner.run_claude_code(
+                    "task", jira_key="TK-442"
+                )
+
+        assert success is False
+        failure_rows = [r for r in db_records if r.get("status") == "failure"]
+        assert len(failure_rows) == 1
+        expected = _calculate_cost_usd(
+            input_tokens=50, output_tokens=25, model="claude-sonnet-4-6"
+        )
+        assert failure_rows[0]["cost_usd"] == pytest.approx(expected, abs=1e-9)
+        assert failure_rows[0]["duration_ms"] >= 0
+
+    @pytest.mark.asyncio
+    async def test_binary_not_found_records_zero_cost(self, monkeypatch):
+        """Missing binary: cost=0, duration=0, status=binary_not_found."""
+        import agent.claude_code_runner as runner
+
+        db_records: list[dict] = []
+        monkeypatch.setattr(
+            runner.executor_runs_db, "record_run",
+            lambda **f: (db_records.append(dict(f)) or 1),
+        )
+
+        with patch("agent.claude_code_runner._find_claude_binary", return_value=None):
+            await runner.run_claude_code("x", jira_key="TK-442")
+
+        bnf = [r for r in db_records if r.get("status") == "binary_not_found"]
+        assert len(bnf) == 1
+        assert bnf[0]["cost_usd"] == 0.0
+        assert bnf[0]["duration_ms"] == 0
+
+
+class TestExecutorRunSummary:
+    """executor_run_summary helper returns the four-field summary dict."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path, monkeypatch):
+        from agent import executor_runs_db
+
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+        yield
+        conn = getattr(executor_runs_db._local, "conn", None)
+        if conn:
+            conn.close()
+            executor_runs_db._local.conn = None
+
+    def test_returns_expected_keys_for_known_id(self):
+        from agent import executor_runs_db
+
+        run_id = executor_runs_db.record_run(
+            run_id="20260416-120000-TK-442",
+            jira_key="TK-442",
+            status="success",
+            duration_ms=12_500,
+            cost_usd=0.0425,
+        )
+        summary = executor_runs_db.executor_run_summary(run_id)
+        assert set(summary.keys()) == {
+            "cost_usd", "duration_ms", "status", "story_key",
+        }
+        assert summary["cost_usd"] == pytest.approx(0.0425)
+        assert summary["duration_ms"] == 12_500
+        assert summary["status"] == "success"
+        assert summary["story_key"] == "TK-442"
+
+    def test_lookup_by_artifact_run_id_string(self):
+        """Callers may pass the sortable artifact run_id instead of the row id."""
+        from agent import executor_runs_db
+
+        executor_runs_db.record_run(
+            run_id="20260416-140000-TK-501",
+            jira_key="TK-501",
+            status="timeout",
+            duration_ms=900_000,
+            cost_usd=0.12,
+        )
+        summary = executor_runs_db.executor_run_summary("20260416-140000-TK-501")
+        assert summary["story_key"] == "TK-501"
+        assert summary["status"] == "timeout"
+        assert summary["cost_usd"] == pytest.approx(0.12)
+
+    def test_unknown_run_id_raises_key_error(self):
+        from agent import executor_runs_db
+
+        with pytest.raises(KeyError):
+            executor_runs_db.executor_run_summary(99999)
+
+    def test_unknown_artifact_run_id_raises_key_error(self):
+        from agent import executor_runs_db
+
+        with pytest.raises(KeyError):
+            executor_runs_db.executor_run_summary("never-existed-run-id")

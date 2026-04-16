@@ -275,6 +275,55 @@ def get_tool_calls(run_id: int) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def executor_run_summary(run_id: int | str) -> dict[str, Any]:
+    """Return a compact per-run summary suitable for dashboards and alerts.
+
+    Accepts either the integer row id returned by :func:`record_run`, or the
+    sortable artifact run_id (``"YYYYMMDD-HHMMSS-<jira_key>"``). Both forms
+    are common: the executor hands out the artifact id, while internal
+    callers that already have the row id can skip the second lookup.
+
+    Args:
+        run_id: Either the numeric ``executor_runs.id`` or the artifact
+            ``run_id`` string.
+
+    Returns:
+        ``{"cost_usd", "duration_ms", "status", "story_key"}``. ``story_key``
+        maps the DB's ``jira_key`` column to the domain name operators use
+        when reading dashboards.
+
+    Raises:
+        KeyError: No matching row was found.
+    """
+    init_db()
+    conn = _get_conn()
+    row = None
+    try:
+        int_id = int(run_id)
+    except (TypeError, ValueError):
+        int_id = None
+    if int_id is not None:
+        row = conn.execute(
+            "SELECT cost_usd, duration_ms, status, jira_key "
+            "FROM executor_runs WHERE id = ?",
+            (int_id,),
+        ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT cost_usd, duration_ms, status, jira_key "
+            "FROM executor_runs WHERE run_id = ?",
+            (str(run_id),),
+        ).fetchone()
+    if row is None:
+        raise KeyError(f"No executor run with id {run_id!r}")
+    return {
+        "cost_usd": row["cost_usd"],
+        "duration_ms": row["duration_ms"],
+        "status": row["status"],
+        "story_key": row["jira_key"],
+    }
+
+
 def get_recent(limit: int = 20) -> list[dict[str, Any]]:
     """Return the most recent runs, newest first.
 

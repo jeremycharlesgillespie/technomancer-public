@@ -44,6 +44,90 @@ PROJECT_ROOT: Path = Path(__file__).parent.parent.parent
 # without a code change.
 TASK_TIMEOUT: int = 900
 
+# ---------------------------------------------------------------------------
+# Cost calculation — $ per million tokens, per model
+# ---------------------------------------------------------------------------
+# Rates are published Anthropic list prices. Unknown model ids fall back to
+# ``DEFAULT_EXECUTOR_MODEL`` so a future rename never produces a null cost.
+MODEL_RATES: dict[str, dict[str, float]] = {
+    "claude-opus-4-6": {
+        "input": 15.00,
+        "output": 75.00,
+        "cache_read": 1.50,
+        "cache_write": 18.75,
+    },
+    "claude-sonnet-4-6": {
+        "input": 3.00,
+        "output": 15.00,
+        "cache_read": 0.30,
+        "cache_write": 3.75,
+    },
+    "claude-haiku-4-5-20251001": {
+        "input": 0.80,
+        "output": 4.00,
+        "cache_read": 0.08,
+        "cache_write": 1.00,
+    },
+}
+DEFAULT_EXECUTOR_MODEL = "claude-sonnet-4-6"
+
+
+def _calculate_cost_usd(
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+    model: str = DEFAULT_EXECUTOR_MODEL,
+) -> float:
+    """Compute USD cost from token counts using :data:`MODEL_RATES`.
+
+    Args:
+        input_tokens: Uncached input tokens.
+        output_tokens: Assistant output tokens.
+        cache_read_tokens: Tokens served from prompt cache (discounted).
+        cache_write_tokens: Tokens that created new cache entries (premium).
+        model: Rate-table key. Unknown models use ``DEFAULT_EXECUTOR_MODEL``.
+    """
+    rates = MODEL_RATES.get(model, MODEL_RATES[DEFAULT_EXECUTOR_MODEL])
+    return (
+        input_tokens * rates["input"]
+        + output_tokens * rates["output"]
+        + cache_read_tokens * rates["cache_read"]
+        + cache_write_tokens * rates["cache_write"]
+    ) / 1_000_000
+
+
+def _cost_from_usage_dict(
+    usage: Any, model: str = DEFAULT_EXECUTOR_MODEL
+) -> float:
+    """Compute cost from a Claude Code usage block.
+
+    Accepts the ``usage`` field of a ``--output-format json`` response or
+    any stream-json ``usage`` block with the standard Anthropic field names.
+    Missing or non-dict input returns ``0.0`` rather than raising.
+    """
+    if not isinstance(usage, dict):
+        return 0.0
+    return _calculate_cost_usd(
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0),
+        cache_read_tokens=int(usage.get("cache_read_input_tokens") or 0),
+        cache_write_tokens=int(usage.get("cache_creation_input_tokens") or 0),
+        model=model,
+    )
+
+
+def sum_turn_costs(
+    turn_usages: list[dict[str, Any]],
+    model: str = DEFAULT_EXECUTOR_MODEL,
+) -> float:
+    """Sum costs across multiple per-turn usage dicts.
+
+    Useful when a run produces one usage block per assistant turn and the
+    caller wants a single aggregated dollar cost for the whole run.
+    """
+    return sum(_cost_from_usage_dict(u, model) for u in turn_usages)
+
 
 async def _drain_stream(stream: Any) -> str:
     """Read any remaining bytes from a StreamReader after termination.
@@ -536,6 +620,7 @@ async def run_claude_code(
                 id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=0,
+                cost_usd=0.0,
                 status="binary_not_found",
             )
             return False, "Error: Claude Code binary not found in VS Code extensions.", 0.0
@@ -564,6 +649,7 @@ async def run_claude_code(
             proc = await asyncio.create_subprocess_exec(
                 str(binary),
                 "-p", full_prompt,
+                "--output-format", "json",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
                 stdout=asyncio.subprocess.PIPE,
@@ -579,7 +665,24 @@ async def run_claude_code(
             duration = time.time() - start
             stdout_text = stdout.decode("utf-8", errors="replace")
             stderr_text = stderr.decode("utf-8", errors="replace")
-            output = stdout_text.strip()
+            raw_output = stdout_text.strip()
+
+            # Parse --output-format json payload for the result text and the
+            # usage block we price against MODEL_RATES. Falls back to raw text
+            # when stdout isn't JSON (keeps backwards compat with callers that
+            # only check "did Claude Code say something").
+            output = raw_output
+            cost_usd = 0.0
+            try:
+                parsed = json.loads(raw_output)
+            except (json.JSONDecodeError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                result_text = parsed.get("result")
+                if isinstance(result_text, str):
+                    output = result_text
+                model = parsed.get("model") or DEFAULT_EXECUTOR_MODEL
+                cost_usd = _cost_from_usage_dict(parsed.get("usage"), model)
 
             set_phase("test")
             logger.info("Executor phase: test")
@@ -588,6 +691,7 @@ async def run_claude_code(
                     id=db_id,
                     ended_at=datetime.now().isoformat(),
                     duration_ms=int(duration * 1000),
+                    cost_usd=cost_usd,
                     status="success",
                     exit_code=0,
                 )
@@ -604,6 +708,7 @@ async def run_claude_code(
                     id=db_id,
                     ended_at=datetime.now().isoformat(),
                     duration_ms=int(duration * 1000),
+                    cost_usd=cost_usd,
                     status="failure",
                     exit_code=proc.returncode,
                 )
@@ -630,10 +735,23 @@ async def run_claude_code(
                     "event": "executor_timeout",
                 },
             )
+            # Best-effort partial cost — if Claude flushed the final JSON
+            # envelope before we killed it, price that; otherwise 0.
+            partial_cost = 0.0
+            try:
+                parsed = json.loads(stdout_partial.strip())
+                if isinstance(parsed, dict):
+                    partial_cost = _cost_from_usage_dict(
+                        parsed.get("usage"),
+                        parsed.get("model") or DEFAULT_EXECUTOR_MODEL,
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
             _safe_record(
                 id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
+                cost_usd=partial_cost,
                 status="timeout",
             )
             _safe_archive(
@@ -650,6 +768,7 @@ async def run_claude_code(
                 id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
+                cost_usd=0.0,
                 status="error",
             )
             return False, f"Error running Claude Code: {e}", duration
