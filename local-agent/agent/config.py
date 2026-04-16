@@ -241,6 +241,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Executor runtime settings
+    executor_max_runtime_seconds: int = Field(
+        default=1800,
+        description=(
+            "Wall-clock timeout (seconds) for a single claude -p executor run. "
+            "On timeout the subprocess is sent SIGTERM, waits the grace period, "
+            "then escalates to SIGKILL. Default 30 minutes. "
+            "A hung Claude Code run would otherwise block the executor queue."
+        ),
+    )
+    executor_sigterm_grace_seconds: int = Field(
+        default=30,
+        description=(
+            "Seconds to wait after SIGTERM for the executor subprocess to exit "
+            "cleanly before escalating to SIGKILL."
+        ),
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"

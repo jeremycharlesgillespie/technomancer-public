@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import sys
+import time as _time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +13,7 @@ from agent.claude_code_runner import (
     ChatSession,
     ChatResult,
     _find_claude_binary,
+    _terminate_and_capture,
     end_session,
     get_active_session,
     run_claude_chat,
@@ -709,3 +712,201 @@ class TestCommandInjectionPrevention:
         assert evil_path in args[prompt_idx]
         # And no stray argv token matches it as a standalone arg
         assert args.count(evil_path) == 0
+
+
+# =============================================================================
+# TK-461 — Executor wall-clock timeout (SIGTERM → wait → SIGKILL)
+# =============================================================================
+
+
+class TestTerminateAndCapture:
+    """Unit tests for the _terminate_and_capture helper itself."""
+
+    @pytest.mark.asyncio
+    async def test_terminate_succeeds_quickly(self):
+        """terminate() + graceful proc.wait() within grace period — no kill()."""
+        proc = MagicMock()
+        proc.terminate = MagicMock()
+        proc.wait = AsyncMock(return_value=0)
+        proc.kill = MagicMock()
+        proc.stdout = None
+        proc.stderr = None
+
+        out, err = await _terminate_and_capture(proc, correlation_id="x", grace_seconds=5)
+
+        proc.terminate.assert_called_once()
+        proc.kill.assert_not_called()
+        assert out == ""
+        assert err == ""
+
+    @pytest.mark.asyncio
+    async def test_escalates_to_kill_after_grace(self):
+        """If proc.wait times out, SIGKILL is sent."""
+        proc = MagicMock()
+        proc.terminate = MagicMock()
+        # First wait (after SIGTERM) hangs → TimeoutError. Second wait (after SIGKILL) returns.
+        proc.wait = AsyncMock(side_effect=[asyncio.TimeoutError(), 0])
+        proc.kill = MagicMock()
+        proc.stdout = None
+        proc.stderr = None
+
+        with patch(
+            "agent.claude_code_runner.asyncio.wait_for",
+            AsyncMock(side_effect=[asyncio.TimeoutError(), 0]),
+        ):
+            await _terminate_and_capture(proc, correlation_id="x", grace_seconds=1)
+
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_swallows_terminate_errors(self):
+        """A ProcessLookupError from terminate() must not propagate."""
+        proc = MagicMock()
+        proc.terminate = MagicMock(side_effect=ProcessLookupError())
+        proc.wait = AsyncMock(return_value=0)
+        proc.kill = MagicMock()
+        proc.stdout = None
+        proc.stderr = None
+
+        # Should not raise
+        out, err = await _terminate_and_capture(proc, correlation_id="x", grace_seconds=1)
+        assert out == ""
+        assert err == ""
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" and sys.version_info < (3, 8),
+    reason="asyncio subprocess support requires proactor event loop on Windows",
+)
+class TestRunnerEnforcesTimeout:
+    """Integration-style test: a real hung subprocess gets terminated.
+
+    Covers TK-461 acceptance criteria:
+      (a) the process is terminated well before its natural exit
+      (b) the executor_runs DB row is marked status='timeout'
+      (c) partial stdout/stderr is captured (archive_run is called)
+    """
+
+    @pytest.mark.asyncio
+    async def test_runner_enforces_timeout(self, monkeypatch):
+        import agent.claude_code_runner as runner
+
+        # Keep the test quick: 2s wall-clock + 2s SIGTERM grace.
+        monkeypatch.setattr(runner.settings, "executor_max_runtime_seconds", 2)
+        monkeypatch.setattr(runner.settings, "executor_sigterm_grace_seconds", 2)
+
+        # Make _find_claude_binary return *something* truthy; the real command
+        # line is replaced below via the create_subprocess_exec patch.
+        monkeypatch.setattr(
+            runner, "_find_claude_binary", lambda: Path(sys.executable)
+        )
+
+        # Intercept DB writes so we can inspect them without touching SQLite.
+        db_records: list[dict] = []
+
+        def fake_record(**fields):
+            db_records.append(dict(fields))
+            return 1
+
+        monkeypatch.setattr(runner.executor_runs_db, "record_run", fake_record)
+
+        # Intercept archive_run so we can verify partial-output capture.
+        archives: list[dict] = []
+
+        def fake_archive(run_id, stdout, stderr, branch_name):
+            archives.append({
+                "run_id": run_id,
+                "stdout": stdout,
+                "stderr": stderr,
+                "branch": branch_name,
+            })
+            return Path("/fake/archive") / run_id
+
+        monkeypatch.setattr(runner.executor_runs_db, "archive_run", fake_archive)
+
+        # Skip real git branch detection — keeps the test deterministic on CI.
+        monkeypatch.setattr(runner, "_detect_branch", lambda cwd: "test-branch")
+
+        # Redirect the subprocess spawn at a hung python sleep. The args
+        # passed by run_claude_code (to /fake/claude) are discarded here.
+        real_create = asyncio.create_subprocess_exec
+
+        async def fake_create(*_args, **kwargs):
+            sleep_args = [
+                sys.executable,
+                "-u",
+                "-c",
+                "import sys, time; print('STARTED_MARKER', flush=True); "
+                "sys.stdout.flush(); time.sleep(120)",
+            ]
+            # Preserve stdout/stderr=PIPE + cwd + env so the runner can read pipes.
+            return await real_create(*sleep_args, **kwargs)
+
+        monkeypatch.setattr(
+            "asyncio.create_subprocess_exec", fake_create
+        )
+
+        t0 = _time.time()
+        success, output, duration = await runner.run_claude_code(
+            "test prompt", jira_key="TK-TEST"
+        )
+        elapsed = _time.time() - t0
+
+        # (a) Process was terminated — elapsed time is far less than the 120s sleep.
+        assert success is False
+        assert elapsed < 30, (
+            f"Expected prompt termination, but elapsed={elapsed:.1f}s — "
+            "the subprocess may not have been killed"
+        )
+        assert "timed out" in output.lower()
+
+        # (b) DB row marked status='timeout'.
+        timeout_rows = [r for r in db_records if r.get("status") == "timeout"]
+        assert len(timeout_rows) == 1, (
+            f"Expected exactly one timeout record, got records={db_records}"
+        )
+        assert timeout_rows[0].get("duration_ms", 0) > 0
+
+        # (c) Partial output capture mechanism ran — archive_run was called
+        # with the captured stdout/stderr strings. Content is best-effort
+        # (may depend on pipe buffering), but the call itself must happen.
+        assert len(archives) == 1
+        assert isinstance(archives[0]["stdout"], str)
+        assert isinstance(archives[0]["stderr"], str)
+
+
+class TestTimeoutIsConfigurable:
+    """Verify the wall-clock timeout comes from settings, not a hardcoded constant."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_reads_from_settings(self, monkeypatch):
+        """run_claude_code passes settings.executor_max_runtime_seconds to wait_for."""
+        import agent.claude_code_runner as runner
+
+        monkeypatch.setattr(
+            runner.settings, "executor_max_runtime_seconds", 4242
+        )
+
+        proc = _make_async_proc(returncode=0, stdout=b"ok")
+        captured_timeouts = []
+
+        async def fake_wait_for(coro, timeout):
+            captured_timeouts.append(timeout)
+            # Drain the underlying coroutine so it doesn't leak
+            try:
+                return await coro
+            except Exception:
+                return None
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary",
+            return_value=Path("/fake/claude"),
+        ):
+            with patch(
+                "asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+            ):
+                with patch("asyncio.wait_for", side_effect=fake_wait_for):
+                    await run_claude_code("hi")
+
+        assert 4242 in captured_timeouts

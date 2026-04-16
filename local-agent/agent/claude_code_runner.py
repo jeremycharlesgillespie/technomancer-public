@@ -31,14 +31,103 @@ from pathlib import Path
 from typing import Any
 
 from . import executor_runs_db
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
 # Project root for working directory
 PROJECT_ROOT: Path = Path(__file__).parent.parent.parent
 
-# Timeout for a single Claude Code turn (15 minutes)
+# Legacy default. Actual executor timeout is read from
+# ``settings.executor_max_runtime_seconds`` at call time so ops can tune it
+# without a code change.
 TASK_TIMEOUT: int = 900
+
+
+async def _drain_stream(stream: Any) -> str:
+    """Read any remaining bytes from a StreamReader after termination.
+
+    Best-effort: returns "" on any error or timeout. Used to capture partial
+    stdout/stderr from a subprocess we just SIGKILL'd.
+    """
+    if stream is None:
+        return ""
+    try:
+        data = await asyncio.wait_for(stream.read(), timeout=1)
+    except (asyncio.TimeoutError, Exception):
+        return ""
+    if isinstance(data, (bytes, bytearray)):
+        return data.decode("utf-8", errors="replace")
+    return ""
+
+
+async def _terminate_and_capture(
+    proc: Any,
+    correlation_id: str | None = None,
+    grace_seconds: int | None = None,
+) -> tuple[str, str]:
+    """Send SIGTERM, wait for graceful exit, escalate to SIGKILL if needed.
+
+    Captures any partial stdout/stderr from the subprocess pipes after it
+    exits so operators can see what the run was doing when it hung. Never
+    raises — all errors are swallowed so the calling timeout path stays
+    simple.
+
+    Args:
+        proc: An ``asyncio.subprocess.Process`` (or compatible mock).
+        correlation_id: Opaque ID (e.g. artifact run_id) included in log
+            entries so operators can trace a timeout back to its run.
+        grace_seconds: Seconds to wait after SIGTERM before escalating.
+            Defaults to ``settings.executor_sigterm_grace_seconds``.
+
+    Returns:
+        ``(stdout_partial, stderr_partial)`` as decoded strings — either may
+        be empty if no bytes were buffered or the read failed.
+    """
+    grace = (
+        grace_seconds if grace_seconds is not None
+        else settings.executor_sigterm_grace_seconds
+    )
+
+    try:
+        proc.terminate()
+    except (ProcessLookupError, OSError) as exc:
+        logger.debug(
+            "terminate() failed (correlation=%s): %s", correlation_id, exc
+        )
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=grace)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Subprocess did not exit %ds after SIGTERM — escalating to SIGKILL",
+            grace,
+            extra={
+                "correlation_id": correlation_id,
+                "event": "executor_sigkill",
+            },
+        )
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError) as exc:
+            logger.debug(
+                "kill() failed (correlation=%s): %s", correlation_id, exc
+            )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Subprocess still alive 5s after SIGKILL (correlation=%s)",
+                correlation_id,
+            )
+        except Exception:  # pragma: no cover — defensive
+            pass
+    except Exception:  # pragma: no cover — defensive
+        pass
+
+    stdout_partial = await _drain_stream(getattr(proc, "stdout", None))
+    stderr_partial = await _drain_stream(getattr(proc, "stderr", None))
+    return stdout_partial, stderr_partial
 
 
 def _safe_record(**fields: Any) -> int | None:
@@ -228,6 +317,8 @@ async def run_claude_code(
     env.pop("CLAUDECODE", None)
     env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
 
+    effective_timeout = settings.executor_max_runtime_seconds
+
     try:
         proc = await asyncio.create_subprocess_exec(
             str(binary),
@@ -241,7 +332,7 @@ async def run_claude_code(
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=TASK_TIMEOUT
+            proc.communicate(), timeout=effective_timeout
         )
 
         duration = time.time() - start
@@ -279,17 +370,33 @@ async def run_claude_code(
 
     except asyncio.TimeoutError:
         duration = time.time() - start
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        stdout_partial, stderr_partial = await _terminate_and_capture(
+            proc, correlation_id=artifact_run_id,
+        )
+        logger.warning(
+            "Claude Code run timed out after %ds — subprocess terminated",
+            effective_timeout,
+            extra={
+                "correlation_id": artifact_run_id,
+                "jira_key": jira_key,
+                "timeout_seconds": effective_timeout,
+                "event": "executor_timeout",
+            },
+        )
         _safe_record(
             id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="timeout",
         )
-        return False, f"Claude Code task timed out after {TASK_TIMEOUT}s", duration
+        _safe_archive(
+            artifact_run_id, stdout_partial, stderr_partial,
+            _detect_branch(work_dir),
+        )
+        msg = f"Claude Code task timed out after {effective_timeout}s"
+        if stdout_partial.strip():
+            msg += f"\nPartial output ({len(stdout_partial)} chars captured)"
+        return False, msg, duration
     except Exception as e:
         duration = time.time() - start
         _safe_record(
@@ -399,6 +506,7 @@ async def run_claude_chat(
         args.extend(["--resume", session_id])
 
     is_new = session_id is None
+    effective_timeout = settings.executor_max_runtime_seconds
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -410,7 +518,7 @@ async def run_claude_chat(
         )
 
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=TASK_TIMEOUT
+            proc.communicate(), timeout=effective_timeout
         )
 
         duration = time.time() - start
@@ -470,18 +578,34 @@ async def run_claude_chat(
 
     except asyncio.TimeoutError:
         duration = time.time() - start
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        stdout_partial, stderr_partial = await _terminate_and_capture(
+            proc, correlation_id=artifact_run_id,
+        )
+        logger.warning(
+            "Claude Code chat timed out after %ds — subprocess terminated",
+            effective_timeout,
+            extra={
+                "correlation_id": artifact_run_id,
+                "jira_key": jira_key,
+                "timeout_seconds": effective_timeout,
+                "event": "executor_timeout",
+            },
+        )
         _safe_record(
             id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="timeout",
         )
+        _safe_archive(
+            artifact_run_id, stdout_partial, stderr_partial,
+            _detect_branch(work_dir),
+        )
+        msg = f"Timed out after {effective_timeout}s"
+        if stdout_partial.strip():
+            msg += f"\nPartial output ({len(stdout_partial)} chars captured)"
         return ChatResult(
-            success=False, response=f"Timed out after {TASK_TIMEOUT}s",
+            success=False, response=msg,
             session_id=session_id or "", duration=duration,
             cost_usd=0, is_new_session=is_new,
         )
