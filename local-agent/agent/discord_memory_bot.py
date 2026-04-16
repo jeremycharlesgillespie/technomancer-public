@@ -805,6 +805,11 @@ Keep responses concise for Discord but thorough when they need depth.""",
     start_consistency_monitor(client, ALLOWED_CHANNEL)
     log("Knowledge consistency monitor started (daily, 3 AM)")
 
+    # Start nightly executor-runs purge (3 AM, 30-day retention)
+    from .executor_runs_db import start_purge_scheduler
+    start_purge_scheduler()
+    log("Executor-runs purge scheduler started (daily, 3 AM, 30-day retention)")
+
     # Register and sync slash commands with Discord
     from .slash_commands import setup_slash_commands
     await setup_slash_commands(client)

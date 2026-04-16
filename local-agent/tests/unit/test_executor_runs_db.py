@@ -1,7 +1,9 @@
 """Tests for agent.executor_runs_db — SQLite-backed executor run metadata."""
 
+import os
 import sqlite3
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -201,6 +203,182 @@ class TestWalMode:
         finally:
             writer.close()
             reader.close()
+
+
+class TestPurgeOldRuns:
+    """Retention policy: rows and artifacts older than N days are deleted."""
+
+    def _iso(self, days_ago: float) -> str:
+        return (datetime.now() - timedelta(days=days_ago)).isoformat(
+            sep=" ", timespec="seconds"
+        )
+
+    def test_old_rows_deleted(self):
+        """Rows older than the cutoff are removed."""
+        old_id = executor_runs_db.record_run(
+            jira_key="TK-old",
+            started_at=self._iso(days_ago=40),
+            status="success",
+        )
+        executor_runs_db.record_run(
+            jira_key="TK-recent",
+            started_at=self._iso(days_ago=1),
+            status="success",
+        )
+
+        deleted = executor_runs_db.purge_old_runs(30)
+
+        assert deleted == 1
+        remaining = {r["jira_key"] for r in executor_runs_db.get_recent()}
+        assert remaining == {"TK-recent"}
+        # The old row really is gone — not just hidden from get_recent
+        conn = executor_runs_db._get_conn()
+        row = conn.execute(
+            "SELECT id FROM executor_runs WHERE id = ?", (old_id,)
+        ).fetchone()
+        assert row is None
+
+    def test_recent_rows_retained(self):
+        """Rows inside the retention window must survive."""
+        ids = [
+            executor_runs_db.record_run(
+                jira_key=f"TK-{i}",
+                started_at=self._iso(days_ago=float(i)),
+                status="success",
+            )
+            for i in range(5)
+        ]
+
+        deleted = executor_runs_db.purge_old_runs(30)
+
+        assert deleted == 0
+        remaining_ids = {r["id"] for r in executor_runs_db.get_recent()}
+        assert remaining_ids == set(ids)
+
+    def test_returns_deleted_count(self):
+        """Purge returns the count of rows removed."""
+        for i in range(3):
+            executor_runs_db.record_run(
+                jira_key=f"TK-old-{i}",
+                started_at=self._iso(days_ago=90),
+                status="success",
+            )
+        executor_runs_db.record_run(
+            jira_key="TK-keep",
+            started_at=self._iso(days_ago=5),
+            status="success",
+        )
+
+        assert executor_runs_db.purge_old_runs(30) == 3
+
+    def test_boundary_same_day_not_deleted(self):
+        """A row less than N days old is retained."""
+        executor_runs_db.record_run(
+            jira_key="TK-boundary",
+            started_at=self._iso(days_ago=29.5),
+            status="success",
+        )
+        assert executor_runs_db.purge_old_runs(30) == 0
+
+    def test_null_started_at_is_not_deleted(self):
+        """Rows with no started_at shouldn't match the cutoff — safer default."""
+        conn = executor_runs_db._get_conn()
+        conn.execute(
+            "INSERT INTO executor_runs (jira_key, started_at, status) "
+            "VALUES (?, NULL, ?)",
+            ("TK-null", "running"),
+        )
+        conn.commit()
+
+        assert executor_runs_db.purge_old_runs(30) == 0
+        rows = conn.execute(
+            "SELECT jira_key FROM executor_runs WHERE jira_key = 'TK-null'"
+        ).fetchall()
+        assert len(rows) == 1
+
+    def test_archived_files_older_than_cutoff_removed(self, tmp_path, monkeypatch):
+        """Files in ARTIFACTS_DIR older than cutoff are unlinked on disk."""
+        artifacts = tmp_path / "executor_artifacts"
+        artifacts.mkdir()
+        monkeypatch.setattr(executor_runs_db, "ARTIFACTS_DIR", artifacts)
+
+        old_run = artifacts / "20260101-120000-TK-old"
+        old_run.mkdir()
+        old_stdout = old_run / "stdout.log"
+        old_stderr = old_run / "stderr.log"
+        old_stdout.write_text("old", encoding="utf-8")
+        old_stderr.write_text("old", encoding="utf-8")
+
+        new_run = artifacts / "20260416-120000-TK-new"
+        new_run.mkdir()
+        new_stdout = new_run / "stdout.log"
+        new_stdout.write_text("new", encoding="utf-8")
+
+        # Backdate the old run's files by 45 days (well past 30-day cutoff).
+        ancient_ts = time.time() - (45 * 86400)
+        os.utime(old_stdout, (ancient_ts, ancient_ts))
+        os.utime(old_stderr, (ancient_ts, ancient_ts))
+
+        executor_runs_db.purge_old_runs(30)
+
+        assert not old_stdout.exists()
+        assert not old_stderr.exists()
+        # Empty directory is cleaned up too
+        assert not old_run.exists()
+        # Recent run is untouched
+        assert new_stdout.exists()
+        assert new_run.exists()
+
+    def test_missing_artifacts_dir_is_safe(self, tmp_path, monkeypatch):
+        """Purge must not raise if ARTIFACTS_DIR doesn't exist."""
+        missing = tmp_path / "does-not-exist"
+        monkeypatch.setattr(executor_runs_db, "ARTIFACTS_DIR", missing)
+        # No DB rows either — just ensure no exception
+        assert executor_runs_db.purge_old_runs(30) == 0
+
+    def test_zero_days_purges_everything(self):
+        """days=0 deletes every row (sanity check for boundary)."""
+        executor_runs_db.record_run(
+            jira_key="TK-a",
+            started_at=self._iso(days_ago=0.01),
+            status="success",
+        )
+        executor_runs_db.record_run(
+            jira_key="TK-b",
+            started_at=self._iso(days_ago=1),
+            status="success",
+        )
+        # Sleep a moment so 'now' advances past the inserted timestamps
+        time.sleep(1.1)
+        assert executor_runs_db.purge_old_runs(0) == 2
+
+
+class TestPurgeCli:
+    """CLI entry point: ``python -m agent.executor_runs_db purge <days>``."""
+
+    def test_purge_prints_deleted_count(self, capsys):
+        executor_runs_db.record_run(
+            jira_key="TK-old-cli",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(
+                sep=" ", timespec="seconds"
+            ),
+            status="success",
+        )
+
+        exit_code = executor_runs_db._main(["purge", "30"])
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        assert "Deleted 1" in out
+        assert "30 day" in out
+
+    def test_purge_rejects_non_integer_days(self, capsys):
+        assert executor_runs_db._main(["purge", "abc"]) == 2
+        assert "must be an integer" in capsys.readouterr().out
+
+    def test_usage_printed_for_unknown_command(self, capsys):
+        assert executor_runs_db._main([]) == 2
+        assert "usage:" in capsys.readouterr().out
 
 
 class TestStartThenCompleteFlow:

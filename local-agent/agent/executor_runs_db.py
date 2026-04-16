@@ -34,7 +34,8 @@ import shutil
 import sqlite3
 import subprocess
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -317,3 +318,174 @@ def prune_old_artifacts(keep: int = MAX_ARTIFACTS) -> int:
         except OSError:
             log.warning("Failed to prune artifact dir %s", path, exc_info=True)
     return deleted
+
+
+# ---------------------------------------------------------------------------
+# Retention / rotation policy
+# ---------------------------------------------------------------------------
+
+# Default retention window used by the nightly scheduler.
+RETENTION_DAYS = 30
+# Local hour (24h) at which the nightly purge fires.
+PURGE_HOUR = 3
+
+
+def _purge_old_artifact_files(cutoff_ts: float) -> int:
+    """Unlink archived files whose mtime is older than ``cutoff_ts``.
+
+    Walks ``ARTIFACTS_DIR/<run_id>/*`` — any file whose modification time
+    predates the cutoff is deleted. Run directories left empty afterwards
+    are removed too so the archive doesn't accumulate stub folders.
+
+    Returns the number of files (not directories) that were unlinked.
+    """
+    if not ARTIFACTS_DIR.exists():
+        return 0
+    removed = 0
+    for run_dir in ARTIFACTS_DIR.iterdir():
+        if not run_dir.is_dir():
+            continue
+        for entry in list(run_dir.iterdir()):
+            if not entry.is_file():
+                continue
+            try:
+                if entry.stat().st_mtime < cutoff_ts:
+                    entry.unlink()
+                    removed += 1
+            except OSError:
+                log.warning(
+                    "Failed to purge artifact file %s", entry, exc_info=True
+                )
+        # Best-effort: drop the directory if we emptied it.
+        try:
+            next(run_dir.iterdir())
+        except StopIteration:
+            try:
+                run_dir.rmdir()
+            except OSError:
+                log.debug(
+                    "Failed to remove empty artifact dir %s", run_dir,
+                    exc_info=True,
+                )
+        except OSError:
+            pass
+    return removed
+
+
+def purge_old_runs(days: int) -> int:
+    """Delete executor_runs rows and archived files older than ``days``.
+
+    DB rows are removed when ``started_at`` predates ``datetime('now', '-N days')``
+    using a parametrized SQL comparison. On-disk artifacts under
+    :data:`ARTIFACTS_DIR` are also pruned by mtime so the archive stays
+    bounded alongside the DB.
+
+    Args:
+        days: Retention window in days. Rows or files older than this are
+            deleted. Must be non-negative — negative values are clamped to 0
+            (which would wipe everything, so callers should pick deliberately).
+
+    Returns:
+        Number of database rows deleted. File deletions are logged but not
+        included in the return value so callers can reason about DB state
+        directly.
+    """
+    days = max(int(days), 0)
+    init_db()
+    conn = _get_conn()
+
+    # Compute the cutoff in Python local time — record_run writes started_at
+    # via datetime.now().isoformat(), which is local time, so comparing
+    # against SQLite's UTC-based datetime('now') would drift by the local
+    # UTC offset.
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat(
+        sep=" ", timespec="seconds"
+    )
+    cursor = conn.execute(
+        "DELETE FROM executor_runs "
+        "WHERE started_at IS NOT NULL "
+        "AND datetime(started_at) < datetime(?)",
+        (cutoff,),
+    )
+    deleted_rows = cursor.rowcount or 0
+    conn.commit()
+
+    cutoff_ts = time.time() - (days * 86400)
+    files_removed = _purge_old_artifact_files(cutoff_ts)
+
+    log.info(
+        "purge_old_runs: deleted %d row(s) and %d artifact file(s) older "
+        "than %d day(s)",
+        deleted_rows, files_removed, days,
+    )
+    return deleted_rows
+
+
+def _seconds_until_purge(hour: int = PURGE_HOUR) -> float:
+    """Seconds until the next local ``hour:00`` boundary."""
+    now = datetime.now()
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max((target - now).total_seconds(), 60)
+
+
+def start_purge_scheduler(days: int = RETENTION_DAYS, hour: int = PURGE_HOUR) -> None:
+    """Schedule :func:`purge_old_runs` to run every day at ``hour:00`` local.
+
+    Creates a monitored asyncio task that sleeps until the next boundary,
+    runs the purge in a worker thread (so SQLite and filesystem I/O don't
+    block the event loop), then sleeps 24h to the next run.
+
+    Safe to call multiple times — each call registers a separate task, so
+    only invoke it once from the bot startup path.
+    """
+    import asyncio
+    from .task_manager import create_monitored_task
+
+    async def _loop() -> None:
+        log.info(
+            "[purge_old_runs] scheduled daily at %02d:00 (retention: %d days)",
+            hour, days,
+        )
+        while True:
+            wait = _seconds_until_purge(hour)
+            log.info(
+                "[purge_old_runs] next run in %.1f hours", wait / 3600,
+            )
+            await asyncio.sleep(wait)
+            try:
+                deleted = await asyncio.to_thread(purge_old_runs, days)
+                log.info("[purge_old_runs] nightly purge deleted %d row(s)", deleted)
+            except Exception:
+                log.exception("[purge_old_runs] nightly purge failed")
+            # Sleep past the trigger boundary before recomputing the next wait.
+            await asyncio.sleep(120)
+
+    create_monitored_task(_loop(), "executor-runs-purge", critical=False)
+
+
+# ---------------------------------------------------------------------------
+# CLI: ``python -m agent.executor_runs_db purge <days>``
+# ---------------------------------------------------------------------------
+
+
+def _main(argv: list[str]) -> int:
+    """CLI entry point — supports ``purge <days>`` for manual invocation."""
+    if len(argv) >= 2 and argv[0] == "purge":
+        try:
+            days = int(argv[1])
+        except ValueError:
+            print(f"error: days must be an integer, got {argv[1]!r}")
+            return 2
+        deleted = purge_old_runs(days)
+        print(f"Deleted {deleted} row(s) older than {days} day(s)")
+        return 0
+    print("usage: python -m agent.executor_runs_db purge <days>")
+    return 2
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(_main(sys.argv[1:]))
