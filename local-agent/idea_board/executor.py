@@ -1666,6 +1666,7 @@ def execute_idea(
                     state.log(
                         f"Launching Claude to fix (retry {attempt}/{MAX_FIX_RETRIES})..."
                     )
+                    _sync_progress_comment(idea_id, state)
                     _notify_discord(
                         f"[{idea_id}] Tests/validation failed. "
                         f"Retry {attempt}/{MAX_FIX_RETRIES}..."
@@ -1757,6 +1758,7 @@ def execute_idea(
                     state.log(
                         f"Fix attempt {attempt} complete. Re-validating..."
                     )
+                    _sync_progress_comment(idea_id, state)
                     continue  # Back to top of retry loop
 
                 elif failure_output:
