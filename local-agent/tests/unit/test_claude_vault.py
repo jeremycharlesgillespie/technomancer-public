@@ -602,3 +602,153 @@ class TestCostTracking:
 
         assert response == "Mock response from Claude"
         assert cost.startswith("$")
+
+
+# =============================================================================
+# TESTS: EPHEMERAL PROMPT CACHING BEHAVIOR
+# =============================================================================
+
+
+class TestEphemeralCaching:
+    """Verify the ephemeral prompt-cache breakpoint is correctly placed.
+
+    The cached prefix must end with a cache_control: ephemeral marker so
+    Anthropic keys the prompt cache on the static system blocks and the
+    dynamic per-call content (user query) stays OUT of the cached prefix.
+    """
+
+    def test_finalize_cache_breakpoint_places_marker_on_last_block(self):
+        """_finalize_cache_breakpoint marks only the last block."""
+        from agent.claude_vault import _finalize_cache_breakpoint
+
+        blocks = [
+            {"type": "text", "text": "a"},
+            {"type": "text", "text": "b"},
+            {"type": "text", "text": "c"},
+        ]
+        result = _finalize_cache_breakpoint(blocks)
+
+        assert "cache_control" not in result[0]
+        assert "cache_control" not in result[1]
+        assert result[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_finalize_cache_breakpoint_strips_earlier_markers(self):
+        """Stray cache_control on earlier blocks is removed."""
+        from agent.claude_vault import _finalize_cache_breakpoint
+
+        blocks = [
+            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "c"},
+        ]
+        result = _finalize_cache_breakpoint(blocks)
+
+        assert "cache_control" not in result[0]
+        assert "cache_control" not in result[1]
+        assert result[-1]["cache_control"] == {"type": "ephemeral"}
+
+    def test_finalize_cache_breakpoint_handles_empty(self):
+        """Empty list is safe to finalize."""
+        from agent.claude_vault import _finalize_cache_breakpoint
+
+        assert _finalize_cache_breakpoint([]) == []
+
+    def test_build_cached_prefix_marker_only_on_last_block(self, vault_with_profile):
+        """Exactly one cache_control marker, on the last block."""
+        from agent.claude_vault import build_cached_prefix
+
+        vault_path = vault_with_profile / "LLM Memory"
+        blocks = build_cached_prefix(vault_path)
+
+        marked = [b for b in blocks if "cache_control" in b]
+        assert len(marked) == 1
+        assert marked[0] is blocks[-1]
+        assert marked[0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_build_cached_prefix_marker_when_memories_missing(self, temp_vault):
+        """Cache marker is on the last block even when memories.md is absent."""
+        from agent.claude_vault import build_cached_prefix
+
+        vault_path = temp_vault / "LLM Memory"
+        blocks = build_cached_prefix(vault_path)
+
+        assert blocks[-1]["cache_control"] == {"type": "ephemeral"}
+        marked = [b for b in blocks if "cache_control" in b]
+        assert len(marked) == 1
+
+    def test_ask_passes_cache_control_on_last_system_block(
+        self, patched_claude_vault, mock_anthropic_with_cache
+    ):
+        """The system payload sent to Anthropic has cache_control on its last block."""
+        from agent.claude_vault import ClaudeVaultSession
+
+        session = ClaudeVaultSession(vault_path=patched_claude_vault)
+        session.ask("What is my name?")
+
+        call = mock_anthropic_with_cache.messages.call_history[0]
+        system = call["system"]
+        assert isinstance(system, list) and len(system) >= 1
+        assert system[-1].get("cache_control") == {"type": "ephemeral"}
+        # And no earlier block carries the marker
+        for block in system[:-1]:
+            assert "cache_control" not in block
+
+    def test_ask_keeps_dynamic_query_out_of_system(
+        self, patched_claude_vault, mock_anthropic_with_cache
+    ):
+        """The user question goes into messages, never into the cached system prefix."""
+        from agent.claude_vault import ClaudeVaultSession
+
+        question = "UNIQUE_MARKER_abc123 tell me a joke"
+        session = ClaudeVaultSession(vault_path=patched_claude_vault)
+        session.ask(question)
+
+        call = mock_anthropic_with_cache.messages.call_history[0]
+        system_text = "".join(b.get("text", "") for b in call["system"])
+        assert "UNIQUE_MARKER_abc123" not in system_text
+
+        messages = call["messages"]
+        assert any(
+            "UNIQUE_MARKER_abc123" in (m.get("content") if isinstance(m.get("content"), str) else "")
+            for m in messages
+        )
+
+    def test_ask_with_tools_passes_cache_control_on_last_system_block(
+        self, patched_claude_vault, mock_anthropic_with_cache
+    ):
+        """ask_with_tools also sends cache_control on the last system block."""
+        from agent.claude_vault import ClaudeVaultSession
+
+        # Mock returns text-only response so the agentic loop terminates in one turn
+        session = ClaudeVaultSession(vault_path=patched_claude_vault)
+        session.ask_with_tools("Do a task", max_turns=1)
+
+        call = mock_anthropic_with_cache.messages.call_history[0]
+        system = call["system"]
+        assert system[-1].get("cache_control") == {"type": "ephemeral"}
+
+    def test_cache_hit_tracked_across_successive_calls(
+        self, patched_claude_vault, mock_anthropic_with_cache
+    ):
+        """Two successive calls accumulate cache_read_input_tokens — proves the
+        caching path is wired into usage tracking (simulates Anthropic returning
+        a cache hit on the second call within the 5-minute TTL window)."""
+        from agent.claude_vault import ClaudeVaultSession
+
+        session = ClaudeVaultSession(vault_path=patched_claude_vault)
+        session.ask("First question")
+        first_read = session.last_cache_read_tokens
+
+        session.ask("Second question")
+        second_read = session.last_cache_read_tokens
+
+        # Both calls see cache_read tokens in the mocked usage
+        assert first_read > 0
+        assert second_read > 0
+        # Cumulative tracker sums across calls
+        assert session.total_cache_read_tokens == first_read + second_read
+        # The same cached prefix is reused (not rebuilt) between calls
+        assert len(mock_anthropic_with_cache.messages.call_history) == 2
+        sys1 = mock_anthropic_with_cache.messages.call_history[0]["system"]
+        sys2 = mock_anthropic_with_cache.messages.call_history[1]["system"]
+        assert sys1 is sys2 or sys1 == sys2

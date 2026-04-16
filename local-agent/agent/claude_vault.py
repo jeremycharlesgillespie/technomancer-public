@@ -164,18 +164,39 @@ def build_user_summary(vault_path: Path) -> str:
     return "\n".join(summary_parts)
 
 
+def _finalize_cache_breakpoint(blocks: list[dict]) -> list[dict]:
+    """Place a single ephemeral cache_control marker on the last static block.
+
+    The Anthropic prompt cache keys on the prefix ending at each
+    cache_control marker. We want exactly one breakpoint, on the final
+    static block, so the whole system prefix is cached as a unit and
+    dynamic per-call content (user query, recent context) stays OUT of
+    the cached prefix — it belongs in `messages`.
+    """
+    if not blocks:
+        return blocks
+    for block in blocks[:-1]:
+        block.pop("cache_control", None)
+    blocks[-1]["cache_control"] = {"type": "ephemeral"}
+    return blocks
+
+
 def build_cached_prefix(vault_path: Path) -> list[dict]:
     """
-    Build system prompt blocks with cache breakpoints.
+    Build system prompt blocks with a single ephemeral cache breakpoint.
 
-    Structure:
-    1. Core instructions (always sent, ~100 tokens)
+    Structure (all static — rebuilt at most once per hour):
+    1. Core instructions (~100 tokens)
     2. User profile quick reference (~200 tokens)
-    3. Full resume + facts with cache_control (~3,500 tokens)
+    3. Full resume + facts (~3,500 tokens)
+
+    The final block always carries cache_control: ephemeral so the entire
+    prefix is cached together. Per-call dynamic content (user question,
+    recent conversation context) is passed via `messages`, not `system`.
 
     Returns list of content blocks for system parameter.
     """
-    blocks = []
+    blocks: list[dict] = []
 
     # Block 1: Core instructions
     core_instructions = """You are Claude, assisting a user whose profile and history are provided below.
@@ -198,7 +219,7 @@ Be concise and helpful. Reference the user's background when relevant."""
     except Exception as e:
         blocks.append({"type": "text", "text": f"[Profile unavailable: {e}]"})
 
-    # Block 3: Full permanent memories with cache control
+    # Block 3: Full permanent memories
     memories_file = vault_path / "Permanent" / "memories.md"
     if memories_file.exists():
         try:
@@ -211,27 +232,14 @@ Be concise and helpful. Reference the user's background when relevant."""
                 {
                     "type": "text",
                     "text": f"## Permanent Knowledge\n\n{memories_content}",
-                    "cache_control": {"type": "ephemeral"},
                 }
             )
         except Exception as e:
-            blocks.append(
-                {
-                    "type": "text",
-                    "text": f"[Memories unavailable: {e}]",
-                    "cache_control": {"type": "ephemeral"},
-                }
-            )
+            blocks.append({"type": "text", "text": f"[Memories unavailable: {e}]"})
     else:
-        blocks.append(
-            {
-                "type": "text",
-                "text": "[No permanent memories found]",
-                "cache_control": {"type": "ephemeral"},
-            }
-        )
+        blocks.append({"type": "text", "text": "[No permanent memories found]"})
 
-    return blocks
+    return _finalize_cache_breakpoint(blocks)
 
 
 # =============================================================================
