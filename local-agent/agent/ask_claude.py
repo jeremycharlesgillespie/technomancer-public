@@ -3,11 +3,12 @@ Ask Claude - Use the Anthropic SDK to get responses from Claude.
 
 The public ``ask_claude(question, context)`` function is unchanged so
 existing callers and tool wiring do not need updates. Internally this
-now calls ``anthropic.Anthropic().messages.create`` directly instead of
-shelling out to the ``claude -p`` CLI, which removes subprocess startup
-cost and enables future use of prompt caching.
+calls ``anthropic.Anthropic().messages.create`` directly and attaches
+an ephemeral prompt-cache breakpoint to the static system prompt so
+repeated calls within 5 minutes read from Anthropic's prompt cache.
 """
 
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +21,8 @@ except ImportError:
 
 from .config import settings
 
+logger = logging.getLogger(__name__)
+
 # Log file for tracking Claude queries
 LOG_FILE = Path(__file__).parent.parent / "claude_queries.log"
 
@@ -28,6 +31,23 @@ DEFAULT_MODEL = "claude-sonnet-4-20250514"
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_TIMEOUT = 120.0  # seconds — matches prior subprocess timeout
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Answer clearly and concisely."
+
+
+def _build_system_blocks(prompt: str = DEFAULT_SYSTEM_PROMPT) -> list[dict]:
+    """Return system content blocks with an ephemeral cache breakpoint.
+
+    Anthropic caches the system prefix up to each cache_control marker.
+    The prompt here is static across calls, so a single ephemeral
+    breakpoint on the block lets calls within the 5-minute TTL hit the
+    cache and pay the discounted cache_read rate instead of full input.
+    """
+    return [
+        {
+            "type": "text",
+            "text": prompt,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
 
 # Lazy module-level client singleton.
 _client: "anthropic.Anthropic | None" = None
@@ -44,6 +64,31 @@ def _get_client() -> "anthropic.Anthropic | None":
         return None
     _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     return _client
+
+
+def _log_cache_usage(response: object) -> None:
+    """Debug-log prompt cache token counts so hits are verifiable.
+
+    Never raises — if the response shape is unexpected the helper just
+    returns quietly so a logging hiccup can't break a user-facing call.
+    """
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_write = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        input_tokens = getattr(usage, "input_tokens", 0) or 0
+        output_tokens = getattr(usage, "output_tokens", 0) or 0
+        logger.debug(
+            "ask_claude usage: cache_read=%d cache_write=%d input=%d output=%d",
+            cache_read,
+            cache_write,
+            input_tokens,
+            output_tokens,
+        )
+    except Exception:
+        return
 
 
 def log_query(question: str, response: str, success: bool) -> None:
@@ -86,10 +131,11 @@ def ask_claude(question: str, context: str = "") -> str:
         response = client.messages.create(
             model=DEFAULT_MODEL,
             max_tokens=DEFAULT_MAX_TOKENS,
-            system=DEFAULT_SYSTEM_PROMPT,
+            system=_build_system_blocks(),
             messages=[{"role": "user", "content": full_prompt}],
             timeout=DEFAULT_TIMEOUT,
         )
+        _log_cache_usage(response)
         text = response.content[0].text.strip()
         log_query(question, text, True)
         return text

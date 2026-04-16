@@ -104,7 +104,7 @@ class TestAskClaudeBasic:
         assert result == "Hello world"
 
     def test_sends_expected_payload(self, mock_ask_claude_client, patched_log_file):
-        """messages.create should be called with model, system, and user messages."""
+        """messages.create should be called with model, system blocks, and user messages."""
         from agent.ask_claude import DEFAULT_MODEL, DEFAULT_SYSTEM_PROMPT, ask_claude
 
         ask_claude("What is 2+2?")
@@ -112,7 +112,10 @@ class TestAskClaudeBasic:
         assert len(mock_ask_claude_client.messages.call_history) == 1
         call = mock_ask_claude_client.messages.call_history[0]
         assert call["model"] == DEFAULT_MODEL
-        assert call["system"] == DEFAULT_SYSTEM_PROMPT
+        # system is now a list of content blocks (for cache_control) not a bare string
+        assert isinstance(call["system"], list)
+        assert call["system"][0]["type"] == "text"
+        assert call["system"][0]["text"] == DEFAULT_SYSTEM_PROMPT
         assert call["max_tokens"] == 4096
         assert call["messages"] == [{"role": "user", "content": "What is 2+2?"}]
 
@@ -169,6 +172,98 @@ class TestAskClaudeBasic:
         content = patched_log_file.read_text(encoding="utf-8")
         assert "SUCCESS" in content
         assert "ping" in content
+
+
+# =============================================================================
+# TESTS: prompt caching
+# =============================================================================
+
+
+class TestPromptCaching:
+    """Verify ephemeral cache_control is attached to the static system prompt."""
+
+    def test_cache_control_on_system_prompt(
+        self, mock_ask_claude_client, patched_log_file
+    ):
+        """The system prompt block must carry cache_control: ephemeral."""
+        from agent.ask_claude import ask_claude
+
+        ask_claude("hi")
+
+        call = mock_ask_claude_client.messages.call_history[0]
+        system = call["system"]
+        assert isinstance(system, list) and len(system) >= 1
+        # Exactly one breakpoint, on the static block
+        assert system[-1].get("cache_control") == {"type": "ephemeral"}
+
+    def test_system_prompt_is_single_static_block(
+        self, mock_ask_claude_client, patched_log_file
+    ):
+        """Only one block — the dynamic user question belongs in messages, not system."""
+        from agent.ask_claude import DEFAULT_SYSTEM_PROMPT, ask_claude
+
+        ask_claude("unique question text")
+
+        call = mock_ask_claude_client.messages.call_history[0]
+        assert len(call["system"]) == 1
+        assert call["system"][0]["text"] == DEFAULT_SYSTEM_PROMPT
+        # User content must NOT leak into the cached prefix
+        assert "unique question text" not in call["system"][0]["text"]
+
+    def test_build_system_blocks_shape(self):
+        """_build_system_blocks returns one text block with ephemeral cache_control."""
+        from agent.ask_claude import DEFAULT_SYSTEM_PROMPT, _build_system_blocks
+
+        blocks = _build_system_blocks()
+
+        assert blocks == [
+            {
+                "type": "text",
+                "text": DEFAULT_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    def test_cache_usage_logged_at_debug(
+        self, mock_ask_claude_client, patched_log_file, caplog
+    ):
+        """Cache read/write token counts are emitted as a debug log line."""
+        import logging
+
+        # Return a response with a usage object exposing cache token counts
+        usage = MagicMock()
+        usage.cache_read_input_tokens = 1234
+        usage.cache_creation_input_tokens = 0
+        usage.input_tokens = 42
+        usage.output_tokens = 7
+
+        orig_create = mock_ask_claude_client.messages.create
+
+        def create_with_usage(**kwargs):
+            resp = orig_create(**kwargs)
+            resp.usage = usage
+            return resp
+
+        mock_ask_claude_client.messages.create = create_with_usage
+
+        from agent.ask_claude import ask_claude
+
+        with caplog.at_level(logging.DEBUG, logger="agent.ask_claude"):
+            ask_claude("hello")
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("cache_read=1234" in m for m in messages)
+
+    def test_cache_usage_logging_tolerates_missing_usage(
+        self, mock_ask_claude_client, patched_log_file
+    ):
+        """When the response has no usage attribute, the call still succeeds."""
+        from agent.ask_claude import ask_claude
+
+        # Default mock response has no .usage — should not crash
+        result = ask_claude("hi")
+
+        assert result == "Claude's answer"
 
 
 # =============================================================================
