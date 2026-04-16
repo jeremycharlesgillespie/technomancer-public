@@ -2446,6 +2446,522 @@ def aim_dashboard() -> str:
     return _render_aim_dashboard()
 
 
+# ---------------------------------------------------------------------------
+# AI Dev Team Dashboard — /aim/dashboard
+# ---------------------------------------------------------------------------
+# Single-page health view that polls /api/aim/backlog, /api/aim/commits, and
+# /api/aim/metrics and renders four bands: current work, backlog counts, two
+# Chart.js charts, and two commit columns.  See the parent epic's Decision 6
+# for the locked-in layout and Decision 5 for polling intervals.
+
+_AIM_TEAM_DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Dev Team Dashboard</title>
+<style>
+:root {
+  --bg: #1a1a1a; --surface: #252525; --surface-2: #2d2d2d; --text: #e0e0e0;
+  --muted: #888; --accent: #66b3ff; --green: #4caf50; --red: #f44336;
+  --yellow: #ffb74d; --border: #333;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { color: var(--accent); font-size: 1.4rem; }
+h2 { font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
+     letter-spacing: 0.08em; margin-bottom: 0.5rem; }
+h3 { font-size: 0.9rem; color: var(--accent); margin-bottom: 0.5rem; }
+
+.page-header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  flex-wrap: wrap; gap: 1rem; margin-bottom: 1rem;
+  padding-bottom: 0.75rem; border-bottom: 1px solid var(--border);
+}
+.page-header .subtitle { color: var(--muted); font-size: 0.85rem; }
+
+#window-selector { display: flex; gap: 0.25rem; }
+#window-selector button {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  padding: 0.3rem 0.7rem; font-size: 0.8rem; border-radius: 6px; cursor: pointer;
+  font-family: inherit;
+}
+#window-selector button:hover { background: var(--surface-2); }
+#window-selector button.active {
+  background: var(--accent); color: #0a1a2a; border-color: var(--accent);
+  font-weight: 600;
+}
+
+section { margin-bottom: 1.25rem; }
+
+/* Band 1: Current work */
+#current-work {
+  background: var(--surface); border-radius: 10px; padding: 1rem 1.2rem;
+  border-left: 4px solid var(--muted);
+}
+#current-work.active { border-left-color: var(--yellow); }
+#current-work-body {
+  font-size: 1rem;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  word-break: break-word;
+}
+#current-work-body a { font-weight: 600; }
+#current-work-body .cw-title { color: var(--text); }
+#current-work-body .cw-elapsed { color: var(--muted); font-size: 0.85rem; }
+#current-work-body.idle { color: var(--muted); font-style: italic; }
+
+/* Band 2: Backlog counts */
+#backlog-counts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.count-tile {
+  background: var(--surface); border-radius: 10px; padding: 0.9rem 1rem;
+  border-left: 4px solid var(--muted); text-align: left;
+}
+.count-tile .count-value {
+  font-size: 1.8rem; font-weight: 700; color: var(--text);
+  font-family: 'Cascadia Code', 'Fira Code', monospace; line-height: 1.1;
+}
+.count-tile .count-label {
+  font-size: 0.7rem; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.05em; margin-top: 0.25rem;
+}
+.count-tile.accent-blue { border-left-color: var(--accent); }
+.count-tile.accent-yellow { border-left-color: var(--yellow); }
+.count-tile.accent-green { border-left-color: var(--green); }
+.count-tile.accent-red { border-left-color: var(--red); }
+
+/* Band 3: Charts */
+#charts {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+}
+.chart-box {
+  background: var(--surface); border-radius: 10px; padding: 1rem;
+  min-height: 280px; position: relative;
+}
+.chart-box canvas { width: 100% !important; max-height: 260px; }
+
+/* Band 4: Commits */
+#commits {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+}
+.commit-col {
+  background: var(--surface); border-radius: 10px; padding: 1rem;
+}
+.commit-list { list-style: none; display: flex; flex-direction: column;
+               gap: 0.35rem; font-size: 0.82rem; }
+.commit-list li {
+  padding: 0.4rem 0.5rem; border-radius: 6px; background: var(--surface-2);
+  font-family: 'Cascadia Code', 'Fira Code', monospace; word-break: break-word;
+}
+.commit-list .sha { color: var(--accent); margin-right: 0.5rem; }
+.commit-list .subject { color: var(--text); }
+.commit-list .meta { display: block; color: var(--muted);
+                     font-size: 0.72rem; margin-top: 0.15rem; }
+.commit-empty { color: var(--muted); font-style: italic; font-size: 0.85rem; }
+
+#footer-status {
+  margin-top: 1rem; color: var(--muted); font-size: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  #charts, #commits { grid-template-columns: 1fr; }
+  #backlog-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .count-tile .count-value { font-size: 1.4rem; }
+}
+@media (max-width: 520px) {
+  body { padding: 12px; }
+  #backlog-counts { grid-template-columns: 1fr 1fr; }
+}
+</style>
+</head>
+<body>
+  <div class="page-header">
+    <div>
+      <h1>AI Dev Team Dashboard</h1>
+      <div class="subtitle">
+        <a href="/">&larr; Hub</a> &middot;
+        <a href="/aim">AIM timeline</a> &middot;
+        Health &amp; throughput at a glance
+      </div>
+    </div>
+    <div id="window-selector" role="tablist" aria-label="Time window">
+      <button type="button" data-hours="1">1h</button>
+      <button type="button" data-hours="6">6h</button>
+      <button type="button" data-hours="24" class="active">24h</button>
+      <button type="button" data-hours="168">7d</button>
+    </div>
+  </div>
+
+  <section id="current-work" aria-label="Current work">
+    <h2>Current Work</h2>
+    <div id="current-work-body" class="idle">loading&hellip;</div>
+  </section>
+
+  <section id="backlog-counts" aria-label="Backlog counts">
+    <div class="count-tile accent-blue">
+      <div class="count-value" id="count-todo">&mdash;</div>
+      <div class="count-label">To Do</div>
+    </div>
+    <div class="count-tile accent-yellow">
+      <div class="count-value" id="count-in-progress">&mdash;</div>
+      <div class="count-label">In Progress</div>
+    </div>
+    <div class="count-tile accent-green">
+      <div class="count-value" id="count-done-today">&mdash;</div>
+      <div class="count-label">Done Today</div>
+    </div>
+    <div class="count-tile accent-red">
+      <div class="count-value" id="count-failed-today">&mdash;</div>
+      <div class="count-label">Failed Today</div>
+    </div>
+    <div class="count-tile">
+      <div class="count-value" id="count-veto">&mdash;</div>
+      <div class="count-label">Veto Total</div>
+    </div>
+  </section>
+
+  <section id="charts" aria-label="Throughput and reliability charts">
+    <div class="chart-box">
+      <h3>Completions per hour</h3>
+      <canvas id="completions-chart"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>Success vs failure</h3>
+      <canvas id="success-failure-chart"></canvas>
+    </div>
+  </section>
+
+  <section id="commits" aria-label="Recent commits">
+    <div class="commit-col">
+      <h3>Private repo</h3>
+      <ul class="commit-list" id="private-commits">
+        <li class="commit-empty">loading&hellip;</li>
+      </ul>
+    </div>
+    <div class="commit-col">
+      <h3>Public repo</h3>
+      <ul class="commit-list" id="public-commits">
+        <li class="commit-empty">loading&hellip;</li>
+      </ul>
+    </div>
+  </section>
+
+  <div id="footer-status">
+    Polling: backlog 10s &middot; commits 30s &middot; metrics 60s.
+    Endpoints: /api/aim/backlog, /api/aim/commits, /api/aim/metrics.
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+(function() {
+  "use strict";
+
+  // Decision 5: polling intervals
+  const BACKLOG_POLL_MS = 10000;
+  const COMMITS_POLL_MS = 30000;
+  const METRICS_POLL_MS = 60000;
+
+  let currentHours = 24;
+  let completionsChart = null;
+  let successFailureChart = null;
+  let elapsedTimer = null;
+  let currentWorkStartedAt = null;
+
+  function formatElapsed(secs) {
+    if (secs < 60) return secs + 's';
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm ' + (secs % 60) + 's';
+    const hrs = Math.floor(mins / 60);
+    return hrs + 'h ' + (mins % 60) + 'm';
+  }
+
+  function formatTimestampLabel(iso) {
+    try {
+      const d = new Date(iso);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      if (currentHours >= 48) {
+        const mo = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return mo + '-' + day + ' ' + hh + ':' + mm;
+      }
+      return hh + ':' + mm;
+    } catch (e) { return iso; }
+  }
+
+  // ------------------------------------------------------------------
+  // Band 1 + 2: current work + backlog counts (polled every 10s)
+  // ------------------------------------------------------------------
+
+  function renderCurrentWork(inProgress, startedAt) {
+    const panel = document.getElementById('current-work');
+    const body = document.getElementById('current-work-body');
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+
+    if (!inProgress || !inProgress.key) {
+      panel.classList.remove('active');
+      body.classList.add('idle');
+      body.textContent = 'idle — no story in progress';
+      currentWorkStartedAt = null;
+      return;
+    }
+
+    panel.classList.add('active');
+    body.classList.remove('idle');
+    body.innerHTML = '';
+
+    const link = document.createElement('a');
+    link.href = '/live/' + encodeURIComponent(inProgress.key);
+    link.textContent = inProgress.key;
+    body.appendChild(link);
+
+    if (inProgress.title) {
+      const titleSpan = document.createElement('span');
+      titleSpan.className = 'cw-title';
+      titleSpan.textContent = '  —  ' + inProgress.title;
+      body.appendChild(titleSpan);
+    }
+
+    const elapsedSpan = document.createElement('span');
+    elapsedSpan.className = 'cw-elapsed';
+    elapsedSpan.id = 'cw-elapsed';
+    body.appendChild(document.createElement('br'));
+    body.appendChild(elapsedSpan);
+
+    currentWorkStartedAt = startedAt ? new Date(startedAt) : null;
+    updateElapsed();
+    elapsedTimer = setInterval(updateElapsed, 1000);
+  }
+
+  function updateElapsed() {
+    const el = document.getElementById('cw-elapsed');
+    if (!el) return;
+    if (!currentWorkStartedAt) { el.textContent = ''; return; }
+    const secs = Math.max(0, Math.floor(
+      (Date.now() - currentWorkStartedAt.getTime()) / 1000
+    ));
+    el.textContent = 'elapsed ' + formatElapsed(secs);
+  }
+
+  function renderCounts(counts, today) {
+    counts = counts || {};
+    today = today || {};
+    document.getElementById('count-todo').textContent = counts['To Do'] || 0;
+    document.getElementById('count-in-progress').textContent =
+      counts['In Progress'] || 0;
+    document.getElementById('count-done-today').textContent = today.done || 0;
+    document.getElementById('count-failed-today').textContent = today.failed || 0;
+    document.getElementById('count-veto').textContent =
+      counts['Veto'] || counts['Vetoed'] || 0;
+  }
+
+  async function fetchBacklog() {
+    try {
+      const backlogP = fetch('/api/aim/backlog').then(r => r.json());
+      const statusP = fetch('/api/aim/status').then(r => r.json())
+        .catch(() => null);
+      const [backlog, status] = await Promise.all([backlogP, statusP]);
+      const startedAt = status && status.worker && status.worker.started_at;
+      renderCurrentWork(backlog.in_progress, startedAt);
+      renderCounts(backlog.counts, backlog.today);
+    } catch (e) {
+      // Leave previous values on transient error.
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Band 4: commits (polled every 30s)
+  // ------------------------------------------------------------------
+
+  function renderCommitList(ulId, commits) {
+    const ul = document.getElementById(ulId);
+    ul.innerHTML = '';
+    if (!commits || commits.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'commit-empty';
+      li.textContent = 'no commits';
+      ul.appendChild(li);
+      return;
+    }
+    commits.forEach(c => {
+      const li = document.createElement('li');
+      const sha = document.createElement('span');
+      sha.className = 'sha';
+      sha.textContent = c.sha;
+      const subj = document.createElement('span');
+      subj.className = 'subject';
+      subj.textContent = c.subject;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      let when = c.timestamp;
+      try {
+        const d = new Date(c.timestamp);
+        if (!isNaN(d.getTime())) when = d.toLocaleString();
+      } catch (e) {}
+      meta.textContent = (c.author || 'unknown') + ' · ' + when;
+      li.appendChild(sha);
+      li.appendChild(subj);
+      li.appendChild(meta);
+      ul.appendChild(li);
+    });
+  }
+
+  async function fetchCommits() {
+    try {
+      const r = await fetch('/api/aim/commits?limit=10&repo=both');
+      const data = await r.json();
+      renderCommitList('private-commits', data.private || []);
+      renderCommitList('public-commits', data.public || []);
+    } catch (e) {
+      // Leave previous values on transient error.
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Band 3: charts (polled every 60s, also on window change)
+  // ------------------------------------------------------------------
+
+  function buildCompletionsChart(labels, completions) {
+    const ctx = document.getElementById('completions-chart').getContext('2d');
+    if (completionsChart) {
+      completionsChart.data.labels = labels;
+      completionsChart.data.datasets[0].data = completions;
+      completionsChart.update();
+      return;
+    }
+    completionsChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: 'Completions',
+          data: completions,
+          borderColor: '#66b3ff',
+          backgroundColor: 'rgba(102,179,255,0.15)',
+          fill: true,
+          tension: 0.25,
+          pointRadius: 2,
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#e0e0e0' } } },
+        scales: {
+          x: { ticks: { color: '#888' }, grid: { color: '#333' } },
+          y: { ticks: { color: '#888', precision: 0 },
+               grid: { color: '#333' }, beginAtZero: true },
+        },
+      },
+    });
+  }
+
+  function buildSuccessFailureChart(labels, completions, failures) {
+    const ctx = document.getElementById('success-failure-chart').getContext('2d');
+    if (successFailureChart) {
+      successFailureChart.data.labels = labels;
+      successFailureChart.data.datasets[0].data = completions;
+      successFailureChart.data.datasets[1].data = failures;
+      successFailureChart.update();
+      return;
+    }
+    successFailureChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Success', data: completions, backgroundColor: '#4caf50' },
+          { label: 'Failure', data: failures, backgroundColor: '#f44336' },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#e0e0e0' } } },
+        scales: {
+          x: { stacked: true, ticks: { color: '#888' },
+               grid: { color: '#333' } },
+          y: { stacked: true, ticks: { color: '#888', precision: 0 },
+               grid: { color: '#333' }, beginAtZero: true },
+        },
+      },
+    });
+  }
+
+  async function fetchMetrics() {
+    try {
+      const r = await fetch('/api/aim/metrics?hours=' + currentHours);
+      const data = await r.json();
+      const labels = (data.timestamps || []).map(formatTimestampLabel);
+      const completions = data.completions || [];
+      const failures = data.failures || [];
+      buildCompletionsChart(labels, completions);
+      buildSuccessFailureChart(labels, completions, failures);
+    } catch (e) {
+      // Leave previous chart state on transient error.
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Window selector
+  // ------------------------------------------------------------------
+
+  function wireWindowSelector() {
+    const buttons = document.querySelectorAll('#window-selector button');
+    buttons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        buttons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentHours = parseInt(btn.dataset.hours, 10) || 24;
+        fetchMetrics();
+      });
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Boot
+  // ------------------------------------------------------------------
+
+  function boot() {
+    wireWindowSelector();
+    fetchBacklog();
+    fetchCommits();
+    fetchMetrics();
+    setInterval(fetchBacklog, BACKLOG_POLL_MS);
+    setInterval(fetchCommits, COMMITS_POLL_MS);
+    setInterval(fetchMetrics, METRICS_POLL_MS);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/aim/dashboard")
+def aim_team_dashboard() -> Response:
+    """Serve the AI Dev Team Dashboard HTML page.
+
+    Renders the four-band layout locked in by the parent epic's Decision 6:
+    current work (top), backlog counts (second), two Chart.js charts (third),
+    and two commit columns (fourth). The page polls /api/aim/backlog,
+    /api/aim/commits, and /api/aim/metrics on the intervals from Decision 5
+    and lets the user switch the metrics time window between 1h, 6h, 24h,
+    and 7d.
+    """
+    return Response(_AIM_TEAM_DASHBOARD_HTML, mimetype="text/html")
+
+
 @app.route("/api/evolve/status")
 def api_evolve_status() -> tuple:
     """GET /api/evolve/status — get evolve cycle progress.
