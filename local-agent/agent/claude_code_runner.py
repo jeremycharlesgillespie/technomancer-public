@@ -55,6 +55,48 @@ def _safe_record(**fields: Any) -> int | None:
         return None
 
 
+def _make_run_id(jira_key: str | None) -> str:
+    """Build the sortable, greppable run_id used for artifact archive dirs.
+
+    Format: ``YYYYMMDD-HHMMSS-<jira_key|unknown>``. Lexicographic sort
+    matches chronological order, so prune_old_artifacts can keep newest N
+    by sorting directory names alone.
+    """
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{jira_key or 'unknown'}"
+
+
+def _detect_branch(cwd: str) -> str | None:
+    """Return the current git branch in ``cwd``, or None if detection fails."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    branch = result.stdout.strip()
+    return branch or None
+
+
+def _safe_archive(
+    run_id: str, stdout: str, stderr: str, branch_name: str | None
+) -> None:
+    """Archive run artifacts, swallowing all errors.
+
+    Same contract as :func:`_safe_record` — disk / git failures must never
+    propagate up into the runner's main success path.
+    """
+    try:
+        executor_runs_db.archive_run(run_id, stdout, stderr, branch_name)
+    except Exception:
+        logger.debug("executor_runs_db.archive_run failed", exc_info=True)
+
+
 def _find_claude_binary() -> Path | None:
     """Find the Claude Code binary from the VS Code extension.
 
@@ -132,7 +174,10 @@ def end_session(channel_id: int) -> ChatSession | None:
 
 
 async def run_claude_code(
-    prompt: str, cwd: str | None = None, image_paths: list[str] | None = None
+    prompt: str,
+    cwd: str | None = None,
+    image_paths: list[str] | None = None,
+    jira_key: str | None = None,
 ) -> tuple[bool, str, float]:
     """Run a Claude Code task headlessly via the CLI.
 
@@ -142,12 +187,17 @@ async def run_claude_code(
         image_paths: Optional list of local image file paths to include.
                      Claude Code's Read tool can view images, so we inject
                      instructions to read them into the prompt.
+        jira_key: Optional Jira key (e.g. ``"TK-452"``) used to build the
+                  artifact run_id. ``None`` produces ``...-unknown``.
 
     Returns:
         Tuple of (success, output, duration_seconds)
     """
     start = time.time()
-    run_id = _safe_record(
+    artifact_run_id = _make_run_id(jira_key)
+    db_id = _safe_record(
+        run_id=artifact_run_id,
+        jira_key=jira_key,
         started_at=datetime.now().isoformat(),
         status="running",
     )
@@ -155,7 +205,7 @@ async def run_claude_code(
     binary = _find_claude_binary()
     if not binary:
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=0,
             status="binary_not_found",
@@ -195,25 +245,35 @@ async def run_claude_code(
         )
 
         duration = time.time() - start
-        output = stdout.decode("utf-8", errors="replace").strip()
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        output = stdout_text.strip()
 
         if proc.returncode == 0:
             _safe_record(
-                id=run_id,
+                id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
                 status="success",
                 exit_code=0,
             )
+            _safe_archive(
+                artifact_run_id, stdout_text, stderr_text,
+                _detect_branch(work_dir),
+            )
             return True, output, duration
         else:
-            error = stderr.decode("utf-8", errors="replace").strip()
+            error = stderr_text.strip()
             _safe_record(
-                id=run_id,
+                id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
                 status="failure",
                 exit_code=proc.returncode,
+            )
+            _safe_archive(
+                artifact_run_id, stdout_text, stderr_text,
+                _detect_branch(work_dir),
             )
             return False, f"Claude Code exited with code {proc.returncode}:\n{error or output}", duration
 
@@ -224,7 +284,7 @@ async def run_claude_code(
         except Exception:
             pass
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="timeout",
@@ -233,7 +293,7 @@ async def run_claude_code(
     except Exception as e:
         duration = time.time() - start
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="error",
@@ -271,6 +331,7 @@ async def run_claude_chat(
     session_id: str | None = None,
     cwd: str | None = None,
     image_paths: list[str] | None = None,
+    jira_key: str | None = None,
 ) -> ChatResult:
     """Run one turn of a Claude Code conversational session.
 
@@ -283,12 +344,16 @@ async def run_claude_chat(
         session_id: Previous session ID to continue (None = new session)
         cwd: Working directory (defaults to technomancer project root)
         image_paths: Optional image files to include in the prompt
+        jira_key: Optional Jira key used to build the artifact run_id
 
     Returns:
         ChatResult with response, session_id, cost, and duration
     """
     start = time.time()
-    run_id = _safe_record(
+    artifact_run_id = _make_run_id(jira_key)
+    db_id = _safe_record(
+        run_id=artifact_run_id,
+        jira_key=jira_key,
         started_at=datetime.now().isoformat(),
         status="running",
     )
@@ -296,7 +361,7 @@ async def run_claude_chat(
     binary = _find_claude_binary()
     if not binary:
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=0,
             status="binary_not_found",
@@ -349,7 +414,9 @@ async def run_claude_chat(
         )
 
         duration = time.time() - start
-        raw_output = stdout.decode("utf-8", errors="replace").strip()
+        stdout_text = stdout.decode("utf-8", errors="replace")
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        raw_output = stdout_text.strip()
 
         # Parse JSON result
         try:
@@ -365,12 +432,16 @@ async def run_claude_chat(
 
         if proc.returncode == 0:
             _safe_record(
-                id=run_id,
+                id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
                 cost_usd=float(cost) if cost else 0.0,
                 status="success",
                 exit_code=0,
+            )
+            _safe_archive(
+                artifact_run_id, stdout_text, stderr_text,
+                _detect_branch(work_dir),
             )
             return ChatResult(
                 success=True, response=response_text,
@@ -378,14 +449,18 @@ async def run_claude_chat(
                 cost_usd=cost, is_new_session=is_new,
             )
         else:
-            error = stderr.decode("utf-8", errors="replace").strip()
+            error = stderr_text.strip()
             _safe_record(
-                id=run_id,
+                id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
                 cost_usd=float(cost) if cost else 0.0,
                 status="failure",
                 exit_code=proc.returncode,
+            )
+            _safe_archive(
+                artifact_run_id, stdout_text, stderr_text,
+                _detect_branch(work_dir),
             )
             return ChatResult(
                 success=False, response=f"Error: {error or response_text}",
@@ -400,7 +475,7 @@ async def run_claude_chat(
         except Exception:
             pass
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="timeout",
@@ -413,7 +488,7 @@ async def run_claude_chat(
     except Exception as e:
         duration = time.time() - start
         _safe_record(
-            id=run_id,
+            id=db_id,
             ended_at=datetime.now().isoformat(),
             duration_ms=int(duration * 1000),
             status="error",
