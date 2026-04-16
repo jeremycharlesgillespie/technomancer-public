@@ -780,3 +780,75 @@ class TestRunOllamaDecide:
         _, chat_kwargs = mock_client.chat.call_args
         assert "model" in chat_kwargs
         assert chat_kwargs["messages"][0]["content"] == "prompt"
+
+
+# ---------------------------------------------------------------------------
+# @profile_fn instrumentation on brain hot paths (TK-438)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileFnInstrumentation:
+    """Verify the two hot-path brain functions are wrapped by @profile_fn.
+
+    profile_fn sets a ``__wrapped_fn_name__`` attribute on the returned
+    wrapper, so checking that attribute confirms the decorator is applied
+    without having to actually invoke claude -p or Ollama.
+    """
+
+    def test_decide_next_action_is_profiled(self):
+        assert getattr(decide_next_action, "__wrapped_fn_name__", None) == (
+            "aim.brain.decide_next_action"
+        )
+
+    def test_generate_work_ideas_is_profiled(self):
+        assert getattr(generate_work_ideas, "__wrapped_fn_name__", None) == (
+            "aim.brain.generate_work_ideas"
+        )
+
+    @patch("aim.brain._run_claude_p", return_value=None)
+    def test_decide_next_action_records_registry_on_call(self, _mock_claude):
+        """Calling decide_next_action should populate the fn_profiler registry.
+
+        With Ollama disabled (autouse fixture) and claude -p returning None,
+        the function falls through to _heuristic_decision and returns without
+        any subprocess — perfect for exercising the decorator cheaply.
+        """
+        import agent.fn_profiler as fp
+
+        fp.reset_registry()
+        result = decide_next_action(
+            board_state={"todo": 5, "in_progress": 0, "done_last_24h": 2},
+            worker_status="idle",
+            approved_ideas=[],
+            last_completion=None,
+            hours_since_completion=0.5,
+            completions_today=0,
+        )
+
+        assert isinstance(result, Decision)
+        stats = fp.get_stats("aim.brain.decide_next_action")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()
+
+    @patch("aim.brain._run_claude_p", return_value=None)
+    def test_generate_work_ideas_records_registry_on_call(self, _mock_claude):
+        """Calling generate_work_ideas should populate the fn_profiler registry.
+
+        With claude -p returning None the function short-circuits to [] —
+        no subprocess needed; the decorator still records the call.
+        """
+        import agent.fn_profiler as fp
+
+        fp.reset_registry()
+        result = generate_work_ideas(
+            codebase_summary="summary",
+            existing_idea_titles=[],
+            board_state={"todo": 0},
+        )
+
+        assert result == []
+        stats = fp.get_stats("aim.brain.generate_work_ideas")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()
