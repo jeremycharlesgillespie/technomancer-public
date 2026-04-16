@@ -18,6 +18,8 @@ Routes:
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
+    GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
+    GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
 """
 
@@ -2631,6 +2633,51 @@ def api_executor_run_tools(run_id: int) -> Response:
     })
 
 
+@app.route("/api/executor/runs")
+def api_executor_runs() -> Response:
+    """GET /api/executor/runs — last 100 executor runs, newest first.
+
+    Returns a JSON array of run summaries used by the /executor-runs
+    dashboard and any external cost/duration monitoring. Each row includes
+    ``id, jira_key, started_at, duration_ms, cost_usd, status`` and the
+    ``error_message`` from the first failed tool call for that run (or
+    ``null`` when the run had no tool-call failures).
+    """
+    from agent import executor_runs_db
+
+    rows = executor_runs_db.get_recent(limit=100)
+    # Attach error_message from the first failed tool_call for each run so
+    # the UI can show a human-readable reason next to failed runs without a
+    # second round-trip.
+    conn = executor_runs_db._get_conn()
+    for row in rows:
+        row["error_message"] = None
+        if row.get("status") and str(row["status"]).lower() in {
+            "failed", "error", "crashed"
+        }:
+            fail = conn.execute(
+                "SELECT error_message FROM executor_tool_calls "
+                "WHERE run_id = ? AND ok = 0 AND error_message IS NOT NULL "
+                "ORDER BY started_at ASC, id ASC LIMIT 1",
+                (int(row["id"]),),
+            ).fetchone()
+            if fail is not None:
+                row["error_message"] = fail["error_message"]
+    return jsonify(rows)
+
+
+@app.route("/executor-runs")
+def executor_runs_page() -> str:
+    """GET /executor-runs — HTML dashboard for executor run cost/duration.
+
+    Renders a mobile-responsive sortable table of the last 100 runs with
+    totals (sum cost, avg duration, success rate) at the top. Loads rows
+    from /api/executor/runs via client-side fetch so the table refreshes
+    without a page reload.
+    """
+    return _render_executor_runs()
+
+
 # ---------------------------------------------------------------------------
 # Memory integrity — /api/memory/integrity
 # ---------------------------------------------------------------------------
@@ -4187,6 +4234,7 @@ def _render_aim_dashboard() -> str:
     <h1>AIM Dashboard</h1>
     <p class="subtitle"><a href="/">&larr; Hub</a> &middot;
        Live worker status &middot;
+       <a href="/executor-runs">Executor runs</a> &middot;
        <a href="/api/aim/status">API: /api/aim/status</a></p>
 
     <header id="aim-status-widget" aria-live="polite">
@@ -4406,6 +4454,332 @@ def _render_aim_dashboard() -> str:
         Page loaded at {now} &middot; Polling every 5s &middot;
         Timeline streams from <a href="/api/aim/events/stream">/api/aim/events/stream</a>
     </p>
+</body>
+</html>"""
+
+
+EXECUTOR_RUNS_CSS = """
+:root {
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --yellow: #ffb74d;
+    --border: #333;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }
+h1 { margin-bottom: 0.5rem; color: var(--accent); }
+.subtitle { color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }
+a { color: var(--accent); }
+
+.totals {
+    display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.25rem;
+}
+.total-card {
+    background: var(--surface); border-radius: 8px;
+    border-left: 4px solid var(--accent);
+    padding: 0.75rem 1rem; min-width: 150px;
+}
+.total-label {
+    font-size: 0.7rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.total-value {
+    font-size: 1.25rem; font-weight: 600;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    margin-top: 2px;
+}
+
+.runs-wrapper { overflow-x: auto; background: var(--surface); border-radius: 8px; }
+table.runs {
+    width: 100%; border-collapse: collapse; font-size: 0.85rem;
+}
+table.runs th, table.runs td {
+    padding: 0.55rem 0.75rem; text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+table.runs th {
+    background: #2d2d2d; color: var(--accent); font-weight: 600;
+    cursor: pointer; user-select: none; position: sticky; top: 0;
+}
+table.runs th:hover { background: #343434; }
+table.runs th .sort-indicator { color: var(--muted); margin-left: 4px; }
+table.runs tr:last-child td { border-bottom: none; }
+table.runs td.err { color: var(--red); font-family: 'Cascadia Code', monospace;
+    max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+table.runs td.num {
+    font-family: 'Cascadia Code', 'Fira Code', monospace; text-align: right;
+}
+table.runs td.jira a { color: var(--accent); text-decoration: none; }
+.status-pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; text-transform: lowercase;
+    background: var(--border); color: var(--text);
+}
+.status-pill.success { background: var(--green); color: #0a1a0a; }
+.status-pill.failed, .status-pill.error, .status-pill.crashed {
+    background: var(--red); color: #1a0000;
+}
+.status-pill.running { background: var(--yellow); color: #2a1900; }
+
+.empty {
+    padding: 1rem; color: var(--muted); font-style: italic; text-align: center;
+}
+#fetch-error {
+    display: none; color: var(--red); margin-bottom: 1rem;
+    background: var(--surface); padding: 0.6rem 0.9rem; border-radius: 6px;
+    border-left: 4px solid var(--red);
+}
+#fetch-error.visible { display: block; }
+
+@media (max-width: 600px) {
+    body { padding: 12px; }
+    .total-card { min-width: 120px; padding: 0.6rem 0.8rem; }
+    .total-value { font-size: 1.05rem; }
+    table.runs { font-size: 0.78rem; }
+    table.runs th, table.runs td { padding: 0.45rem 0.5rem; }
+    table.runs td.err { max-width: 160px; }
+}
+"""
+
+
+def _render_executor_runs() -> str:
+    """Render the /executor-runs dashboard page.
+
+    Static shell that pulls rows from /api/executor/runs over fetch() so the
+    table can refresh without reloading the page. Sorting and totals are
+    computed client-side in the embedded vanilla JS.
+    """
+    jira_url = (settings.jira_url or "").rstrip("/")
+    jira_url_json = json.dumps(jira_url)
+    now = datetime.now().strftime("%H:%M:%S")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Executor Runs</title>
+    <style>{EXECUTOR_RUNS_CSS}</style>
+</head>
+<body>
+    <h1>Executor Runs</h1>
+    <p class="subtitle">
+        <a href="/">&larr; Hub</a> &middot;
+        <a href="/aim">AIM dashboard</a> &middot;
+        Last 100 runs &middot;
+        <a href="/api/executor/runs">API: /api/executor/runs</a>
+    </p>
+
+    <div id="fetch-error"></div>
+
+    <section class="totals" aria-label="Totals">
+        <div class="total-card">
+            <div class="total-label">Runs</div>
+            <div class="total-value" id="total-runs">&mdash;</div>
+        </div>
+        <div class="total-card">
+            <div class="total-label">Sum cost</div>
+            <div class="total-value" id="total-cost">&mdash;</div>
+        </div>
+        <div class="total-card">
+            <div class="total-label">Avg duration</div>
+            <div class="total-value" id="avg-duration">&mdash;</div>
+        </div>
+        <div class="total-card">
+            <div class="total-label">Success rate</div>
+            <div class="total-value" id="success-rate">&mdash;</div>
+        </div>
+    </section>
+
+    <div class="runs-wrapper">
+        <table class="runs" id="runs-table">
+            <thead>
+                <tr>
+                    <th data-col="id" data-type="num">ID<span class="sort-indicator"></span></th>
+                    <th data-col="jira_key" data-type="str">Jira<span class="sort-indicator"></span></th>
+                    <th data-col="started_at" data-type="str">Started<span class="sort-indicator">&darr;</span></th>
+                    <th data-col="duration_ms" data-type="num">Duration<span class="sort-indicator"></span></th>
+                    <th data-col="cost_usd" data-type="num">Cost&nbsp;(USD)<span class="sort-indicator"></span></th>
+                    <th data-col="status" data-type="str">Status<span class="sort-indicator"></span></th>
+                    <th data-col="error_message" data-type="str">Error<span class="sort-indicator"></span></th>
+                </tr>
+            </thead>
+            <tbody id="runs-tbody">
+                <tr><td colspan="7" class="empty">Loading&hellip;</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:1.5rem">
+        Page loaded at {now} &middot;
+        Click any column header to sort &middot;
+        Data from <a href="/api/executor/runs">/api/executor/runs</a>
+    </p>
+
+    <script>
+    const JIRA_URL = {jira_url_json};
+    const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\\d+$/;
+    let RUNS = [];
+    let SORT_COL = 'started_at';
+    let SORT_DIR = 'desc';
+
+    function fmtCost(v) {{
+        if (v == null || isNaN(v)) return '—';
+        return '$' + Number(v).toFixed(4);
+    }}
+
+    function fmtDurationMs(v) {{
+        if (v == null || isNaN(v)) return '—';
+        const secs = Number(v) / 1000;
+        if (secs < 60) return secs.toFixed(1) + 's';
+        const mins = Math.floor(secs / 60);
+        const rem = Math.round(secs - mins * 60);
+        return mins + 'm ' + rem + 's';
+    }}
+
+    function fmtStarted(v) {{
+        if (!v) return '—';
+        // show YYYY-MM-DD HH:MM from ISO string, no TZ juggling
+        return String(v).replace('T', ' ').slice(0, 16);
+    }}
+
+    function escapeHtml(s) {{
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }}
+
+    function jiraCell(key) {{
+        if (!key) return '—';
+        const safe = escapeHtml(key);
+        if (JIRA_KEY_RE.test(key) && JIRA_URL) {{
+            return '<a href="' + JIRA_URL + '/browse/' + encodeURIComponent(key) +
+                   '" target="_blank" rel="noopener noreferrer">' + safe + '</a>';
+        }}
+        return safe;
+    }}
+
+    function statusPill(status) {{
+        const s = (status || '').toLowerCase();
+        return '<span class="status-pill ' + escapeHtml(s) + '">' +
+               escapeHtml(status || '—') + '</span>';
+    }}
+
+    function renderTotals(runs) {{
+        const totalRuns = runs.length;
+        let totalCost = 0, sumDuration = 0, countDuration = 0;
+        let success = 0, completed = 0;
+        for (const r of runs) {{
+            if (typeof r.cost_usd === 'number') totalCost += r.cost_usd;
+            if (typeof r.duration_ms === 'number') {{
+                sumDuration += r.duration_ms;
+                countDuration += 1;
+            }}
+            const s = (r.status || '').toLowerCase();
+            if (s === 'success') {{ success += 1; completed += 1; }}
+            else if (s === 'failed' || s === 'error' || s === 'crashed') {{
+                completed += 1;
+            }}
+        }}
+        document.getElementById('total-runs').textContent = String(totalRuns);
+        document.getElementById('total-cost').textContent = fmtCost(totalCost);
+        document.getElementById('avg-duration').textContent =
+            countDuration ? fmtDurationMs(sumDuration / countDuration) : '—';
+        document.getElementById('success-rate').textContent =
+            completed ? Math.round(success / completed * 100) + '%' : '—';
+    }}
+
+    function renderRows(runs) {{
+        const tbody = document.getElementById('runs-tbody');
+        if (!runs.length) {{
+            tbody.innerHTML =
+                '<tr><td colspan="7" class="empty">No runs yet</td></tr>';
+            return;
+        }}
+        const rows = runs.map(r => {{
+            const cost = typeof r.cost_usd === 'number' ? fmtCost(r.cost_usd) : '—';
+            const dur = typeof r.duration_ms === 'number' ? fmtDurationMs(r.duration_ms) : '—';
+            return '<tr>' +
+                '<td class="num">' + escapeHtml(r.id) + '</td>' +
+                '<td class="jira">' + jiraCell(r.jira_key) + '</td>' +
+                '<td>' + escapeHtml(fmtStarted(r.started_at)) + '</td>' +
+                '<td class="num">' + escapeHtml(dur) + '</td>' +
+                '<td class="num">' + escapeHtml(cost) + '</td>' +
+                '<td>' + statusPill(r.status) + '</td>' +
+                '<td class="err" title="' + escapeHtml(r.error_message || '') + '">' +
+                    escapeHtml(r.error_message || '') +
+                '</td>' +
+            '</tr>';
+        }}).join('');
+        tbody.innerHTML = rows;
+    }}
+
+    function sortBy(col, type) {{
+        if (SORT_COL === col) {{
+            SORT_DIR = SORT_DIR === 'asc' ? 'desc' : 'asc';
+        }} else {{
+            SORT_COL = col;
+            SORT_DIR = type === 'num' ? 'desc' : 'asc';
+        }}
+        const mul = SORT_DIR === 'asc' ? 1 : -1;
+        const sorted = [...RUNS].sort((a, b) => {{
+            let av = a[col], bv = b[col];
+            if (type === 'num') {{
+                av = (av == null || isNaN(av)) ? -Infinity : Number(av);
+                bv = (bv == null || isNaN(bv)) ? -Infinity : Number(bv);
+            }} else {{
+                av = (av == null) ? '' : String(av).toLowerCase();
+                bv = (bv == null) ? '' : String(bv).toLowerCase();
+            }}
+            if (av < bv) return -1 * mul;
+            if (av > bv) return 1 * mul;
+            return 0;
+        }});
+        updateSortIndicators();
+        renderRows(sorted);
+    }}
+
+    function updateSortIndicators() {{
+        const arrow = SORT_DIR === 'asc' ? '\u2191' : '\u2193';
+        document.querySelectorAll('#runs-table th').forEach(th => {{
+            const ind = th.querySelector('.sort-indicator');
+            if (!ind) return;
+            ind.textContent = th.dataset.col === SORT_COL ? arrow : '';
+        }});
+    }}
+
+    function attachSortHandlers() {{
+        document.querySelectorAll('#runs-table th').forEach(th => {{
+            th.addEventListener('click', () => {{
+                sortBy(th.dataset.col, th.dataset.type || 'str');
+            }});
+        }});
+    }}
+
+    async function load() {{
+        const errEl = document.getElementById('fetch-error');
+        try {{
+            const resp = await fetch('/api/executor/runs', {{ cache: 'no-store' }});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            RUNS = await resp.json();
+            if (!Array.isArray(RUNS)) RUNS = [];
+            errEl.classList.remove('visible');
+            errEl.textContent = '';
+            renderTotals(RUNS);
+            renderRows(RUNS);
+            updateSortIndicators();
+        }} catch (e) {{
+            errEl.textContent = 'Failed to load runs: ' + e.message;
+            errEl.classList.add('visible');
+            document.getElementById('runs-tbody').innerHTML =
+                '<tr><td colspan="7" class="empty">Failed to load</td></tr>';
+        }}
+    }}
+
+    attachSortHandlers();
+    load();
+    </script>
 </body>
 </html>"""
 
