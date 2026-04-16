@@ -112,6 +112,10 @@ MAX_FIX_RETRIES: int = 5
 # File to persist known failures between executor runs (replaces baseline)
 KNOWN_FAILURES_FILE: Path = Path(__file__).parent / ".known_test_failures.json"
 
+# Per-execution streaming log files. One file per idea — the cross-process
+# live log viewer tails these instead of poking at the in-memory ExecutionState.
+EXECUTION_LOGS_DIR: Path = Path(__file__).parent / "execution_logs"
+
 # Minimum seconds between Discord webhook sends (rate limiting)
 DISCORD_RATE_LIMIT: float = 10.0
 
@@ -211,7 +215,9 @@ class ExecutionState:
         """Append a timestamped message to the execution log."""
         from datetime import datetime
         ts = datetime.now().strftime("%Y%m%d %H:%M:%S.%f")[:-3]
-        self.log_lines.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self.log_lines.append(line)
+        _append_execution_log_line(self.idea_id, line)
 
     @property
     def elapsed(self) -> float:
@@ -237,6 +243,52 @@ class ExecutionState:
 
 # Active executions: idea_id -> ExecutionState
 _active: dict[str, ExecutionState] = {}
+
+
+def _append_execution_log_line(idea_id: str, line: str) -> None:
+    """Append ``line + "\\n"`` to ``execution_logs/<idea_id>.log``.
+
+    The viewer in the next story tails these files across processes, so we
+    open-write-close per line — every line is flushed before the call
+    returns. Best-effort: IO errors are swallowed because losing a log line
+    should never crash an execution.
+    """
+    try:
+        EXECUTION_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        path = EXECUTION_LOGS_DIR / f"{idea_id}.log"
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception as exc:
+        logger.debug(
+            "[Executor] Failed to write execution log for %s: %s", idea_id, exc,
+        )
+
+
+def _prune_stale_execution_logs() -> None:
+    """Delete ``execution_logs/*.log`` files whose stem is not in ``_active``.
+
+    Called once at module import so the directory doesn't grow unboundedly
+    across executor restarts. At import time ``_active`` is empty, so this
+    effectively clears every leftover file — correct, because reaching module
+    load means no execution from a prior process can still be running here.
+    """
+    try:
+        if not EXECUTION_LOGS_DIR.exists():
+            return
+        for log_file in EXECUTION_LOGS_DIR.glob("*.log"):
+            if log_file.stem not in _active:
+                try:
+                    log_file.unlink()
+                except OSError as exc:
+                    logger.debug(
+                        "[Executor] Could not remove stale log %s: %s",
+                        log_file, exc,
+                    )
+    except Exception as exc:
+        logger.debug("[Executor] Failed to prune execution logs: %s", exc)
+
+
+_prune_stale_execution_logs()
 
 
 def get_execution(idea_id: str) -> ExecutionState | None:

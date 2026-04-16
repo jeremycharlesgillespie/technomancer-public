@@ -14,6 +14,7 @@ from idea_board.executor import (
     RATE_LIMIT_KEYWORDS,
     RATE_LIMIT_MAX_LOG_LINES,
     ExecutionState,
+    _append_execution_log_line,
     _build_epic_execution_context,
     _build_prior_failure_context,
     _build_story_prompt,
@@ -23,6 +24,7 @@ from idea_board.executor import (
     _has_branch_commits,
     _parse_pytest_failures,
     _post_deploy_comment,
+    _prune_stale_execution_logs,
     execute_epic,
 )
 
@@ -1260,3 +1262,192 @@ class TestClassifyRateLimit:
         state = self._make_state(["Rate Limit exceeded — try again later"])
         with patch("idea_board.executor._has_branch_commits", return_value=False):
             assert _classify_rate_limit(state, False, tmp_path) is True
+
+
+# ---------------------------------------------------------------------------
+# Per-execution streaming log files (execution_logs/<idea_id>.log)
+# ---------------------------------------------------------------------------
+
+
+class TestAppendExecutionLogLine:
+    """_append_execution_log_line: per-line append to execution_logs/<id>.log."""
+
+    def test_creates_directory_and_file(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _append_execution_log_line("TK-427", "first line")
+
+        log_file = logs_dir / "TK-427.log"
+        assert logs_dir.is_dir()
+        assert log_file.exists()
+        assert log_file.read_text(encoding="utf-8") == "first line\n"
+
+    def test_appends_multiple_lines(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _append_execution_log_line("TK-427", "line one")
+        _append_execution_log_line("TK-427", "line two")
+        _append_execution_log_line("TK-427", "line three")
+
+        content = (logs_dir / "TK-427.log").read_text(encoding="utf-8")
+        assert content == "line one\nline two\nline three\n"
+
+    def test_separate_files_per_idea(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _append_execution_log_line("TK-100", "alpha")
+        _append_execution_log_line("TK-200", "beta")
+
+        assert (logs_dir / "TK-100.log").read_text(encoding="utf-8") == "alpha\n"
+        assert (logs_dir / "TK-200.log").read_text(encoding="utf-8") == "beta\n"
+
+    def test_writes_utf8(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _append_execution_log_line("TK-427", "emoji: 🚀 accents: é")
+
+        content = (logs_dir / "TK-427.log").read_text(encoding="utf-8")
+        assert content == "emoji: 🚀 accents: é\n"
+
+    def test_io_error_is_swallowed(self, tmp_path, monkeypatch):
+        # Point at a path whose parent can't be created (collision with file).
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setattr(
+            "idea_board.executor.EXECUTION_LOGS_DIR", blocker / "execution_logs",
+        )
+
+        # Should not raise even though mkdir fails.
+        _append_execution_log_line("TK-427", "should not explode")
+
+
+class TestExecutionStateLogWritesFile:
+    """ExecutionState.log() mirrors every line to the per-execution file."""
+
+    def test_log_creates_file_on_first_call(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        state = ExecutionState(idea_id="TK-427")
+        state.log("starting execution")
+
+        log_file = logs_dir / "TK-427.log"
+        assert log_file.exists()
+        assert "starting execution" in log_file.read_text(encoding="utf-8")
+
+    def test_each_state_log_appears_in_file(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        state = ExecutionState(idea_id="TK-427")
+        state.log("phase 1")
+        state.log("phase 2")
+        state.log("phase 3")
+
+        lines = (logs_dir / "TK-427.log").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 3
+        assert "phase 1" in lines[0]
+        assert "phase 2" in lines[1]
+        assert "phase 3" in lines[2]
+
+    def test_file_mirrors_log_lines_buffer(self, tmp_path, monkeypatch):
+        """In-memory log_lines and on-disk file must stay in sync line-for-line."""
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        state = ExecutionState(idea_id="TK-427")
+        for i in range(5):
+            state.log(f"message {i}")
+
+        file_lines = (logs_dir / "TK-427.log").read_text(encoding="utf-8").splitlines()
+        assert file_lines == state.log_lines
+
+
+class TestPruneStaleExecutionLogs:
+    """_prune_stale_execution_logs: delete .log files not in _active."""
+
+    def test_removes_all_logs_when_active_empty(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-100.log").write_text("stale a")
+        (logs_dir / "TK-200.log").write_text("stale b")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        _prune_stale_execution_logs()
+
+        assert not (logs_dir / "TK-100.log").exists()
+        assert not (logs_dir / "TK-200.log").exists()
+
+    def test_keeps_active_logs(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-100.log").write_text("active")
+        (logs_dir / "TK-200.log").write_text("stale")
+        (logs_dir / "TK-300.log").write_text("stale")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr(
+            "idea_board.executor._active",
+            {"TK-100": ExecutionState(idea_id="TK-100")},
+        )
+
+        _prune_stale_execution_logs()
+
+        assert (logs_dir / "TK-100.log").exists()
+        assert not (logs_dir / "TK-200.log").exists()
+        assert not (logs_dir / "TK-300.log").exists()
+
+    def test_no_dir_is_not_an_error(self, tmp_path, monkeypatch):
+        missing = tmp_path / "does_not_exist"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", missing)
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        _prune_stale_execution_logs()  # Must not raise
+        assert not missing.exists()
+
+    def test_ignores_non_log_files(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-100.log").write_text("stale")
+        (logs_dir / "README.md").write_text("keep me")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        _prune_stale_execution_logs()
+
+        assert not (logs_dir / "TK-100.log").exists()
+        assert (logs_dir / "README.md").exists()
+
+    def test_file_persists_after_execution_completes(self, tmp_path, monkeypatch):
+        """AC: on completion, the file remains — the reader uses it.
+
+        Simulates a full execution by writing lines, then removing the idea
+        from _active. The log file must still exist until the next prune
+        (which happens on module load, not on completion).
+        """
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr(
+            "idea_board.executor._active",
+            {"TK-427": ExecutionState(idea_id="TK-427")},
+        )
+
+        state = ExecutionState(idea_id="TK-427")
+        state.log("working")
+        state.log("done")
+
+        # Execution "finishes" — state removed from _active
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        log_file = logs_dir / "TK-427.log"
+        assert log_file.exists()
+        content = log_file.read_text(encoding="utf-8")
+        assert "working" in content
+        assert "done" in content
