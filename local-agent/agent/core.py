@@ -207,6 +207,7 @@ except ImportError:
     raise ImportError("Install ollama: pip install ollama")
 
 from .config import settings as _settings
+from .ollama_health import ollama_call_with_retries
 
 
 def _build_ollama_client() -> "ollama.Client":
@@ -643,7 +644,8 @@ If you need to perform multiple steps, do them one at a time."""
             input_chars = sum(len(m.get("content", "")) for m in self.messages)
             llm_start = _time.perf_counter()
             try:
-                response = _ollama_client.chat(
+                response = ollama_call_with_retries(
+                    _ollama_client.chat,
                     model=self.config.model,
                     messages=self.messages,
                     tools=self._get_ollama_tools() if self.tools else None,
@@ -725,7 +727,8 @@ If you need to perform multiple steps, do them one at a time."""
         # Run one turn
         chat_start = _time.perf_counter()
         try:
-            response = _ollama_client.chat(
+            response = ollama_call_with_retries(
+                _ollama_client.chat,
                 model=self.config.model,
                 messages=self.messages,
                 tools=self._get_ollama_tools() if self.tools else None,
@@ -756,7 +759,8 @@ If you need to perform multiple steps, do them one at a time."""
             # Get final response after tool execution
             chat_start2 = _time.perf_counter()
             try:
-                response = _ollama_client.chat(
+                response = ollama_call_with_retries(
+                    _ollama_client.chat,
                     model=self.config.model,
                     messages=self.messages,
                     options={"temperature": self._get_temperature(), "num_ctx": self._estimate_ctx_size()},

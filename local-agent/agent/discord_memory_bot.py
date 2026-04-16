@@ -828,6 +828,14 @@ Keep responses concise for Discord but thorough when they need depth.""",
     start_health_checker()
     log("Task health checker started (monitors all background tasks)")
 
+    # Start Ollama health monitor (polls /api/tags periodically)
+    try:
+        from .ollama_health import start_monitor as start_ollama_monitor
+        start_ollama_monitor()
+        log("Ollama health monitor started")
+    except Exception as e:
+        log(f"Failed to start Ollama health monitor: {e}")
+
 
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:

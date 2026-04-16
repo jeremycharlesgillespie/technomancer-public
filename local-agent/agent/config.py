@@ -79,6 +79,36 @@ class Settings(BaseSettings):
             "indefinite hangs when the server stalls. Default 600s (10 min)."
         ),
     )
+    ollama_max_retries: int = Field(
+        default=3,
+        description=(
+            "Max retries on transient Ollama failures (connection refused, "
+            "5xx, read timeouts). Permanent errors (unknown model, 4xx) are "
+            "never retried. Total attempts = retries + 1."
+        ),
+    )
+    ollama_retry_base_delay: float = Field(
+        default=1.0,
+        description=(
+            "Base delay (seconds) for exponential backoff between Ollama "
+            "retries. Actual delay = base * 2**attempt + jitter."
+        ),
+    )
+    ollama_retry_max_delay: float = Field(
+        default=30.0,
+        description="Cap (seconds) on the exponential backoff delay between retries.",
+    )
+    ollama_health_check_interval: int = Field(
+        default=30,
+        description=(
+            "Seconds between Ollama /api/tags health probes. Lets the bot "
+            "flip to 'degraded' before user calls start failing."
+        ),
+    )
+    ollama_health_check_timeout: float = Field(
+        default=5.0,
+        description="HTTP timeout (seconds) for a single Ollama health probe.",
+    )
 
     # Obsidian vault settings
     vault_path: Path = Field(
