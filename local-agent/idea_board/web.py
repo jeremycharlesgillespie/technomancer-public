@@ -18,6 +18,7 @@ Routes:
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
+    GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import asyncio
 import html
 import json
 import logging
+import re
 import subprocess
 import sys
 import threading
@@ -2627,6 +2629,124 @@ def api_executor_run_tools(run_id: int) -> Response:
         "run_id": run_id,
         "tool_calls": executor_runs_db.get_tool_calls(run_id),
     })
+
+
+# ---------------------------------------------------------------------------
+# Memory integrity — /api/memory/integrity
+# ---------------------------------------------------------------------------
+# Dashboard widget for memory compaction health. The vault is not under git,
+# so a bad compaction can silently drop context. This endpoint reports whether
+# compaction is running (via backup dir presence), when it last ran, and the
+# pass/fail result of the latest post-compaction verify.
+
+# Match either `**Compaction Verify:** PASSED` or `**Compaction Verify:** FAILED`
+# anywhere in the crash log (the marker from the compaction-verify story is
+# written alongside crash reports so a single file holds both signals).
+_COMPACTION_VERIFY_RE = re.compile(
+    r"\*\*Compaction Verify:\*\*\s*(PASSED|FAILED)",
+    re.IGNORECASE,
+)
+
+
+def _parse_snapshot_timestamp(name: str) -> datetime | None:
+    """Parse a backup dir name of the form ``YYYYMMDD-HHMMSS`` (optionally
+    suffixed by ``-N`` for same-second collisions) into a datetime."""
+    base = "-".join(name.split("-")[:2])
+    try:
+        return datetime.strptime(base, "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def _read_last_compaction_verify(crash_log: Path) -> bool | None:
+    """Return True/False for the most recent compaction-verify marker in
+    crash_log.md, or None if no marker is present or the file is missing."""
+    if not crash_log.exists():
+        return None
+    try:
+        content = crash_log.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    matches = _COMPACTION_VERIFY_RE.findall(content)
+    if not matches:
+        return None
+    return matches[-1].upper() == "PASSED"
+
+
+def _collect_memory_integrity(backups_root: Path, crash_log: Path) -> dict[str, Any]:
+    """Build the payload returned by /api/memory/integrity.
+
+    Extracted so tests can drive the logic with a stubbed directory tree
+    without spinning up the Flask test client.
+    """
+    payload: dict[str, Any] = {
+        "last_compaction_at": None,
+        "last_verify_passed": _read_last_compaction_verify(crash_log),
+        "backup_count_hourly": 0,
+        "backup_count_daily": 0,
+        "newest_backup_age_seconds": None,
+    }
+
+    if not backups_root.is_dir():
+        return payload
+
+    snapshots = sorted(
+        (d for d in backups_root.iterdir() if d.is_dir()),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    if not snapshots:
+        return payload
+
+    payload["backup_count_hourly"] = sum(
+        1 for d in snapshots if (d / "hourly.md").exists()
+    )
+    payload["backup_count_daily"] = sum(
+        1 for d in snapshots if (d / "daily.md").exists()
+    )
+
+    newest = snapshots[0]
+    parsed = _parse_snapshot_timestamp(newest.name)
+    if parsed is not None:
+        payload["last_compaction_at"] = parsed.isoformat()
+    else:
+        try:
+            payload["last_compaction_at"] = datetime.fromtimestamp(
+                newest.stat().st_mtime
+            ).isoformat()
+        except OSError:
+            payload["last_compaction_at"] = None
+
+    try:
+        age = time.time() - newest.stat().st_mtime
+        payload["newest_backup_age_seconds"] = max(0, int(age))
+    except OSError:
+        payload["newest_backup_age_seconds"] = None
+
+    return payload
+
+
+@app.route("/api/memory/integrity")
+def api_memory_integrity() -> Response:
+    """GET /api/memory/integrity — memory vault compaction health snapshot.
+
+    JSON shape::
+
+        {
+          "last_compaction_at":       ISO timestamp of newest snapshot or null,
+          "last_verify_passed":       true | false | null,
+          "backup_count_hourly":      int,
+          "backup_count_daily":       int,
+          "newest_backup_age_seconds": int | null,
+        }
+
+    Snapshots live under ``<vault>/Backups/memory/<YYYYMMDD-HHMMSS>/`` and are
+    created by ``MemorySystem._snapshot_before_compaction``. The verify field
+    is read from ``<vault>/LLM Memory/Permanent/crash_log.md``.
+    """
+    backups_root = settings.vault_path / "Backups" / "memory"
+    crash_log = settings.vault_path / "LLM Memory" / "Permanent" / "crash_log.md"
+    return jsonify(_collect_memory_integrity(backups_root, crash_log))
 
 
 @app.route("/aim")
