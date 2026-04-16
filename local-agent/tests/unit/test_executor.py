@@ -767,9 +767,6 @@ class TestBuildStoryPromptEpicContext:
             _build_discussion=lambda i: "",
             _build_prior_failure_context=lambda i: "",
             _load_codebase_summary=lambda: "",
-            _load_git_history=lambda: "",
-            _load_recent_errors=lambda: "",
-            _load_similar_execution_logs=lambda i: "",
             _get_category_guidance=lambda c: "",
             _find_relevant_test_file=lambda i: "",
             _build_workflow_section=lambda i: "",
@@ -802,9 +799,6 @@ class TestBuildStoryPromptEpicContext:
             _build_discussion=lambda i: "",
             _build_prior_failure_context=lambda i: "",
             _load_codebase_summary=lambda: "",
-            _load_git_history=lambda: "",
-            _load_recent_errors=lambda: "",
-            _load_similar_execution_logs=lambda i: "",
             _get_category_guidance=lambda c: "",
             _find_relevant_test_file=lambda i: "",
             _build_workflow_section=lambda i: "",
@@ -824,9 +818,6 @@ class TestBuildStoryPromptEpicContext:
             _build_discussion=lambda i: "",
             _build_prior_failure_context=lambda i: "",
             _load_codebase_summary=lambda: "",
-            _load_git_history=lambda: "",
-            _load_recent_errors=lambda: "",
-            _load_similar_execution_logs=lambda i: "",
             _get_category_guidance=lambda c: "",
             _find_relevant_test_file=lambda i: "",
             _build_workflow_section=lambda i: "",
@@ -990,9 +981,6 @@ class TestBuildStoryPromptPriorFailure:
             _build_epic_context=lambda i: "",
             _build_discussion=lambda i: "",
             _load_codebase_summary=lambda: "CODEBASE_SUMMARY_SENTINEL",
-            _load_git_history=lambda: "",
-            _load_recent_errors=lambda: "",
-            _load_similar_execution_logs=lambda i: "",
             _get_category_guidance=lambda c: "",
             _find_relevant_test_file=lambda i: "",
             _build_workflow_section=lambda i: "",
@@ -1034,6 +1022,56 @@ class TestBuildStoryPromptPriorFailure:
         assert prompt.index("## Prior Failure Context") < prompt.index(
             "CODEBASE_SUMMARY_SENTINEL"
         )
+
+
+# ---------------------------------------------------------------------------
+# [TK-421] Trimmed ambient sections — git log, crash log, similar execution logs
+# ---------------------------------------------------------------------------
+
+
+class TestBuildStoryPromptTrimmedSections:
+    """_build_story_prompt no longer emits low-signal ambient sections.
+
+    TK-421 dropped three sections that carried little signal for Claude's
+    story implementation: recent git commits, crash_log tail, and prior
+    execution logs from same-category ideas. These headers must not appear.
+    """
+
+    @staticmethod
+    def _make_story():
+        idea = MagicMock()
+        idea.id = "TK-421-test"
+        idea.title = "Trim test"
+        idea.idea_type = "story"
+        idea.category = "quality"
+        idea.parent_id = None
+        idea.description = "verify low-signal sections are gone"
+        idea.comments = []
+        return idea
+
+    def test_story_prompt_omits_trimmed_headers(self):
+        provider = MagicMock()
+        provider.get_comments.return_value = []
+        with patch(
+            "idea_board.executor._get_board_provider", return_value=provider
+        ):
+            prompt = _build_story_prompt(self._make_story())
+
+        assert "## Recent Changes (git log)" not in prompt
+        assert "## Recent Errors (from crash log)" not in prompt
+        assert "## Reference: How similar ideas were implemented" not in prompt
+
+    def test_story_prompt_keeps_task_critical_sections(self):
+        """Sanity: the sections preservation-required by the spec remain."""
+        provider = MagicMock()
+        provider.get_comments.return_value = []
+        with patch(
+            "idea_board.executor._get_board_provider", return_value=provider
+        ):
+            prompt = _build_story_prompt(self._make_story())
+
+        assert "verify low-signal sections are gone" in prompt  # description
+        assert "## MANDATORY WORKFLOW" in prompt  # workflow section
 
 
 # ---------------------------------------------------------------------------

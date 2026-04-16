@@ -792,73 +792,6 @@ def _get_category_guidance(category: str) -> str:
     return f"\n## Category Guidance ({category})\n{guidance}"
 
 
-def _load_similar_execution_logs(idea: Any) -> str:
-    """Find completed ideas in the same category and include their execution logs."""
-    try:
-        all_ideas = load_ideas()
-        similar = [
-            i for i in all_ideas
-            if i.state == "done"
-            and i.category == idea.category
-            and i.id != idea.id
-            and i.execution_log
-            and len(i.execution_log.strip()) > 50
-        ]
-        if not similar:
-            return ""
-
-        # Sort by creation date (most recent first) and take top 2
-        similar.sort(key=lambda i: i.created, reverse=True)
-        refs = similar[:2]
-
-        lines = ["\n## Reference: How similar ideas were implemented"]
-        for ref in refs:
-            lines.append(f"\n**{ref.id}: {ref.title}**")
-            # Last 1000 chars of execution log (completion summary)
-            log_snippet = ref.execution_log[-1000:]
-            if len(ref.execution_log) > 1000:
-                log_snippet = "..." + log_snippet
-            lines.append(f"```\n{log_snippet}\n```")
-
-        return "\n".join(lines)
-    except Exception:
-        return ""
-
-
-def _load_git_history() -> str:
-    """Load recent git commit messages for context."""
-    try:
-        project_root = Path(__file__).parent.parent.parent
-        result = subprocess.run(
-            ["git", "log", "--oneline", "-15"],
-            capture_output=True,
-            text=True,
-            cwd=str(project_root),
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return f"\n## Recent Changes (git log)\n```\n{result.stdout.strip()}\n```"
-    except Exception:
-        pass
-    return ""
-
-
-def _load_recent_errors() -> str:
-    """Load recent crash log entries for context."""
-    crash_log = settings.llm_memory_path / "Permanent" / "crash_log.md"
-    if not crash_log.exists():
-        return ""
-    try:
-        content = crash_log.read_text(encoding="utf-8", errors="replace")
-        if not content.strip():
-            return ""
-        # Last 1500 chars (most recent errors)
-        snippet = content[-1500:] if len(content) > 1500 else content
-        return f"\n## Recent Errors (from crash log)\n```\n{snippet}\n```"
-    except OSError:
-        return ""
-
-
 def _build_workflow_section(idea: Any) -> str:
     """Build the mandatory workflow and completion instructions."""
     return (
@@ -1004,9 +937,6 @@ def _build_story_prompt(
         _build_discussion(idea),
         _build_prior_failure_context(idea),
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
-        _load_git_history(),
-        _load_recent_errors(),
-        _load_similar_execution_logs(idea),
         _get_category_guidance(idea.category),
         _find_relevant_test_file(idea),
         _build_workflow_section(idea),
@@ -1069,8 +999,6 @@ def _build_epic_prompt(idea: Any) -> str:
         f"## Epic Description\n{idea.description}",
         done_context,
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
-        _load_git_history(),
-        _load_recent_errors(),
         "\n## Implementation Process\n"
         "The branch has ALREADY been created for you. You are already on it.\n\n"
         "For EACH story below:\n"
