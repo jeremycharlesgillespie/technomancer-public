@@ -105,6 +105,7 @@ class Idea:
     execution_log: str | None = None
     execution_order: list[str] = field(default_factory=list)
     epic_context: str = ""
+    labels: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.created:
@@ -126,6 +127,7 @@ class Idea:
             "execution_log": self.execution_log,
             "execution_order": self.execution_order,
             "epic_context": self.epic_context,
+            "labels": self.labels,
         }
 
     @classmethod
@@ -149,6 +151,7 @@ class Idea:
             execution_log=data.get("execution_log"),
             execution_order=data.get("execution_order", []),
             epic_context=data.get("epic_context", ""),
+            labels=list(data.get("labels", []) or []),
         )
 
 

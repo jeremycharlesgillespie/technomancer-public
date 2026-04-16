@@ -481,6 +481,9 @@ class TestReviewQueueVetoedExclusion:
             category: str = "quality"
             created: str = "2026-04-14T10:00:00"
             execution_log: str = ""
+            source: str = "llm_analysis"
+            parent_id: str | None = None
+            labels: list = None
 
         ideas = [
             # This idea matches 2 failures — should be auto-vetoed
@@ -500,6 +503,95 @@ class TestReviewQueueVetoedExclusion:
 
         # The matching proposed idea should be vetoed (not moved to To Do)
         mock_provider.vote.assert_called_once_with("TK-10", "owner", "veto")
+
+
+class TestReviewQueueExemptions:
+    """Human-intent exemptions prevent auto-veto of legitimately planned work."""
+
+    @dataclass
+    class FakeIdea:
+        id: str
+        title: str
+        state: str
+        description: str = ""
+        category: str = "quality"
+        created: str = "2026-04-14T10:00:00"
+        execution_log: str = ""
+        source: str = "llm_analysis"
+        parent_id: str | None = None
+        labels: list = None
+
+        def __post_init__(self):
+            if self.labels is None:
+                self.labels = []
+
+    def _run_review(self, ideas, state):
+        from aim.manager import review_queue
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = ideas
+        with patch("board.get_provider", return_value=mock_provider), \
+             patch("aim.manager._notify_discord"):
+            review_queue(state)
+        return mock_provider
+
+    def test_src_planning_exempt_from_dedup_veto(self, state):
+        ideas = [
+            self.FakeIdea(id="TK-101", title="Filter commits publish script",
+                          description="filter generic commits from publish",
+                          state="approved", source="planning"),
+            self.FakeIdea(id="TK-100", title="Filter auto generic commits",
+                          description="filter generic commits in publish step",
+                          state="done"),
+        ]
+        provider = self._run_review(ideas, state)
+        for call in provider.vote.call_args_list:
+            assert call[0][0] != "TK-101", "planning-source idea must not be vetoed"
+
+    def test_protect_label_exempt_from_dedup_veto(self, state):
+        ideas = [
+            self.FakeIdea(id="TK-201", title="Add caching layer",
+                          description="caching layer stuff",
+                          state="approved", source="llm_analysis",
+                          labels=["protect:no-veto"]),
+            self.FakeIdea(id="TK-200", title="Add caching layer v1",
+                          description="caching layer stuff",
+                          state="done"),
+        ]
+        provider = self._run_review(ideas, state)
+        for call in provider.vote.call_args_list:
+            assert call[0][0] != "TK-201", "protect-labeled idea must not be vetoed"
+
+    def test_idea_with_active_parent_epic_exempt(self, state):
+        ideas = [
+            self.FakeIdea(id="TK-300", title="Dashboard epic", state="approved",
+                          idea_type="epic") if False else self.FakeIdea(
+                id="TK-300", title="Dashboard epic", state="approved",
+            ),
+            self.FakeIdea(id="TK-301", title="Add caching layer",
+                          description="caching layer stuff",
+                          state="approved", parent_id="TK-300"),
+            self.FakeIdea(id="TK-302", title="Add caching layer v1",
+                          description="caching layer stuff",
+                          state="done"),
+        ]
+        provider = self._run_review(ideas, state)
+        for call in provider.vote.call_args_list:
+            assert call[0][0] != "TK-301", (
+                "story under a non-vetoed parent epic must not be vetoed"
+            )
+
+    def test_orphan_story_still_eligible_for_veto(self, state):
+        """Sanity: non-exempt ideas still get vetoed when they match patterns."""
+        ideas = [
+            self.FakeIdea(id="TK-400", title="Add caching layer",
+                          description="caching layer stuff",
+                          state="approved"),
+            self.FakeIdea(id="TK-401", title="Add caching layer v1",
+                          description="caching layer stuff",
+                          state="done"),
+        ]
+        provider = self._run_review(ideas, state)
+        provider.vote.assert_called_once_with("TK-400", "owner", "veto")
 
 
 # ---------------------------------------------------------------------------
