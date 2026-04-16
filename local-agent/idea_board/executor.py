@@ -1622,11 +1622,30 @@ def execute_idea(
             # Brief pause to let OS fully release resources
             time.sleep(2)
 
-            # Check success via the result event, not exit code
-            # (we terminate the process after getting the result event,
-            # which gives exit code 1 on Windows even though Claude succeeded)
-            claude_succeeded = final_result != "" or any(
-                "result" in line.lower() for line in state.log_lines[-3:]
+            # Success is authoritatively determined by whether the feature
+            # branch has commits ahead of main. Claude's stdout is a weak
+            # signal — stream-json can miss events, credit exhaustion can
+            # exit non-gracefully, and the substring "result" can appear
+            # in unrelated output. Commits on the branch are the ground
+            # truth that Claude can't fake. The stream-json final_result
+            # stays as a secondary hint that's logged but not load-bearing.
+            project_root_str = str(project_root)
+            current_branch_check = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, cwd=project_root_str,
+            )
+            current_branch = current_branch_check.stdout.strip()
+            commits_ahead = 0
+            if current_branch and current_branch != "main":
+                ahead = subprocess.run(
+                    ["git", "rev-list", "--count", f"main..{current_branch}"],
+                    capture_output=True, text=True, cwd=project_root_str,
+                )
+                commits_ahead = int((ahead.stdout or "0").strip() or "0")
+            claude_succeeded = commits_ahead > 0
+            state.log(
+                f"Success check: {commits_ahead} commit(s) on {current_branch} "
+                f"ahead of main (final_result={'set' if final_result else 'empty'})"
             )
 
             if not claude_succeeded:
@@ -1928,6 +1947,59 @@ def execute_idea(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     capture_output=True, text=True, cwd=project_root,
                 ).stdout.strip()
+
+                # Defense-in-depth: verify the branch still has commits
+                # ahead of main. Success detection already checked this,
+                # but state can drift between that check and here (another
+                # process committed, branch got rebased, etc.). A zero-
+                # commit merge would silently produce "Already up to date"
+                # and the auto-README commit would falsely claim success.
+                # Fail loudly instead of silently.
+                ahead_check = subprocess.run(
+                    ["git", "rev-list", "--count", f"main..{branch}"],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+                if int((ahead_check.stdout or "0").strip() or "0") == 0:
+                    state.log(
+                        f"Merge aborted: feature branch '{branch}' has 0 "
+                        f"commits ahead of main. Nothing to merge."
+                    )
+                    mark_failed(
+                        idea_id,
+                        "Merge phase saw 0 commits ahead of main. "
+                        "Story cannot be marked done without real work.",
+                    )
+                    _notify_discord(
+                        f"Idea {idea_id} merge aborted — no commits to merge.",
+                    )
+                    return
+
+                # Abort if the feature branch has uncommitted changes —
+                # git checkout would silently carry them to main and the
+                # auto-README commit would claim credit for uncommitted
+                # work. That's the exact failure mode that lost TK-410's
+                # rate-limit code. Prefer a loud failure.
+                status_check = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    capture_output=True, text=True, cwd=project_root,
+                )
+                if status_check.stdout.strip():
+                    state.log(
+                        "Merge aborted: feature branch has uncommitted changes "
+                        f"({len(status_check.stdout.splitlines())} paths). "
+                        "Claude Code was supposed to commit. Refusing to "
+                        "checkout main and carry dirt onto the shipping branch."
+                    )
+                    mark_failed(
+                        idea_id,
+                        "Uncommitted working tree at merge time. "
+                        "The branch still has its changes — recover manually "
+                        "or let the story re-run.",
+                    )
+                    _notify_discord(
+                        f"Idea {idea_id} merge aborted — uncommitted changes.",
+                    )
+                    return
 
                 subprocess.run(
                     ["git", "checkout", "main"],
