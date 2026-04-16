@@ -16,6 +16,7 @@ Structure in Obsidian vault:
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -24,6 +25,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+# Number of compaction snapshots to retain in <vault>/Backups/memory/
+# before pruning the oldest. Compaction is LLM-driven and destructive;
+# 10 snapshots gives ~5 hours of recovery window at the default 30-min cadence.
+MAX_COMPACTION_SNAPSHOTS = 10
 
 log = logging.getLogger(__name__)
 
@@ -280,6 +286,63 @@ class MemorySystem:
     # COMPACTION — LLM-powered summarization with cost tracking
     # =========================================================================
 
+    def _snapshot_before_compaction(self) -> Optional[Path]:
+        """Copy compaction target files into a timestamped backup directory.
+
+        Compaction rewrites hourly.md, daily.md, and (indirectly) memories.md
+        from LLM output. A bad summary can silently drop important context
+        with no recovery path (the vault is not under git). This snapshots
+        the live files into <vault>/Backups/memory/<YYYYMMDD-HHMMSS>/ and
+        prunes the backup directory to the MAX_COMPACTION_SNAPSHOTS most
+        recent snapshots.
+
+        Returns the snapshot directory path, or None if none of the target
+        files existed (nothing to snapshot, e.g. first run on an empty vault).
+        """
+        targets = [
+            self.memory_root / "Context" / "hourly.md",
+            self.memory_root / "Context" / "daily.md",
+            self.memory_root / "Permanent" / "memories.md",
+        ]
+        existing = [p for p in targets if p.exists()]
+        if not existing:
+            return None
+
+        backups_dir = self.vault_path / "Backups" / "memory"
+        backups_dir.mkdir(parents=True, exist_ok=True)
+
+        # Collision handling: if the same-second timestamp dir already exists
+        # (tests or a fast retry loop), append -1, -2, ... to guarantee a
+        # fresh directory per call.
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        snapshot_dir = backups_dir / ts
+        counter = 1
+        while snapshot_dir.exists():
+            snapshot_dir = backups_dir / f"{ts}-{counter}"
+            counter += 1
+        snapshot_dir.mkdir(parents=True)
+
+        for src in existing:
+            try:
+                shutil.copy2(src, snapshot_dir / src.name)
+            except OSError as e:
+                log.warning("Snapshot copy failed for %s: %s", src, e)
+
+        # Lexicographic sort matches chronological order because the
+        # timestamp prefix is fixed-width YYYYMMDD-HHMMSS.
+        snapshots = sorted(
+            (d for d in backups_dir.iterdir() if d.is_dir()),
+            key=lambda p: p.name,
+        )
+        while len(snapshots) > MAX_COMPACTION_SNAPSHOTS:
+            oldest = snapshots.pop(0)
+            try:
+                shutil.rmtree(oldest)
+            except OSError as e:
+                log.warning("Snapshot prune failed for %s: %s", oldest, e)
+
+        return snapshot_dir
+
     def _llm_summarize(self, summarizer, text: str, tier: str) -> tuple[str, dict]:
         """Run LLM summarization and track cost/time.
 
@@ -358,6 +421,7 @@ class MemorySystem:
 
     def compact_hourly(self, summarizer=None) -> str:
         """Compact conversations older than 1 hour into hourly summary."""
+        self._snapshot_before_compaction()
         now = datetime.now()
         cutoff = now - timedelta(hours=1)
 

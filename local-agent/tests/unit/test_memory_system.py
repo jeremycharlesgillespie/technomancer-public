@@ -542,6 +542,90 @@ class TestCompactionHealth:
         memory_system._running = False
 
 
+class TestCompactionSnapshots:
+    """Tests for _snapshot_before_compaction backup mechanism."""
+
+    def _write_targets(self, temp_vault):
+        """Populate the three files that compaction snapshots."""
+        memory_root = temp_vault / "LLM Memory"
+        hourly = memory_root / "Context" / "hourly.md"
+        daily = memory_root / "Context" / "daily.md"
+        memories = memory_root / "Permanent" / "memories.md"
+        hourly.write_text("hourly content", encoding="utf-8")
+        daily.write_text("daily content", encoding="utf-8")
+        memories.write_text("memories content", encoding="utf-8")
+        return hourly, daily, memories
+
+    def test_snapshot_copies_three_target_files(self, memory_system, temp_vault):
+        """Triggering compaction copies hourly/daily/memories into a new backup dir."""
+        self._write_targets(temp_vault)
+
+        memory_system.compact_hourly()
+
+        backup_root = temp_vault / "Backups" / "memory"
+        assert backup_root.exists()
+        snapshots = [d for d in backup_root.iterdir() if d.is_dir()]
+        assert len(snapshots) == 1
+
+        snap = snapshots[0]
+        assert (snap / "hourly.md").read_text(encoding="utf-8") == "hourly content"
+        assert (snap / "daily.md").read_text(encoding="utf-8") == "daily content"
+        assert (snap / "memories.md").read_text(encoding="utf-8") == "memories content"
+
+    def test_snapshot_skips_missing_files(self, memory_system, temp_vault):
+        """Snapshot only copies files that actually exist."""
+        memory_root = temp_vault / "LLM Memory"
+        (memory_root / "Context" / "hourly.md").write_text("only hourly", encoding="utf-8")
+
+        memory_system.compact_hourly()
+
+        backup_root = temp_vault / "Backups" / "memory"
+        snapshots = [d for d in backup_root.iterdir() if d.is_dir()]
+        assert len(snapshots) == 1
+        snap = snapshots[0]
+        assert (snap / "hourly.md").exists()
+        assert not (snap / "daily.md").exists()
+        assert not (snap / "memories.md").exists()
+
+    def test_snapshot_no_backup_when_nothing_exists(self, memory_system, temp_vault):
+        """If none of the target files exist, no backup dir is created."""
+        memory_system.compact_hourly()
+
+        backup_root = temp_vault / "Backups" / "memory"
+        if backup_root.exists():
+            assert list(backup_root.iterdir()) == []
+
+    def test_snapshot_prunes_to_ten_most_recent(self, memory_system, temp_vault):
+        """Running compaction 11 times leaves exactly 10 snapshot dirs."""
+        self._write_targets(temp_vault)
+
+        for _ in range(11):
+            memory_system._snapshot_before_compaction()
+
+        backup_root = temp_vault / "Backups" / "memory"
+        snapshots = [d for d in backup_root.iterdir() if d.is_dir()]
+        assert len(snapshots) == 10
+
+    def test_snapshot_keeps_newest_after_prune(self, memory_system, temp_vault):
+        """After pruning, the 10 most recent (by name) are retained."""
+        self._write_targets(temp_vault)
+        backup_root = temp_vault / "Backups" / "memory"
+
+        # Pre-seed backup root with an obviously-old snapshot that should get pruned.
+        stale = backup_root / "19990101-000000"
+        stale.mkdir(parents=True)
+        (stale / "hourly.md").write_text("old", encoding="utf-8")
+
+        for _ in range(10):
+            memory_system._snapshot_before_compaction()
+
+        snapshots = sorted(
+            [d.name for d in backup_root.iterdir() if d.is_dir()]
+        )
+        assert len(snapshots) == 10
+        assert "19990101-000000" not in snapshots
+
+
 class TestCompactionThreadResilience:
     """Tests for compaction thread not dying on exceptions."""
 
