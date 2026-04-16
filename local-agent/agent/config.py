@@ -176,6 +176,14 @@ class Settings(BaseSettings):
     aim_queue_review_interval: int = Field(
         default=10, description="Run queue review (dedup + failure detection) every N cycles"
     )
+    aim_brain_use_ollama: bool = Field(
+        default=True,
+        description=(
+            "Route AIM brain's decide_next_action through local Ollama first. "
+            "Falls back to claude -p on error, empty output, or unparseable JSON. "
+            "generate_work_ideas still uses claude -p regardless."
+        ),
+    )
 
     # Claude rate-limit retry settings (used by the AI Worker)
     rate_limit_wait_minutes: int = Field(

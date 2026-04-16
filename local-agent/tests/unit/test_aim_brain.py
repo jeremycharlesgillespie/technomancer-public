@@ -11,9 +11,21 @@ from aim.brain import (
     Decision,
     _heuristic_decision,
     _parse_decision,
+    _run_ollama_decide,
     decide_next_action,
     generate_work_ideas,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_ollama_by_default():
+    """Force the Ollama branch OFF so pre-existing claude-path tests still run.
+
+    Tests that specifically exercise the Ollama routing opt back in by
+    patching ``_run_ollama_decide`` themselves.
+    """
+    with patch("aim.brain._run_ollama_decide", return_value=None):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -534,3 +546,237 @@ class TestGenerateWorkIdeas:
         # Older titles beyond the last-30 window are dropped
         assert "Older idea 0" not in sent_prompt
         assert "Older idea 49" not in sent_prompt
+
+
+# ---------------------------------------------------------------------------
+# Ollama routing tests — decide_next_action only; generate_work_ideas stays on claude -p
+# ---------------------------------------------------------------------------
+
+class TestOllamaRouting:
+    """Verify decide_next_action prefers Ollama and falls back to claude -p."""
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_ollama_valid_json_short_circuits_claude(self, mock_ollama, mock_claude):
+        """When Ollama returns a parseable decision, claude -p MUST NOT run."""
+        mock_ollama.return_value = (
+            '{"action": "ASSIGN", "target": "idea-007", "reason": "top of board"}'
+        )
+
+        d = decide_next_action(
+            board_state={"todo": 15, "in_progress": 0, "done_last_24h": 2},
+            worker_status="idle",
+            approved_ideas=[{"id": "idea-007", "title": "X", "category": "quality"}],
+            last_completion="2026-04-16T08:00:00",
+            hours_since_completion=1.0,
+            completions_today=2,
+        )
+        assert d.action == "ASSIGN"
+        assert d.target == "idea-007"
+        mock_ollama.assert_called_once()
+        mock_claude.assert_not_called()
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_ollama_error_falls_through_to_claude(self, mock_ollama, mock_claude):
+        """Ollama returning None (exception/timeout/empty) triggers claude -p."""
+        mock_ollama.return_value = None
+        mock_claude.return_value = (
+            '{"action": "ASSIGN", "target": "idea-008", "reason": "from claude"}'
+        )
+
+        d = decide_next_action(
+            board_state={"todo": 15},
+            worker_status="idle",
+            approved_ideas=[{"id": "idea-008", "title": "Y", "category": "quality"}],
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+        )
+        mock_ollama.assert_called_once()
+        mock_claude.assert_called_once()
+        assert d.action == "ASSIGN"
+        assert d.target == "idea-008"
+        assert d.reason == "from claude"
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_ollama_unparseable_falls_through_to_claude(self, mock_ollama, mock_claude):
+        """Unparseable Ollama output (no JSON, no action keywords) triggers claude -p."""
+        mock_ollama.return_value = "hmm, let me think about this some more"
+        mock_claude.return_value = '{"action": "WAIT", "reason": "claude said wait"}'
+
+        d = decide_next_action(
+            board_state={"todo": 15},
+            worker_status="idle",
+            approved_ideas=[],
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+        )
+        mock_ollama.assert_called_once()
+        mock_claude.assert_called_once()
+        assert d.action == "WAIT"
+        assert d.reason == "claude said wait"
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_ollama_legitimate_wait_does_not_call_claude(self, mock_ollama, mock_claude):
+        """A well-formed WAIT from Ollama is a real decision — don't escalate to Claude."""
+        mock_ollama.return_value = '{"action": "WAIT", "reason": "worker busy"}'
+
+        d = decide_next_action(
+            board_state={"todo": 15},
+            worker_status="executing",
+            approved_ideas=[],
+            last_completion=None,
+            hours_since_completion=0.5,
+            completions_today=2,
+        )
+        assert d.action == "WAIT"
+        assert d.reason == "worker busy"
+        mock_ollama.assert_called_once()
+        mock_claude.assert_not_called()
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    @patch("aim.brain.settings")
+    def test_toggle_off_skips_ollama_entirely(self, mock_settings, mock_ollama, mock_claude):
+        """When aim_brain_use_ollama=False, decide_next_action must NOT call Ollama."""
+        mock_settings.aim_brain_use_ollama = False
+        mock_claude.return_value = '{"action": "WAIT", "reason": "toggle off"}'
+
+        d = decide_next_action(
+            board_state={"todo": 15},
+            worker_status="idle",
+            approved_ideas=[],
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+        )
+        mock_ollama.assert_not_called()
+        mock_claude.assert_called_once()
+        assert d.action == "WAIT"
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_ollama_receives_same_prompt_as_claude_would(self, mock_ollama, mock_claude):
+        """The Ollama branch must not strip signal from the prompt."""
+        mock_ollama.return_value = '{"action": "WAIT", "reason": "test"}'
+
+        fc = "RECENT FAILURES: idea-999 bricked tests"
+        decide_next_action(
+            board_state={"todo": 20, "in_progress": 0, "done_last_24h": 3},
+            worker_status="idle",
+            approved_ideas=[{"id": "idea-010", "title": "X", "category": "quality"}],
+            last_completion="2026-04-16T09:00:00",
+            hours_since_completion=1.0,
+            completions_today=3,
+            failure_context=fc,
+        )
+        sent = mock_ollama.call_args[0][0]
+        assert fc in sent
+        assert "idea-010" in sent
+        assert "ASSIGN" in sent  # action vocabulary must survive
+        mock_claude.assert_not_called()
+
+    @patch("aim.brain._run_claude_p")
+    @patch("aim.brain._run_ollama_decide")
+    def test_generate_work_ideas_ignores_ollama_toggle(self, mock_ollama, mock_claude):
+        """generate_work_ideas must stay on claude -p — creative work needs the big model."""
+        mock_claude.return_value = json.dumps([
+            {"title": "Idea", "description": "X", "category": "quality", "idea_type": "story"},
+        ])
+
+        result = generate_work_ideas(
+            codebase_summary="agent/core.py",
+            existing_idea_titles=[],
+            board_state={"todo": 1},
+        )
+        mock_ollama.assert_not_called()
+        mock_claude.assert_called_once()
+        assert len(result) == 1
+
+
+class TestRunOllamaDecide:
+    """Direct tests for the _run_ollama_decide helper."""
+
+    @patch("aim.brain.ollama.Client")
+    def test_returns_content_on_success(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {
+            "message": {"content": '{"action": "WAIT", "reason": "ok"}'}
+        }
+        mock_client_cls.return_value = mock_client
+
+        result = _run_ollama_decide("pick an action")
+        assert result is not None
+        assert '"action": "WAIT"' in result
+
+    @patch("aim.brain.ollama.Client")
+    def test_strips_think_tags(self, mock_client_cls):
+        """qwen3.x <think>…</think> reasoning must be stripped before parsing."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {
+            "message": {
+                "content": (
+                    "<think>weighing options</think>"
+                    '{"action": "ASSIGN", "target": "idea-001", "reason": "top"}'
+                )
+            }
+        }
+        mock_client_cls.return_value = mock_client
+
+        result = _run_ollama_decide("prompt")
+        assert result is not None
+        assert "<think>" not in result
+        assert "ASSIGN" in result
+
+    @patch("aim.brain.ollama.Client")
+    def test_returns_none_on_empty_content(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {"message": {"content": ""}}
+        mock_client_cls.return_value = mock_client
+
+        assert _run_ollama_decide("prompt") is None
+
+    @patch("aim.brain.ollama.Client")
+    def test_returns_none_on_only_think_tags(self, mock_client_cls):
+        """If the whole response is just reasoning, the caller must fall through."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {
+            "message": {"content": "<think>I have no idea</think>"}
+        }
+        mock_client_cls.return_value = mock_client
+
+        assert _run_ollama_decide("prompt") is None
+
+    @patch("aim.brain.ollama.Client")
+    def test_returns_none_on_exception(self, mock_client_cls):
+        """Any exception (connection refused, timeout, etc.) yields None."""
+        mock_client_cls.side_effect = ConnectionError("ollama down")
+        assert _run_ollama_decide("prompt") is None
+
+    @patch("aim.brain.ollama.Client")
+    def test_returns_none_when_chat_raises(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.chat.side_effect = TimeoutError("slow")
+        mock_client_cls.return_value = mock_client
+
+        assert _run_ollama_decide("prompt") is None
+
+    @patch("aim.brain.ollama.Client")
+    def test_uses_configured_model_and_host(self, mock_client_cls):
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {"message": {"content": "ok"}}
+        mock_client_cls.return_value = mock_client
+
+        _run_ollama_decide("prompt")
+
+        # Client built with host/timeout from settings
+        _, kwargs = mock_client_cls.call_args
+        assert "host" in kwargs
+        # chat() invoked with the configured model
+        _, chat_kwargs = mock_client.chat.call_args
+        assert "model" in chat_kwargs
+        assert chat_kwargs["messages"][0]["content"] == "prompt"
