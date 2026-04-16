@@ -1,20 +1,49 @@
 """
-Ask Claude - Use Claude CLI to get responses from Claude.
+Ask Claude - Use the Anthropic SDK to get responses from Claude.
 
-This allows the local LLM to pass questions to Claude via the CLI,
-leveraging an existing Claude Pro subscription.
+The public ``ask_claude(question, context)`` function is unchanged so
+existing callers and tool wiring do not need updates. Internally this
+now calls ``anthropic.Anthropic().messages.create`` directly instead of
+shelling out to the ``claude -p`` CLI, which removes subprocess startup
+cost and enables future use of prompt caching.
 """
 
-import os
-import subprocess
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import anthropic
+
+    HAS_ANTHROPIC = True
+except ImportError:
+    HAS_ANTHROPIC = False
+
+from .config import settings
 
 # Log file for tracking Claude queries
 LOG_FILE = Path(__file__).parent.parent / "claude_queries.log"
 
-# Claude CLI path - installed via npm
-CLAUDE_CLI = Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd"
+# Keep in sync with agent/claude_vault.py::DEFAULT_MODEL
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_MAX_TOKENS = 4096
+DEFAULT_TIMEOUT = 120.0  # seconds — matches prior subprocess timeout
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Answer clearly and concisely."
+
+# Lazy module-level client singleton.
+_client: "anthropic.Anthropic | None" = None
+
+
+def _get_client() -> "anthropic.Anthropic | None":
+    """Return a lazily-initialized Anthropic client, or None if unavailable."""
+    global _client
+    if _client is not None:
+        return _client
+    if not HAS_ANTHROPIC:
+        return None
+    if not settings.anthropic_api_key:
+        return None
+    _client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    return _client
 
 
 def log_query(question: str, response: str, success: bool) -> None:
@@ -30,7 +59,7 @@ def log_query(question: str, response: str, success: bool) -> None:
 
 def ask_claude(question: str, context: str = "") -> str:
     """
-    Ask Claude a question using the Claude CLI.
+    Ask Claude a question via the Anthropic SDK.
 
     Args:
         question: The question to ask Claude
@@ -39,48 +68,41 @@ def ask_claude(question: str, context: str = "") -> str:
     Returns:
         Claude's response as a string
     """
+    if context:
+        full_prompt = f"Context: {context}\n\nQuestion: {question}"
+    else:
+        full_prompt = question
+
+    client = _get_client()
+    if client is None:
+        if not HAS_ANTHROPIC:
+            msg = "Anthropic SDK not installed. Run: pip install anthropic"
+        else:
+            msg = "ANTHROPIC_API_KEY not set in environment/.env"
+        log_query(question, msg, False)
+        return msg
+
     try:
-        # Build the prompt
-        if context:
-            full_prompt = f"Context: {context}\n\nQuestion: {question}"
-        else:
-            full_prompt = question
-
-        # Check if CLI exists
-        if not CLAUDE_CLI.exists():
-            return f"Claude CLI not found at {CLAUDE_CLI}. Check npm installation."
-
-        # Create env without CLAUDECODE to avoid "nested session" error
-        env = os.environ.copy()
-        env.pop("CLAUDECODE", None)
-
-        # Call Claude CLI with --print flag to get just the response
-        # Using -p for print mode (non-interactive, just outputs response)
-        result = subprocess.run(
-            [str(CLAUDE_CLI), "-p", full_prompt],
-            capture_output=True,
-            text=True,
-            timeout=120,  # 2 minute timeout
-            encoding="utf-8",
-            shell=True,  # Needed for .cmd files on Windows
-            env=env,  # Use env without CLAUDECODE
+        response = client.messages.create(
+            model=DEFAULT_MODEL,
+            max_tokens=DEFAULT_MAX_TOKENS,
+            system=DEFAULT_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": full_prompt}],
+            timeout=DEFAULT_TIMEOUT,
         )
+        text = response.content[0].text.strip()
+        log_query(question, text, True)
+        return text
 
-        if result.returncode == 0:
-            response = result.stdout.strip()
-            log_query(question, response, True)
-            return response
-        else:
-            error_msg = result.stderr.strip() or "Unknown error"
-            log_query(question, f"Error: {error_msg}", False)
-            return f"Claude CLI error: {error_msg}"
-
-    except subprocess.TimeoutExpired:
+    except anthropic.APITimeoutError:
         log_query(question, "Timeout", False)
-        return "Claude took too long to respond (timeout after 2 minutes)"
-    except FileNotFoundError:
-        log_query(question, "CLI not found", False)
-        return "Claude CLI not found. Make sure 'claude' is in your PATH."
+        return "Claude took too long to respond (timeout)"
+    except anthropic.APIConnectionError as e:
+        log_query(question, f"Connection error: {e}", False)
+        return f"Error calling Claude: connection error ({e})"
+    except anthropic.APIStatusError as e:
+        log_query(question, f"API error: {e}", False)
+        return f"Claude API error: {e}"
     except Exception as e:
         log_query(question, str(e), False)
         return f"Error calling Claude: {e}"
