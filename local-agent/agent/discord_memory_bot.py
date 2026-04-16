@@ -836,6 +836,15 @@ Keep responses concise for Discord but thorough when they need depth.""",
     except Exception as e:
         log(f"Failed to start Ollama health monitor: {e}")
 
+    # Start crash watcher — auto-files Jira stories for new crashes
+    try:
+        from .crash_triage import start_crash_watcher
+        state_dir = Path(__file__).resolve().parent.parent / "data"
+        start_crash_watcher(vault_path=VAULT_PATH, state_dir=state_dir)
+        log("Crash watcher started (polling crash_log.md every 60s)")
+    except Exception as e:
+        log(f"Failed to start crash watcher: {e}")
+
 
 @client.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent) -> None:
