@@ -14,7 +14,6 @@ import pytest
 
 from agent.memory_system import (
     ConversationEntry,
-    MAX_COMPACTION_SNAPSHOTS,
     MemorySystem,
     atomic_write,
     get_memory_tools,
@@ -759,6 +758,257 @@ class TestAtomicWrite:
         leftovers = [p for p in tmp_path.iterdir() if p.suffix == ".tmp"]
         assert leftovers == []
 
+    def test_partial_file_invisible_on_crash(self, tmp_path, monkeypatch):
+        """A crash between temp-write and rename must never expose partial content.
+
+        Mid-rename, the temp file holds the new bytes but the live file
+        has not been swapped yet. A reader observing *target* in that
+        window must still see the original content, never a partial write.
+        """
+        target = tmp_path / "file.md"
+        target.write_text("ORIGINAL", encoding="utf-8")
+        observed: list[str] = []
+
+        def crash_after_write(src, dst):
+            observed.append(Path(dst).read_text(encoding="utf-8"))
+            raise OSError("simulated crash mid-rename")
+
+        monkeypatch.setattr("agent.memory_system.os.replace", crash_after_write)
+        with pytest.raises(OSError):
+            atomic_write(target, b"PARTIAL OR FULL NEW DATA")
+
+        assert observed == ["ORIGINAL"], "target was overwritten before rename"
+        assert target.read_text(encoding="utf-8") == "ORIGINAL"
+        assert [p for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+class TestRotateBackup:
+    """rotate_backup snapshots a file into .backups/ and prunes the oldest."""
+
+    def test_creates_backup_with_timestamp_name(self, tmp_path):
+        live = tmp_path / "memories.md"
+        live.write_text("v1 content", encoding="utf-8")
+
+        backup = rotate_backup(live)
+
+        assert backup is not None
+        assert backup.parent == tmp_path / ".backups"
+        assert backup.exists()
+        assert backup.read_text(encoding="utf-8") == "v1 content"
+        # Name format: <stem>-YYYYMMDD-HHMMSS<suffix>
+        assert backup.suffix == ".md"
+        assert backup.stem.startswith("memories-")
+        timestamp_part = backup.stem[len("memories-"):]
+        assert len(timestamp_part) == len("YYYYMMDD-HHMMSS")
+        assert timestamp_part[8] == "-"
+        assert timestamp_part.replace("-", "").isdigit()
+
+    def test_returns_none_when_source_missing(self, tmp_path):
+        result = rotate_backup(tmp_path / "does-not-exist.md")
+        assert result is None
+        # No .backups dir should be created when there is nothing to back up.
+        assert not (tmp_path / ".backups").exists()
+
+    def test_collision_uses_counter_suffix(self, tmp_path, monkeypatch):
+        """Same-second rotations must not overwrite each other."""
+        live = tmp_path / "hourly.md"
+        live.write_text("body", encoding="utf-8")
+
+        # Pin datetime.now() so two calls produce the same timestamp.
+        class FixedDT:
+            @classmethod
+            def now(cls):
+                return datetime(2026, 4, 16, 12, 0, 0)
+
+            @classmethod
+            def strptime(cls, *args, **kwargs):
+                return datetime.strptime(*args, **kwargs)
+
+        monkeypatch.setattr("agent.memory_system.datetime", FixedDT)
+
+        b1 = rotate_backup(live)
+        b2 = rotate_backup(live)
+        b3 = rotate_backup(live)
+
+        # Three distinct, real files in the backups dir, all naming-compliant.
+        assert b1.exists() and b2.exists() and b3.exists()
+        assert {b1, b2, b3} == {b1, b2, b3}  # distinctness
+        assert len({b1, b2, b3}) == 3
+        names = {p.name for p in (b1, b2, b3)}
+        assert names == {
+            "hourly-20260416-120000.md",
+            "hourly-20260416-120000-1.md",
+            "hourly-20260416-120000-2.md",
+        }
+
+    def test_prunes_oldest_at_limit(self, tmp_path):
+        """At keep=N, the oldest backups (by sorted name) are unlinked."""
+        live = tmp_path / "daily.md"
+        live.write_text("body", encoding="utf-8")
+        backups_dir = tmp_path / ".backups"
+        backups_dir.mkdir()
+
+        # Seed 4 pre-existing backups with deterministic, ordered timestamps.
+        seeded = []
+        for ts in [
+            "20260101-000000",
+            "20260102-000000",
+            "20260103-000000",
+            "20260104-000000",
+        ]:
+            p = backups_dir / f"daily-{ts}.md"
+            p.write_text(ts, encoding="utf-8")
+            seeded.append(p)
+
+        # keep=2 → after this call there should be exactly 2 backups left,
+        # and they should be the two newest (the just-written one, plus the
+        # newest of the seeded ones).
+        new_backup = rotate_backup(live, keep=2)
+        remaining = sorted(backups_dir.glob("daily-*.md"))
+
+        assert len(remaining) == 2
+        assert new_backup in remaining
+        # Oldest two seeded entries are gone.
+        assert not seeded[0].exists()
+        assert not seeded[1].exists()
+        # 4th seeded entry survives because it sorts newer than the first two.
+        assert seeded[3].exists()
+
+    def test_does_not_prune_other_files_backups(self, tmp_path):
+        """Pruning only touches backups whose stem matches the rotated file."""
+        live = tmp_path / "hourly.md"
+        live.write_text("h", encoding="utf-8")
+        backups_dir = tmp_path / ".backups"
+        backups_dir.mkdir()
+
+        # An unrelated backup from another file in the same .backups dir.
+        unrelated = backups_dir / "daily-20260101-000000.md"
+        unrelated.write_text("d", encoding="utf-8")
+        # Many old hourly backups that should get pruned.
+        for ts in ["20260101-000000", "20260102-000000", "20260103-000000"]:
+            (backups_dir / f"hourly-{ts}.md").write_text(ts, encoding="utf-8")
+
+        rotate_backup(live, keep=1)
+
+        # All hourly backups except the freshly created one should be gone.
+        hourly_left = sorted(backups_dir.glob("hourly-*.md"))
+        assert len(hourly_left) == 1
+        # Unrelated daily backup must be untouched by hourly's prune.
+        assert unrelated.exists()
+        assert unrelated.read_text(encoding="utf-8") == "d"
+
+    def test_under_limit_keeps_all(self, tmp_path):
+        """When backups <= keep, no pruning happens."""
+        live = tmp_path / "memories.md"
+        live.write_text("body", encoding="utf-8")
+        backups_dir = tmp_path / ".backups"
+        backups_dir.mkdir()
+        seeded = []
+        for ts in ["20260101-000000", "20260102-000000"]:
+            p = backups_dir / f"memories-{ts}.md"
+            p.write_text(ts, encoding="utf-8")
+            seeded.append(p)
+
+        rotate_backup(live, keep=24)
+
+        # Original 2 + 1 newly written = 3, all retained.
+        assert len(list(backups_dir.glob("memories-*.md"))) == 3
+        for p in seeded:
+            assert p.exists()
+
+
+class TestVerifyMemoryFile:
+    """verify_memory_file checks header + body + size sanity after a write."""
+
+    def test_happy_path(self, tmp_path):
+        path = tmp_path / "memories.md"
+        path.write_text("# Memories\n\nSome content here.\n", encoding="utf-8")
+
+        # prior_size roughly matches current size.
+        ok, reason = verify_memory_file(path, prior_size=path.stat().st_size)
+        assert ok is True
+        assert reason == "OK"
+
+    def test_first_write_skips_size_check(self, tmp_path):
+        """prior_size <= 0 means no comparison baseline → only structural checks."""
+        path = tmp_path / "memories.md"
+        path.write_text("# Memories\n\nbody\n", encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=0)
+        assert ok is True
+        assert reason == "OK"
+
+    def test_failure_missing_file(self, tmp_path):
+        ok, reason = verify_memory_file(tmp_path / "nope.md", prior_size=100)
+        assert ok is False
+        assert "Missing file" in reason
+
+    def test_failure_missing_header(self, tmp_path):
+        path = tmp_path / "memories.md"
+        path.write_text("just some plain text without a header\n", encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=0)
+        assert ok is False
+        assert reason == "Missing header"
+
+    def test_failure_empty_body(self, tmp_path):
+        path = tmp_path / "memories.md"
+        path.write_text("# Header only\n\n   \n", encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=0)
+        assert ok is False
+        assert reason == "Empty body"
+
+    def test_failure_size_too_small(self, tmp_path):
+        path = tmp_path / "memories.md"
+        # Tiny content vs. a large prior — current is far below 25% of prior.
+        path.write_text("# H\nx\n", encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=10_000)
+        assert ok is False
+        assert "too small" in reason.lower()
+
+    def test_failure_size_too_large(self, tmp_path):
+        path = tmp_path / "memories.md"
+        # Big content vs. a tiny prior — current is far above 500% of prior.
+        path.write_text("# H\n" + "filler line\n" * 200, encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=10)
+        assert ok is False
+        assert "too large" in reason.lower()
+
+    def test_size_at_lower_bound_passes(self, tmp_path):
+        """Exactly 25% of prior is on the boundary and should pass.
+
+        Use write_bytes() so size is platform-deterministic (avoids
+        Windows CRLF translation that text mode applies).
+        """
+        path = tmp_path / "memories.md"
+        path.write_bytes(b"# H\n\n" + b"x" * 95)  # 5 + 95 = 100 bytes
+        assert path.stat().st_size == 100
+
+        # 100 == 25% of 400 → on the boundary.
+        ok, reason = verify_memory_file(path, prior_size=400)
+        assert ok is True, reason
+
+    def test_size_at_upper_bound_passes(self, tmp_path):
+        """Exactly 500% of prior is on the boundary and should pass."""
+        path = tmp_path / "memories.md"
+        path.write_bytes(b"# H\n\n" + b"x" * 495)  # 5 + 495 = 500 bytes
+        assert path.stat().st_size == 500
+
+        # 500 == 500% of 100 → on the boundary.
+        ok, reason = verify_memory_file(path, prior_size=100)
+        assert ok is True, reason
+
+    def test_header_can_have_leading_blank_lines(self, tmp_path):
+        """Blank lines before the header are tolerated."""
+        path = tmp_path / "memories.md"
+        path.write_text("\n\n# Memories\n\nSome content.\n", encoding="utf-8")
+
+        ok, reason = verify_memory_file(path, prior_size=0)
+        assert ok is True, reason
+
 
 class TestRestoreCliList:
     """`restore <file>` with no --backup lists available backups."""
@@ -902,314 +1152,3 @@ class TestAutoRestoreNotification:
         ):
             # Must not propagate — compaction thread should keep running.
             notify_auto_restored("daily.md", "20260401-120000")
-
-
-# =============================================================================
-# ROTATE_BACKUP — per-path snapshot helper used by the safe-write flow
-# =============================================================================
-
-
-class TestRotateBackup:
-    """rotate_backup() snapshots a single file into Backups/memory/<ts>/."""
-
-    def test_creates_snapshot_with_only_target(self, tmp_path):
-        target = tmp_path / "LLM Memory" / "Context" / "hourly.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("live content", encoding="utf-8")
-
-        snap_dir = rotate_backup(tmp_path, target)
-
-        assert snap_dir is not None
-        assert snap_dir.is_dir()
-        assert (snap_dir / "hourly.md").read_text(encoding="utf-8") == "live content"
-        assert not (snap_dir / "daily.md").exists()
-
-    def test_returns_none_when_target_missing(self, tmp_path):
-        target = tmp_path / "LLM Memory" / "Context" / "hourly.md"
-
-        assert rotate_backup(tmp_path, target) is None
-        assert not (tmp_path / "Backups" / "memory").exists()
-
-    def test_prunes_to_max_snapshots(self, tmp_path):
-        target = tmp_path / "LLM Memory" / "Context" / "hourly.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("c", encoding="utf-8")
-
-        for _ in range(MAX_COMPACTION_SNAPSHOTS + 3):
-            rotate_backup(tmp_path, target)
-
-        snapshots = [d for d in (tmp_path / "Backups" / "memory").iterdir() if d.is_dir()]
-        assert len(snapshots) == MAX_COMPACTION_SNAPSHOTS
-
-    def test_collision_in_same_second_uses_suffix(self, tmp_path):
-        target = tmp_path / "LLM Memory" / "Context" / "hourly.md"
-        target.parent.mkdir(parents=True)
-        target.write_text("c", encoding="utf-8")
-
-        first = rotate_backup(tmp_path, target)
-        second = rotate_backup(tmp_path, target)
-
-        # Two back-to-back calls must produce distinct snapshot dirs.
-        assert first != second
-        assert first.exists()
-        assert second.exists()
-
-
-# =============================================================================
-# VERIFY_MEMORY_FILE — integrity check after each compaction write
-# =============================================================================
-
-
-class TestVerifyMemoryFile:
-    """verify_memory_file() must reject corrupted/missing/empty files."""
-
-    def test_accepts_healthy_file(self, tmp_path):
-        path = tmp_path / "f.md"
-        path.write_text("normal content", encoding="utf-8")
-
-        assert verify_memory_file(path) is True
-
-    def test_rejects_missing_file(self, tmp_path):
-        assert verify_memory_file(tmp_path / "ghost.md") is False
-
-    def test_rejects_empty_file(self, tmp_path):
-        path = tmp_path / "empty.md"
-        path.write_bytes(b"")
-
-        assert verify_memory_file(path) is False
-
-    def test_rejects_invalid_utf8(self, tmp_path):
-        path = tmp_path / "bad.md"
-        # 0xff 0xfe 0xfd is invalid as UTF-8 but non-empty.
-        path.write_bytes(b"\xff\xfe\xfd")
-
-        assert verify_memory_file(path) is False
-
-
-# =============================================================================
-# COMPACTION SAFE-WRITE — verify failure triggers backup restore
-# =============================================================================
-
-
-class TestCompactionSafeWriteVerifyFailure:
-    """Integration tests for the rotate → atomic_write → verify flow.
-
-    These cover the acceptance criterion: simulate a verify failure and
-    confirm the backup is restored and a crash_log entry is appended.
-    """
-
-    def _add_old_convo(self, memory_system):
-        """Add a conversation in the 1–2 hour window so compact_hourly does work."""
-        old_time = datetime.now() - timedelta(hours=1, minutes=30)
-        memory_system.recent_conversations.append(
-            ConversationEntry(
-                timestamp=old_time,
-                user="u",
-                message="What is Django?",
-                response="A web framework.",
-            )
-        )
-
-    def test_hourly_verify_failure_restores_previous_backup(
-        self, memory_system, temp_vault
-    ):
-        """If verify_memory_file returns False, the prior hourly.md is restored."""
-        self._add_old_convo(memory_system)
-
-        # Seed an existing hourly.md so rotate_backup captures it first.
-        hourly_path = temp_vault / "LLM Memory" / "Context" / "hourly.md"
-        original_body = "# Hourly Context\n\nKNOWN GOOD CONTENT\n"
-        hourly_path.write_text(original_body, encoding="utf-8")
-
-        # Force verify to fail once (for the fresh write) then pass during the
-        # post-restore check (there is no post-restore verify today, but this
-        # keeps the stub robust against future additions).
-        call_count = {"n": 0}
-
-        def fake_verify(path):
-            call_count["n"] += 1
-            return False  # always fail — write was "corrupted"
-
-        with patch(
-            "agent.memory_system.verify_memory_file", side_effect=fake_verify
-        ), patch(
-            "agent.memory_system.notifications.discord_send"
-        ) as mock_notify:
-            result = memory_system.compact_hourly(
-                summarizer=lambda prompt: "Post-write summary — simulated bad write."
-            )
-
-        assert "restored" in result.lower()
-        assert hourly_path.read_text(encoding="utf-8") == original_body
-        # Auto-restore Discord notification must fire exactly once.
-        assert mock_notify.call_count == 1
-
-        crash_log = temp_vault / "LLM Memory" / "Permanent" / "crash_log.md"
-        assert crash_log.exists()
-        body = crash_log.read_text(encoding="utf-8")
-        assert "hourly.md" in body
-        assert "Compaction recovery" in body
-
-    def test_daily_verify_failure_restores_previous_backup(
-        self, memory_system, temp_vault
-    ):
-        """Same flow for compact_daily writes to daily.md."""
-        memory_system.log_conversation("user1", "Hello", "Hi")
-
-        daily_path = temp_vault / "LLM Memory" / "Context" / "daily.md"
-        original_body = "# Daily Context\n\nOLD GOOD DAILY CONTENT\n"
-        daily_path.write_text(original_body, encoding="utf-8")
-
-        with patch(
-            "agent.memory_system.verify_memory_file", return_value=False
-        ), patch(
-            "agent.memory_system.notifications.discord_send"
-        ) as mock_notify:
-            result = memory_system.compact_daily(
-                summarizer=lambda prompt: "Post-write daily summary."
-            )
-
-        assert "restored" in result.lower()
-        assert daily_path.read_text(encoding="utf-8") == original_body
-        assert mock_notify.call_count == 1
-
-    def test_verify_failure_without_backup_reports_restore_failed(
-        self, memory_system, temp_vault
-    ):
-        """If verify fails and no backup exists, the caller learns restore_failed.
-
-        This can happen on the very first hourly write when no prior snapshot
-        exists — we must not silently pretend everything worked.
-        """
-        self._add_old_convo(memory_system)
-
-        # Ensure no backup dir exists at all.
-        assert not (temp_vault / "Backups" / "memory").exists()
-
-        # Make list_backups return empty for the live verify-fail path by
-        # patching verify to always return False.
-        with patch(
-            "agent.memory_system.verify_memory_file", return_value=False
-        ), patch(
-            "agent.memory_system.list_backups", return_value=[]
-        ):
-            result = memory_system.compact_hourly(
-                summarizer=lambda prompt: "summary"
-            )
-
-        assert "no backup could be restored" in result.lower()
-
-        crash_log = temp_vault / "LLM Memory" / "Permanent" / "crash_log.md"
-        assert crash_log.exists()
-        assert "no backup" in crash_log.read_text(encoding="utf-8").lower()
-
-
-# =============================================================================
-# COMPACTION SAFE-WRITE — filelock contention skips the cycle cleanly
-# =============================================================================
-
-
-class TestCompactionSafeWriteLockContention:
-    """When the per-path lock cannot be acquired, the cycle is skipped."""
-
-    def _add_old_convo(self, memory_system):
-        old_time = datetime.now() - timedelta(hours=1, minutes=30)
-        memory_system.recent_conversations.append(
-            ConversationEntry(
-                timestamp=old_time,
-                user="u",
-                message="Any topic.",
-                response="Any response.",
-            )
-        )
-
-    def test_hourly_skipped_on_lock_timeout(
-        self, memory_system, temp_vault, caplog
-    ):
-        """FileLock.acquire raises Timeout → compact_hourly returns 'skipped'."""
-        from filelock import Timeout as FileLockTimeout
-
-        self._add_old_convo(memory_system)
-
-        hourly_path = temp_vault / "LLM Memory" / "Context" / "hourly.md"
-        original = "# Hourly Context\n\nSHOULD NOT BE OVERWRITTEN\n"
-        hourly_path.write_text(original, encoding="utf-8")
-
-        with patch(
-            "agent.memory_system.FileLock.acquire",
-            side_effect=FileLockTimeout("hourly.md.lock"),
-        ), caplog.at_level(logging.WARNING, logger="agent.memory_system"):
-            result = memory_system.compact_hourly(
-                summarizer=lambda prompt: "summary"
-            )
-
-        assert "skipped" in result.lower()
-        # Live file must be untouched when the cycle is skipped.
-        assert hourly_path.read_text(encoding="utf-8") == original
-        # Warning must be logged so operators can see lock contention in prod.
-        assert any(
-            "lock" in r.getMessage().lower() and "hourly" in r.getMessage().lower()
-            for r in caplog.records
-        )
-
-    def test_daily_skipped_on_lock_timeout(self, memory_system, temp_vault):
-        """Same skip-cleanly behaviour for compact_daily."""
-        from filelock import Timeout as FileLockTimeout
-
-        memory_system.log_conversation("user1", "Hi", "Hello")
-
-        daily_path = temp_vault / "LLM Memory" / "Context" / "daily.md"
-        original = "# Daily Context\n\nSHOULD NOT BE OVERWRITTEN\n"
-        daily_path.write_text(original, encoding="utf-8")
-
-        with patch(
-            "agent.memory_system.FileLock.acquire",
-            side_effect=FileLockTimeout("daily.md.lock"),
-        ):
-            result = memory_system.compact_daily(
-                summarizer=lambda prompt: "summary"
-            )
-
-        assert "skipped" in result.lower()
-        assert daily_path.read_text(encoding="utf-8") == original
-
-
-# =============================================================================
-# COMPACTION SAFE-WRITE — healthy path still rotates a per-target backup
-# =============================================================================
-
-
-class TestCompactionSafeWriteHealthy:
-    """Successful compaction still produces a per-path rotate_backup snapshot."""
-
-    def test_hourly_success_creates_per_target_backup(
-        self, memory_system, temp_vault
-    ):
-        """A successful compact_hourly leaves a snapshot containing hourly.md."""
-        old_time = datetime.now() - timedelta(hours=1, minutes=30)
-        memory_system.recent_conversations.append(
-            ConversationEntry(
-                timestamp=old_time,
-                user="u",
-                message="msg",
-                response="resp",
-            )
-        )
-
-        hourly_path = temp_vault / "LLM Memory" / "Context" / "hourly.md"
-        hourly_path.write_text("# Hourly\n\nprevious summary\n", encoding="utf-8")
-
-        result = memory_system.compact_hourly(
-            summarizer=lambda prompt: "fresh summary"
-        )
-
-        assert "Compacted 1" in result
-        assert "fresh summary" in hourly_path.read_text(encoding="utf-8")
-
-        # rotate_backup keeps the pre-write body in at least one snapshot.
-        snapshots = list_backups(temp_vault, filename="hourly.md")
-        assert snapshots, "rotate_backup should have produced at least one snapshot"
-        assert any(
-            "previous summary" in (s / "hourly.md").read_text(encoding="utf-8")
-            for s in snapshots
-        )
