@@ -2,30 +2,51 @@
 Alerts Channel — Send infrastructure and error alerts to a dedicated
 Discord channel via webhook, separate from the main chat.
 
-Configure via DISCORD_ALERTS_WEBHOOK in .env. All alert functions are
-non-blocking and fail silently so they never disrupt the main bot.
+Webhook resolution order:
+1. Explicit ``webhook_url`` argument (if provided)
+2. Routing config (``routing_config.json``) matched by ``category`` / ``level``
+3. ``DISCORD_ALERTS_WEBHOOK`` from .env (via settings)
+
+All alert functions are non-blocking and fail silently so they never disrupt
+the main bot.
 """
 
 import logging
+from typing import Optional
+
+from .config import settings
+from .error_routing import get_webhook_for_category
 
 log = logging.getLogger(__name__)
 
 
-def send_alert(message: str, title: str = "", level: str = "info") -> None:
+def send_alert(
+    message: str,
+    title: str = "",
+    level: str = "info",
+    category: Optional[str] = None,
+    webhook_url: Optional[str] = None,
+) -> None:
     """Send an alert to the dedicated alerts Discord channel via webhook.
 
     Args:
         message: Alert text
         title: Optional embed title
         level: Severity level — "info", "warning", "error", "critical"
+        category: Error category name for routing lookup (e.g. ``"rate_limited"``)
+        webhook_url: Explicit webhook URL that bypasses routing entirely
     """
-    try:
-        from .config import settings
-        webhook_url = settings.discord_alerts_webhook
-    except Exception:
-        webhook_url = ""
-    if not webhook_url:
-        log.debug("[Alerts] No DISCORD_ALERTS_WEBHOOK configured, skipping")
+    resolved_url = webhook_url
+    if resolved_url is None:
+        try:
+            resolved_url = get_webhook_for_category(category=category, severity=level)
+        except Exception:
+            log.debug("[Alerts] Routing lookup failed, falling back to settings", exc_info=True)
+            resolved_url = settings.discord_alerts_webhook or ""
+
+    if not resolved_url:
+        log.debug("[Alerts] No webhook configured for category=%s level=%s, skipping",
+                  category, level)
         return
 
     try:
@@ -57,7 +78,7 @@ def send_alert(message: str, title: str = "", level: str = "info") -> None:
 
         retry_request(
             requests.post,
-            webhook_url,
+            resolved_url,
             json=payload,
             headers={"Content-Type": "application/json"},
             timeout=10,

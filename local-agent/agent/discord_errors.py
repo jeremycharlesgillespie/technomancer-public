@@ -658,7 +658,12 @@ def _correlate_empty_with_gaps(context: str) -> None:
 
 
 def _notify_critical(cat: ErrorCategory, error_text: str) -> None:
-    """Send Discord notification for critical errors to the alerts channel."""
+    """Send Discord notification for critical errors to the alerts channel.
+
+    The category name and severity are passed to ``send_alert`` so that
+    ``routing_config.json`` can route different error types to different
+    Discord channels.
+    """
     try:
         from .alerts import send_alert
 
@@ -666,7 +671,12 @@ def _notify_critical(cat: ErrorCategory, error_text: str) -> None:
             f"**{cat.name}**: {error_text[:200]}\n"
             f"**Recovery:** {cat.recovery}"
         )
-        send_alert(msg, title=f"Discord Error [{cat.severity.upper()}]", level="error")
+        send_alert(
+            msg,
+            title=f"Discord Error [{cat.severity.upper()}]",
+            level=cat.severity,
+            category=cat.name,
+        )
     except Exception:
         pass
 
