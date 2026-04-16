@@ -268,6 +268,31 @@ class TestExecuteDecision:
 
         mock_assign.assert_not_called()
 
+    def test_assign_blocked_when_jira_in_progress(self, state):
+        """Hard guard: don't assign new work while something is already In Progress.
+
+        Prevents parallel runs on the same board when a stuck orphan or a
+        live execution would conflict with a fresh assignment.
+        """
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+
+        @dataclass
+        class FakeIdea:
+            id: str = "TK-100"
+            title: str = "new work"
+            state: str = "approved"
+
+        decision = Decision(action="ASSIGN", target="TK-100", reason="?")
+        board = {"todo": 20, "in_progress": 1}
+
+        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("aim.state.assign_idea_to_worker") as mock_assign, \
+             patch("aim.manager._notify_discord_throttled"):
+            execute_decision(state, decision, board)
+
+        mock_assign.assert_not_called()
+
     def test_create_work(self, state):
         from aim.brain import Decision
         from aim.manager import execute_decision
@@ -772,3 +797,43 @@ class TestEventLogEmits:
             execute_decision(state, decision, {})
 
         mock_notify.assert_called_once()
+
+
+class TestRecoverOrphanInProgress:
+    """Startup orphan recovery: stale 'In Progress' items on Jira get moved back."""
+
+    def test_moves_orphan_in_progress_to_todo(self, state):
+        from aim.manager import _recover_orphan_in_progress
+
+        state.worker.current_idea_id = None  # No active assignment
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            'issues': [{'key': 'TK-393', 'fields': {'summary': 'orphan'}}]
+        }
+
+        with patch('idea_board.jira_sync.is_jira_configured', return_value=True),              patch('idea_board.jira_sync._api', return_value=resp),              patch('idea_board.jira_sync.transition_jira_issue', return_value=True) as mock_transition,              patch('aim.manager._notify_discord'):
+            _recover_orphan_in_progress(state)
+
+        mock_transition.assert_called_once_with('TK-393', 'To Do')
+
+    def test_skips_workers_current_assignment(self, state):
+        from aim.manager import _recover_orphan_in_progress
+
+        state.worker.current_idea_id = 'TK-396'  # Worker was on this when we shut down
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {
+            'issues': [{'key': 'TK-396', 'fields': {'summary': 'resumable'}}]
+        }
+
+        with patch('idea_board.jira_sync.is_jira_configured', return_value=True),              patch('idea_board.jira_sync._api', return_value=resp),              patch('idea_board.jira_sync.transition_jira_issue') as mock_transition:
+            _recover_orphan_in_progress(state)
+
+        mock_transition.assert_not_called()
+
+    def test_no_op_when_jira_not_configured(self, state):
+        from aim.manager import _recover_orphan_in_progress
+
+        with patch('idea_board.jira_sync.is_jira_configured', return_value=False),              patch('idea_board.jira_sync._api') as mock_api:
+            _recover_orphan_in_progress(state)
+
+        mock_api.assert_not_called()
