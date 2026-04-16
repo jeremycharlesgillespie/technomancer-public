@@ -177,6 +177,22 @@ class Settings(BaseSettings):
         default=10, description="Run queue review (dedup + failure detection) every N cycles"
     )
 
+    # Claude rate-limit retry settings (used by the AI Worker)
+    rate_limit_wait_minutes: int = Field(
+        default=15,
+        description=(
+            "Initial wait (minutes) after a Claude rate-limit is detected "
+            "before the Worker retries. Doubles on each retry up to 60 min."
+        ),
+    )
+    rate_limit_max_retries: int = Field(
+        default=3,
+        description=(
+            "Max rate-limit retries before the Worker gives up and marks "
+            "the idea failed."
+        ),
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"

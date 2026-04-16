@@ -158,6 +158,28 @@ CATEGORY_GUIDANCE: dict[str, str] = {
 # Bridge token file for Discord notifications
 BRIDGE_TOKEN_FILE: Path = Path(__file__).parent.parent / ".bridge_token"
 
+# Substrings we treat as evidence of a Claude usage/rate-limit outage.
+# Matched case-insensitively against the full execution log. Kept as module-
+# level so tests (and callers that want to extend the set) can import it.
+RATE_LIMIT_KEYWORDS: tuple[str, ...] = (
+    "rate_limit",
+    "rate limit",
+    "usage limit",
+    "usage has exceeded",
+    "429",
+    "overloaded",
+    "billing",
+    "credit limit",
+    "credit balance",
+    "quota",
+)
+
+# Claude exits this quickly when it never got past the auth/preflight stage
+# (rate-limited, credits exhausted). Real failures produce far more log lines
+# because the stream-json protocol emits an event per tool call / assistant
+# message.
+RATE_LIMIT_MAX_LOG_LINES: int = 20
+
 
 @dataclass
 class ExecutionState:
@@ -170,6 +192,10 @@ class ExecutionState:
         log_lines: Live buffer of stdout lines
         thread: The background thread running the execution
         cancelled: Whether cancellation was requested
+        rate_limited: Set when the Claude subprocess was classified as hitting
+            a usage/rate limit. The worker inspects this after the execution
+            thread exits and triggers its retry loop instead of calling
+            mark_failed.
     """
 
     idea_id: str
@@ -179,6 +205,7 @@ class ExecutionState:
     thread: threading.Thread | None = None
     cancelled: bool = False
     baseline_failures: set[str] = field(default_factory=set)
+    rate_limited: bool = False
 
     def log(self, msg: str) -> None:
         """Append a timestamped message to the execution log."""
@@ -476,6 +503,57 @@ def _save_known_failures(failures: set[str]) -> None:
         "failures": sorted(failures),
         "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, indent=2))
+
+
+def _has_branch_commits(project_root: Path, base: str = "main") -> bool:
+    """Return True if the current branch has commits not already on ``base``.
+
+    Used as a rate-limit signal: when ``claude -p`` bails out without writing
+    any code, the branch will have zero commits past main, so we can tell
+    "Claude hit its limit" apart from "Claude actually failed".
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", f"{base}..HEAD", "--oneline"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(project_root),
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def _classify_rate_limit(
+    state: ExecutionState,
+    claude_succeeded: bool,
+    project_root: Path,
+    branch_base: str = "main",
+) -> bool:
+    """Return True when the Claude run matches a usage/rate-limit outage.
+
+    All three signals must fire, per the TK-410 design:
+
+    1. Claude did not finish cleanly (no ``result`` stream event) AND the
+       total log line count is small (≲ :data:`RATE_LIMIT_MAX_LOG_LINES`).
+    2. The combined log text contains at least one keyword from
+       :data:`RATE_LIMIT_KEYWORDS`.
+    3. The branch has no commits past ``branch_base`` — i.e. Claude wrote
+       nothing, so the "success" wasn't masking real work.
+
+    Returning False here sends the caller down the normal failure path
+    (``mark_failed``), so being conservative is correct: we only claim
+    rate-limited when we are highly confident.
+    """
+    if claude_succeeded:
+        return False
+    if len(state.log_lines) >= RATE_LIMIT_MAX_LOG_LINES:
+        return False
+    text = state.log_text.lower()
+    if not any(kw in text for kw in RATE_LIMIT_KEYWORDS):
+        return False
+    if _has_branch_commits(project_root, branch_base):
+        return False
+    return True
 
 
 def _find_claude_binary() -> Path | None:
@@ -1552,6 +1630,20 @@ def execute_idea(
             )
 
             if not claude_succeeded:
+                # Distinguish "Claude hit a usage/rate limit and bailed" from
+                # a real failure. On rate-limit we do NOT call mark_failed —
+                # we return with state.rate_limited set, and the Worker runs
+                # its retry loop (see aim/worker.py::execute_assigned_idea).
+                if _classify_rate_limit(state, claude_succeeded, project_root):
+                    state.rate_limited = True
+                    state.log(
+                        "Detected Claude usage/rate limit — deferring retry to worker"
+                    )
+                    _notify_discord(
+                        f"[{idea_id}] Rate limited — worker will retry"
+                    )
+                    return
+
                 state.log(
                     f"Claude failed ({state.elapsed:.0f}s)"
                 )

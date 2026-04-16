@@ -99,6 +99,23 @@ class TestCheckWorkerHealth:
         assert result is False
         assert state.worker.status == "stuck"
 
+    def test_rate_limited_worker_is_healthy(self, state):
+        """TK-410: A Worker with status='rate_limited' must be considered
+        healthy as long as heartbeats stay fresh — restarting it would
+        abort the back-off retry loop."""
+        from aim.manager import check_worker_health
+
+        state.worker.status = "rate_limited"
+        state.worker.last_heartbeat = datetime.now().isoformat(timespec="seconds")
+        save_state(state)
+
+        with patch("aim.state.is_process_alive", return_value=True):
+            result = check_worker_health(state)
+
+        assert result is True
+        # Status is informational — health check must not overwrite it.
+        assert state.worker.status == "rate_limited"
+
 
 # ---------------------------------------------------------------------------
 # Worker failure handling

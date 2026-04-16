@@ -7,7 +7,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from aim.worker import WatchResult, _check_git_clean, execute_assigned_idea, watch_execution
+from aim.worker import (
+    RATE_LIMIT_MAX_WAIT_MINUTES,
+    WatchResult,
+    _check_git_clean,
+    _post_rate_limit_comment,
+    _sleep_with_heartbeat,
+    execute_assigned_idea,
+    watch_execution,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,12 +41,13 @@ class FakeExecutionState:
     """Mimics the real ExecutionState for testing."""
 
     def __init__(self, idea_id="idea-001", pid=1234, log_lines=None,
-                 alive=True, elapsed=0.0):
+                 alive=True, elapsed=0.0, rate_limited=False):
         self.idea_id = idea_id
         self.pid = pid
         self.log_lines = log_lines if log_lines is not None else []
         self._alive = alive
         self._elapsed = elapsed
+        self.rate_limited = rate_limited
 
     @property
     def is_alive(self) -> bool:
@@ -274,3 +283,259 @@ class TestExecuteAssignedIdea:
         result = execute_assigned_idea("idea-001")
         assert result.success is False
         assert "None" in result.summary
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit handling (TK-410)
+# ---------------------------------------------------------------------------
+
+class TestWatchResultRateLimited:
+    """WatchResult grows a rate_limited flag."""
+
+    def test_default_false(self):
+        r = WatchResult(success=True, summary="ok")
+        assert r.rate_limited is False
+
+    def test_can_set_true(self):
+        r = WatchResult(success=False, summary="Rate limited", rate_limited=True)
+        assert r.rate_limited is True
+
+
+class TestWatchExecutionRateLimited:
+    """watch_execution surfaces the executor's rate_limited flag."""
+
+    @patch("aim.worker.time.sleep")
+    @patch("aim.worker.WATCH_INTERVAL", 0)
+    def test_returns_rate_limited(self, mock_sleep):
+        """When exec_state.rate_limited is True, result.rate_limited is set
+        and mark_done/mark_failed must NOT have run (neither is called here;
+        we just verify the watcher's return payload)."""
+        fake_state = FakeExecutionState(
+            idea_id="idea-001",
+            log_lines=["hit rate_limit_error"],
+            alive=False,
+            rate_limited=True,
+        )
+        with patch("idea_board.executor.get_execution", return_value=fake_state), \
+             patch("aim.state.update_worker_heartbeat"), \
+             patch("aim.state.update_worker_status"):
+            result = watch_execution("idea-001")
+
+        assert result.success is False
+        assert result.rate_limited is True
+        assert "rate" in result.summary.lower()
+
+
+class TestSleepWithHeartbeat:
+    """_sleep_with_heartbeat ticks the heartbeat periodically."""
+
+    @patch("aim.worker.time.sleep")
+    def test_calls_heartbeat_each_chunk(self, mock_sleep):
+        with patch("aim.state.update_worker_heartbeat") as mock_hb:
+            _sleep_with_heartbeat(duration_seconds=90, interval=30)
+        # 90s / 30s = 3 heartbeats
+        assert mock_hb.call_count == 3
+        assert mock_sleep.call_count == 3
+
+    @patch("aim.worker.time.sleep")
+    def test_zero_duration_noop(self, mock_sleep):
+        with patch("aim.state.update_worker_heartbeat") as mock_hb:
+            _sleep_with_heartbeat(duration_seconds=0)
+        mock_hb.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    @patch("aim.worker.time.sleep")
+    def test_heartbeat_error_swallowed(self, mock_sleep):
+        """A provider hiccup during heartbeat must not break the sleep."""
+        with patch(
+            "aim.state.update_worker_heartbeat",
+            side_effect=OSError("disk full"),
+        ):
+            # Should not raise
+            _sleep_with_heartbeat(duration_seconds=30, interval=30)
+
+
+class TestPostRateLimitComment:
+    """_post_rate_limit_comment writes via the board provider."""
+
+    def test_calls_add_comment(self):
+        provider = MagicMock()
+        with patch("board.get_provider", return_value=provider):
+            _post_rate_limit_comment("TK-410", wait_minutes=15)
+        provider.add_comment.assert_called_once()
+        kwargs = provider.add_comment.call_args.kwargs
+        args = provider.add_comment.call_args.args
+        # text is the third positional or a kwarg
+        text = kwargs.get("text") or (args[2] if len(args) >= 3 else "")
+        assert "Rate Limited" in text
+        assert "15 minutes" in text
+
+    def test_noop_when_provider_lacks_add_comment(self):
+        """LocalProvider without add_comment should not raise."""
+        provider = object()  # no add_comment attribute
+        with patch("board.get_provider", return_value=provider):
+            _post_rate_limit_comment("TK-410", wait_minutes=15)  # must not raise
+
+    def test_swallows_provider_errors(self):
+        provider = MagicMock()
+        provider.add_comment.side_effect = RuntimeError("jira down")
+        with patch("board.get_provider", return_value=provider):
+            # Must not raise — retries continue even if Jira is flaky.
+            _post_rate_limit_comment("TK-410", wait_minutes=15)
+
+
+class TestExecuteAssignedIdeaRateLimitRetry:
+    """Full retry loop: rate-limit → sleep → retry → success/exhaustion."""
+
+    def test_retry_then_success(self):
+        """Rate-limited on first attempt, succeeds on retry.
+
+        Asserts the primary TK-410 requirement: mark_done is NOT called
+        directly by the worker (the executor owns that) and mark_failed
+        is NOT called on the rate-limited attempt."""
+        mock_watch = MagicMock(side_effect=[
+            WatchResult(success=False, summary="Rate limited", rate_limited=True),
+            WatchResult(success=True, summary="Completed"),
+        ])
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_mark_failed = MagicMock()
+        mock_mark_done = MagicMock()
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker._sleep_with_heartbeat"), \
+             patch("aim.worker._post_rate_limit_comment"), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed", mock_mark_failed), \
+             patch("idea_board.executor.mark_done", mock_mark_done), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 3
+            result = execute_assigned_idea("TK-410")
+
+        assert result.success is True
+        assert result.rate_limited is False
+        assert mock_execute.call_count == 2
+        assert mock_watch.call_count == 2
+        mock_mark_failed.assert_not_called()
+        mock_mark_done.assert_not_called()
+
+    def test_retries_exhaust_marks_failed(self):
+        """Every attempt hits rate-limit; final attempt triggers mark_failed
+        with a message that mentions 'rate limit'."""
+        mock_watch = MagicMock(return_value=WatchResult(
+            success=False, summary="Rate limited", rate_limited=True,
+        ))
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_mark_failed = MagicMock()
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker._sleep_with_heartbeat"), \
+             patch("aim.worker._post_rate_limit_comment"), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed", mock_mark_failed), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 2
+            result = execute_assigned_idea("TK-410")
+
+        assert result.success is False
+        assert "rate limit" in result.summary.lower()
+        # 3 attempts total = initial + 2 retries
+        assert mock_execute.call_count == 3
+        mock_mark_failed.assert_called_once()
+        failed_msg = mock_mark_failed.call_args.args[1]
+        assert "rate limit" in failed_msg.lower()
+
+    def test_first_attempt_succeeds_skips_sleep(self):
+        """Happy path: no rate-limit → no retry, no sleep, no comment."""
+        mock_watch = MagicMock(return_value=WatchResult(success=True, summary="ok"))
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_hb = MagicMock()
+        mock_comment = MagicMock()
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker._sleep_with_heartbeat", mock_hb), \
+             patch("aim.worker._post_rate_limit_comment", mock_comment), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed"), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 3
+            result = execute_assigned_idea("TK-410")
+
+        assert result.success is True
+        assert mock_execute.call_count == 1
+        mock_hb.assert_not_called()
+        mock_comment.assert_not_called()
+
+    def test_wait_doubles_and_caps_at_max(self):
+        """Wait schedule follows 15 → 30 → 60 → 60 (capped at max)."""
+        waits: list[int] = []
+
+        def capture_sleep(duration_seconds, interval=30):
+            waits.append(duration_seconds // 60)
+
+        mock_watch = MagicMock(side_effect=[
+            WatchResult(success=False, summary="r", rate_limited=True),
+            WatchResult(success=False, summary="r", rate_limited=True),
+            WatchResult(success=False, summary="r", rate_limited=True),
+            WatchResult(success=True, summary="ok"),
+        ])
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker._sleep_with_heartbeat", side_effect=capture_sleep), \
+             patch("aim.worker._post_rate_limit_comment"), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed"), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 5
+            result = execute_assigned_idea("TK-410")
+
+        assert result.success is True
+        # Three sleeps before success on the 4th attempt
+        assert waits == [15, 30, RATE_LIMIT_MAX_WAIT_MINUTES]
+
+    def test_sets_rate_limited_worker_status_during_wait(self):
+        """Worker status must be 'rate_limited' while we're sleeping so AIM
+        doesn't restart us and so the dashboard can surface the state."""
+        mock_watch = MagicMock(side_effect=[
+            WatchResult(success=False, summary="r", rate_limited=True),
+            WatchResult(success=True, summary="ok"),
+        ])
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_status = MagicMock()
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status", mock_status), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker._sleep_with_heartbeat"), \
+             patch("aim.worker._post_rate_limit_comment"), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed"), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 3
+            execute_assigned_idea("TK-410")
+
+        statuses = [c.args[0] for c in mock_status.call_args_list if c.args]
+        assert "rate_limited" in statuses

@@ -11,12 +11,16 @@ import pytest
 from idea_board.executor import (
     MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
+    RATE_LIMIT_KEYWORDS,
+    RATE_LIMIT_MAX_LOG_LINES,
     ExecutionState,
     _build_epic_execution_context,
     _build_prior_failure_context,
     _build_story_prompt,
+    _classify_rate_limit,
     _find_related_tests,
     _format_injected_epic_context,
+    _has_branch_commits,
     _parse_pytest_failures,
     _post_deploy_comment,
     execute_epic,
@@ -1101,3 +1105,120 @@ class TestPostDeployComment:
 
         text = provider.add_comment.call_args.kwargs["text"]
         assert "feedface" in text
+
+
+# ---------------------------------------------------------------------------
+# Claude rate-limit detection (TK-410)
+# ---------------------------------------------------------------------------
+
+
+class TestExecutionStateRateLimited:
+    """ExecutionState gains a rate_limited flag the Worker inspects."""
+
+    def test_default_false(self):
+        state = ExecutionState(idea_id="idea-1")
+        assert state.rate_limited is False
+
+    def test_independent_per_instance(self):
+        s1 = ExecutionState(idea_id="idea-1")
+        s2 = ExecutionState(idea_id="idea-2")
+        s1.rate_limited = True
+        assert s2.rate_limited is False
+
+
+class TestRateLimitKeywords:
+    """Sanity checks on the public keyword tuple."""
+
+    def test_contains_common_signals(self):
+        joined = " ".join(RATE_LIMIT_KEYWORDS)
+        # Spot-check a few well-known indicators.
+        for expected in ("rate_limit", "429", "overloaded", "quota", "billing"):
+            assert expected in joined
+
+    def test_is_tuple(self):
+        # Tuples are immutable — tests shouldn't accidentally mutate module state.
+        assert isinstance(RATE_LIMIT_KEYWORDS, tuple)
+
+
+class TestHasBranchCommits:
+    """_has_branch_commits: delegate to git log, swallow errors."""
+
+    def test_returns_true_when_log_nonempty(self, tmp_path):
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="abcdef1 [TK-410] Some work\n",
+            )
+            assert _has_branch_commits(tmp_path) is True
+
+    def test_returns_false_when_log_empty(self, tmp_path):
+        with patch("idea_board.executor.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="")
+            assert _has_branch_commits(tmp_path) is False
+
+    def test_returns_false_on_git_error(self, tmp_path):
+        with patch("idea_board.executor.subprocess.run", side_effect=OSError("git missing")):
+            assert _has_branch_commits(tmp_path) is False
+
+
+class TestClassifyRateLimit:
+    """_classify_rate_limit: all three signals must fire."""
+
+    def _make_state(self, lines, idea_id="idea-1"):
+        state = ExecutionState(idea_id=idea_id)
+        state.log_lines.extend(lines)
+        return state
+
+    def test_success_never_rate_limited(self, tmp_path):
+        state = self._make_state(["Started", "rate_limit_error seen"])
+        # claude_succeeded=True short-circuits immediately.
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, True, tmp_path) is False
+
+    def test_long_log_is_not_rate_limit(self, tmp_path):
+        # Too many lines → treat as a real failure even if keyword shows up.
+        lines = [f"line {i}" for i in range(RATE_LIMIT_MAX_LOG_LINES + 5)]
+        lines.append("rate_limit_error")
+        state = self._make_state(lines)
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is False
+
+    def test_no_keyword_is_not_rate_limit(self, tmp_path):
+        state = self._make_state(["starting", "ImportError: no module"])
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is False
+
+    def test_commits_present_is_not_rate_limit(self, tmp_path):
+        # If Claude actually committed something, this isn't a rate-limit
+        # bail-out — treat as a real failure.
+        state = self._make_state(["Error: rate_limit_error"])
+        with patch("idea_board.executor._has_branch_commits", return_value=True):
+            assert _classify_rate_limit(state, False, tmp_path) is False
+
+    def test_all_signals_present_returns_true(self, tmp_path):
+        state = self._make_state([
+            "Setting up branch",
+            "Creating branch 2026-04-15-TK-410",
+            "Branch created",
+            "Starting Claude Code",
+            "Error: rate_limit_error (429)",
+        ])
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is True
+
+    def test_detects_credit_balance_keyword(self, tmp_path):
+        state = self._make_state([
+            "Starting Claude",
+            "API error: Credit balance is too low for this request",
+        ])
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is True
+
+    def test_detects_overloaded_keyword(self, tmp_path):
+        state = self._make_state(["Claude started", "overloaded_error from upstream"])
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is True
+
+    def test_keyword_match_is_case_insensitive(self, tmp_path):
+        state = self._make_state(["Rate Limit exceeded — try again later"])
+        with patch("idea_board.executor._has_branch_commits", return_value=False):
+            assert _classify_rate_limit(state, False, tmp_path) is True
