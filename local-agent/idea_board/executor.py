@@ -106,6 +106,10 @@ def _sync_progress_comment(idea_id, state) -> None:
     place after the first call, so a 30-minute run does not generate 30
     separate comments. Silently no-op when the provider doesn't support it
     (e.g. LocalProvider).
+
+    The body leads with a ``Live log: <url>`` line pointing at the hub's
+    ``/live/<idea_id>`` SSE viewer so anyone reading the Jira issue can jump
+    straight to the running stream. Jira ADF auto-links bare URLs.
     """
     try:
         provider = _get_board_provider()
@@ -113,8 +117,11 @@ def _sync_progress_comment(idea_id, state) -> None:
         if appender is None:
             return
         recent = "\n".join(state.log_lines[-30:])
-        if recent.strip():
-            appender(idea_id, recent)
+        if not recent.strip():
+            return
+        live_url = f"http://{settings.server_host}:8322/live/{idea_id}"
+        body = f"Live log: {live_url}\n\n{recent}"
+        appender(idea_id, body)
     except Exception as exc:
         logger.debug("[Executor] progress comment sync failed for %s: %s", idea_id, exc)
 

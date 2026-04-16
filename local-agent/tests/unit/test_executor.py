@@ -26,6 +26,7 @@ from idea_board.executor import (
     _parse_pytest_failures,
     _post_deploy_comment,
     _prune_stale_execution_logs,
+    _sync_progress_comment,
     _write_done_sentinel,
     execute_epic,
     mark_done,
@@ -1149,6 +1150,93 @@ class TestPostDeployComment:
 
         text = provider.add_comment.call_args.kwargs["text"]
         assert "feedface" in text
+
+
+# ---------------------------------------------------------------------------
+# _sync_progress_comment — leads body with clickable Live log URL (TK-429)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncProgressCommentLiveUrl:
+    """The Jira progress comment body starts with a Live log: <url> line."""
+
+    def _state(self, lines):
+        state = ExecutionState(idea_id="TK-429")
+        state.log_lines = list(lines)
+        return state
+
+    def test_prepends_live_url_with_blank_line_separator(self):
+        provider = MagicMock()
+        provider.append_progress_comment = MagicMock()
+        fake_settings = MagicMock(server_host="myhost.local")
+        state = self._state(["line one", "line two"])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.settings", fake_settings):
+            _sync_progress_comment("TK-429", state)
+
+        provider.append_progress_comment.assert_called_once()
+        idea_id, body = provider.append_progress_comment.call_args.args
+        assert idea_id == "TK-429"
+        assert body.startswith("Live log: http://myhost.local:8322/live/TK-429\n\n")
+        assert body.endswith("line one\nline two")
+
+    def test_uses_idea_id_in_url_path(self):
+        provider = MagicMock()
+        fake_settings = MagicMock(server_host="localhost")
+        state = self._state(["x"])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.settings", fake_settings):
+            _sync_progress_comment("TK-9999", state)
+
+        body = provider.append_progress_comment.call_args.args[1]
+        first_line = body.splitlines()[0]
+        assert first_line == "Live log: http://localhost:8322/live/TK-9999"
+
+    def test_no_call_when_log_is_blank(self):
+        """Empty/whitespace logs still skip the call — no header-only comments."""
+        provider = MagicMock()
+        fake_settings = MagicMock(server_host="localhost")
+        state = self._state(["", "   "])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.settings", fake_settings):
+            _sync_progress_comment("TK-429", state)
+
+        provider.append_progress_comment.assert_not_called()
+
+    def test_silent_noop_when_provider_lacks_appender(self):
+        """LocalProvider has no append_progress_comment — must not raise."""
+        provider = MagicMock(spec=[])  # no append_progress_comment attr
+        state = self._state(["line"])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider):
+            _sync_progress_comment("TK-429", state)  # must not raise
+
+    def test_swallows_provider_errors(self):
+        provider = MagicMock()
+        provider.append_progress_comment.side_effect = RuntimeError("jira down")
+        fake_settings = MagicMock(server_host="localhost")
+        state = self._state(["line"])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.settings", fake_settings):
+            _sync_progress_comment("TK-429", state)  # must not raise
+
+    def test_only_last_30_lines_included(self):
+        """The tail-30 behavior is preserved alongside the new URL line."""
+        provider = MagicMock()
+        fake_settings = MagicMock(server_host="localhost")
+        state = self._state([f"line {i}" for i in range(50)])
+
+        with patch("idea_board.executor._get_board_provider", return_value=provider), \
+             patch("idea_board.executor.settings", fake_settings):
+            _sync_progress_comment("TK-429", state)
+
+        body = provider.append_progress_comment.call_args.args[1]
+        tail = body.split("\n\n", 1)[1]
+        assert tail.splitlines() == [f"line {i}" for i in range(20, 50)]
 
 
 # ---------------------------------------------------------------------------
