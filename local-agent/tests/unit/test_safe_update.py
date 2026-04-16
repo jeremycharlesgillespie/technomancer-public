@@ -75,6 +75,62 @@ class TestCheckBotRunning:
 
 
 # ---------------------------------------------------------------------------
+# restart_bot — timeout-tolerant liveness verification
+# ---------------------------------------------------------------------------
+
+
+class TestRestartBot:
+    """Tests for restart_bot()'s PID-polling verification.
+
+    The regression these protect against: safe_update used to trust the
+    subprocess return code alone. A slow-but-successful restart (Ollama
+    unload + warm-start that takes >30s) was indistinguishable from a
+    real failure, and triggered spurious rollbacks. Now we verify
+    liveness via the PID file after the subprocess returns.
+    """
+
+    @patch("safe_update.time.sleep")
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.check_bot_running")
+    def test_returns_true_when_subprocess_ok_and_bot_alive(
+        self, mock_check, mock_run, _mock_sleep, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_check.return_value = True
+        (tmp_path / "bot_service.py").write_text("# stub")
+        with patch.object(safe_update, "SCRIPT_DIR", tmp_path):
+            assert safe_update.restart_bot() is True
+
+    @patch("safe_update.time.sleep")
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.check_bot_running")
+    def test_returns_true_when_subprocess_times_out_but_bot_alive(
+        self, mock_check, mock_run, _mock_sleep, tmp_path
+    ):
+        # The regression case — subprocess hit its 120s timeout, but the
+        # bot is already running. We must not false-positive a rollback.
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd="bot_service.py start", timeout=120,
+        )
+        mock_check.return_value = True
+        (tmp_path / "bot_service.py").write_text("# stub")
+        with patch.object(safe_update, "SCRIPT_DIR", tmp_path):
+            assert safe_update.restart_bot() is True
+
+    @patch("safe_update.time.sleep")
+    @patch("safe_update.subprocess.run")
+    @patch("safe_update.check_bot_running")
+    def test_returns_false_when_subprocess_ok_but_bot_dead(
+        self, mock_check, mock_run, _mock_sleep, tmp_path
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_check.return_value = False  # bot never comes up
+        (tmp_path / "bot_service.py").write_text("# stub")
+        with patch.object(safe_update, "SCRIPT_DIR", tmp_path):
+            assert safe_update.restart_bot() is False
+
+
+# ---------------------------------------------------------------------------
 # post_deploy_health_check
 # ---------------------------------------------------------------------------
 

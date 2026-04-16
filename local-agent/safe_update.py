@@ -378,8 +378,21 @@ def delete_branch(branch_name: str):
         log(f"Could not delete branch {branch_name} (may need manual cleanup)", "WARNING")
 
 
+BOT_RESTART_SUBPROCESS_TIMEOUT = 120
+BOT_LIVENESS_POLL_DEADLINE = 30
+BOT_LIVENESS_POLL_INTERVAL = 2
+
+
 def restart_bot():
-    """Restart the Discord bot via bot_service.py."""
+    """Restart the Discord bot via bot_service.py.
+
+    Subprocess-level timeouts are generous (120s) because bot_service.py
+    serializes kill + Ollama unload + preflight + start, which routinely
+    runs 45-50s on a cold Ollama. We verify success by polling the bot's
+    PID file afterwards rather than trusting the subprocess return code —
+    a slow-but-successful restart is indistinguishable from a real failure
+    if we only look at exit status and wall-clock.
+    """
     log("Restarting Discord bot...")
     bot_service = SCRIPT_DIR / "bot_service.py"
 
@@ -387,42 +400,57 @@ def restart_bot():
         log("bot_service.py not found, skipping restart", "WARNING")
         return False
 
+    # Stop the bot (best-effort — a timeout here doesn't block the start).
     try:
-        # Stop the bot
         log("Stopping bot...")
         stop_result = subprocess.run(
             [sys.executable, str(bot_service), "stop"],
             cwd=SCRIPT_DIR,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=BOT_RESTART_SUBPROCESS_TIMEOUT,
         )
         if stop_result.returncode != 0:
             log(f"Stop output: {stop_result.stdout}{stop_result.stderr}", "WARNING")
+    except subprocess.TimeoutExpired:
+        log("Bot stop timed out — continuing with start anyway", "WARNING")
+    except Exception as e:
+        log(f"Bot stop error: {e} — continuing with start anyway", "WARNING")
 
-        # Start the bot
+    # Start the bot.
+    try:
         log("Starting bot...")
         start_result = subprocess.run(
             [sys.executable, str(bot_service), "start"],
             cwd=SCRIPT_DIR,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=BOT_RESTART_SUBPROCESS_TIMEOUT,
         )
-
         if start_result.returncode == 0:
-            log("Bot restarted successfully")
-            return True
+            log("Bot start subprocess returned OK")
         else:
-            log(f"Bot start may have failed: {start_result.stderr}", "WARNING")
-            return False
-
+            log(f"Bot start returned non-zero: {start_result.stderr}", "WARNING")
     except subprocess.TimeoutExpired:
-        log("Bot restart timed out", "WARNING")
-        return False
+        log("Bot start subprocess timed out — verifying liveness anyway", "WARNING")
     except Exception as e:
-        log(f"Bot restart error: {e}", "ERROR")
-        return False
+        log(f"Bot start error: {e} — verifying liveness anyway", "WARNING")
+
+    # Verify via PID-file liveness regardless of subprocess outcome —
+    # the subprocess may have returned non-zero or timed out while the
+    # bot process is alive and healthy.
+    deadline = time.time() + BOT_LIVENESS_POLL_DEADLINE
+    while time.time() < deadline:
+        if check_bot_running():
+            log("Bot restart verified — process alive")
+            return True
+        time.sleep(BOT_LIVENESS_POLL_INTERVAL)
+
+    log(
+        f"Bot not running after {BOT_LIVENESS_POLL_DEADLINE}s liveness poll",
+        "WARNING",
+    )
+    return False
 
 
 def push_to_remote() -> bool:
