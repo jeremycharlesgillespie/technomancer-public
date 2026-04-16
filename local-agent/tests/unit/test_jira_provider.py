@@ -498,3 +498,71 @@ class TestProtocolCompliance:
         from board import BoardProvider
         from board.jira_provider import JiraProvider
         assert isinstance(JiraProvider(), BoardProvider)
+
+
+# ---------------------------------------------------------------------------
+# @profile_fn instrumentation on JiraProvider CRUD methods (TK-439)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileFnInstrumentation:
+    """Verify the CRUD methods on JiraProvider are wrapped by @profile_fn.
+
+    profile_fn sets a ``__wrapped_fn_name__`` attribute on the returned
+    wrapper, so checking that attribute confirms the decorator is applied
+    without hitting the Jira API. The name uses __qualname__, so instance
+    methods register as ``board.jira_provider.JiraProvider.<method>``.
+    """
+
+    @pytest.mark.parametrize(
+        "method_name",
+        [
+            "load_all",
+            "list_by_state",
+            "get",
+            "add",
+            "mark_executing",
+            "mark_done",
+            "mark_failed",
+        ],
+    )
+    def test_method_is_profiled(self, method_name):
+        from board.jira_provider import JiraProvider
+
+        method = getattr(JiraProvider, method_name)
+        expected = f"board.jira_provider.JiraProvider.{method_name}"
+        assert getattr(method, "__wrapped_fn_name__", None) == expected
+
+    def test_load_all_records_registry_on_call(self, provider, mock_api):
+        """Calling load_all should populate the fn_profiler registry.
+
+        The mocked _api returns an empty result set, so load_all exits
+        quickly without touching Jira — perfect for exercising the decorator.
+        """
+        import agent.fn_profiler as fp
+
+        fp.reset_registry()
+        mock_api.return_value = _search_response([])
+
+        provider.load_all()
+
+        stats = fp.get_stats("board.jira_provider.JiraProvider.load_all")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()
+
+    def test_get_records_registry_on_call(self, provider, mock_api):
+        """Calling get should populate the fn_profiler registry on a miss."""
+        import agent.fn_profiler as fp
+
+        fp.reset_registry()
+        resp = MagicMock()
+        resp.status_code = 404
+        mock_api.return_value = resp
+
+        provider.get("TK-absent")
+
+        stats = fp.get_stats("board.jira_provider.JiraProvider.get")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()
