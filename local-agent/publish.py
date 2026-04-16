@@ -235,15 +235,36 @@ def _get_recent_private_commits(since_last_publish: bool = True) -> list[str]:
         return []
 
 
+# Patterns for generic/automated commits that should not become the public
+# repo's commit title — these bury the real feature work.
+_GENERIC_COMMIT_PATTERNS = [
+    re.compile(r"^Update README with latest stats"),
+    re.compile(r"^Merge branch '2026-"),
+    re.compile(r"\[auto\]$"),
+    re.compile(r"^\[TK-\d+\] Merge branch"),
+    re.compile(r"^\[TK-\d+\] Deploy \+ update stats"),
+]
+
+
+def _is_generic_commit(message: str) -> bool:
+    """Return True if the commit message is an auto-generated stats/deploy/merge commit."""
+    return any(pat.search(message) for pat in _GENERIC_COMMIT_PATTERNS)
+
+
+def _filter_meaningful_commits(commits: list[str]) -> list[str]:
+    """Drop auto-generated stats/deploy/merge commits so real work is surfaced."""
+    return [c for c in commits if not _is_generic_commit(c)]
+
+
 def _build_publish_message(copied: int, deleted: int) -> str:
     """Build a descriptive commit message from private repo's recent changes."""
-    commits = _get_recent_private_commits()
+    commits = _filter_meaningful_commits(_get_recent_private_commits())
 
     if not commits:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         return f"Update ({timestamp})\n\n{copied} files synced."
 
-    # Use the most recent commit as the title
+    # Use the most recent meaningful commit as the title
     title = commits[0]
 
     # If there are multiple commits, list them
