@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agent import executor_runs_db
 from aim.brain import Decision
 from aim.state import AIMState, WorkerState, load_state, save_state
 from board.provider import Comment, parse_marker
@@ -208,6 +209,26 @@ def fake_jira_provider(monkeypatch):
     return provider
 
 
+@pytest.fixture
+def isolated_executor_runs_db(tmp_path, monkeypatch):
+    """Point executor_runs_db at a tmp_path SQLite file for one test.
+
+    Mirrors the unit-test fixture in ``tests/unit/test_executor_runs_db.py``
+    so the e2e test never writes to ``local-agent/data/executor_runs.db``.
+    Yields the tmp DB path so callers can assert it's where rows went.
+    """
+    db_path = tmp_path / "executor_runs.db"
+    monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+    monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+    executor_runs_db._local.__dict__.pop("conn", None)
+    executor_runs_db.init_db()
+    yield db_path
+    conn = getattr(executor_runs_db._local, "conn", None)
+    if conn:
+        conn.close()
+        executor_runs_db._local.conn = None
+
+
 # ---------------------------------------------------------------------------
 # E2E test
 # ---------------------------------------------------------------------------
@@ -283,3 +304,82 @@ def test_story_state_transitions(
     assert history.index("executing") < history.index("done")
 
     assert elapsed < 5.0, f"tick + worker step took {elapsed:.2f}s (must be <5s)"
+
+
+def test_executor_runs_persistence(
+    isolated_aim_state,
+    patched_git,
+    patched_jira_reader,
+    fake_jira_provider,
+    isolated_executor_runs_db,
+    monkeypatch,
+):
+    """A successful AIM tick writes exactly one executor_runs row.
+
+    Reuses the same fixtures as ``test_story_state_transitions`` plus a
+    tmp_path-scoped ``executor_runs_db``. The canned-success Worker step
+    also calls ``record_run`` — the same thing the real executor does
+    when ``run_claude_code`` succeeds — so we can assert the row lands in
+    the tmp DB without touching ``local-agent/data/executor_runs.db``.
+    """
+    from aim.manager import assess_board, check_worker_health, execute_decision
+
+    story = Idea(
+        id="TK-100",
+        title="Add retry logic to webhook delivery",
+        description="Stub story seeded for the executor_runs persistence test.",
+        source="planning",
+        category="quality",
+        idea_type="story",
+        state="approved",
+        created=datetime.now().isoformat(timespec="seconds"),
+    )
+    fake_jira_provider.seed(story)
+
+    monkeypatch.setattr("aim.state.is_process_alive", lambda pid: True)
+    monkeypatch.setattr("aim.manager._notify_discord", lambda *a, **k: None)
+    monkeypatch.setattr("aim.manager._notify_discord_throttled", lambda *a, **k: None)
+
+    state = load_state()
+    assert check_worker_health(state) is True
+
+    board = assess_board(state)
+    assert any(i["id"] == "TK-100" for i in board.get("approved_ideas", []))
+
+    decision = Decision(action="ASSIGN", target="TK-100", reason="e2e test")
+    execute_decision(state, decision, board)
+
+    # Canned-success Worker — simulate what idea_board.executor /
+    # claude_code_runner.run_claude_code does on a successful run: insert a
+    # running row, then update it to success when the subprocess exits 0.
+    db_run_id = executor_runs_db.record_run(
+        jira_key="TK-100",
+        branch="2026-04-16-122843-TK-100",
+        started_at=datetime.now().isoformat(),
+        status="running",
+    )
+    executor_runs_db.record_run(
+        id=db_run_id,
+        ended_at=datetime.now().isoformat(),
+        duration_ms=1234,
+        status="success",
+        exit_code=0,
+        tests_passed=True,
+        deployed=True,
+    )
+    fake_jira_provider.mark_executing("TK-100")
+    fake_jira_provider.mark_done("TK-100", "stubbed worker: canned success")
+
+    # DB assertions — exactly one row, status=success, matching jira_key.
+    conn = executor_runs_db._get_conn()
+    rows = conn.execute(
+        "SELECT jira_key, status FROM executor_runs"
+    ).fetchall()
+    assert len(rows) == 1, f"expected exactly 1 executor_runs row, got {len(rows)}"
+    assert rows[0]["jira_key"] == "TK-100"
+    assert rows[0]["status"] == "success"
+
+    # No pollution — the DB file must live under tmp_path, not the repo.
+    assert executor_runs_db.DB_PATH == isolated_executor_runs_db
+    assert isolated_executor_runs_db.exists()
+    assert str(isolated_executor_runs_db).startswith(str(isolated_executor_runs_db.parent))
