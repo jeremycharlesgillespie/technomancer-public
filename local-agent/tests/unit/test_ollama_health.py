@@ -17,6 +17,7 @@ from agent.ollama_health import (
     STATUS_UNKNOWN,
     OllamaHealthMonitor,
     _compute_backoff,
+    check_ollama_ready,
     is_transient_error,
     ollama_call_with_retries,
 )
@@ -420,3 +421,108 @@ class TestModuleHelpers:
             assert _fresh_monitor._thread is not None
             assert _fresh_monitor._thread.is_alive()
             ollama_health.stop_monitor()
+
+
+# ---------------------------------------------------------------------------
+# check_ollama_ready — pre-flight readiness probe
+# ---------------------------------------------------------------------------
+
+
+def _tags_response(model_names: list[str]) -> MagicMock:
+    """Helper: build a mock requests.get response with the given models."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"models": [{"name": n} for n in model_names]}
+    return resp
+
+
+class TestCheckOllamaReady:
+    def test_success_returns_ready(self):
+        """Happy path: /api/tags lists the model and generate succeeds."""
+        tags_resp = _tags_response(["qwen3.5:27b", "llava-llama3:latest"])
+        mock_client = MagicMock()
+        mock_client.generate.return_value = {"response": "ok"}
+
+        with patch("agent.ollama_health.requests.get", return_value=tags_resp), \
+             patch("agent.core._ollama_client", mock_client):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=2.0)
+
+        assert ok is True
+        assert "ready" in reason
+        # Generate called with 1-token limit (the actual point of warmup).
+        args, kwargs = mock_client.generate.call_args
+        assert kwargs["model"] == "qwen3.5:27b"
+        assert kwargs["options"] == {"num_predict": 1}
+
+    def test_connection_refused_returns_false(self):
+        """Ollama server down: requests raises ConnectionError."""
+        with patch(
+            "agent.ollama_health.requests.get",
+            side_effect=requests.ConnectionError("refused"),
+        ):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=1.0)
+
+        assert ok is False
+        assert "connection refused" in reason.lower()
+
+    def test_missing_model_returns_false(self):
+        """Server is up, but requested model isn't in /api/tags."""
+        tags_resp = _tags_response(["llava-llama3:latest", "nomic-embed-text:latest"])
+        with patch("agent.ollama_health.requests.get", return_value=tags_resp):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=1.0)
+
+        assert ok is False
+        assert "not loaded" in reason
+        assert "qwen3.5:27b" in reason
+
+    def test_generate_timeout_returns_false(self):
+        """Generate warmup exceeds the configured timeout."""
+        tags_resp = _tags_response(["qwen3.5:27b"])
+        mock_client = MagicMock()
+
+        def _slow_generate(*_args, **_kwargs):
+            time.sleep(0.5)  # Longer than the 0.05s timeout below.
+            return {"response": "finally"}
+
+        mock_client.generate.side_effect = _slow_generate
+
+        with patch("agent.ollama_health.requests.get", return_value=tags_resp), \
+             patch("agent.core._ollama_client", mock_client):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=0.05)
+
+        assert ok is False
+        assert "timeout" in reason.lower()
+
+    def test_matches_model_by_base_name(self):
+        """A bare name like 'qwen3.5' matches a listed 'qwen3.5:27b'."""
+        tags_resp = _tags_response(["qwen3.5:27b"])
+        mock_client = MagicMock()
+        mock_client.generate.return_value = {"response": "ok"}
+
+        with patch("agent.ollama_health.requests.get", return_value=tags_resp), \
+             patch("agent.core._ollama_client", mock_client):
+            ok, reason = check_ollama_ready("qwen3.5", timeout=2.0)
+
+        assert ok is True, reason
+
+    def test_tags_http_error_returns_false(self):
+        """/api/tags returning non-200 is a failure."""
+        resp = MagicMock(status_code=500)
+        with patch("agent.ollama_health.requests.get", return_value=resp):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=1.0)
+
+        assert ok is False
+        assert "500" in reason
+
+    def test_generate_response_error_returns_false(self):
+        """Generate raising ResponseError (e.g. model 404) is handled."""
+        tags_resp = _tags_response(["qwen3.5:27b"])
+        mock_client = MagicMock()
+        mock_client.generate.side_effect = ResponseError("not found", 404)
+
+        with patch("agent.ollama_health.requests.get", return_value=tags_resp), \
+             patch("agent.core._ollama_client", mock_client):
+            ok, reason = check_ollama_ready("qwen3.5:27b", timeout=1.0)
+
+        assert ok is False
+        assert "404" in reason

@@ -20,6 +20,7 @@ called explicitly from ``discord_memory_bot.py`` so tests can skip the thread.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import random
 import threading
@@ -352,3 +353,96 @@ def stop_monitor() -> None:
 def get_ollama_status() -> dict[str, Any]:
     """Return the current Ollama health snapshot (for /health endpoints)."""
     return _monitor.get_state()
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight readiness probe
+# ---------------------------------------------------------------------------
+
+
+def _model_is_listed(name: str, tags: list[dict[str, Any]]) -> bool:
+    """Check whether ``name`` matches any model listed in ``/api/tags``.
+
+    Ollama lists models as ``name:tag`` (e.g. ``qwen3.5:27b``). A caller may
+    pass either the full tagged name or just the base name, so accept either
+    form: exact match, match after stripping our tag, or match against the
+    listed base name.
+    """
+    listed: set[str] = {m.get("name", "") for m in tags if isinstance(m, dict)}
+    if name in listed:
+        return True
+    base = name.split(":", 1)[0]
+    return any(n == name or n.split(":", 1)[0] == base for n in listed)
+
+
+def check_ollama_ready(model: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """Pre-flight probe: confirm Ollama is up and ``model`` is ready to serve.
+
+    Two sequential checks, each bounded by ``timeout`` seconds:
+
+    1. ``GET /api/tags`` — verifies the server is reachable and the model is
+       installed.
+    2. 1-token ``generate`` via ``_ollama_client`` — verifies the model can
+       actually respond (catches cold-start hangs where the GPU is still
+       loading weights).
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``(True, reason)`` when both checks pass. ``(False, reason)`` on
+        connection refused, missing model, or >timeout response. Never raises.
+    """
+    host = settings.ollama_host.rstrip("/")
+
+    try:
+        resp = requests.get(f"{host}/api/tags", timeout=timeout)
+    except (requests.ConnectionError, ConnectionRefusedError) as exc:
+        return False, f"connection refused: {exc}"
+    except (requests.Timeout, TimeoutError) as exc:
+        return False, f"timeout contacting {host}/api/tags: {exc}"
+    except Exception as exc:
+        return False, f"error contacting {host}/api/tags: {type(exc).__name__}: {exc}"
+
+    if resp.status_code != 200:
+        return False, f"/api/tags returned HTTP {resp.status_code}"
+
+    try:
+        tags = resp.json().get("models", [])
+    except Exception as exc:
+        return False, f"invalid /api/tags response: {exc}"
+
+    if not _model_is_listed(model, tags):
+        available = sorted({m.get("name", "") for m in tags if isinstance(m, dict)})
+        return False, f"model not loaded: {model} (available: {available})"
+
+    # Local import avoids a circular dep at module-load time (core imports us).
+    from .core import _ollama_client
+
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="ollama-readycheck"
+    )
+    try:
+        start = time.monotonic()
+        future = executor.submit(
+            _ollama_client.generate,
+            model=model,
+            prompt="hi",
+            options={"num_predict": 1},
+        )
+        try:
+            future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            return False, f"generate warmup exceeded {timeout:.1f}s timeout"
+        except (requests.ConnectionError, ConnectionRefusedError) as exc:
+            return False, f"connection refused during generate: {exc}"
+        except ResponseError as exc:
+            status = getattr(exc, "status_code", -1)
+            return False, f"generate returned HTTP {status}: {exc}"
+        except Exception as exc:
+            return False, f"generate failed: {type(exc).__name__}: {exc}"
+    finally:
+        # Don't block startup on a still-running probe thread.
+        executor.shutdown(wait=False)
+
+    elapsed = time.monotonic() - start
+    return True, f"ready (warmup {elapsed:.2f}s)"

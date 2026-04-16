@@ -830,7 +830,15 @@ Keep responses concise for Discord but thorough when they need depth.""",
 
     # Start Ollama health monitor (polls /api/tags periodically)
     try:
-        from .ollama_health import start_monitor as start_ollama_monitor
+        from .ollama_health import check_ollama_ready, start_monitor as start_ollama_monitor
+        ready, reason = check_ollama_ready(settings.ollama_model, timeout=5.0)
+        if ready:
+            log(f"Ollama pre-flight OK for {settings.ollama_model}: {reason}")
+        else:
+            log(
+                f"WARNING: Ollama pre-flight failed for {settings.ollama_model}: "
+                f"{reason} — first user message may hang until model loads"
+            )
         start_ollama_monitor()
         log("Ollama health monitor started")
     except Exception as e:

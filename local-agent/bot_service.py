@@ -162,12 +162,36 @@ def unload_ollama_models():
         pass  # Ollama not running or no models loaded
 
 
+def check_ollama_preflight() -> None:
+    """Log a warning if Ollama isn't ready for the main chat model.
+
+    Non-fatal: the bot still starts because Ollama often comes up a few
+    seconds later, but the warning tells the operator why the first user
+    message hangs (was the top user-reported visibility gap — TK-448).
+    """
+    try:
+        from agent.ollama_health import check_ollama_ready
+
+        ready, reason = check_ollama_ready(settings.ollama_model, timeout=5.0)
+        if ready:
+            log(f"Ollama pre-flight OK for {settings.ollama_model}: {reason}")
+        else:
+            log(
+                f"WARNING: Ollama pre-flight failed for {settings.ollama_model}: "
+                f"{reason} — first user message may hang until model loads"
+            )
+    except Exception as exc:
+        log(f"Ollama pre-flight check errored (continuing): {exc}")
+
+
 def start_bot() -> tuple[bool, str]:
     """
     Start the bot process.
     Returns (success, error_message).
     """
     os.chdir(SCRIPT_DIR)
+
+    check_ollama_preflight()
 
     try:
         process = subprocess.Popen(
