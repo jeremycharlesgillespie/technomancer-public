@@ -32,6 +32,7 @@ from typing import Any
 
 from . import executor_runs_db
 from .config import settings
+from .run_context import set_phase, with_run_context
 
 logger = logging.getLogger(__name__)
 
@@ -515,128 +516,143 @@ async def run_claude_code(
     """
     start = time.time()
     artifact_run_id = _make_run_id(jira_key)
-    db_id = _safe_record(
-        run_id=artifact_run_id,
-        jira_key=jira_key,
-        started_at=datetime.now().isoformat(),
-        status="running",
-    )
 
-    binary = _find_claude_binary()
-    if not binary:
-        _safe_record(
-            id=db_id,
-            ended_at=datetime.now().isoformat(),
-            duration_ms=0,
-            status="binary_not_found",
-        )
-        return False, "Error: Claude Code binary not found in VS Code extensions.", 0.0
-
-    work_dir = cwd or str(PROJECT_ROOT)
-
-    # If images were attached, append instructions to read them
-    full_prompt = prompt
-    if image_paths:
-        image_instructions = "\n\nThe user attached the following image(s). Read each one:\n"
-        for path in image_paths:
-            image_instructions += f"- {path}\n"
-        image_instructions += "\nAnalyze the image(s) as part of your task."
-        full_prompt = prompt + image_instructions
-
-    # Build environment — remove CLAUDECODE to avoid "nested session" error
-    env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
-    env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
-
-    effective_timeout = settings.executor_max_runtime_seconds
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            str(binary),
-            "-p", full_prompt,
-            "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
-            "--max-turns", "50",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=work_dir,
-            env=env,
+    # Bind run_id + idea_key to every log record this call emits, then walk
+    # through the four executor phase boundaries (plan → code → test →
+    # deploy) so operators can grep logs by stage. Phase is reset on exit.
+    with with_run_context(artifact_run_id, jira_key):
+        set_phase("plan")
+        logger.info("Executor phase: plan")
+        db_id = _safe_record(
+            run_id=artifact_run_id,
+            jira_key=jira_key,
+            started_at=datetime.now().isoformat(),
+            status="running",
         )
 
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=effective_timeout
-        )
+        binary = _find_claude_binary()
+        if not binary:
+            _safe_record(
+                id=db_id,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=0,
+                status="binary_not_found",
+            )
+            return False, "Error: Claude Code binary not found in VS Code extensions.", 0.0
 
-        duration = time.time() - start
-        stdout_text = stdout.decode("utf-8", errors="replace")
-        stderr_text = stderr.decode("utf-8", errors="replace")
-        output = stdout_text.strip()
+        work_dir = cwd or str(PROJECT_ROOT)
 
-        if proc.returncode == 0:
+        # If images were attached, append instructions to read them
+        full_prompt = prompt
+        if image_paths:
+            image_instructions = "\n\nThe user attached the following image(s). Read each one:\n"
+            for path in image_paths:
+                image_instructions += f"- {path}\n"
+            image_instructions += "\nAnalyze the image(s) as part of your task."
+            full_prompt = prompt + image_instructions
+
+        # Build environment — remove CLAUDECODE to avoid "nested session" error
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        env.pop("ANTHROPIC_API_KEY", None)  # Force Pro subscription, not API credits
+
+        effective_timeout = settings.executor_max_runtime_seconds
+
+        try:
+            set_phase("code")
+            logger.info("Executor phase: code")
+            proc = await asyncio.create_subprocess_exec(
+                str(binary),
+                "-p", full_prompt,
+                "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
+                "--max-turns", "50",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=work_dir,
+                env=env,
+            )
+
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=effective_timeout
+            )
+
+            duration = time.time() - start
+            stdout_text = stdout.decode("utf-8", errors="replace")
+            stderr_text = stderr.decode("utf-8", errors="replace")
+            output = stdout_text.strip()
+
+            set_phase("test")
+            logger.info("Executor phase: test")
+            if proc.returncode == 0:
+                _safe_record(
+                    id=db_id,
+                    ended_at=datetime.now().isoformat(),
+                    duration_ms=int(duration * 1000),
+                    status="success",
+                    exit_code=0,
+                )
+                set_phase("deploy")
+                logger.info("Executor phase: deploy")
+                _safe_archive(
+                    artifact_run_id, stdout_text, stderr_text,
+                    _detect_branch(work_dir),
+                )
+                return True, output, duration
+            else:
+                error = stderr_text.strip()
+                _safe_record(
+                    id=db_id,
+                    ended_at=datetime.now().isoformat(),
+                    duration_ms=int(duration * 1000),
+                    status="failure",
+                    exit_code=proc.returncode,
+                )
+                set_phase("deploy")
+                logger.info("Executor phase: deploy")
+                _safe_archive(
+                    artifact_run_id, stdout_text, stderr_text,
+                    _detect_branch(work_dir),
+                )
+                return False, f"Claude Code exited with code {proc.returncode}:\n{error or output}", duration
+
+        except asyncio.TimeoutError:
+            duration = time.time() - start
+            stdout_partial, stderr_partial = await _terminate_and_capture(
+                proc, correlation_id=artifact_run_id,
+            )
+            logger.warning(
+                "Claude Code run timed out after %ds — subprocess terminated",
+                effective_timeout,
+                extra={
+                    "correlation_id": artifact_run_id,
+                    "jira_key": jira_key,
+                    "timeout_seconds": effective_timeout,
+                    "event": "executor_timeout",
+                },
+            )
             _safe_record(
                 id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
-                status="success",
-                exit_code=0,
+                status="timeout",
             )
             _safe_archive(
-                artifact_run_id, stdout_text, stderr_text,
+                artifact_run_id, stdout_partial, stderr_partial,
                 _detect_branch(work_dir),
             )
-            return True, output, duration
-        else:
-            error = stderr_text.strip()
+            msg = f"Claude Code task timed out after {effective_timeout}s"
+            if stdout_partial.strip():
+                msg += f"\nPartial output ({len(stdout_partial)} chars captured)"
+            return False, msg, duration
+        except Exception as e:
+            duration = time.time() - start
             _safe_record(
                 id=db_id,
                 ended_at=datetime.now().isoformat(),
                 duration_ms=int(duration * 1000),
-                status="failure",
-                exit_code=proc.returncode,
+                status="error",
             )
-            _safe_archive(
-                artifact_run_id, stdout_text, stderr_text,
-                _detect_branch(work_dir),
-            )
-            return False, f"Claude Code exited with code {proc.returncode}:\n{error or output}", duration
-
-    except asyncio.TimeoutError:
-        duration = time.time() - start
-        stdout_partial, stderr_partial = await _terminate_and_capture(
-            proc, correlation_id=artifact_run_id,
-        )
-        logger.warning(
-            "Claude Code run timed out after %ds — subprocess terminated",
-            effective_timeout,
-            extra={
-                "correlation_id": artifact_run_id,
-                "jira_key": jira_key,
-                "timeout_seconds": effective_timeout,
-                "event": "executor_timeout",
-            },
-        )
-        _safe_record(
-            id=db_id,
-            ended_at=datetime.now().isoformat(),
-            duration_ms=int(duration * 1000),
-            status="timeout",
-        )
-        _safe_archive(
-            artifact_run_id, stdout_partial, stderr_partial,
-            _detect_branch(work_dir),
-        )
-        msg = f"Claude Code task timed out after {effective_timeout}s"
-        if stdout_partial.strip():
-            msg += f"\nPartial output ({len(stdout_partial)} chars captured)"
-        return False, msg, duration
-    except Exception as e:
-        duration = time.time() - start
-        _safe_record(
-            id=db_id,
-            ended_at=datetime.now().isoformat(),
-            duration_ms=int(duration * 1000),
-            status="error",
-        )
-        return False, f"Error running Claude Code: {e}", duration
+            return False, f"Error running Claude Code: {e}", duration
 
 
 # ============================================================================
