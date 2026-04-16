@@ -1,6 +1,48 @@
 """Tests for agent/embedding_store.py — persistent embedding cache."""
 
+import sqlite3
+
 from agent import embedding_store
+
+
+class TestWalMode:
+    """WAL journal mode must be active to allow concurrent readers and writers."""
+
+    def test_journal_mode_is_wal(self):
+        embedding_store.init_store()
+        conn = embedding_store._get_conn()
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_concurrent_read_during_open_write_transaction(self):
+        """A reader connection must succeed while another connection holds
+        an open write transaction — the contention scenario that produces
+        `database is locked` without WAL."""
+        embedding_store.save_cached(
+            "fact", [("seed", "h", [0.1], {})]
+        )
+        conn = getattr(embedding_store._local, "emb_conn", None)
+        if conn:
+            conn.close()
+            embedding_store._local.emb_conn = None
+
+        writer = sqlite3.connect(str(embedding_store.DB_PATH), timeout=5)
+        reader = sqlite3.connect(str(embedding_store.DB_PATH), timeout=5)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO embeddings (source, key, text_hash, embedding) "
+                "VALUES (?, ?, ?, ?)",
+                ("fact", "concurrent", "h2", b"\x00\x00\x00\x00"),
+            )
+            count = reader.execute(
+                "SELECT COUNT(*) FROM embeddings"
+            ).fetchone()[0]
+            assert count >= 1
+            writer.rollback()
+        finally:
+            writer.close()
+            reader.close()
 
 
 class TestInitStore:

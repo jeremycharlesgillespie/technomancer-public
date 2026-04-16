@@ -23,6 +23,43 @@ def _isolate_db(tmp_path, monkeypatch):
         facts_db._local.conn = None
 
 
+class TestWalMode:
+    """WAL journal mode must be active so readers don't block on writers."""
+
+    def test_journal_mode_is_wal(self):
+        conn = facts_db._get_conn()
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_concurrent_read_during_open_write_transaction(self):
+        """Separate reader connection must succeed while a writer holds an
+        open write transaction — the contention scenario that causes
+        `database is locked` under the default rollback journal."""
+        facts_db.add_fact("test", "seed", "v", source="user")
+        conn = getattr(facts_db._local, "conn", None)
+        if conn:
+            conn.close()
+            facts_db._local.conn = None
+
+        writer = sqlite3.connect(str(facts_db.DB_PATH), timeout=5)
+        reader = sqlite3.connect(str(facts_db.DB_PATH), timeout=5)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO facts (category, key, value, source) "
+                "VALUES (?, ?, ?, ?)",
+                ("test", "concurrent", "v", "test"),
+            )
+            count = reader.execute(
+                "SELECT COUNT(*) FROM facts"
+            ).fetchone()[0]
+            assert count >= 1
+            writer.rollback()
+        finally:
+            writer.close()
+            reader.close()
+
+
 class TestInitDb:
     """Test database initialization."""
 

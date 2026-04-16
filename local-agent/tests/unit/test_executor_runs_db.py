@@ -1,5 +1,6 @@
 """Tests for agent.executor_runs_db — SQLite-backed executor run metadata."""
 
+import sqlite3
 from datetime import datetime
 
 import pytest
@@ -161,6 +162,45 @@ class TestGetRecent:
         for i in range(25):
             executor_runs_db.record_run(jira_key=f"TK-{i}")
         assert len(executor_runs_db.get_recent()) == 20
+
+
+class TestWalMode:
+    """WAL journal mode must be active so reads and writes don't serialize."""
+
+    def test_journal_mode_is_wal(self):
+        conn = executor_runs_db._get_conn()
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_concurrent_read_during_open_write_transaction(self):
+        """With WAL, a separate connection can read while another holds an
+        open write transaction — the regression signal is `database is
+        locked` which is what we're eliminating."""
+        executor_runs_db.record_run(jira_key="TK-seed", status="running")
+        # Drop the cached per-thread connection so the writer below is the
+        # only one holding the write lock when we open the reader.
+        conn = getattr(executor_runs_db._local, "conn", None)
+        if conn:
+            conn.close()
+            executor_runs_db._local.conn = None
+
+        writer = sqlite3.connect(str(executor_runs_db.DB_PATH), timeout=5)
+        reader = sqlite3.connect(str(executor_runs_db.DB_PATH), timeout=5)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute(
+                "INSERT INTO executor_runs (jira_key, status) VALUES (?, ?)",
+                ("TK-concurrent", "running"),
+            )
+            # Read from a separate connection while writer's txn is open.
+            count = reader.execute(
+                "SELECT COUNT(*) FROM executor_runs"
+            ).fetchone()[0]
+            assert count >= 1
+            writer.rollback()
+        finally:
+            writer.close()
+            reader.close()
 
 
 class TestStartThenCompleteFlow:
