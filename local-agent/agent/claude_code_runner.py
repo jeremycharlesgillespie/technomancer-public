@@ -26,8 +26,11 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from . import executor_runs_db
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,20 @@ PROJECT_ROOT: Path = Path(__file__).parent.parent.parent
 
 # Timeout for a single Claude Code turn (15 minutes)
 TASK_TIMEOUT: int = 900
+
+
+def _safe_record(**fields: Any) -> int | None:
+    """Record an executor-run row, swallowing all DB errors.
+
+    Instrumentation must never crash the caller — if the SQLite layer has
+    any issue (locked file, corrupt db, missing dir), we log at debug and
+    return None so the run continues normally.
+    """
+    try:
+        return executor_runs_db.record_run(**fields)
+    except Exception:
+        logger.debug("executor_runs_db.record_run failed", exc_info=True)
+        return None
 
 
 def _find_claude_binary() -> Path | None:
@@ -130,9 +147,19 @@ async def run_claude_code(
         Tuple of (success, output, duration_seconds)
     """
     start = time.time()
+    run_id = _safe_record(
+        started_at=datetime.now().isoformat(),
+        status="running",
+    )
 
     binary = _find_claude_binary()
     if not binary:
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=0,
+            status="binary_not_found",
+        )
         return False, "Error: Claude Code binary not found in VS Code extensions.", 0.0
 
     work_dir = cwd or str(PROJECT_ROOT)
@@ -171,9 +198,23 @@ async def run_claude_code(
         output = stdout.decode("utf-8", errors="replace").strip()
 
         if proc.returncode == 0:
+            _safe_record(
+                id=run_id,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=int(duration * 1000),
+                status="success",
+                exit_code=0,
+            )
             return True, output, duration
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
+            _safe_record(
+                id=run_id,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=int(duration * 1000),
+                status="failure",
+                exit_code=proc.returncode,
+            )
             return False, f"Claude Code exited with code {proc.returncode}:\n{error or output}", duration
 
     except asyncio.TimeoutError:
@@ -182,9 +223,21 @@ async def run_claude_code(
             proc.kill()
         except Exception:
             pass
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=int(duration * 1000),
+            status="timeout",
+        )
         return False, f"Claude Code task timed out after {TASK_TIMEOUT}s", duration
     except Exception as e:
         duration = time.time() - start
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=int(duration * 1000),
+            status="error",
+        )
         return False, f"Error running Claude Code: {e}", duration
 
 
@@ -235,9 +288,19 @@ async def run_claude_chat(
         ChatResult with response, session_id, cost, and duration
     """
     start = time.time()
+    run_id = _safe_record(
+        started_at=datetime.now().isoformat(),
+        status="running",
+    )
 
     binary = _find_claude_binary()
     if not binary:
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=0,
+            status="binary_not_found",
+        )
         return ChatResult(
             success=False, response="Error: Claude Code binary not found.",
             session_id="", duration=0, cost_usd=0, is_new_session=True,
@@ -301,6 +364,14 @@ async def run_claude_chat(
             cost = 0
 
         if proc.returncode == 0:
+            _safe_record(
+                id=run_id,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=int(duration * 1000),
+                cost_usd=float(cost) if cost else 0.0,
+                status="success",
+                exit_code=0,
+            )
             return ChatResult(
                 success=True, response=response_text,
                 session_id=new_session_id, duration=duration,
@@ -308,6 +379,14 @@ async def run_claude_chat(
             )
         else:
             error = stderr.decode("utf-8", errors="replace").strip()
+            _safe_record(
+                id=run_id,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=int(duration * 1000),
+                cost_usd=float(cost) if cost else 0.0,
+                status="failure",
+                exit_code=proc.returncode,
+            )
             return ChatResult(
                 success=False, response=f"Error: {error or response_text}",
                 session_id=new_session_id, duration=duration,
@@ -320,6 +399,12 @@ async def run_claude_chat(
             proc.kill()
         except Exception:
             pass
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=int(duration * 1000),
+            status="timeout",
+        )
         return ChatResult(
             success=False, response=f"Timed out after {TASK_TIMEOUT}s",
             session_id=session_id or "", duration=duration,
@@ -327,6 +412,12 @@ async def run_claude_chat(
         )
     except Exception as e:
         duration = time.time() - start
+        _safe_record(
+            id=run_id,
+            ended_at=datetime.now().isoformat(),
+            duration_ms=int(duration * 1000),
+            status="error",
+        )
         return ChatResult(
             success=False, response=f"Error: {e}",
             session_id=session_id or "", duration=duration,
