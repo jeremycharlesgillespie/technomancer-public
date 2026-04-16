@@ -294,6 +294,48 @@ def load_stats() -> int:
     return len(rows)
 
 
+def snapshot_from_db() -> dict[str, FnStats]:
+    """Read every persisted row and return fresh FnStats, untouched by the registry.
+
+    Callers that just want to read current persisted stats (e.g. the
+    ``/api/perf/functions`` endpoint) should use this instead of
+    ``load_stats`` — it keeps the in-memory registry untouched so live
+    counters that haven't been flushed yet aren't overwritten.
+    """
+    init_db()
+    conn = _get_conn()
+    cur = conn.execute(
+        "SELECT name, call_count, total_seconds, last_n_durations FROM fn_stats"
+    )
+    result: dict[str, FnStats] = {}
+    for name, call_count, total_seconds, last_n_durations in cur.fetchall():
+        try:
+            durations = json.loads(last_n_durations) if last_n_durations else []
+        except (json.JSONDecodeError, TypeError):
+            durations = []
+        result[name] = FnStats(
+            name=name,
+            call_count=int(call_count),
+            total_seconds=float(total_seconds),
+            last_n_durations=list(durations),
+        )
+    return result
+
+
+def get_collected_since() -> str | None:
+    """Return the earliest ``updated_at`` in the fn_stats table, or None if empty.
+
+    Acts as a proxy for "we've been collecting at least since this time"
+    so consumers know how fresh / old the aggregate picture is.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute("SELECT MIN(updated_at) FROM fn_stats").fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
+
+
 def _flush_tick(interval: float) -> None:
     """Timer callback: flush once, then re-arm if still running."""
     global _flush_timer

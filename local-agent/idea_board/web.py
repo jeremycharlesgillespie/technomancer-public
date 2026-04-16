@@ -14,6 +14,7 @@ Routes:
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
+    GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import sys
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
+from statistics import pstdev
 from typing import Any
 
 import time
@@ -35,6 +37,7 @@ import requests as _requests_lib
 
 from flask import Flask, Response, jsonify, request
 
+from agent import fn_profiler
 from agent.config import settings
 
 from .executor import EXECUTION_LOGS_DIR, get_execution
@@ -2502,6 +2505,67 @@ def api_aim_events_stream() -> Response:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ============================================================================
+# PER-FUNCTION PERFORMANCE METRICS
+# ============================================================================
+
+
+@app.route("/api/perf/functions")
+def api_perf_functions() -> Response:
+    """GET /api/perf/functions?limit=N — top-N functions ranked three ways.
+
+    Reads the ``fn_stats`` SQLite table via ``fn_profiler.snapshot_from_db``
+    and returns three ranked lists: ``by_total_time``, ``by_call_count``,
+    and ``by_variance`` (population stddev of ``last_n_durations``).  Each
+    item has ``name``, ``call_count``, ``total_seconds``, ``p50_seconds``,
+    ``p95_seconds``, ``stddev_seconds``.  ``limit`` defaults to 20 and is
+    clamped to ``[1, 100]``.  Functions with ``call_count == 0`` are
+    omitted from every list.
+    """
+    try:
+        limit = int(request.args.get("limit", "20"))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))
+
+    stats = fn_profiler.snapshot_from_db()
+
+    items: list[dict[str, Any]] = []
+    for name, s in stats.items():
+        if s.call_count <= 0:
+            continue
+        durations = list(s.last_n_durations)
+        stddev = pstdev(durations) if len(durations) >= 2 else 0.0
+        items.append({
+            "name": name,
+            "call_count": s.call_count,
+            "total_seconds": s.total_seconds,
+            "p50_seconds": s.p50(),
+            "p95_seconds": s.p95(),
+            "stddev_seconds": stddev,
+        })
+
+    by_total_time = sorted(
+        items, key=lambda x: x["total_seconds"], reverse=True
+    )[:limit]
+    by_call_count = sorted(
+        items, key=lambda x: x["call_count"], reverse=True
+    )[:limit]
+    by_variance = sorted(
+        items, key=lambda x: x["stddev_seconds"], reverse=True
+    )[:limit]
+
+    return jsonify({
+        "by_total_time": by_total_time,
+        "by_call_count": by_call_count,
+        "by_variance": by_variance,
+        "meta": {
+            "collected_since": fn_profiler.get_collected_since(),
+            "limit": limit,
+        },
+    })
 
 
 @app.route("/aim")
