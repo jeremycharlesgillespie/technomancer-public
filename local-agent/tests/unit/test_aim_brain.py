@@ -261,6 +261,99 @@ class TestDecideNextAction:
         # The function uses the parsed result, not fallback
         assert d.action == "WAIT"
 
+    @patch("aim.brain._run_claude_p")
+    def test_approved_ideas_capped_at_top_ten(self, mock_claude):
+        """The prompt must list only the top 10 approved ideas plus a summary of the rest."""
+        mock_claude.return_value = '{"action": "WAIT", "reason": "test"}'
+
+        ideas = [
+            {"id": f"idea-{i:03d}", "title": f"Title {i}", "category": "quality"}
+            for i in range(25)
+        ]
+        decide_next_action(
+            board_state={"todo": 20, "in_progress": 0},
+            worker_status="idle",
+            approved_ideas=ideas,
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+        )
+
+        sent_prompt = mock_claude.call_args[0][0]
+        # Top 10 listed by ID
+        for i in range(10):
+            assert f"idea-{i:03d}" in sent_prompt
+        # Items 10+ omitted from the bulleted list
+        for i in range(10, 25):
+            assert f"idea-{i:03d}" not in sent_prompt
+        # Overflow summary indicates how many were hidden
+        assert "+15 more" in sent_prompt
+
+    @patch("aim.brain._run_claude_p")
+    def test_no_overflow_note_when_under_cap(self, mock_claude):
+        mock_claude.return_value = '{"action": "WAIT", "reason": "test"}'
+
+        ideas = [
+            {"id": f"idea-{i:03d}", "title": f"T{i}", "category": "quality"}
+            for i in range(3)
+        ]
+        decide_next_action(
+            board_state={"todo": 20},
+            worker_status="idle",
+            approved_ideas=ideas,
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+        )
+        sent_prompt = mock_claude.call_args[0][0]
+        assert "more lower-priority" not in sent_prompt
+
+    @patch("aim.brain._run_claude_p")
+    def test_prompt_preserves_failure_context(self, mock_claude):
+        """Failure context is high-signal and must appear verbatim in the prompt."""
+        mock_claude.return_value = '{"action": "WAIT", "reason": "test"}'
+
+        fc = "RECENT FAILURES: idea-999 bricked tests twice. Avoid similar work."
+        decide_next_action(
+            board_state={"todo": 20},
+            worker_status="idle",
+            approved_ideas=[],
+            last_completion=None,
+            hours_since_completion=1.0,
+            completions_today=0,
+            failure_context=fc,
+        )
+        sent_prompt = mock_claude.call_args[0][0]
+        assert fc in sent_prompt
+
+    @patch("aim.brain._run_claude_p")
+    def test_prompt_is_shorter_than_legacy_baseline(self, mock_claude):
+        """Trimmed prompt must be materially shorter even with a long approved list.
+
+        Guards against a regression where someone reintroduces the old RULES
+        block or drops the top-10 cap on approved_ideas.
+        """
+        mock_claude.return_value = '{"action": "WAIT", "reason": "test"}'
+
+        # Large list simulating a realistic backlog
+        ideas = [
+            {"id": f"idea-{i:03d}", "title": f"Some descriptive idea title {i}", "category": "quality"}
+            for i in range(50)
+        ]
+        decide_next_action(
+            board_state={"todo": 20, "in_progress": 0, "done_last_24h": 3},
+            worker_status="idle",
+            approved_ideas=ideas,
+            last_completion="2026-04-14T09:00:00",
+            hours_since_completion=1.0,
+            completions_today=3,
+        )
+        sent_prompt = mock_claude.call_args[0][0]
+        # With 50 approved ideas at ~60 chars each, the legacy prompt was ~3800+
+        # chars. The trimmed version (top-10 cap + shorter RULES) should be well
+        # under 2000 chars.
+        assert len(sent_prompt) < 2000, f"Prompt too long: {len(sent_prompt)} chars"
+
 
 # ---------------------------------------------------------------------------
 # generate_work_ideas tests
@@ -401,3 +494,43 @@ class TestGenerateWorkIdeas:
         # Disallowed verbs must be listed so the model avoids them in stories.
         for verb in ("design", "decide", "evaluate", "choose", "plan", "architect", "research"):
             assert verb in sent_prompt
+
+    @patch("aim.brain._run_claude_p")
+    def test_codebase_summary_truncated_at_1000_chars(self, mock_claude):
+        """Large codebase summaries must be capped to keep the prompt lean."""
+        mock_claude.return_value = "[]"
+
+        big_summary = "A" * 5000 + "UNIQUE_TAIL_MARKER"
+        generate_work_ideas(
+            codebase_summary=big_summary,
+            existing_idea_titles=[],
+            board_state={"todo": 1},
+        )
+        sent_prompt = mock_claude.call_args[0][0]
+        # First 1000 chars of summary are included
+        assert "A" * 1000 in sent_prompt
+        # Content past 1000 chars is dropped
+        assert "UNIQUE_TAIL_MARKER" not in sent_prompt
+        # The old 3000-char chunk would have emitted 3000 A's in a row
+        assert "A" * 1001 not in sent_prompt
+
+    @patch("aim.brain._run_claude_p")
+    def test_existing_titles_capped_to_last_thirty(self, mock_claude):
+        """Only the last 30 existing titles are shown; older ones are dropped."""
+        mock_claude.return_value = "[]"
+
+        titles = [f"Older idea {i}" for i in range(50)] + [
+            f"Recent idea {i}" for i in range(30)
+        ]
+        generate_work_ideas(
+            codebase_summary="",
+            existing_idea_titles=titles,
+            board_state={"todo": 1},
+        )
+        sent_prompt = mock_claude.call_args[0][0]
+        # All 30 recent titles appear
+        for i in range(30):
+            assert f"Recent idea {i}" in sent_prompt
+        # Older titles beyond the last-30 window are dropped
+        assert "Older idea 0" not in sent_prompt
+        assert "Older idea 49" not in sent_prompt
