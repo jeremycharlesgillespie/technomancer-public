@@ -1,4 +1,4 @@
-.PHONY: test lint format start stop status update install clean help
+.PHONY: test lint format start stop status update install clean secrets-audit help
 
 # Default target
 help:
@@ -12,6 +12,7 @@ help:
 	@echo "  make stop       - Stop the Discord bot"
 	@echo "  make status     - Show bot status"
 	@echo "  make update     - Start safe_update workflow (use: make update name=fix-bug)"
+	@echo "  make secrets-audit - Review findings in .secrets.baseline"
 	@echo "  make clean      - Remove build artifacts"
 
 # Installation
@@ -63,6 +64,10 @@ continue:
 
 abort:
 	python safe_update.py abort
+
+# Secret scanning
+secrets-audit:
+	detect-secrets audit ../.secrets.baseline
 
 # Cleanup
 clean:
