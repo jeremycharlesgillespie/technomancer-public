@@ -25,7 +25,7 @@ import logging
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2147,6 +2147,74 @@ def api_aim_status() -> tuple:
         "last_error": state.last_error,
         "last_decisions": last_decisions,
         "snapshot_at": datetime.now().isoformat(timespec="seconds"),
+    })
+
+
+@app.route("/api/aim/metrics")
+def api_aim_metrics() -> tuple:
+    """GET /api/aim/metrics?hours=N — time-bucketed completion and failure counts.
+
+    Reads ``execution_completed`` and ``execution_failed`` events from the
+    AIM event log, buckets them into per-hour slots over the trailing
+    ``hours`` window, and returns timestamps/completions/failures arrays
+    plus a totals summary. ``hours`` defaults to 24 and is clamped to
+    [1, 168]. Feeds the AI Dev Team Dashboard throughput and reliability
+    charts.
+    """
+    try:
+        hours = int(request.args.get("hours", "24"))
+    except (TypeError, ValueError):
+        hours = 24
+    hours = max(1, min(hours, 168))
+
+    # Window: N per-hour buckets ending with the current (partial) hour.
+    current_hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+    buckets = [current_hour - timedelta(hours=hours - 1 - i) for i in range(hours)]
+    bucket_index = {b: i for i, b in enumerate(buckets)}
+    window_start = buckets[0]
+
+    completions = [0] * hours
+    failures = [0] * hours
+
+    # Pull a generous slice — events.jsonl rotates at ~5MB so this bounds
+    # the scan without dropping any events in the window.
+    events = aim_event_log.read_events(limit=50000)
+
+    for event in events:
+        etype = event.get("type")
+        if etype not in ("execution_completed", "execution_failed"):
+            continue
+        ts_raw = event.get("timestamp")
+        if not ts_raw:
+            continue
+        try:
+            ts = datetime.fromisoformat(ts_raw)
+        except (TypeError, ValueError):
+            continue
+        hour_floor = ts.replace(minute=0, second=0, microsecond=0)
+        idx = bucket_index.get(hour_floor)
+        if idx is None or hour_floor < window_start:
+            continue
+        if etype == "execution_completed":
+            completions[idx] += 1
+        else:
+            failures[idx] += 1
+
+    total_completions = sum(completions)
+    total_failures = sum(failures)
+    denom = total_completions + total_failures
+    completion_rate = (total_completions / denom) if denom > 0 else 0.0
+
+    return jsonify({
+        "hours": hours,
+        "timestamps": [b.isoformat(timespec="seconds") for b in buckets],
+        "completions": completions,
+        "failures": failures,
+        "totals": {
+            "completions": total_completions,
+            "failures": total_failures,
+            "completion_rate": completion_rate,
+        },
     })
 
 
