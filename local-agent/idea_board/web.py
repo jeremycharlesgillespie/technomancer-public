@@ -3614,8 +3614,15 @@ def api_jira_create() -> tuple:
         idea_type (optional, default "story"): "story" or "epic".
         parent_key (optional): Jira key of parent epic (e.g. "TK-10").
         rank_position (optional): "top" or "after:<KEY>" for backlog ordering.
+        force (optional, default false): On duplicate match, suppress the
+            ``[Duplicate Match]`` comment that would otherwise be appended
+            to the existing issue.
 
     Returns 201 JSON: {key, title, state, url, rank_result?}
+
+    On duplicate match returns 409 JSON: {error, key, title, state, url}.
+    Unless ``force`` is true, the incoming ``title`` + ``description`` is
+    posted as a ``[Duplicate Match]`` comment on the matched issue.
     """
     data = request.get_json(silent=True) or {}
 
@@ -3631,6 +3638,7 @@ def api_jira_create() -> tuple:
     idea_type = (data.get("idea_type") or "story").strip().lower()
     parent_key = (data.get("parent_key") or "").strip() or None
     rank_position = (data.get("rank_position") or "").strip() or None
+    force = bool(data.get("force"))
 
     if idea_type not in ("story", "epic"):
         return jsonify({"error": "idea_type must be 'story' or 'epic'"}), 400
@@ -3662,6 +3670,23 @@ def api_jira_create() -> tuple:
     # Provider-level dedup returned an existing item — surface it as 409 so
     # clients can distinguish "we created this" from "this already existed".
     if item.id in existing_ids:
+        # Attach the incoming idea's description as a comment on the matched
+        # issue so the canonical item accumulates the context of every
+        # near-duplicate submission instead of dropping it on the floor.
+        # ``force=true`` bypasses this — callers that already decided to
+        # re-post the same content don't need to re-log it as a match.
+        if not force:
+            comment_text = (
+                f"[Duplicate Match] Incoming idea matched this issue.\n\n"
+                f"Title: {title}\n\n{description}"
+            )
+            try:
+                provider.add_comment(item.id, "jira_create", comment_text)
+            except Exception as exc:
+                logger.warning(
+                    "[JiraCreate] add_comment on duplicate %s failed: %s",
+                    item.id, exc,
+                )
         return jsonify({
             "error": "Duplicate idea detected",
             "key": item.id,

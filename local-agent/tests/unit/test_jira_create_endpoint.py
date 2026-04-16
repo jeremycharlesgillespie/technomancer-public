@@ -256,6 +256,82 @@ class TestJiraCreateErrors:
 
 
 # ============================================================================
+# DUPLICATE COMMENT ATTACHMENT (TK-475)
+# ============================================================================
+
+
+class TestJiraCreateDuplicateComment:
+    """On duplicate match, the incoming idea's body is posted as a comment
+    on the canonical issue — unless the caller opts out via ``force=true``.
+    """
+
+    def test_duplicate_posts_comment_with_incoming_body(self, client):
+        """409 path attaches exactly one [Duplicate Match] comment on the
+        matched issue, carrying the incoming title and description."""
+        existing = _make_item(key="TK-100", title="Existing issue")
+        mock_provider = MagicMock()
+        # load_all reports the existing item; provider.add returns the same
+        # id, which is how the endpoint detects a dedup hit.
+        mock_provider.load_all.return_value = [existing]
+        mock_provider.add.return_value = existing
+
+        payload = {
+            "title": "Near duplicate",
+            "description": "WHY: repeat of the existing item. HOW: dedup it.",
+        }
+
+        with patch("idea_board.web._get_board_provider", return_value=mock_provider), \
+             patch("idea_board.web.settings") as mock_settings:
+            mock_settings.jira_url = "https://test.atlassian.net"
+            mock_settings.jira_project_key = "TK"
+
+            resp = client.post(
+                "/api/jira/create",
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+
+        assert resp.status_code == 409
+        body = resp.get_json()
+        assert body["key"] == "TK-100"
+
+        expected_text = (
+            "[Duplicate Match] Incoming idea matched this issue.\n\n"
+            f"Title: {payload['title']}\n\n{payload['description']}"
+        )
+        mock_provider.add_comment.assert_called_once_with(
+            "TK-100", "jira_create", expected_text
+        )
+
+    def test_duplicate_with_force_true_skips_comment(self, client):
+        """When ``force=true`` is supplied, the endpoint returns 409 as
+        usual but does not attach a comment — callers that already intend
+        to re-post the same content shouldn't spam the matched issue."""
+        existing = _make_item(key="TK-101", title="Existing issue")
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = [existing]
+        mock_provider.add.return_value = existing
+
+        with patch("idea_board.web._get_board_provider", return_value=mock_provider), \
+             patch("idea_board.web.settings") as mock_settings:
+            mock_settings.jira_url = "https://test.atlassian.net"
+            mock_settings.jira_project_key = "TK"
+
+            resp = client.post(
+                "/api/jira/create",
+                data=json.dumps({
+                    "title": "Another duplicate",
+                    "description": "Body that should not be posted.",
+                    "force": True,
+                }),
+                content_type="application/json",
+            )
+
+        assert resp.status_code == 409
+        mock_provider.add_comment.assert_not_called()
+
+
+# ============================================================================
 # RANKING
 # ============================================================================
 
