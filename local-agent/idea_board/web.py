@@ -43,7 +43,7 @@ from .models import Idea, save_ideas
 from board import get_provider as _get_board_provider
 from idea_board.jira_sync import is_jira_configured, _api as _jira_api
 
-from aim import event_log as aim_event_log, state as aim_state
+from aim import event_log as aim_event_log, jira_reader as aim_jira_reader, state as aim_state
 
 
 def load_ideas():
@@ -2214,6 +2214,83 @@ def api_aim_metrics() -> tuple:
             "completions": total_completions,
             "failures": total_failures,
             "completion_rate": completion_rate,
+        },
+    })
+
+
+@app.route("/api/aim/backlog")
+def api_aim_backlog() -> tuple:
+    """GET /api/aim/backlog — live Jira snapshot for the dashboard top bands.
+
+    Returns counts per status column, the key/title of the single currently
+    In Progress item (or null if none), and today-only done/failed counts
+    based on ``resolutiondate >= startOfDay()``. Feeds the AI Dev Team
+    Dashboard's current-work and backlog-counts bands in one round-trip.
+    """
+    counts = aim_jira_reader.count_issues_by_status()
+
+    in_progress: dict[str, str] | None = None
+    today_done = 0
+    today_failed = 0
+
+    if is_jira_configured():
+        try:
+            resp = _jira_api(
+                "post",
+                "/search/jql",
+                json={
+                    "jql": (
+                        f'project = {settings.jira_project_key} '
+                        f'AND status = "In Progress"'
+                    ),
+                    "maxResults": 1,
+                    "fields": ["summary"],
+                },
+            )
+            if resp.status_code == 200:
+                issues = resp.json().get("issues", [])
+                if issues:
+                    in_progress = {
+                        "key": issues[0]["key"],
+                        "title": issues[0]["fields"].get("summary", ""),
+                    }
+        except Exception as exc:
+            logger.warning(
+                "[AimBacklog] in_progress lookup failed: %s", exc
+            )
+
+        try:
+            resp = _jira_api(
+                "post",
+                "/search/jql",
+                json={
+                    "jql": (
+                        f'project = {settings.jira_project_key} '
+                        f'AND resolutiondate >= startOfDay() '
+                        f'AND status in ("Done", "Failed")'
+                    ),
+                    "maxResults": 100,
+                    "fields": ["status"],
+                },
+            )
+            if resp.status_code == 200:
+                for issue in resp.json().get("issues", []):
+                    status_name = issue["fields"]["status"]["name"]
+                    if status_name == "Done":
+                        today_done += 1
+                    elif status_name == "Failed":
+                        today_failed += 1
+        except Exception as exc:
+            logger.warning(
+                "[AimBacklog] today counts lookup failed: %s", exc
+            )
+
+    return jsonify({
+        "counts": counts,
+        "in_progress": in_progress,
+        "today": {
+            "done": today_done,
+            "failed": today_failed,
         },
     })
 
