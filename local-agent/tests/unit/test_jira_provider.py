@@ -82,17 +82,25 @@ class TestStateDerivation:
         from board.jira_provider import _jira_status_to_state
         assert _jira_status_to_state("To Do", ["pending-approval"]) == "proposed"
 
-    def test_failed_with_vetoed_label_is_vetoed(self):
+    def test_veto_status_maps_to_vetoed(self):
         from board.jira_provider import _jira_status_to_state
-        assert _jira_status_to_state("Failed", ["vetoed"]) == "vetoed"
+        assert _jira_status_to_state("Veto", []) == "vetoed"
 
-    def test_failed_without_vetoed_label_is_failed(self):
+    def test_veto_status_with_label_maps_to_vetoed(self):
         from board.jira_provider import _jira_status_to_state
+        assert _jira_status_to_state("Veto", ["vetoed"]) == "vetoed"
+
+    def test_failed_always_maps_to_failed(self):
+        from board.jira_provider import _jira_status_to_state
+        assert _jira_status_to_state("Failed", []) == "failed"
+        assert _jira_status_to_state("Failed", ["vetoed"]) == "failed"
         assert _jira_status_to_state("Failed", ["cat:quality"]) == "failed"
 
     def test_is_vetoed_helper(self):
         from board.jira_provider import _is_vetoed
-        assert _is_vetoed("Failed", ["vetoed"]) is True
+        assert _is_vetoed("Veto", []) is True
+        assert _is_vetoed("Veto", ["vetoed"]) is True
+        assert _is_vetoed("Failed", ["vetoed"]) is False
         assert _is_vetoed("Failed", ["cat:quality"]) is False
         assert _is_vetoed("To Do", ["vetoed"]) is False
         assert _is_vetoed("In Progress", ["vetoed"]) is False
@@ -130,7 +138,7 @@ class TestIssueToItem:
 
     def test_vetoed_issue_has_vetoed_state(self):
         from board.jira_provider import _issue_to_item
-        item = _issue_to_item(_issue(status="Failed", labels=["vetoed", "cat:quality"]))
+        item = _issue_to_item(_issue(status="Veto", labels=["vetoed", "cat:quality"]))
         assert item.state == "vetoed"
 
 
@@ -160,17 +168,15 @@ class TestReads:
         items = provider.list_by_state("proposed")
         assert [i.id for i in items] == ["TK-2"]
 
-    def test_list_by_state_vetoed_filters_to_vetoed_label(self, provider, mock_api):
+    def test_list_by_state_vetoed_queries_veto_status(self, provider, mock_api):
         mock_api.return_value = _search_response([
-            _issue("TK-1", status="Failed", labels=["vetoed", "cat:quality"]),
-            _issue("TK-2", status="Failed", labels=["cat:feature"]),
+            _issue("TK-1", status="Veto", labels=["vetoed", "cat:quality"]),
         ])
         items = provider.list_by_state("vetoed")
         assert [i.id for i in items] == ["TK-1"]
 
-    def test_list_by_state_failed_excludes_vetoed(self, provider, mock_api):
+    def test_list_by_state_failed_only_returns_failed(self, provider, mock_api):
         mock_api.return_value = _search_response([
-            _issue("TK-1", status="Failed", labels=["vetoed", "cat:quality"]),
             _issue("TK-2", status="Failed", labels=["cat:feature"]),
         ])
         items = provider.list_by_state("failed")
@@ -248,13 +254,13 @@ class TestVote:
         assert "/issue/TK-1" in put_call.args[1]
         assert {"remove": "pending-approval"} in put_call.kwargs["json"]["update"]["labels"]
 
-    def test_owner_veto_transitions_to_failed(self, provider, mock_api):
+    def test_owner_veto_transitions_to_veto(self, provider, mock_api):
         # add-label PUT then final get()
         put_resp = MagicMock()
         put_resp.status_code = 204
         get_resp = MagicMock()
         get_resp.status_code = 200
-        get_resp.json.return_value = _issue("TK-1", status="Failed", labels=["vetoed"])
+        get_resp.json.return_value = _issue("TK-1", status="Veto", labels=["vetoed"])
         mock_api.side_effect = [put_resp, get_resp]
 
         with patch("board.jira_provider.transition_jira_issue", return_value=True) as t:
@@ -262,7 +268,7 @@ class TestVote:
 
         add_call = mock_api.call_args_list[0]
         assert {"add": "vetoed"} in add_call.kwargs["json"]["update"]["labels"]
-        t.assert_called_once_with("TK-1", "Failed")
+        t.assert_called_once_with("TK-1", "Veto")
 
 
 class TestTransitions:
