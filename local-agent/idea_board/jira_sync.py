@@ -18,8 +18,12 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
 
 import requests
 
@@ -43,6 +47,134 @@ STATE_MAP = {
     "done": "Done",
     "failed": "Failed",
 }
+
+# Retry tuning for Jira writes (429 / 5xx).
+MAX_RETRY_ATTEMPTS = 5
+BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0)
+RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Dead-letter file for sync writes that fail all retries.
+DEADLETTER_PATH: Path = (
+    Path(__file__).parent.parent / "logs" / "jira_sync_deadletter.jsonl"
+)
+
+
+class JiraRetryExhausted(Exception):
+    """Raised when all retry attempts for a Jira POST are exhausted."""
+
+    def __init__(
+        self,
+        status: int | None,
+        body: str,
+        attempts: int,
+        path: str = "",
+    ) -> None:
+        self.status = status
+        self.body = body or ""
+        self.attempts = attempts
+        self.path = path
+        super().__init__(
+            f"Jira POST {path or '?'} failed after {attempts} attempts "
+            f"(last status={status})"
+        )
+
+
+def _backoff_for(attempt: int) -> float:
+    """Return backoff seconds for ``attempt`` (1-indexed)."""
+    idx = min(max(attempt, 1) - 1, len(BACKOFF_SECONDS) - 1)
+    return BACKOFF_SECONDS[idx]
+
+
+def _retry_after_seconds(resp: requests.Response) -> float | None:
+    """Parse the ``Retry-After`` header (integer-seconds form only)."""
+    header = resp.headers.get("Retry-After") if resp is not None else None
+    if header is None:
+        return None
+    try:
+        return max(0.0, float(header))
+    except (TypeError, ValueError):
+        return None
+
+
+def _post_with_retry(
+    path: str,
+    payload: dict,
+    *,
+    max_attempts: int = MAX_RETRY_ATTEMPTS,
+    sleep: Callable[[float], None] | None = None,
+) -> requests.Response:
+    """POST to Jira with exponential backoff on 429 / 5xx.
+
+    Honours ``Retry-After`` on 429 when present. Any other error response
+    or a successful response is returned to the caller as-is. Raises
+    :class:`JiraRetryExhausted` when all attempts return a retryable
+    status or raise a network-level ``requests`` exception.
+    """
+    sleep_fn = sleep if sleep is not None else time.sleep
+    last_status: int | None = None
+    last_body: str = ""
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = _api("post", path, json=payload)
+        except requests.RequestException as exc:
+            last_status = None
+            last_body = repr(exc)
+            if attempt >= max_attempts:
+                break
+            delay = _backoff_for(attempt)
+            logger.warning(
+                "[JiraSync] POST %s network error %s, retry in %.1fs "
+                "(attempt %d/%d)",
+                path, exc, delay, attempt, max_attempts,
+            )
+            sleep_fn(delay)
+            continue
+
+        if resp.status_code not in RETRY_STATUS_CODES:
+            return resp
+
+        last_status = resp.status_code
+        last_body = resp.text or ""
+        if attempt >= max_attempts:
+            break
+
+        delay = _retry_after_seconds(resp) if resp.status_code == 429 else None
+        if delay is None:
+            delay = _backoff_for(attempt)
+
+        logger.warning(
+            "[JiraSync] POST %s -> %d, retry in %.1fs (attempt %d/%d)",
+            path, resp.status_code, delay, attempt, max_attempts,
+        )
+        sleep_fn(delay)
+
+    raise JiraRetryExhausted(last_status, last_body, max_attempts, path=path)
+
+
+def _write_deadletter(
+    idea_id: str,
+    target_state: str,
+    last_error: str,
+    *,
+    path: Path | None = None,
+) -> None:
+    """Append a failed-sync payload to the dead-letter JSONL file."""
+    dest = path or DEADLETTER_PATH
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "idea_id": idea_id,
+            "target_state": target_state,
+            "last_error": (last_error or "")[:2000],
+        }
+        with dest.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error(
+            "[JiraSync] Failed to write dead-letter for %s: %s", idea_id, exc
+        )
 
 
 def is_jira_configured() -> bool:
@@ -145,18 +277,19 @@ def create_jira_issue(
             fields["parent"] = {"key": parent_key}
 
     try:
-        resp = _api("post", "/issue", json={"fields": fields})
+        resp = _post_with_retry("/issue", {"fields": fields})
         if resp.status_code == 201:
             key = resp.json()["key"]
             logger.info("[JiraSync] Created %s for %s: %s", key, idea_id, title[:50])
             _add_execute_comment(key, idea_id)
             return key
-        else:
-            logger.warning(
-                "[JiraSync] Create failed (%d): %s",
-                resp.status_code,
-                resp.text[:200],
-            )
+        logger.warning(
+            "[JiraSync] Create failed (%d): %s",
+            resp.status_code,
+            resp.text[:200],
+        )
+    except JiraRetryExhausted:
+        raise
     except Exception as e:
         logger.warning("[JiraSync] Create error: %s", e)
 
@@ -243,32 +376,31 @@ def transition_jira_issue(jira_key: str, target_status: str) -> bool:
         available = {t["name"]: t["id"] for t in transitions}
 
         if target_status in available:
-            _api(
-                "post",
+            _post_with_retry(
                 f"/issue/{jira_key}/transitions",
-                json={"transition": {"id": available[target_status]}},
+                {"transition": {"id": available[target_status]}},
             )
             return True
 
         # If Done isn't directly available, go through In Progress first
         if target_status == "Done" and "In Progress" in available:
-            _api(
-                "post",
+            _post_with_retry(
                 f"/issue/{jira_key}/transitions",
-                json={"transition": {"id": available["In Progress"]}},
+                {"transition": {"id": available["In Progress"]}},
             )
             # Re-fetch transitions from In Progress
             resp = _api("get", f"/issue/{jira_key}/transitions")
             transitions = resp.json().get("transitions", [])
             available = {t["name"]: t["id"] for t in transitions}
             if "Done" in available:
-                _api(
-                    "post",
+                _post_with_retry(
                     f"/issue/{jira_key}/transitions",
-                    json={"transition": {"id": available["Done"]}},
+                    {"transition": {"id": available["Done"]}},
                 )
                 return True
 
+    except JiraRetryExhausted:
+        raise
     except Exception as e:
         logger.warning("[JiraSync] Transition error for %s: %s", jira_key, e)
 
@@ -300,23 +432,34 @@ def sync_idea_to_jira(idea: Any) -> str | None:
     if state == "vetoed":
         return None
 
-    # Find or create
-    jira_key = find_jira_issue(idea_id)
-    if not jira_key:
-        jira_key = create_jira_issue(
-            idea_id=idea_id,
-            title=title,
-            description=description,
-            idea_type=idea_type,
-            parent_idea_id=parent_id,
-            labels=[state, category] if category else [state],
-        )
-
-    if not jira_key:
-        return None
-
-    # Transition to correct status
     target_status = STATE_MAP.get(state, "To Do")
-    transition_jira_issue(jira_key, target_status)
 
-    return jira_key
+    try:
+        # Find or create
+        jira_key = find_jira_issue(idea_id)
+        if not jira_key:
+            jira_key = create_jira_issue(
+                idea_id=idea_id,
+                title=title,
+                description=description,
+                idea_type=idea_type,
+                parent_idea_id=parent_id,
+                labels=[state, category] if category else [state],
+            )
+
+        if not jira_key:
+            return None
+
+        transition_jira_issue(jira_key, target_status)
+        return jira_key
+    except JiraRetryExhausted as exc:
+        logger.error(
+            "[JiraSync] Retries exhausted for %s -> %s: %s",
+            idea_id, target_status, exc,
+        )
+        _write_deadletter(
+            idea_id=idea_id,
+            target_state=target_status,
+            last_error=str(exc),
+        )
+        return None

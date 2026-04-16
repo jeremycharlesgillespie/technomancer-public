@@ -27,3 +27,4 @@ profiling/
 data/
 executor_artifacts/
 aim/events.jsonl
+logs/
