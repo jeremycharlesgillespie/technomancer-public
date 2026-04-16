@@ -18,12 +18,15 @@ Examples:
 
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from agent.logging_config import get_safe_update_logger
 
@@ -124,28 +127,217 @@ def create_branch(short_name: str) -> str:
     return branch_name
 
 
-def run_tests() -> Tuple[bool, str]:
-    """Run pytest and return (success, output)."""
-    log("Running pytest...")
+def _parse_failed_nodeids(junit_xml_path: Optional[Path]) -> List[str]:
+    """Parse failed/errored test node IDs from a JUnit XML report.
+
+    pytest sets ``file`` and ``classname`` (``module[.ClassName]``) attributes
+    on each ``<testcase>``. We reconstruct a pytest nodeid of the form
+    ``path/to/test.py::ClassName::test_method`` (or without the class segment
+    for free functions) by pairing the ``file`` attribute with whatever class
+    name is present on the end of ``classname``. Returns an empty list if the
+    file is missing, empty, or malformed — callers treat that as "no retry
+    possible".
+    """
+    if junit_xml_path is None or not junit_xml_path.exists():
+        return []
+    try:
+        tree = ET.parse(junit_xml_path)
+    except ET.ParseError:
+        return []
+
+    nodeids: List[str] = []
+    for tc in tree.iter("testcase"):
+        if tc.find("failure") is None and tc.find("error") is None:
+            continue
+        classname = tc.get("classname", "")
+        name = tc.get("name", "")
+        file_attr = tc.get("file", "")
+        if not name:
+            continue
+
+        if file_attr:
+            path_prefix = file_attr.replace("\\", "/")
+            module_path = path_prefix.removesuffix(".py").replace("/", ".")
+            class_part = ""
+            if classname and classname != module_path:
+                if classname.startswith(module_path + "."):
+                    class_part = classname[len(module_path) + 1:]
+                else:
+                    tail = classname.rsplit(".", 1)[-1]
+                    if tail and tail[0].isupper():
+                        class_part = tail
+            nodeid = (
+                f"{path_prefix}::{class_part}::{name}"
+                if class_part
+                else f"{path_prefix}::{name}"
+            )
+        else:
+            nodeid = f"{classname}::{name}" if classname else name
+        nodeids.append(nodeid)
+    return nodeids
+
+
+def _log_flaky_tests(nodeids: List[str]) -> Optional[Path]:
+    """Append a flaky-test recovery entry to the vault crash_log.md.
+
+    Uses a distinct ``# Flaky Test Recovery`` header so crash_triage.py
+    (which splits on ``# Bot Crash Report``) ignores it. Failures are
+    swallowed — flaky logging is best-effort and must never break the
+    deploy flow.
+    """
+    if not nodeids:
+        return None
+    try:
+        from agent.config import settings
+        crash_file = settings.permanent_path / "crash_log.md"
+    except Exception as exc:
+        log(f"Could not resolve vault path for flaky log: {exc}", "WARNING")
+        return None
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "",
+        "# Flaky Test Recovery",
+        "",
+        f"**Timestamp:** {timestamp}",
+        f"**Recovered Tests:** {len(nodeids)}",
+        "",
+        "## Test Node IDs",
+        "```",
+        *nodeids,
+        "```",
+        "",
+    ]
+
+    try:
+        crash_file.parent.mkdir(parents=True, exist_ok=True)
+        with crash_file.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+    except OSError as exc:
+        log(f"Could not write flaky test entry to crash log: {exc}", "WARNING")
+        return None
+    return crash_file
+
+
+def _run_pytest_subprocess(
+    nodeids: Optional[List[str]] = None,
+    junit_xml: Optional[Path] = None,
+) -> Tuple[int, str]:
+    """Run pytest once as a subprocess. Returns (returncode, combined output).
+
+    When ``nodeids`` is supplied, only those tests are collected — used for
+    the flaky retry. Full-suite runs keep ``--reruns`` so in-process rerun
+    behavior is unchanged from before; the retry run skips it because we
+    want a clean pass/fail signal.
+    """
+    cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
+    if nodeids:
+        cmd.extend(nodeids)
+    else:
+        cmd.extend(["--reruns", "2", "--reruns-delay", "1"])
+    if junit_xml is not None:
+        cmd.append(f"--junitxml={junit_xml}")
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=short",
-         "--reruns", "2", "--reruns-delay", "1"],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        cwd=SCRIPT_DIR,
+        cmd, capture_output=True, text=True, timeout=600, cwd=SCRIPT_DIR,
     )
+    return result.returncode, result.stdout + result.stderr
 
-    output = result.stdout + result.stderr
 
-    # Check for actual test failures vs collection issues
-    success = result.returncode == 0
+def run_tests_with_retry(
+    runner: Callable[..., Tuple[int, str]] = _run_pytest_subprocess,
+    flaky_logger: Optional[Callable[[List[str]], Optional[Path]]] = None,
+    junit_xml: Optional[Path] = None,
+) -> Tuple[bool, str, List[str]]:
+    """Run the pytest suite, retrying failed tests once in a fresh process.
+
+    Flow:
+      1. Full suite with ``--junitxml`` capture.
+      2. On non-zero exit: parse failed node IDs from the XML and re-run
+         only those tests in a second pytest invocation.
+      3. If the retry passes, mark those tests flaky (log via
+         ``flaky_logger``) and return success. If it fails again, return
+         failure. If the first run has no parseable failures (e.g. a
+         collection error) there's nothing to retry — return failure.
+
+    The ``runner`` and ``flaky_logger`` parameters exist so unit tests can
+    inject fakes without spawning real pytest processes.
+
+    Returns ``(success, combined_output, flaky_nodeids)``. ``flaky_nodeids``
+    is non-empty only when the retry recovered one or more tests.
+    """
+    if flaky_logger is None:
+        flaky_logger = _log_flaky_tests
+
+    owns_tempdir = junit_xml is None
+    tmp_dir: Optional[str] = None
+    if owns_tempdir:
+        tmp_dir = tempfile.mkdtemp(prefix="safe_update_junit_")
+        junit_xml = Path(tmp_dir) / "junit.xml"
+
+    try:
+        rc1, out1 = runner(nodeids=None, junit_xml=junit_xml)
+        if rc1 == 0:
+            return True, out1, []
+
+        failed = _parse_failed_nodeids(junit_xml)
+        if not failed:
+            log(
+                "pytest failed but no test node IDs parsed from JUnit XML — "
+                "likely a collection/import error. Not retrying.",
+                "ERROR",
+            )
+            return False, out1, []
+
+        log(
+            f"First run failed; retrying {len(failed)} failed test(s) "
+            "in a fresh pytest process...",
+            "WARNING",
+        )
+        for nodeid in failed[:10]:
+            log(f"  - {nodeid}")
+        if len(failed) > 10:
+            log(f"  (+ {len(failed) - 10} more)")
+
+        rc2, out2 = runner(nodeids=failed, junit_xml=None)
+        combined = out1 + "\n" + ("=" * 60) + "\nRETRY OUTPUT:\n" + out2
+        if rc2 == 0:
+            log(
+                f"Retry passed — flagging {len(failed)} test(s) as flaky",
+                "WARNING",
+            )
+            try:
+                flaky_logger(failed)
+            except Exception as exc:
+                log(f"flaky_logger raised: {exc}", "WARNING")
+            return True, combined, failed
+
+        log("Retry failed — tests are genuinely broken, not flaky", "ERROR")
+        return False, combined, []
+    finally:
+        if owns_tempdir and tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def run_tests() -> Tuple[bool, str]:
+    """Run pytest with flaky retry and return (success, output).
+
+    A failing full-suite run is retried once with only the failed tests;
+    if the retry passes the suite is considered green and the flaky tests
+    are logged to ``crash_log.md``. See ``run_tests_with_retry``.
+    """
+    log("Running pytest...")
+    success, output, flaky = run_tests_with_retry()
 
     if success:
-        log("All tests passed!")
+        if flaky:
+            log(
+                f"All tests passed after retry "
+                f"({len(flaky)} flaky test(s) recovered)"
+            )
+        else:
+            log("All tests passed!")
     else:
         log("Tests failed!", "ERROR")
-        # Show summary
         for line in output.split("\n"):
             if "FAILED" in line or "ERROR" in line or "passed" in line:
                 log(f"  {line}")

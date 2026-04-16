@@ -1,6 +1,7 @@
 """Tests for safe_update.py post-deploy health check and auto-rollback."""
 
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import subprocess
 
@@ -570,3 +571,295 @@ class TestReadmeCommitMessage:
         assert readme_commits == [], (
             f"Expected no README commit when unchanged, got: {readme_commits}"
         )
+
+
+# ---------------------------------------------------------------------------
+# _parse_failed_nodeids
+# ---------------------------------------------------------------------------
+
+
+def _write_junit(path: Path, testcases_xml: str) -> Path:
+    path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<testsuites>\n'
+        '<testsuite name="pytest" tests="3" failures="1" errors="1">\n'
+        f'{testcases_xml}\n'
+        '</testsuite>\n'
+        '</testsuites>\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestParseFailedNodeids:
+    """Tests for JUnit-XML failure parsing."""
+
+    def test_returns_empty_for_missing_file(self, tmp_path):
+        assert safe_update._parse_failed_nodeids(tmp_path / "nope.xml") == []
+
+    def test_returns_empty_for_none_path(self):
+        assert safe_update._parse_failed_nodeids(None) == []
+
+    def test_returns_empty_for_malformed_xml(self, tmp_path):
+        bad = tmp_path / "junit.xml"
+        bad.write_text("not xml at all", encoding="utf-8")
+        assert safe_update._parse_failed_nodeids(bad) == []
+
+    def test_parses_failed_method_in_class(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_method" file="tests/unit/test_foo.py">'
+            '<failure message="boom">AssertionError</failure></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == ["tests/unit/test_foo.py::TestThing::test_method"]
+
+    def test_parses_failed_free_function(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo" name="test_bar" '
+            'file="tests/unit/test_foo.py">'
+            '<failure message="nope">AssertionError</failure></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == ["tests/unit/test_foo.py::test_bar"]
+
+    def test_parses_error_testcase(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_broken" file="tests/unit/test_foo.py">'
+            '<error message="setup failed">RuntimeError</error></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == ["tests/unit/test_foo.py::TestThing::test_broken"]
+
+    def test_skips_passing_testcases(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_pass" file="tests/unit/test_foo.py"/>'
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_fail" file="tests/unit/test_foo.py">'
+            '<failure>oops</failure></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == ["tests/unit/test_foo.py::TestThing::test_fail"]
+
+    def test_normalizes_windows_path_separator(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_win" file="tests\\unit\\test_foo.py">'
+            '<failure>err</failure></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == ["tests/unit/test_foo.py::TestThing::test_win"]
+
+    def test_preserves_parametrize_name(self, tmp_path):
+        junit = _write_junit(
+            tmp_path / "junit.xml",
+            '<testcase classname="tests.unit.test_foo.TestThing" '
+            'name="test_param[case1-42]" file="tests/unit/test_foo.py">'
+            '<failure>err</failure></testcase>',
+        )
+        result = safe_update._parse_failed_nodeids(junit)
+        assert result == [
+            "tests/unit/test_foo.py::TestThing::test_param[case1-42]"
+        ]
+
+
+# ---------------------------------------------------------------------------
+# run_tests_with_retry
+# ---------------------------------------------------------------------------
+
+
+class FakePytestRunner:
+    """Callable that mimics _run_pytest_subprocess with scripted responses.
+
+    Each call pops the next (returncode, output, junit_xml_content) tuple
+    from ``responses``. When ``junit_xml`` is provided, the fake writes the
+    tuple's XML into it so the real ``_parse_failed_nodeids`` can consume it.
+    """
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def __call__(self, nodeids=None, junit_xml=None):
+        self.calls.append({"nodeids": nodeids, "junit_xml": junit_xml})
+        rc, output, xml_content = self.responses.pop(0)
+        if junit_xml is not None and xml_content:
+            Path(junit_xml).write_text(xml_content, encoding="utf-8")
+        return rc, output
+
+
+_FAIL_XML = (
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<testsuites><testsuite name="pytest" tests="1" failures="1">'
+    '<testcase classname="tests.unit.test_foo.TestThing" '
+    'name="test_flaky" file="tests/unit/test_foo.py">'
+    '<failure message="timing">AssertionError</failure>'
+    '</testcase></testsuite></testsuites>\n'
+)
+
+
+class TestRunTestsWithRetry:
+    """Tests for the flaky-retry orchestrator."""
+
+    def test_first_run_passes_returns_success_no_retry(self):
+        runner = FakePytestRunner([(0, "3 passed", "")])
+        logger = MagicMock()
+        success, output, flaky = safe_update.run_tests_with_retry(
+            runner=runner, flaky_logger=logger,
+        )
+        assert success is True
+        assert flaky == []
+        assert "3 passed" in output
+        assert len(runner.calls) == 1
+        logger.assert_not_called()
+
+    def test_first_fail_then_retry_passes_returns_success(self):
+        runner = FakePytestRunner([
+            (1, "FAILED tests/unit/test_foo.py::TestThing::test_flaky", _FAIL_XML),
+            (0, "1 passed", ""),
+        ])
+        logger = MagicMock()
+        success, output, flaky = safe_update.run_tests_with_retry(
+            runner=runner, flaky_logger=logger,
+        )
+        assert success is True
+        assert flaky == ["tests/unit/test_foo.py::TestThing::test_flaky"]
+        assert "RETRY OUTPUT" in output
+        assert len(runner.calls) == 2
+        assert runner.calls[0]["nodeids"] is None
+        assert runner.calls[1]["nodeids"] == [
+            "tests/unit/test_foo.py::TestThing::test_flaky"
+        ]
+        logger.assert_called_once_with(
+            ["tests/unit/test_foo.py::TestThing::test_flaky"]
+        )
+
+    def test_both_runs_fail_returns_failure(self):
+        runner = FakePytestRunner([
+            (1, "FAILED first run", _FAIL_XML),
+            (1, "FAILED retry run", ""),
+        ])
+        logger = MagicMock()
+        success, output, flaky = safe_update.run_tests_with_retry(
+            runner=runner, flaky_logger=logger,
+        )
+        assert success is False
+        assert flaky == []
+        assert "RETRY OUTPUT" in output
+        assert len(runner.calls) == 2
+        logger.assert_not_called()
+
+    def test_no_parseable_failures_no_retry(self):
+        """Collection/import errors have no testcases — we shouldn't retry."""
+        runner = FakePytestRunner([(2, "ERROR collecting tests", "")])
+        logger = MagicMock()
+        success, output, flaky = safe_update.run_tests_with_retry(
+            runner=runner, flaky_logger=logger,
+        )
+        assert success is False
+        assert flaky == []
+        # Only one runner call — we bailed out before the retry
+        assert len(runner.calls) == 1
+        logger.assert_not_called()
+
+    def test_flaky_logger_exception_does_not_break_success(self):
+        """If the flaky logger raises, we still report success."""
+        runner = FakePytestRunner([
+            (1, "FAILED first", _FAIL_XML),
+            (0, "passed", ""),
+        ])
+        logger = MagicMock(side_effect=OSError("vault unreachable"))
+        success, _output, flaky = safe_update.run_tests_with_retry(
+            runner=runner, flaky_logger=logger,
+        )
+        assert success is True
+        assert flaky == ["tests/unit/test_foo.py::TestThing::test_flaky"]
+        logger.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _log_flaky_tests
+# ---------------------------------------------------------------------------
+
+
+class TestLogFlakyTests:
+    """Tests for appending flaky-test notes to crash_log.md."""
+
+    def test_appends_flaky_entry_to_crash_log(self, tmp_path):
+        permanent = tmp_path / "Permanent"
+        mock_settings = MagicMock(permanent_path=permanent)
+        with patch.dict(
+            "sys.modules",
+            {"agent.config": MagicMock(settings=mock_settings)},
+        ):
+            result = safe_update._log_flaky_tests(
+                ["tests/unit/test_foo.py::TestThing::test_flaky"]
+            )
+        assert result == permanent / "crash_log.md"
+        body = result.read_text(encoding="utf-8")
+        assert "# Flaky Test Recovery" in body
+        assert "**Recovered Tests:** 1" in body
+        assert "tests/unit/test_foo.py::TestThing::test_flaky" in body
+
+    def test_preserves_existing_content_on_append(self, tmp_path):
+        permanent = tmp_path / "Permanent"
+        permanent.mkdir()
+        crash_file = permanent / "crash_log.md"
+        crash_file.write_text("# Bot Crash Report\n\nOld crash here\n", encoding="utf-8")
+
+        mock_settings = MagicMock(permanent_path=permanent)
+        with patch.dict(
+            "sys.modules",
+            {"agent.config": MagicMock(settings=mock_settings)},
+        ):
+            safe_update._log_flaky_tests(["tests/unit/test_a.py::test_b"])
+
+        body = crash_file.read_text(encoding="utf-8")
+        assert "Old crash here" in body
+        assert "# Flaky Test Recovery" in body
+        # Flaky header must NOT match crash_triage's split marker
+        assert "# Bot Crash Report" in body  # original preserved
+        assert body.count("# Bot Crash Report") == 1
+
+    def test_returns_none_for_empty_nodeids(self):
+        assert safe_update._log_flaky_tests([]) is None
+
+    def test_swallows_settings_import_error(self):
+        """Missing/broken agent.config should not crash the deploy."""
+        with patch.dict(
+            "sys.modules",
+            {"agent.config": MagicMock(
+                settings=MagicMock(
+                    permanent_path=MagicMock(
+                        __truediv__=MagicMock(
+                            side_effect=OSError("broken"),
+                        ),
+                    ),
+                ),
+            )},
+        ):
+            # Should return None gracefully instead of propagating
+            result = safe_update._log_flaky_tests(["some::test"])
+        assert result is None
+
+    def test_header_does_not_trigger_crash_triage(self, tmp_path):
+        """crash_triage.py splits on '# Bot Crash Report'. Our header must differ."""
+        permanent = tmp_path / "Permanent"
+        mock_settings = MagicMock(permanent_path=permanent)
+        with patch.dict(
+            "sys.modules",
+            {"agent.config": MagicMock(settings=mock_settings)},
+        ):
+            crash_file = safe_update._log_flaky_tests(
+                ["tests/unit/test_x.py::test_y"]
+            )
+        body = crash_file.read_text(encoding="utf-8")
+        assert "# Bot Crash Report" not in body
+        assert "**Exception Type:**" not in body
