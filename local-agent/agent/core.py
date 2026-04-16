@@ -13,6 +13,7 @@ import re
 import threading
 import time as _time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -89,6 +90,9 @@ class ToolResultStorage:
             "bytes_saved": 0,
         }
         self.backend = "redis" if self.redis else "memory"
+        # Guards stats increments and the in-memory store when multiple
+        # tool calls are executed concurrently.
+        self._lock = threading.Lock()
 
     def _store(self, result_id: str, content: str) -> None:
         """Store a full result in Redis or memory."""
@@ -98,7 +102,8 @@ class ToolResultStorage:
                 return
             except Exception:
                 pass  # Fall through to memory
-        self._mem_store[result_id] = content
+        with self._lock:
+            self._mem_store[result_id] = content
 
     def _retrieve(self, result_id: str) -> str | None:
         """Retrieve a stored result from Redis or memory."""
@@ -109,7 +114,8 @@ class ToolResultStorage:
                     return val
             except Exception:
                 pass  # Fall through to memory
-        return self._mem_store.get(result_id)
+        with self._lock:
+            return self._mem_store.get(result_id)
 
     def maybe_truncate(self, tool_name: str, result: str) -> str:
         """Truncate a tool result if it exceeds the threshold.
@@ -117,10 +123,11 @@ class ToolResultStorage:
         Returns the original result if small enough, or a preview with a
         storage reference if truncated.
         """
-        self.stats["total_results"] += 1
         threshold = TOOL_RESULT_THRESHOLDS.get(tool_name, DEFAULT_THRESHOLD)
 
         if len(result) <= threshold:
+            with self._lock:
+                self.stats["total_results"] += 1
             return result
 
         # Store full result
@@ -140,8 +147,10 @@ class ToolResultStorage:
             f"{tail}"
         )
 
-        self.stats["truncated_results"] += 1
-        self.stats["bytes_saved"] += len(result) - len(truncated)
+        with self._lock:
+            self.stats["total_results"] += 1
+            self.stats["truncated_results"] += 1
+            self.stats["bytes_saved"] += len(result) - len(truncated)
 
         return truncated
 
@@ -161,7 +170,8 @@ class ToolResultStorage:
                     self.redis.delete(*keys)
             except Exception:
                 pass
-        self._mem_store.clear()
+        with self._lock:
+            self._mem_store.clear()
 
     def get_stats(self) -> dict[str, Any]:
         """Return truncation stats for this session."""
@@ -244,6 +254,11 @@ class AgentConfig:
     # tool/assistant messages once the running context crosses this size.
     compression_threshold_chars: int = DEFAULT_COMPRESSION_THRESHOLD_CHARS
     compression_keep_recent: int = 4
+    # Parallel tool execution: when the LLM emits multiple independent tool
+    # calls in a single response, run them concurrently. Falls back to
+    # sequential execution when dependencies are detected between calls.
+    parallel_tool_execution: bool = True
+    max_parallel_tools: int = 8
 
 
 class Agent:
@@ -363,6 +378,82 @@ If you need to perform multiple steps, do them one at a time."""
             raise error_box[0]
 
         return result_box[0]  # type: ignore[return-value]
+
+    def _tool_calls_have_dependencies(self, tool_calls: list[dict]) -> bool:
+        """Return True if any call's arguments reference an earlier call's output.
+
+        The LLM normally cannot reference outputs that don't exist yet within a
+        single response turn, so this is nearly always False. Kept as a
+        conservative guard: if a later call's arguments contain a placeholder
+        pointing at an earlier tool's name or a stored-result marker, fall back
+        to sequential execution.
+        """
+        if len(tool_calls) <= 1:
+            return False
+
+        earlier_names: list[str] = []
+        for tc in tool_calls:
+            func = tc.get("function", {}) or {}
+            args = func.get("arguments", {}) or {}
+            try:
+                args_str = json.dumps(args, default=str).lower()
+            except (TypeError, ValueError):
+                args_str = str(args).lower()
+
+            for earlier in earlier_names:
+                lname = earlier.lower()
+                if not lname:
+                    continue
+                patterns = (
+                    f"{{{{{lname}",        # {{tool_name...
+                    f"{{{lname}}}",         # {tool_name}
+                    f"${lname}",            # $tool_name
+                    f"output_of_{lname}",   # output_of_tool_name
+                    f"<{lname}_result>",    # <tool_name_result>
+                    f"result_of_{lname}",   # result_of_tool_name
+                )
+                if any(p in args_str for p in patterns):
+                    return True
+            earlier_names.append(func.get("name", ""))
+        return False
+
+    def _execute_tool_calls(self, tool_calls: list[dict]) -> list[dict]:
+        """Execute a batch of tool calls, returning tool-role messages in order.
+
+        Uses a thread pool when the batch has multiple independent calls and
+        ``config.parallel_tool_execution`` is enabled. Falls back to sequential
+        execution for a single call, detected dependencies, or when disabled.
+        The returned list matches the order of ``tool_calls`` so downstream
+        message appends stay deterministic.
+        """
+        if not tool_calls:
+            return []
+
+        parallel = (
+            self.config.parallel_tool_execution
+            and len(tool_calls) > 1
+            and not self._tool_calls_have_dependencies(tool_calls)
+        )
+
+        def _run_one(tc: dict) -> str:
+            func = tc.get("function", {}) or {}
+            name = func.get("name", "")
+            args = func.get("arguments", {}) or {}
+            mode = "parallel" if parallel else "sequential"
+            self._log(f"Calling tool ({mode}): {name}({json.dumps(args, default=str)[:100]}...)")
+            result = self._execute_tool(name, args)
+            self._log(f"Tool result ({name}): {result[:200]}...")
+            return result
+
+        if parallel:
+            self._log(f"Running {len(tool_calls)} tool calls in parallel")
+            max_workers = min(len(tool_calls), max(1, self.config.max_parallel_tools))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(executor.map(_run_one, tool_calls))
+        else:
+            results = [_run_one(tc) for tc in tool_calls]
+
+        return [{"role": "tool", "content": r} for r in results]
 
     def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a tool and return the result as a string.
@@ -614,25 +705,8 @@ If you need to perform multiple steps, do them one at a time."""
                     self._cache_store(task, final)
                 return final
 
-            # Execute tool calls
-            for tool_call in tool_calls:
-                func = tool_call.get("function", {})
-                name = func.get("name", "")
-                args = func.get("arguments", {})
-
-                self._log(f"Calling tool: {name}({json.dumps(args)[:100]}...)")
-
-                result = self._execute_tool(name, args)
-
-                self._log(f"Tool result: {result[:200]}...")
-
-                # Add tool result to messages
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "content": result,
-                    }
-                )
+            # Execute tool calls (in parallel when independent)
+            self.messages.extend(self._execute_tool_calls(tool_calls))
 
         self._log("Max turns reached")
         return (
@@ -675,15 +749,9 @@ If you need to perform multiple steps, do them one at a time."""
         # Capture thinking from initial response (may be overwritten if tool calls follow)
         self.last_thinking = extract_thinking(content)
 
-        # Handle tool calls if any
+        # Handle tool calls if any (in parallel when independent)
         if tool_calls:
-            for tool_call in tool_calls:
-                func = tool_call.get("function", {})
-                name = func.get("name", "")
-                args = func.get("arguments", {})
-
-                result = self._execute_tool(name, args)
-                self.messages.append({"role": "tool", "content": result})
+            self.messages.extend(self._execute_tool_calls(tool_calls))
 
             # Get final response after tool execution
             chat_start2 = _time.perf_counter()

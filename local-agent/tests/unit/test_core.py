@@ -2,6 +2,8 @@
 Tests for agent/core.py - Agent class, Tool dataclass, and utilities.
 """
 
+import re
+import threading
 import time
 from unittest.mock import patch
 
@@ -852,3 +854,312 @@ class TestAgentResponseCache:
             result = agent.run("hi")
 
         assert result == "still ok"
+
+
+# =============================================================================
+# PARALLEL TOOL EXECUTION (TK-328)
+# =============================================================================
+
+
+class TestParallelToolExecution:
+    """Agent should execute independent tool calls concurrently to cut latency."""
+
+    def _make_call(self, name: str, args: dict | None = None) -> dict:
+        return {"function": {"name": name, "arguments": args or {}}}
+
+    def test_parallel_enabled_by_default(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        assert agent.config.parallel_tool_execution is True
+
+    def test_empty_tool_calls_returns_empty(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        assert agent._execute_tool_calls([]) == []
+
+    def test_single_tool_call_returns_one_message(
+        self, mock_ollama_client, sample_tool_function, sample_tool_schema
+    ):
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(
+            create_tool("greet", "Greet", sample_tool_schema, sample_tool_function)
+        )
+        msgs = agent._execute_tool_calls([self._make_call("greet", {"name": "A"})])
+        assert msgs == [{"role": "tool", "content": "Hello, A!"}]
+
+    def test_results_preserve_call_order(self, mock_ollama_client):
+        """Parallel results come back in the same order as the input calls."""
+        order_record = []
+
+        def slow_a(**kwargs):
+            time.sleep(0.15)
+            order_record.append("A")
+            return "result_A"
+
+        def slow_b(**kwargs):
+            time.sleep(0.05)
+            order_record.append("B")
+            return "result_B"
+
+        schema = {"type": "object", "properties": {}, "required": []}
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("tool_a", "A", schema, slow_a))
+        agent.register_tool(create_tool("tool_b", "B", schema, slow_b))
+
+        msgs = agent._execute_tool_calls(
+            [self._make_call("tool_a"), self._make_call("tool_b")]
+        )
+
+        # Output order matches input order, even though B finished first.
+        assert [m["content"] for m in msgs] == ["result_A", "result_B"]
+        # Real concurrency: B completed before A.
+        assert order_record == ["B", "A"]
+
+    def test_parallel_cuts_latency(self, mock_ollama_client):
+        """Running two 200ms tools concurrently finishes well under 400ms."""
+        schema = {"type": "object", "properties": {}, "required": []}
+
+        def slow(**kwargs):
+            time.sleep(0.2)
+            return "done"
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("s1", "", schema, slow))
+        agent.register_tool(create_tool("s2", "", schema, slow))
+        agent.register_tool(create_tool("s3", "", schema, slow))
+
+        calls = [self._make_call("s1"), self._make_call("s2"), self._make_call("s3")]
+
+        start = time.monotonic()
+        msgs = agent._execute_tool_calls(calls)
+        elapsed = time.monotonic() - start
+
+        assert len(msgs) == 3
+        # Sequential would take ~0.6s. Parallel should be closer to 0.2s.
+        assert elapsed < 0.45, f"Expected parallel speed-up, took {elapsed:.2f}s"
+
+    def test_parallel_disabled_runs_sequentially(self, mock_ollama_client):
+        """With parallel_tool_execution=False, tools run in sequence."""
+        schema = {"type": "object", "properties": {}, "required": []}
+        order_record = []
+
+        def slow_a(**kwargs):
+            time.sleep(0.1)
+            order_record.append("A")
+            return "A"
+
+        def fast_b(**kwargs):
+            order_record.append("B")
+            return "B"
+
+        agent = Agent(AgentConfig(verbose=False, parallel_tool_execution=False))
+        agent.register_tool(create_tool("tool_a", "", schema, slow_a))
+        agent.register_tool(create_tool("tool_b", "", schema, fast_b))
+
+        agent._execute_tool_calls(
+            [self._make_call("tool_a"), self._make_call("tool_b")]
+        )
+
+        # Sequential: A blocks, so A finishes before B starts.
+        assert order_record == ["A", "B"]
+
+    def test_dependency_detection_no_references(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        calls = [
+            self._make_call("web_search", {"query": "python asyncio"}),
+            self._make_call("read_file", {"path": "/etc/hosts"}),
+        ]
+        assert agent._tool_calls_have_dependencies(calls) is False
+
+    def test_dependency_detection_placeholder_reference(self, mock_ollama_client):
+        """When a later call's args reference an earlier tool by placeholder."""
+        agent = Agent(AgentConfig(verbose=False))
+        calls = [
+            self._make_call("web_search", {"query": "python"}),
+            self._make_call("summarize", {"text": "{{web_search_result}}"}),
+        ]
+        assert agent._tool_calls_have_dependencies(calls) is True
+
+    def test_dependency_detection_output_of_pattern(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        calls = [
+            self._make_call("fetch_data", {}),
+            self._make_call("post", {"body": "output_of_fetch_data"}),
+        ]
+        assert agent._tool_calls_have_dependencies(calls) is True
+
+    def test_single_call_never_has_dependencies(self, mock_ollama_client):
+        agent = Agent(AgentConfig(verbose=False))
+        assert agent._tool_calls_have_dependencies([self._make_call("x")]) is False
+
+    def test_dependent_calls_run_sequentially(self, mock_ollama_client):
+        """Dependent calls fall back to serial execution even with parallel enabled."""
+        schema = {"type": "object", "properties": {}, "required": []}
+        order_record = []
+
+        def slow_a(**kwargs):
+            time.sleep(0.1)
+            order_record.append("A")
+            return "A_result"
+
+        def slow_b(**kwargs):
+            order_record.append("B")
+            return kwargs.get("body", "")
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("fetch_a", "", schema, slow_a))
+        agent.register_tool(
+            create_tool(
+                "use_b",
+                "",
+                {
+                    "type": "object",
+                    "properties": {"body": {"type": "string"}},
+                    "required": [],
+                },
+                slow_b,
+            )
+        )
+
+        calls = [
+            self._make_call("fetch_a"),
+            self._make_call("use_b", {"body": "{{fetch_a"}),
+        ]
+        agent._execute_tool_calls(calls)
+        # Detected dependency ⇒ sequential execution.
+        assert order_record == ["A", "B"]
+
+    def test_parallel_handles_tool_errors(self, mock_ollama_client):
+        """If one tool raises, others still complete and the error is surfaced as a string."""
+        schema = {"type": "object", "properties": {}, "required": []}
+
+        def boom(**kwargs):
+            raise ValueError("kaboom")
+
+        def ok(**kwargs):
+            return "ok_result"
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("boom", "", schema, boom))
+        agent.register_tool(create_tool("ok", "", schema, ok))
+
+        msgs = agent._execute_tool_calls(
+            [self._make_call("boom"), self._make_call("ok")]
+        )
+
+        assert len(msgs) == 2
+        assert "kaboom" in msgs[0]["content"]
+        assert msgs[1]["content"] == "ok_result"
+
+    def test_run_parallel_integration(self, mock_ollama_client):
+        """Full run() loop dispatches multiple tool calls in parallel."""
+        schema = {"type": "object", "properties": {}, "required": []}
+        order_record = []
+
+        def slow(**kwargs):
+            time.sleep(0.15)
+            order_record.append(kwargs.get("tag", "?"))
+            return "done"
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(
+            create_tool(
+                "slow",
+                "",
+                {
+                    "type": "object",
+                    "properties": {"tag": {"type": "string"}},
+                    "required": [],
+                },
+                slow,
+            )
+        )
+
+        mock_ollama_client.set_responses([
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {"function": {"name": "slow", "arguments": {"tag": "a"}}},
+                        {"function": {"name": "slow", "arguments": {"tag": "b"}}},
+                    ],
+                }
+            },
+            {"message": {"content": "all done", "tool_calls": []}},
+        ])
+
+        start = time.monotonic()
+        result = agent.run("do both")
+        elapsed = time.monotonic() - start
+
+        assert result == "all done"
+        # Two 150ms calls in parallel should finish well under 300ms.
+        assert elapsed < 0.4, f"Parallel run took {elapsed:.2f}s"
+
+    def test_max_parallel_tools_caps_workers(self, mock_ollama_client):
+        """max_parallel_tools limits the thread pool size."""
+        schema = {"type": "object", "properties": {}, "required": []}
+        active = {"count": 0, "peak": 0}
+        lock = threading.Lock()
+
+        def tracked(**kwargs):
+            with lock:
+                active["count"] += 1
+                active["peak"] = max(active["peak"], active["count"])
+            time.sleep(0.05)
+            with lock:
+                active["count"] -= 1
+            return "ok"
+
+        agent = Agent(AgentConfig(verbose=False, max_parallel_tools=2))
+        agent.register_tool(create_tool("t", "", schema, tracked))
+
+        calls = [self._make_call("t") for _ in range(6)]
+        agent._execute_tool_calls(calls)
+
+        assert active["peak"] <= 2
+
+
+class TestParallelExecutionThreadSafety:
+    """ToolResultStorage stats must stay consistent under concurrent writes."""
+
+    def test_concurrent_small_results_stats_consistent(self, mock_ollama_client):
+        """Total results counter matches the number of concurrent calls."""
+        schema = {"type": "object", "properties": {}, "required": []}
+
+        def quick(**kwargs):
+            return "ok"
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("q", "", schema, quick))
+
+        calls = [{"function": {"name": "q", "arguments": {}}} for _ in range(20)]
+        agent._execute_tool_calls(calls)
+
+        assert agent.result_storage.stats["total_results"] == 20
+        assert agent.result_storage.stats["truncated_results"] == 0
+
+    def test_concurrent_large_results_are_all_stored(self, mock_ollama_client):
+        """Every truncated result gets its own retrievable ID — no collisions."""
+        schema = {"type": "object", "properties": {}, "required": []}
+        big = "y" * 20_000
+
+        def heavy(**kwargs):
+            return big
+
+        agent = Agent(AgentConfig(verbose=False))
+        agent.register_tool(create_tool("heavy", "", schema, heavy))
+
+        calls = [{"function": {"name": "heavy", "arguments": {}}} for _ in range(8)]
+        msgs = agent._execute_tool_calls(calls)
+
+        ids = []
+        for m in msgs:
+            match = re.search(r"ID: ([a-f0-9]+)", m["content"])
+            assert match, f"no truncation id in {m['content'][:120]}"
+            ids.append(match.group(1))
+
+        # All IDs unique.
+        assert len(set(ids)) == 8
+        # Every ID retrieves the original content.
+        for rid in ids:
+            assert agent.result_storage.get_full_result(rid) == big
+        assert agent.result_storage.stats["truncated_results"] == 8
