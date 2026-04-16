@@ -11,6 +11,7 @@ from idea_board.executor import (
     PYTEST_TIMEOUT,
     ExecutionState,
     _build_epic_execution_context,
+    _build_prior_failure_context,
     _build_story_prompt,
     _find_related_tests,
     _format_injected_epic_context,
@@ -831,3 +832,198 @@ class TestBuildStoryPromptEpicContext:
         assert "Add API endpoint" in prompt
         assert "s-1" in prompt
         assert "Create the /api/users endpoint" in prompt
+
+
+# ---------------------------------------------------------------------------
+# _build_prior_failure_context — retry-memory injector
+# ---------------------------------------------------------------------------
+
+
+class _StubComment:
+    """Minimal stand-in for board.provider.Comment.
+
+    Tests only touch ``text`` and ``marker`` — using a lightweight object
+    avoids pulling the provider layer into these unit tests.
+    """
+
+    def __init__(self, text: str, marker: str | None, author: str = "claude"):
+        self.text = text
+        self.marker = marker
+        self.author = author
+        self.created = "2026-04-15T10:00:00.000+0000"
+
+
+class TestBuildPriorFailureContext:
+    """Test injection of the most-recent [Execution Log - Failed] comment."""
+
+    @staticmethod
+    def _idea(idea_id: str = "TK-396"):
+        idea = MagicMock()
+        idea.id = idea_id
+        return idea
+
+    def _patch_comments(self, comments):
+        provider = MagicMock()
+        provider.get_comments.return_value = comments
+        return patch(
+            "idea_board.executor._get_board_provider", return_value=provider
+        )
+
+    def test_returns_empty_when_no_comments(self):
+        with self._patch_comments([]):
+            assert _build_prior_failure_context(self._idea()) == ""
+
+    def test_returns_empty_when_no_failure_markers(self):
+        """Progress and free-form comments are ignored — only failure markers inject."""
+        comments = [
+            _StubComment("just a note", marker=None),
+            _StubComment("[AIM Progress]\nstep 1 done", marker="[AIM Progress]"),
+            _StubComment("[Execution Log]\nsuccess trace", marker="[Execution Log]"),
+        ]
+        with self._patch_comments(comments):
+            assert _build_prior_failure_context(self._idea()) == ""
+
+    def test_includes_failure_text_and_header(self):
+        failure_text = (
+            "[Execution Log - Failed]\n"
+            "Traceback: NameError: name 'settings' is not defined"
+        )
+        comments = [_StubComment(failure_text, marker="[Execution Log - Failed]")]
+        with self._patch_comments(comments):
+            result = _build_prior_failure_context(self._idea())
+
+        assert "## Prior Failure Context" in result
+        assert "NameError" in result
+        assert "avoid repeating the same mistakes" in result
+        assert "root cause" in result
+
+    def test_uses_most_recent_failure_when_multiple(self):
+        """Only the newest failure is injected (list is newest-last)."""
+        comments = [
+            _StubComment(
+                "[Execution Log - Failed]\nFIRST failure: old trace",
+                marker="[Execution Log - Failed]",
+            ),
+            _StubComment("[AIM Progress]\nretry started", marker="[AIM Progress]"),
+            _StubComment(
+                "[Execution Log - Failed]\nSECOND failure: newer trace",
+                marker="[Execution Log - Failed]",
+            ),
+        ]
+        with self._patch_comments(comments):
+            result = _build_prior_failure_context(self._idea())
+
+        assert "SECOND failure" in result
+        assert "FIRST failure" not in result
+
+    def test_truncates_long_failure_from_front(self):
+        """Front is trimmed, tail is preserved — the tail has the useful traceback."""
+        # 5000 chars of setup noise + a unique sentinel at the end
+        noise = "X" * 5000
+        tail = "UNIQUE_TAIL_MARKER: this is the traceback"
+        body = f"[Execution Log - Failed]\n{noise}\n{tail}"
+        comments = [_StubComment(body, marker="[Execution Log - Failed]")]
+        with self._patch_comments(comments):
+            result = _build_prior_failure_context(self._idea())
+
+        # Tail is preserved, truncation marker is added
+        assert "UNIQUE_TAIL_MARKER" in result
+        assert "truncated" in result
+        # The head of the noise block is dropped
+        assert "X" * 5000 not in result
+
+    def test_short_failure_is_not_truncated(self):
+        """A failure under the cap is injected verbatim, no truncation marker."""
+        body = "[Execution Log - Failed]\nshort and sweet trace"
+        comments = [_StubComment(body, marker="[Execution Log - Failed]")]
+        with self._patch_comments(comments):
+            result = _build_prior_failure_context(self._idea())
+
+        assert "short and sweet trace" in result
+        assert "truncated" not in result
+
+    def test_returns_empty_when_provider_raises(self):
+        """Provider failure must not break prompt assembly."""
+        provider = MagicMock()
+        provider.get_comments.side_effect = RuntimeError("Jira down")
+        with patch(
+            "idea_board.executor._get_board_provider", return_value=provider
+        ):
+            assert _build_prior_failure_context(self._idea()) == ""
+
+    def test_returns_empty_when_provider_lacks_get_comments(self):
+        """Older provider without get_comments degrades gracefully."""
+        provider = object()  # No get_comments attribute
+        with patch(
+            "idea_board.executor._get_board_provider", return_value=provider
+        ):
+            assert _build_prior_failure_context(self._idea()) == ""
+
+
+class TestBuildStoryPromptPriorFailure:
+    """Integration: _build_story_prompt wires _build_prior_failure_context in."""
+
+    @staticmethod
+    def _make_story():
+        idea = MagicMock()
+        idea.id = "TK-396"
+        idea.title = "Inject prior failure"
+        idea.idea_type = "story"
+        idea.category = "quality"
+        idea.parent_id = None
+        idea.description = "Wire retry memory into the executor prompt"
+        return idea
+
+    def _patch_sections(self, comments):
+        provider = MagicMock()
+        provider.get_comments.return_value = comments
+        return patch.multiple(
+            "idea_board.executor",
+            _enrich_stub_description=lambda i: i.description,
+            _build_epic_context=lambda i: "",
+            _build_discussion=lambda i: "",
+            _load_codebase_summary=lambda: "CODEBASE_SUMMARY_SENTINEL",
+            _load_git_history=lambda: "",
+            _load_recent_errors=lambda: "",
+            _load_similar_execution_logs=lambda i: "",
+            _get_category_guidance=lambda c: "",
+            _find_relevant_test_file=lambda i: "",
+            _build_workflow_section=lambda i: "",
+            _get_board_provider=MagicMock(return_value=provider),
+        )
+
+    def test_injects_section_when_failure_exists(self):
+        comments = [
+            _StubComment(
+                "[Execution Log - Failed]\nSENTINEL_FAIL_TEXT",
+                marker="[Execution Log - Failed]",
+            ),
+        ]
+        with self._patch_sections(comments):
+            prompt = _build_story_prompt(self._make_story())
+
+        assert "## Prior Failure Context" in prompt
+        assert "SENTINEL_FAIL_TEXT" in prompt
+
+    def test_omits_section_when_no_failure(self):
+        with self._patch_sections([]):
+            prompt = _build_story_prompt(self._make_story())
+
+        assert "## Prior Failure Context" not in prompt
+
+    def test_section_precedes_codebase_summary(self):
+        """Failure context is placed before the codebase summary so the LLM reads it early."""
+        comments = [
+            _StubComment(
+                "[Execution Log - Failed]\nFAILURE_MARKER_TEXT",
+                marker="[Execution Log - Failed]",
+            ),
+        ]
+        with self._patch_sections(comments):
+            prompt = _build_story_prompt(self._make_story())
+
+        assert "## Prior Failure Context" in prompt
+        assert "CODEBASE_SUMMARY_SENTINEL" in prompt
+        assert prompt.index("## Prior Failure Context") < prompt.index(
+            "CODEBASE_SUMMARY_SENTINEL"
+        )
