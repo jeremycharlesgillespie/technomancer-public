@@ -37,7 +37,7 @@ from flask import Flask, Response, jsonify, request
 
 from agent.config import settings
 
-from .executor import get_execution
+from .executor import EXECUTION_LOGS_DIR, get_execution
 from .models import Idea, save_ideas
 
 from board import get_provider as _get_board_provider
@@ -1771,7 +1771,76 @@ def api_log_stream(idea_id: str) -> Response:
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
+    def _final_state_from_sentinel(done_path: Path) -> str:
+        """Read the idea's terminal state from the ``.done`` sentinel.
+
+        Falls back to the board provider (and ultimately ``"unknown"``) when
+        the sentinel is missing or unreadable — keeps the SSE ``done`` event
+        well-formed even under filesystem hiccups.
+        """
+        try:
+            if done_path.exists():
+                content = done_path.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+        except OSError:
+            pass
+        idea = get_idea(idea_id)
+        return idea.state if idea else "unknown"
+
+    def _tail_disk_log(log_path: Path, done_path: Path):
+        """Tail ``log_path`` line-by-line; close when ``done_path`` appears.
+
+        Cross-process: works even when the execution runs in a separate
+        worker process whose ``_active`` dict this server can't see.
+        """
+        poll_interval = 0.5
+        # Hard safety nets — in production the .done sentinel always lands
+        # eventually; these only trigger on truly wedged runs so a wedged
+        # SSE connection doesn't hold a gunicorn worker open forever.
+        max_idle_seconds = 900
+        max_total_seconds = 3600
+
+        start = time.time()
+        last_progress = start
+
+        with open(log_path, encoding="utf-8") as fh:
+            while True:
+                line = fh.readline()
+                if line:
+                    yield _sse("log", {"lines": [line.rstrip("\n")]})
+                    last_progress = time.time()
+                    continue
+
+                # EOF — check the sentinel before sleeping so a completed
+                # run closes as fast as possible.
+                if done_path.exists():
+                    yield _sse("done", {
+                        "idea_state": _final_state_from_sentinel(done_path),
+                        "is_alive": False,
+                    })
+                    return
+
+                now = time.time()
+                if now - start > max_total_seconds or now - last_progress > max_idle_seconds:
+                    break
+                time.sleep(poll_interval)
+
+        # Timeout / idle fallback — still emit a terminal event.
+        yield _sse("done", {
+            "idea_state": _final_state_from_sentinel(done_path),
+            "is_alive": False,
+        })
+
     def generate():
+        log_path = EXECUTION_LOGS_DIR / f"{idea_id}.log"
+        done_path = EXECUTION_LOGS_DIR / f"{idea_id}.done"
+
+        # ---- Disk log present: cross-process tail (preferred path) ----
+        if log_path.exists():
+            yield from _tail_disk_log(log_path, done_path)
+            return
+
         state = get_execution(idea_id)
 
         # ---- Not actively executing: send stored log and close ----
@@ -1792,7 +1861,7 @@ def api_log_stream(idea_id: str) -> Response:
             })
             return
 
-        # ---- Live execution: stream incremental updates ----
+        # ---- Live execution, no disk log yet: stream from memory ----
         sent = 0
         while True:
             current_lines = state.log_lines

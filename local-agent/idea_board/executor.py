@@ -46,11 +46,32 @@ def mark_executing(idea_id):
 
 
 def mark_done(idea_id, execution_log):
-    return _get_board_provider().mark_done(idea_id, execution_log)
+    result = _get_board_provider().mark_done(idea_id, execution_log)
+    _write_done_sentinel(idea_id, "done")
+    return result
 
 
 def mark_failed(idea_id, error):
-    return _get_board_provider().mark_failed(idea_id, error)
+    result = _get_board_provider().mark_failed(idea_id, error)
+    _write_done_sentinel(idea_id, "failed")
+    return result
+
+
+def _write_done_sentinel(idea_id: str, final_state: str) -> None:
+    """Write ``execution_logs/<idea_id>.done`` containing the final idea state.
+
+    The cross-process SSE streamer in web.py watches for this file to know
+    when to emit the terminal ``done`` event and close the connection.
+    Best-effort — IO errors are swallowed so they can't crash the deploy.
+    """
+    try:
+        EXECUTION_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        path = EXECUTION_LOGS_DIR / f"{idea_id}.done"
+        path.write_text(final_state.strip() + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.debug(
+            "[Executor] Failed to write done sentinel for %s: %s", idea_id, exc,
+        )
 
 
 def get_execution_order(idea_id):
@@ -265,7 +286,8 @@ def _append_execution_log_line(idea_id: str, line: str) -> None:
 
 
 def _prune_stale_execution_logs() -> None:
-    """Delete ``execution_logs/*.log`` files whose stem is not in ``_active``.
+    """Delete ``execution_logs/*.log`` and ``*.done`` files whose stem is not
+    in ``_active``.
 
     Called once at module import so the directory doesn't grow unboundedly
     across executor restarts. At import time ``_active`` is empty, so this
@@ -275,17 +297,38 @@ def _prune_stale_execution_logs() -> None:
     try:
         if not EXECUTION_LOGS_DIR.exists():
             return
-        for log_file in EXECUTION_LOGS_DIR.glob("*.log"):
-            if log_file.stem not in _active:
+        for artifact in EXECUTION_LOGS_DIR.iterdir():
+            if artifact.suffix not in (".log", ".done"):
+                continue
+            if artifact.stem not in _active:
                 try:
-                    log_file.unlink()
+                    artifact.unlink()
                 except OSError as exc:
                     logger.debug(
-                        "[Executor] Could not remove stale log %s: %s",
-                        log_file, exc,
+                        "[Executor] Could not remove stale artifact %s: %s",
+                        artifact, exc,
                     )
     except Exception as exc:
         logger.debug("[Executor] Failed to prune execution logs: %s", exc)
+
+
+def _clear_execution_artifacts(idea_id: str) -> None:
+    """Remove any leftover ``.log`` / ``.done`` files for ``idea_id``.
+
+    Called when a fresh execution starts for an idea so a stale sentinel
+    from a prior run can't trick the SSE streamer into emitting ``done``
+    immediately.
+    """
+    for suffix in (".log", ".done"):
+        path = EXECUTION_LOGS_DIR / f"{idea_id}{suffix}"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug(
+                "[Executor] Could not remove %s: %s", path, exc,
+            )
 
 
 _prune_stale_execution_logs()
@@ -1340,6 +1383,7 @@ def execute_idea(
         return _active[idea_id]
 
     mark_executing(idea_id)
+    _clear_execution_artifacts(idea_id)
 
     state = ExecutionState(idea_id=idea_id)
     _active[idea_id] = state
@@ -2221,6 +2265,7 @@ def execute_epic(epic_id: str) -> ExecutionState | None:
     execution_order = get_execution_order(epic_id)
 
     mark_executing(epic_id)
+    _clear_execution_artifacts(epic_id)
     state = ExecutionState(idea_id=epic_id)
     _active[epic_id] = state
 

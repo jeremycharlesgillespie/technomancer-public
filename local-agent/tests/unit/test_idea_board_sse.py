@@ -24,6 +24,18 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _isolated_execution_logs(tmp_path_factory, monkeypatch):
+    """Isolate SSE tests from the real ``idea_board/execution_logs/`` dir.
+
+    Without this guard a stray ``idea-001.log`` left behind by an earlier
+    run would flip the SSE generator onto the disk-tail path and break
+    tests that expect the in-memory or stored-log fallbacks.
+    """
+    empty = tmp_path_factory.mktemp("sse_execution_logs")
+    monkeypatch.setattr("idea_board.web.EXECUTION_LOGS_DIR", empty)
+
+
 def _parse_sse(raw: str) -> list[dict]:
     """Parse raw SSE text into a list of {event, data} dicts."""
     events = []
@@ -178,6 +190,97 @@ class TestLogStreamSSE:
 
         done_ev = [e for e in events if e["event"] == "done"][0]
         assert done_ev["data"]["idea_state"] == "failed"
+
+
+class TestLogStreamDiskTail:
+    """Tests for the disk-log tailing path of /api/ideas/<id>/log/stream.
+
+    The SSE generator prefers ``execution_logs/<id>.log`` (cross-process)
+    over the in-memory ``_active`` dict when the file is present.
+    """
+
+    def test_two_lines_yield_two_log_events(self, client, tmp_path):
+        """Pre-existing .log with two lines produces two log events then done."""
+        log_path = tmp_path / "idea-100.log"
+        log_path.write_text("first\nsecond\n", encoding="utf-8")
+        done_path = tmp_path / "idea-100.done"
+        done_path.write_text("done\n", encoding="utf-8")
+
+        with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path):
+            resp = client.get("/api/ideas/idea-100/log/stream")
+            events = _parse_sse(resp.get_data(as_text=True))
+
+        log_events = [e for e in events if e["event"] == "log"]
+        assert len(log_events) == 2
+        assert log_events[0]["data"]["lines"] == ["first"]
+        assert log_events[1]["data"]["lines"] == ["second"]
+
+        done_events = [e for e in events if e["event"] == "done"]
+        assert len(done_events) == 1
+        assert done_events[0]["data"]["idea_state"] == "done"
+        assert done_events[0]["data"]["is_alive"] is False
+
+    def test_done_sentinel_closes_stream(self, client, tmp_path):
+        """Writing the .done sentinel emits a terminal done event."""
+        log_path = tmp_path / "idea-101.log"
+        log_path.write_text("only-line\n", encoding="utf-8")
+        done_path = tmp_path / "idea-101.done"
+        done_path.write_text("failed\n", encoding="utf-8")
+
+        with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path):
+            resp = client.get("/api/ideas/idea-101/log/stream")
+            events = _parse_sse(resp.get_data(as_text=True))
+
+        # Last event is done with the sentinel-supplied state
+        assert events[-1]["event"] == "done"
+        assert events[-1]["data"]["idea_state"] == "failed"
+
+    def test_disk_path_preferred_over_in_memory(self, client, tmp_path):
+        """When .log is on disk, in-memory state is bypassed entirely."""
+        log_path = tmp_path / "idea-102.log"
+        log_path.write_text("from-disk\n", encoding="utf-8")
+        done_path = tmp_path / "idea-102.done"
+        done_path.write_text("done\n", encoding="utf-8")
+
+        # An in-memory state with different content — must be ignored
+        state = FakeExecutionState(idea_id="idea-102")
+        state.log_lines = ["from-memory"]
+
+        with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path), \
+             patch("idea_board.web.get_execution", return_value=state):
+            resp = client.get("/api/ideas/idea-102/log/stream")
+            events = _parse_sse(resp.get_data(as_text=True))
+
+        log_events = [e for e in events if e["event"] == "log"]
+        assert len(log_events) == 1
+        assert log_events[0]["data"]["lines"] == ["from-disk"]
+
+    def test_missing_sentinel_state_from_provider(self, client, tmp_path):
+        """When .done is absent but loop times out, state falls back to get_idea."""
+        log_path = tmp_path / "idea-103.log"
+        log_path.write_text("line-a\n", encoding="utf-8")
+
+        fake_idea = MagicMock()
+        fake_idea.state = "executing"
+
+        # Patch time helpers inside _tail_disk_log so the timeout path fires
+        # immediately rather than spinning for 15 minutes.
+        time_calls = [0.0, 0.0, 10000.0, 10000.0]
+
+        def _time_side_effect():
+            return time_calls.pop(0) if time_calls else 10000.0
+
+        with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path), \
+             patch("idea_board.web.get_idea", return_value=fake_idea), \
+             patch("idea_board.web.time.time", side_effect=_time_side_effect), \
+             patch("idea_board.web.time.sleep"):
+            resp = client.get("/api/ideas/idea-103/log/stream")
+            events = _parse_sse(resp.get_data(as_text=True))
+
+        done_events = [e for e in events if e["event"] == "done"]
+        assert len(done_events) == 1
+        # Falls back to the provider when the sentinel isn't present
+        assert done_events[0]["data"]["idea_state"] == "executing"
 
 
 class TestLogPollingEndpoint:

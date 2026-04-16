@@ -19,13 +19,17 @@ from idea_board.executor import (
     _build_prior_failure_context,
     _build_story_prompt,
     _classify_rate_limit,
+    _clear_execution_artifacts,
     _find_related_tests,
     _format_injected_epic_context,
     _has_branch_commits,
     _parse_pytest_failures,
     _post_deploy_comment,
     _prune_stale_execution_logs,
+    _write_done_sentinel,
     execute_epic,
+    mark_done,
+    mark_failed,
 )
 
 
@@ -1451,3 +1455,131 @@ class TestPruneStaleExecutionLogs:
         content = log_file.read_text(encoding="utf-8")
         assert "working" in content
         assert "done" in content
+
+    def test_prunes_stale_done_sentinels(self, tmp_path, monkeypatch):
+        """Stale .done files are pruned alongside .log files on module load."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-100.log").write_text("stale")
+        (logs_dir / "TK-100.done").write_text("done")
+        (logs_dir / "TK-200.done").write_text("failed")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        _prune_stale_execution_logs()
+
+        assert not (logs_dir / "TK-100.log").exists()
+        assert not (logs_dir / "TK-100.done").exists()
+        assert not (logs_dir / "TK-200.done").exists()
+
+
+class TestWriteDoneSentinel:
+    """_write_done_sentinel writes <idea_id>.done with the final state."""
+
+    def test_writes_state_string(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _write_done_sentinel("TK-428", "done")
+
+        sentinel = logs_dir / "TK-428.done"
+        assert sentinel.exists()
+        assert sentinel.read_text(encoding="utf-8").strip() == "done"
+
+    def test_overwrites_existing_sentinel(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-428.done").write_text("failed")
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _write_done_sentinel("TK-428", "done")
+
+        assert (logs_dir / "TK-428.done").read_text(encoding="utf-8").strip() == "done"
+
+    def test_io_error_is_swallowed(self, tmp_path, monkeypatch):
+        # Parent path collision — mkdir will fail.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory")
+        monkeypatch.setattr(
+            "idea_board.executor.EXECUTION_LOGS_DIR", blocker / "execution_logs",
+        )
+
+        # Must not raise.
+        _write_done_sentinel("TK-428", "done")
+
+
+class TestMarkDoneWritesSentinel:
+    """mark_done / mark_failed wrappers create .done sentinels via provider."""
+
+    def test_mark_done_writes_sentinel(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "idea_board.executor._get_board_provider", lambda: provider,
+        )
+
+        mark_done("TK-428", "final log")
+
+        provider.mark_done.assert_called_once_with("TK-428", "final log")
+        sentinel = logs_dir / "TK-428.done"
+        assert sentinel.read_text(encoding="utf-8").strip() == "done"
+
+    def test_mark_failed_writes_sentinel(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        provider = MagicMock()
+        monkeypatch.setattr(
+            "idea_board.executor._get_board_provider", lambda: provider,
+        )
+
+        mark_failed("TK-428", "boom")
+
+        provider.mark_failed.assert_called_once_with("TK-428", "boom")
+        sentinel = logs_dir / "TK-428.done"
+        assert sentinel.read_text(encoding="utf-8").strip() == "failed"
+
+
+class TestClearExecutionArtifacts:
+    """_clear_execution_artifacts removes stale .log and .done files per idea."""
+
+    def test_removes_both_artifacts(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-428.log").write_text("old log")
+        (logs_dir / "TK-428.done").write_text("done")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _clear_execution_artifacts("TK-428")
+
+        assert not (logs_dir / "TK-428.log").exists()
+        assert not (logs_dir / "TK-428.done").exists()
+
+    def test_missing_artifacts_is_noop(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        # No files present — must not raise.
+        _clear_execution_artifacts("TK-428")
+
+    def test_leaves_other_ideas_alone(self, tmp_path, monkeypatch):
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-428.log").write_text("target")
+        (logs_dir / "TK-428.done").write_text("done")
+        (logs_dir / "TK-999.log").write_text("other")
+        (logs_dir / "TK-999.done").write_text("done")
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+
+        _clear_execution_artifacts("TK-428")
+
+        assert not (logs_dir / "TK-428.log").exists()
+        assert not (logs_dir / "TK-428.done").exists()
+        assert (logs_dir / "TK-999.log").exists()
+        assert (logs_dir / "TK-999.done").exists()
