@@ -1671,3 +1671,57 @@ class TestClearExecutionArtifacts:
         assert not (logs_dir / "TK-428.done").exists()
         assert (logs_dir / "TK-999.log").exists()
         assert (logs_dir / "TK-999.done").exists()
+
+
+# ---------------------------------------------------------------------------
+# @profile_fn instrumentation on executor hot paths (TK-437)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileFnInstrumentation:
+    """Verify the three hot-path functions are wrapped by @profile_fn.
+
+    profile_fn sets a ``__wrapped_fn_name__`` attribute on the returned
+    wrapper, so checking that attribute confirms the decorator was applied
+    without having to actually invoke the heavy functions.
+    """
+
+    def test_build_story_prompt_is_profiled(self):
+        from idea_board.executor import _build_story_prompt
+
+        assert getattr(_build_story_prompt, "__wrapped_fn_name__", None) == (
+            "idea_board.executor._build_story_prompt"
+        )
+
+    def test_build_epic_prompt_is_profiled(self):
+        from idea_board.executor import _build_epic_prompt
+
+        assert getattr(_build_epic_prompt, "__wrapped_fn_name__", None) == (
+            "idea_board.executor._build_epic_prompt"
+        )
+
+    def test_execute_idea_is_profiled(self):
+        from idea_board.executor import execute_idea
+
+        assert getattr(execute_idea, "__wrapped_fn_name__", None) == (
+            "idea_board.executor.execute_idea"
+        )
+
+    def test_execute_idea_records_registry_on_call(self, monkeypatch):
+        """Calling execute_idea should populate the fn_profiler registry.
+
+        execute_idea exits early when ``get_idea`` returns None, so we can
+        exercise the decorator without spawning a subprocess.
+        """
+        import agent.fn_profiler as fp
+        from idea_board.executor import execute_idea
+
+        fp.reset_registry()
+        monkeypatch.setattr("idea_board.executor.get_idea", lambda _id: None)
+
+        assert execute_idea("TK-DOES-NOT-EXIST") is None
+
+        stats = fp.get_stats("idea_board.executor.execute_idea")
+        assert stats is not None
+        assert stats.call_count == 1
+        fp.reset_registry()

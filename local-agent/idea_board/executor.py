@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.config import settings
+from agent.fn_profiler import profile_fn
 
 from board import get_provider as _get_board_provider
 
@@ -1012,6 +1013,7 @@ def _enrich_stub_description(idea: Any) -> str:
     )
 
 
+@profile_fn
 def _build_story_prompt(
     idea: Any,
     epic_context: str = "",
@@ -1046,6 +1048,7 @@ def _build_story_prompt(
     return "\n".join(s for s in sections if s)
 
 
+@profile_fn
 def _build_epic_prompt(idea: Any) -> str:
     """Build a rich prompt for executing an entire epic sequentially."""
     all_ideas = load_ideas()
@@ -1360,6 +1363,7 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
     return (event_type, "")
 
 
+@profile_fn
 def execute_idea(
     idea_id: str,
     extra_context: str = "",
