@@ -201,6 +201,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Idea generator settings
+    idea_generator_skip_threshold: int = Field(
+        default=15,
+        description=(
+            "Skip the hourly idea_generator run when the board already has "
+            "at least this many approved + proposed items ready to work. "
+            "Saves the ~5000-token prompt when the backlog is healthy."
+        ),
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"

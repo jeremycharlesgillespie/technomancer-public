@@ -888,6 +888,26 @@ def _count_proposed_ideas() -> int:
         return 0
 
 
+def _count_ready_to_work_ideas() -> int:
+    """Count approved and proposed ideas on the board.
+
+    These are the items that already represent usable work the executor
+    could pick up. When this count is healthy, running the LLM to
+    synthesise more ideas wastes tokens.
+
+    Returns:
+        Number of ideas with state in {"approved", "proposed"}. Returns 0
+        if the idea board is unavailable.
+    """
+    try:
+        if load_ideas is None:
+            return 0
+        ideas = load_ideas()
+        return sum(1 for i in ideas if i.state in ("approved", "proposed"))
+    except Exception:
+        return 0
+
+
 def _seconds_until_next_run() -> float:
     """Calculate seconds until the next hourly run.
 
@@ -959,6 +979,19 @@ async def idea_generation_loop(client: Any, agent: Any) -> None:
             wait = _seconds_until_next_run()
             logger.info("[IdeaGen] Next run in %.0f min", wait / 60)
             await asyncio.sleep(wait)
+
+            # Skip entirely when the ready-to-work backlog is healthy —
+            # the ~5000-token prompt would just get deduped anyway.
+            ready = _count_ready_to_work_ideas()
+            threshold = settings.idea_generator_skip_threshold
+            if ready >= threshold:
+                logger.info(
+                    "idea_generator skipping: backlog healthy (%d >= %d)",
+                    ready,
+                    threshold,
+                )
+                await asyncio.sleep(120)
+                continue
 
             # Check backlog before generating
             proposed = _count_proposed_ideas()

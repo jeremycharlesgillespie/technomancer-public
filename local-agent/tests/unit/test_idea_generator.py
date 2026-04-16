@@ -14,6 +14,7 @@ from agent.idea_generator import (
     OFFSET_AFTER_NEWS_MINUTES,
     SYNTHESIS_PROMPT,
     _count_proposed_ideas,
+    _count_ready_to_work_ideas,
     _load_codebase_summary,
     _load_errors,
     _load_performance,
@@ -517,6 +518,52 @@ class TestCountProposedIdeas:
         assert _count_proposed_ideas() == 0
 
 
+class TestCountReadyToWorkIdeas:
+    """Test _count_ready_to_work_ideas — approved + proposed tally."""
+
+    def _make_idea(self, state: str) -> MagicMock:
+        idea = MagicMock()
+        idea.state = state
+        return idea
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_counts_approved_and_proposed(self, mock_load):
+        mock_load.return_value = [
+            self._make_idea("proposed"),
+            self._make_idea("approved"),
+            self._make_idea("approved"),
+            self._make_idea("executing"),
+            self._make_idea("done"),
+            self._make_idea("failed"),
+            self._make_idea("refining"),
+        ]
+        # proposed (1) + approved (2) = 3
+        # refining, executing, done, failed all excluded
+        assert _count_ready_to_work_ideas() == 3
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_on_empty_board(self, mock_load):
+        mock_load.return_value = []
+        assert _count_ready_to_work_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_when_nothing_ready(self, mock_load):
+        mock_load.return_value = [
+            self._make_idea("done"),
+            self._make_idea("executing"),
+        ]
+        assert _count_ready_to_work_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas")
+    def test_returns_zero_on_exception(self, mock_load):
+        mock_load.side_effect = RuntimeError("board unavailable")
+        assert _count_ready_to_work_ideas() == 0
+
+    @patch("agent.idea_generator.load_ideas", None)
+    def test_returns_zero_when_import_missing(self):
+        assert _count_ready_to_work_ideas() == 0
+
+
 class TestSecondsUntilNextRun:
     """Test _seconds_until_next_run hourly timing logic."""
 
@@ -610,10 +657,11 @@ class TestIdeaGenerationLoop:
     @pytest.mark.asyncio
     @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
     @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=0)
     @patch("agent.idea_generator._count_proposed_ideas")
     @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
     async def test_skips_when_backlog_full(
-        self, mock_wait, mock_count, mock_gen, mock_notify
+        self, mock_wait, mock_count, mock_ready, mock_gen, mock_notify
     ):
         """Loop skips generation when proposed ideas exceed limit."""
         mock_count.return_value = MAX_PROPOSED_IDEAS + 1
@@ -641,10 +689,11 @@ class TestIdeaGenerationLoop:
     @pytest.mark.asyncio
     @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
     @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=0)
     @patch("agent.idea_generator._count_proposed_ideas", return_value=3)
     @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
     async def test_generates_when_backlog_ok(
-        self, mock_wait, mock_count, mock_gen, mock_notify
+        self, mock_wait, mock_count, mock_ready, mock_gen, mock_notify
     ):
         """Loop runs generation when proposed count is under limit."""
         mock_gen.return_value = [{"title": "New Epic", "category": "feature"}]
@@ -671,10 +720,11 @@ class TestIdeaGenerationLoop:
     @pytest.mark.asyncio
     @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
     @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=0)
     @patch("agent.idea_generator._count_proposed_ideas", return_value=0)
     @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
     async def test_no_notify_when_nothing_generated(
-        self, mock_wait, mock_count, mock_gen, mock_notify
+        self, mock_wait, mock_count, mock_ready, mock_gen, mock_notify
     ):
         """Loop does not notify when generate_ideas returns empty."""
         mock_gen.return_value = []
@@ -697,6 +747,107 @@ class TestIdeaGenerationLoop:
 
         mock_gen.assert_called_once()
         mock_notify.assert_not_called()
+
+
+class TestIdeaGenerationLoopHealthyBacklog:
+    """TK-424: skip the hourly run entirely when approved+proposed backlog
+    is already at or above settings.idea_generator_skip_threshold."""
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas", return_value=0)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=20)
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_skips_when_backlog_healthy(
+        self, mock_wait, mock_ready, mock_count, mock_gen, mock_notify
+    ):
+        """With 20 approved+proposed items (>= default threshold 15), the
+        full hourly cycle must return without invoking the LLM."""
+        from agent.config import settings
+
+        # Sanity — make sure the default threshold is what the story expects.
+        assert settings.idea_generator_skip_threshold == 15
+
+        client = MagicMock()
+        agent = MagicMock()
+
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        # LLM is never touched when backlog is healthy.
+        mock_gen.assert_not_called()
+        mock_notify.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas", return_value=0)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=5)
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_runs_when_backlog_below_threshold(
+        self, mock_wait, mock_ready, mock_count, mock_gen, mock_notify
+    ):
+        """With 5 approved+proposed items (< default threshold 15), the
+        cycle runs normally and invokes generate_ideas."""
+        mock_gen.return_value = [{"title": "New Epic", "category": "quality"}]
+
+        client = MagicMock()
+        agent = MagicMock()
+
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        mock_gen.assert_called_once_with(agent)
+        mock_notify.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("agent.idea_generator._notify_discord", new_callable=AsyncMock)
+    @patch("agent.idea_generator.generate_ideas", new_callable=AsyncMock)
+    @patch("agent.idea_generator._count_proposed_ideas", return_value=0)
+    @patch("agent.idea_generator._count_ready_to_work_ideas", return_value=15)
+    @patch("agent.idea_generator._seconds_until_next_run", return_value=0.01)
+    async def test_skips_at_exact_threshold(
+        self, mock_wait, mock_ready, mock_count, mock_gen, mock_notify
+    ):
+        """Threshold comparison uses `>=`, so hitting it exactly also skips."""
+        client = MagicMock()
+        agent = MagicMock()
+
+        iteration = [0]
+        original_sleep = asyncio.sleep
+
+        async def counting_sleep(secs):
+            iteration[0] += 1
+            if iteration[0] >= 3:
+                raise KeyboardInterrupt("break loop")
+            await original_sleep(0.01)
+
+        with patch("agent.idea_generator.asyncio.sleep", side_effect=counting_sleep):
+            with pytest.raises(KeyboardInterrupt):
+                await idea_generation_loop(client, agent)
+
+        mock_gen.assert_not_called()
 
 
 class TestStartIdeaGenerator:
