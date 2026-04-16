@@ -16,6 +16,7 @@ Routes:
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
+    GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
 """
 
 from __future__ import annotations
@@ -2581,6 +2582,20 @@ def api_claude_vault_stats() -> Response:
     from agent.claude_vault import get_cache_stats
 
     return jsonify(get_cache_stats())
+
+
+@app.route("/api/embeddings/stats")
+def api_embeddings_stats() -> Response:
+    """GET /api/embeddings/stats — embedding store lifecycle visibility.
+
+    Surfaces total row count, per-source breakdown, current stale count,
+    orphan count and timestamp from the last sweep. Feeds the dashboard's
+    staleness widget and lets us notice when the semantic index has drifted
+    from live source content without opening the SQLite file by hand.
+    """
+    from agent import embedding_store
+
+    return jsonify(embedding_store.get_stats())
 
 
 @app.route("/aim")
