@@ -2,12 +2,105 @@
 
 ![tests](https://img.shields.io/badge/tests-2344-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.7%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-71-blue) ![lines](https://img.shields.io/badge/lines-29k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
-An Ollama-powered autonomous agent framework with Discord bot interface,
-Obsidian vault integration, Claude API escalation, and a self-improving
-knowledge base. Built for a Senior Software Engineer's daily workflow.
+Technomancer is an **autonomous AI dev team** wrapped around an Ollama-powered
+Discord bot. A human drags a story to the top of a Jira board; a daemon picks
+it up, spins up Claude Code against it, streams the log, tests it, and merges
+it. The Discord bot, Obsidian vault, and Claude API escalation are all still
+here — but the headline feature is the engineering loop that turns a ranked
+Jira story into a deployed commit without a human in the middle.
 
 > **Auto-generated** — This README is updated automatically on every deployment
 > via `safe_update.py`.
+
+## AI Dev Team
+
+Three moving parts turn a Jira ticket into a merged pull request:
+
+- **AIM** (AI Manager) — a long-running daemon that watches the board, plans
+  work, and decides when to dispatch the next story.
+- **Worker** — a short-lived process AIM spawns per story. It prepares the
+  git state, invokes Claude Code, and reports back.
+- **Claude Code** — the hands. Given a ranked story's prompt, it edits files,
+  runs tests, and commits.
+
+The human's job shrinks to *ranking* the board. Drag a story to the top and
+AIM treats that as "do this next."
+
+### AIM — the Manager daemon
+
+- Picks the next story from the Jira board using **rank** (drag-to-top ==
+  next story picked, rank-aware since TK-384/TK-385).
+- Spawns the Worker and monitors it for liveness and timeouts.
+- Escalates to Discord when it gets stuck — surfaces the failing story, the
+  error, and links to the live log.
+- **Auto-approves safe-category stories** (`cat:quality`, doc-only changes)
+  so low-risk work doesn't sit waiting on a human.
+- Enforces a **one-in-progress-at-a-time mutex**: refuses ASSIGN while Jira
+  already has an item In Progress, so two Workers can never fight over the
+  same main branch.
+- **Recovers orphaned In Progress items on startup** — if the daemon died
+  mid-story, boot-time reconciliation either resumes or releases them.
+
+### Worker — the executor
+
+- Ensures a **clean main branch** before it starts (no dangling edits, no
+  stale feature branch).
+- Spawns Claude Code against the ranked story's prompt and streams every
+  token of stdout.
+- Detects success via **Jira state** (through the BoardProvider abstraction)
+  rather than parsing log output — the ticket moving to Done is the ground
+  truth.
+- Emits structured lifecycle events to `aim/events.jsonl` so the dashboard
+  and `/api/aim/status` snapshot always know what's happening.
+
+### Jira integration — the single source of truth
+
+Jira, when configured, is where work lives. The **BoardProvider** abstraction
+(in `board/`) has two implementations:
+
+- **`JiraProvider`** — reads and writes Jira directly. Used whenever
+  `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, and `JIRA_PROJECT_KEY` are set.
+- **`LocalProvider`** — JSON fallback so the system runs fully standalone
+  when Jira isn't configured. No features are lost — sync just doesn't fire.
+
+Metadata travels as **labels**: category becomes `cat:quality`, source becomes
+`src:llm_analysis`, and so on. That keeps the shape portable between the two
+providers and survives round-trips through the Jira UI. JQL pagination is
+handled for large boards, so ranking scales past the first page.
+
+### Live log view — `/live/<item_id>`
+
+While a Worker is running, anyone with the link can watch in real time:
+
+- A dark-mode, **auto-scrolling** HTML page streams executor stdout over
+  Server-Sent Events.
+- On the Jira side, the same run writes a **single `[AIM Progress]` comment
+  that's edited in place every 60s**. One comment per execution — not thirty —
+  so the issue page stays readable but still shows live progress.
+- Lifecycle transitions (spawned / succeeded / failed) land in
+  `aim/events.jsonl` and surface on the `/aim` dashboard.
+
+## Recent highlights
+
+- **Jira-first refactor** with the `BoardProvider` abstraction — same code
+  runs against Jira or the local JSON store depending on config.
+- **`/aim` dashboard + `/api/aim/status` snapshot + `aim/events.jsonl`** —
+  unified view of what the daemon is doing right now and what it's done
+  recently.
+- **Epic-vs-story prompt discipline** — epics get a planning prompt, stories
+  get an implementation prompt; no more Claude Code trying to implement a
+  whole epic in one pass.
+- **Failure memory** — when a retry runs, the prior `[Execution Log - Failed]`
+  comment is injected into the new prompt so Claude Code sees what went wrong
+  last time instead of repeating the same mistake.
+- **README idempotency** — this generator compares before writing and skips
+  the write when content is identical, so consecutive `generate_readme.py`
+  runs don't dirty the tree or produce no-op commits.
+- **ASSIGN mutex + orphan recovery** — the one-in-progress invariant is
+  enforced at dispatch time, and startup reconciles anything the last run
+  left hanging.
+- **JQL pagination fix** — ranking works correctly on large boards, not just
+  the first page of results.
 
 ## Highlights
 
