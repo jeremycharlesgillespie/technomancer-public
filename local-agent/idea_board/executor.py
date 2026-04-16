@@ -806,6 +806,49 @@ def _build_workflow_section(idea: Any) -> str:
     )
 
 
+def _build_prior_failure_context(idea: Any) -> str:
+    """Inject the most-recent [Execution Log - Failed] comment into the prompt.
+
+    Lets a retried story learn from its previous attempt. Pulls the comment
+    stream from the active BoardProvider, filters to the ``Execution Log -
+    Failed`` marker, and renders the newest one as a ``Prior Failure
+    Context`` section. Returns an empty string when no such comment exists
+    so the caller can omit the section entirely.
+
+    The failure log is truncated to ~4000 chars from the front — the tail
+    typically contains the actual traceback, which is the useful part.
+    """
+    max_failure_chars = 4000
+    try:
+        provider = _get_board_provider()
+        getter = getattr(provider, "get_comments", None)
+        if getter is None:
+            return ""
+        comments = getter(idea.id) or []
+    except Exception as exc:
+        logger.debug(
+            "[Executor] get_comments for %s failed: %s", getattr(idea, "id", "?"), exc,
+        )
+        return ""
+
+    failures = [c for c in comments if getattr(c, "marker", None) == "[Execution Log - Failed]"]
+    if not failures:
+        return ""
+
+    latest = failures[-1]
+    body = (latest.text or "").strip()
+    if len(body) > max_failure_chars:
+        body = "... (truncated)\n" + body[-max_failure_chars:]
+
+    return (
+        "\n## Prior Failure Context\n"
+        "The previous attempt failed with the log below. Read it carefully "
+        "and avoid repeating the same mistakes. Address the root cause "
+        "before continuing.\n\n"
+        f"```\n{body}\n```"
+    )
+
+
 def _enrich_stub_description(idea: Any) -> str:
     """If a story has only a stub description, pull the parent epic's full description.
 
@@ -859,6 +902,7 @@ def _build_story_prompt(
         _build_epic_context(idea),
         _format_injected_epic_context(epic_context, previous_results),
         _build_discussion(idea),
+        _build_prior_failure_context(idea),
         f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
         _load_git_history(),
         _load_recent_errors(),
