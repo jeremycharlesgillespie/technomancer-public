@@ -300,6 +300,17 @@ def main_loop():
     if not settings.discord_webhook_url:
         log("WARNING: DISCORD_WEBHOOK_URL not set - alerts will not be sent")
 
+    # Kick off the executor_runs cleanup schedule (runs immediately, then
+    # every 6 hours on a daemon timer). The cleanup prunes old rows in
+    # executor_runs and the matching idea_board/execution_logs/ artifacts.
+    try:
+        from agent.executor_runs_cleanup import start_cleanup_scheduler
+
+        start_cleanup_scheduler()
+        log("executor_runs cleanup scheduler started (every 6h)")
+    except Exception as exc:
+        log(f"Failed to start executor_runs cleanup scheduler: {exc}")
+
     state = load_state()
     log(
         f"Loaded state: {state['total_restarts']} total restarts, "
