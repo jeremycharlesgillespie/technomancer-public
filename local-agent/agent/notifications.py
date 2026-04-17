@@ -4,12 +4,14 @@ Notifications - Send alerts to Discord, ntfy, etc.
 
 import os
 from datetime import datetime
+from typing import Any
 
 try:
     import requests
 except ImportError:
     requests = None
 
+from .config import settings
 from .discord_rate_limit import retry_request
 
 # Webhook URL loaded from environment — never hardcode secrets
@@ -145,6 +147,195 @@ def discord_alert(
     color = COLORS.get(level, COLORS["info"])
     title = title or level.upper()
     return discord_send(message, title=title, color=color, webhook_url=webhook_url)
+
+
+# ---------------------------------------------------------------------------
+# Executor run summary — posted to Discord on every completed executor run
+# ---------------------------------------------------------------------------
+
+# Status codes that count as success. Everything else renders as a failure
+# and triggers the stderr tail in the embed body.
+_EXECUTOR_SUCCESS_STATUSES = frozenset({"success"})
+
+# How many trailing lines of stderr to include on failure runs.
+_STDERR_TAIL_LINES = 20
+
+# Idea board port — matches agent/bot_commands.py and idea_board/web.py.
+_IDEA_BOARD_PORT = 8322
+
+
+def _executor_summary_webhook() -> str:
+    """Return the webhook URL for executor-run summaries.
+
+    Falls back to ``discord_webhook_url`` when the dedicated
+    ``executor_summary_webhook`` setting is empty, so ops get notifications
+    out of the box without extra configuration.
+    """
+    dedicated = (settings.executor_summary_webhook or "").strip()
+    if dedicated:
+        return dedicated
+    fallback = settings.discord_webhook_url or ""
+    return fallback.strip()
+
+
+def _format_duration_ms(duration_ms: Any) -> str:
+    """Render ``duration_ms`` for humans (e.g. ``12345`` -> ``12.3s``).
+
+    Missing or non-numeric values render as ``"?"`` rather than raising so
+    the summary still posts when instrumentation has a gap.
+    """
+    try:
+        ms = int(duration_ms)
+    except (TypeError, ValueError):
+        return "?"
+    if ms < 1000:
+        return f"{ms}ms"
+    secs = ms / 1000
+    if secs < 60:
+        return f"{secs:.1f}s"
+    mins, secs_rem = divmod(secs, 60)
+    return f"{int(mins)}m{secs_rem:04.1f}s"
+
+
+def _format_cost_usd(cost_usd: Any) -> str:
+    """Render ``cost_usd`` for humans. Missing values render as ``$?``."""
+    try:
+        return f"${float(cost_usd):.4f}"
+    except (TypeError, ValueError):
+        return "$?"
+
+
+def _stderr_tail(stderr: Any, lines: int = _STDERR_TAIL_LINES) -> str:
+    """Return the last ``lines`` lines of ``stderr``. Empty string when blank."""
+    if not stderr:
+        return ""
+    text = str(stderr)
+    tail = text.splitlines()[-lines:]
+    return "\n".join(tail).strip()
+
+
+def build_executor_summary_payload(run_record: dict[str, Any]) -> dict[str, Any]:
+    """Build the Discord webhook payload for an executor run summary.
+
+    The payload has a single embed:
+
+    * title: ``[<jira_key>] <idea title>`` (falls back to the run_id)
+    * color: green for success, red otherwise
+    * fields: status, duration, cost
+    * description: a link to ``/executor-runs#<run_id>``; for failures the
+      last 20 lines of stderr are appended in a fenced code block.
+
+    Args:
+        run_record: Dict with executor run fields. Recognised keys:
+            ``run_id``, ``jira_key``, ``title``, ``status``, ``duration_ms``,
+            ``cost_usd``, ``stderr``. Missing fields render as ``"?"`` rather
+            than raising.
+
+    Returns:
+        A dict in Discord webhook shape: ``{"embeds": [...]}``.
+    """
+    run_id = str(run_record.get("run_id") or "").strip()
+    jira_key = (run_record.get("jira_key") or "").strip()
+    title = (run_record.get("title") or jira_key or run_id or "executor run").strip()
+    status = (run_record.get("status") or "unknown").strip()
+    is_success = status in _EXECUTOR_SUCCESS_STATUSES
+    color = COLORS["success"] if is_success else COLORS["error"]
+
+    # Title prefix — "[TK-463] Foo" reads naturally even when title already
+    # starts with the key (we strip the dupe), and drops the prefix when no
+    # key is available.
+    header_title = title
+    if jira_key and not title.startswith(f"[{jira_key}]"):
+        if title == jira_key:
+            header_title = jira_key
+        else:
+            header_title = f"[{jira_key}] {title}"
+
+    # Build the run link. server_host + hardcoded idea-board port matches the
+    # pattern used across bot_commands.py and the executor module.
+    host = settings.server_host or "localhost"
+    if run_id:
+        link = f"http://{host}:{_IDEA_BOARD_PORT}/executor-runs#{run_id}"
+    else:
+        link = f"http://{host}:{_IDEA_BOARD_PORT}/executor-runs"
+
+    description_parts: list[str] = [f"[View run]({link})"]
+    if not is_success:
+        tail = _stderr_tail(run_record.get("stderr"))
+        if tail:
+            description_parts.append(f"```\n{tail}\n```")
+
+    embed: dict[str, Any] = {
+        "title": header_title,
+        "description": "\n".join(description_parts),
+        "color": color,
+        "timestamp": datetime.utcnow().isoformat(),
+        "footer": {"text": "Executor"},
+        "fields": [
+            {"name": "Status", "value": status, "inline": True},
+            {
+                "name": "Duration",
+                "value": _format_duration_ms(run_record.get("duration_ms")),
+                "inline": True,
+            },
+            {
+                "name": "Cost",
+                "value": _format_cost_usd(run_record.get("cost_usd")),
+                "inline": True,
+            },
+        ],
+    }
+    if jira_key:
+        embed["fields"].append(
+            {"name": "Jira", "value": jira_key, "inline": True}
+        )
+    return {"embeds": [embed]}
+
+
+def send_executor_summary(
+    run_record: dict[str, Any],
+    webhook_url: str | None = None,
+) -> str:
+    """Post a per-run summary to the executor-summary Discord webhook.
+
+    Safe to call from the executor's completion hook — every failure mode
+    (missing webhook, no ``requests``, HTTP error) returns a descriptive
+    string instead of raising, so an instrumentation hiccup never aborts
+    the finalizer.
+
+    Args:
+        run_record: Completed run metadata. See
+            :func:`build_executor_summary_payload` for recognised keys.
+        webhook_url: Override for the resolved settings webhook. Useful for
+            tests and ops-triggered resends.
+
+    Returns:
+        Short status string describing the outcome.
+    """
+    if requests is None:
+        return "Error: requests library not installed"
+
+    url = (webhook_url or _executor_summary_webhook()).strip()
+    if not url:
+        return "Error: No executor summary webhook configured"
+
+    payload = build_executor_summary_payload(run_record)
+
+    try:
+        response = retry_request(
+            requests.post,
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        return f"Error sending executor summary: {exc}"
+
+    if response.status_code in (200, 204):
+        run_id = run_record.get("run_id") or run_record.get("jira_key") or "run"
+        return f"Sent executor summary for {run_id}"
+    return f"Discord error {response.status_code}: {response.text}"
 
 
 def get_notification_tools() -> list:

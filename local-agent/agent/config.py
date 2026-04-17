@@ -304,6 +304,13 @@ class Settings(BaseSettings):
             "cleanly before escalating to SIGKILL."
         ),
     )
+    executor_summary_webhook: str = Field(
+        default="",
+        description=(
+            "Discord webhook URL for per-run executor summary messages posted "
+            "on completion. Empty string falls back to discord_webhook_url."
+        ),
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(

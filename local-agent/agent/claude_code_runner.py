@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from . import executor_runs_db
+from . import executor_runs_db, notifications
 from .config import settings
 from .run_context import set_phase, with_run_context
 
@@ -488,6 +488,35 @@ def _detect_branch(cwd: str) -> str | None:
     return branch or None
 
 
+def _safe_send_summary(
+    run_id: str,
+    jira_key: str | None,
+    status: str,
+    duration_ms: int,
+    cost_usd: float,
+    stderr: str = "",
+    title: str | None = None,
+) -> None:
+    """Post a per-run summary to Discord, swallowing all errors.
+
+    Instrumentation side-channel — same contract as :func:`_safe_record`.
+    A webhook outage or malformed payload must never propagate up into the
+    executor's main success/failure path.
+    """
+    try:
+        notifications.send_executor_summary({
+            "run_id": run_id,
+            "jira_key": jira_key,
+            "title": title,
+            "status": status,
+            "duration_ms": duration_ms,
+            "cost_usd": cost_usd,
+            "stderr": stderr,
+        })
+    except Exception:
+        logger.debug("notifications.send_executor_summary failed", exc_info=True)
+
+
 def _safe_archive(
     run_id: str, stdout: str, stderr: str, branch_name: str | None
 ) -> None:
@@ -623,6 +652,14 @@ async def run_claude_code(
                 cost_usd=0.0,
                 status="binary_not_found",
             )
+            _safe_send_summary(
+                run_id=artifact_run_id,
+                jira_key=jira_key,
+                status="binary_not_found",
+                duration_ms=0,
+                cost_usd=0.0,
+                stderr="Claude Code binary not found in VS Code extensions.",
+            )
             return False, "Error: Claude Code binary not found in VS Code extensions.", 0.0
 
         work_dir = cwd or str(PROJECT_ROOT)
@@ -703,6 +740,13 @@ async def run_claude_code(
                     artifact_run_id, stdout_text, stderr_text,
                     _detect_branch(work_dir),
                 )
+                _safe_send_summary(
+                    run_id=artifact_run_id,
+                    jira_key=jira_key,
+                    status="success",
+                    duration_ms=int(duration * 1000),
+                    cost_usd=cost_usd,
+                )
                 return True, output, duration
             else:
                 error = stderr_text.strip()
@@ -719,6 +763,14 @@ async def run_claude_code(
                 _safe_archive(
                     artifact_run_id, stdout_text, stderr_text,
                     _detect_branch(work_dir),
+                )
+                _safe_send_summary(
+                    run_id=artifact_run_id,
+                    jira_key=jira_key,
+                    status="failure",
+                    duration_ms=int(duration * 1000),
+                    cost_usd=cost_usd,
+                    stderr=error,
                 )
                 return False, f"Claude Code exited with code {proc.returncode}:\n{error or output}", duration
 
@@ -760,6 +812,14 @@ async def run_claude_code(
                 artifact_run_id, stdout_partial, stderr_partial,
                 _detect_branch(work_dir),
             )
+            _safe_send_summary(
+                run_id=artifact_run_id,
+                jira_key=jira_key,
+                status="timeout",
+                duration_ms=int(duration * 1000),
+                cost_usd=partial_cost,
+                stderr=stderr_partial,
+            )
             msg = f"Claude Code task timed out after {effective_timeout}s"
             if stdout_partial.strip():
                 msg += f"\nPartial output ({len(stdout_partial)} chars captured)"
@@ -772,6 +832,14 @@ async def run_claude_code(
                 duration_ms=int(duration * 1000),
                 cost_usd=0.0,
                 status="error",
+            )
+            _safe_send_summary(
+                run_id=artifact_run_id,
+                jira_key=jira_key,
+                status="error",
+                duration_ms=int(duration * 1000),
+                cost_usd=0.0,
+                stderr=str(e),
             )
             return False, f"Error running Claude Code: {e}", duration
 

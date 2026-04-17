@@ -1,15 +1,18 @@
 """Tests for the notifications module — Discord webhook messaging."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.notifications import (
     COLORS,
+    build_executor_summary_payload,
     discord_alert,
     discord_send,
     discord_send_code,
     get_notification_tools,
+    send_executor_summary,
 )
 
 
@@ -158,6 +161,237 @@ class TestDiscordSendFile:
         monkeypatch.setattr("agent.notifications.DISCORD_WEBHOOK_URL", "")
         result = discord_send_file("test.txt")
         assert "No webhook" in result or "Error" in result
+
+
+def _fake_settings(
+    executor_summary_webhook: str = "",
+    discord_webhook_url: str = "",
+    server_host: str = "localhost",
+) -> SimpleNamespace:
+    """Build a minimal settings stand-in for the executor-summary tests."""
+    return SimpleNamespace(
+        executor_summary_webhook=executor_summary_webhook,
+        discord_webhook_url=discord_webhook_url,
+        server_host=server_host,
+    )
+
+
+class TestBuildExecutorSummaryPayload:
+    """Payload shape assertions for build_executor_summary_payload."""
+
+    def test_success_run_has_green_color_and_no_stderr_block(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(server_host="example.com"),
+        )
+        payload = build_executor_summary_payload({
+            "run_id": "20260417-120000-TK-463",
+            "jira_key": "TK-463",
+            "title": "Surface executor run metadata",
+            "status": "success",
+            "duration_ms": 12345,
+            "cost_usd": 0.4242,
+        })
+        assert "embeds" in payload
+        embed = payload["embeds"][0]
+        assert embed["color"] == COLORS["success"]
+        assert embed["title"] == "[TK-463] Surface executor run metadata"
+        # Success runs never render a stderr code block.
+        assert "```" not in embed["description"]
+        assert "/executor-runs#20260417-120000-TK-463" in embed["description"]
+        assert "example.com" in embed["description"]
+        field_names = [f["name"] for f in embed["fields"]]
+        assert "Status" in field_names
+        assert "Duration" in field_names
+        assert "Cost" in field_names
+        assert "Jira" in field_names
+
+    def test_failure_run_has_red_color_and_stderr_tail(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        stderr = "\n".join(f"line{i}" for i in range(1, 51))  # 50 lines
+        payload = build_executor_summary_payload({
+            "run_id": "rid",
+            "jira_key": "TK-1",
+            "title": "Boom",
+            "status": "failure",
+            "duration_ms": 900,
+            "cost_usd": 0.01,
+            "stderr": stderr,
+        })
+        embed = payload["embeds"][0]
+        assert embed["color"] == COLORS["error"]
+        assert "```" in embed["description"]
+        # Should keep only the last 20 lines.
+        assert "line50" in embed["description"]
+        assert "line31" in embed["description"]
+        assert "line30" not in embed["description"]
+
+    def test_timeout_status_treated_as_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        payload = build_executor_summary_payload({
+            "run_id": "rid",
+            "jira_key": "TK-1",
+            "status": "timeout",
+            "duration_ms": 1800000,
+            "cost_usd": 0.0,
+            "stderr": "hung",
+        })
+        embed = payload["embeds"][0]
+        assert embed["color"] == COLORS["error"]
+
+    def test_missing_fields_do_not_raise(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        payload = build_executor_summary_payload({})
+        embed = payload["embeds"][0]
+        # Defaults exist for every required display slot.
+        assert embed["title"]
+        assert embed["fields"]
+
+    def test_duration_under_one_second_renders_ms(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        payload = build_executor_summary_payload({
+            "run_id": "r", "status": "success",
+            "duration_ms": 250, "cost_usd": 0,
+        })
+        duration_field = next(
+            f for f in payload["embeds"][0]["fields"] if f["name"] == "Duration"
+        )
+        assert duration_field["value"] == "250ms"
+
+    def test_cost_renders_with_four_decimals(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        payload = build_executor_summary_payload({
+            "run_id": "r", "status": "success",
+            "duration_ms": 1000, "cost_usd": 1.23456,
+        })
+        cost_field = next(
+            f for f in payload["embeds"][0]["fields"] if f["name"] == "Cost"
+        )
+        assert cost_field["value"] == "$1.2346"
+
+
+class TestSendExecutorSummary:
+    """Webhook-delivery tests for send_executor_summary."""
+
+    @patch("agent.notifications.retry_request")
+    def test_posts_to_dedicated_webhook(self, mock_retry, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(
+                executor_summary_webhook="https://dedicated.test",
+                discord_webhook_url="https://default.test",
+            ),
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+
+        result = send_executor_summary({
+            "run_id": "rid",
+            "jira_key": "TK-1",
+            "title": "thing",
+            "status": "success",
+            "duration_ms": 1000,
+            "cost_usd": 0.1,
+        })
+        assert "Sent executor summary" in result
+        assert mock_retry.call_args[0][1] == "https://dedicated.test"
+        payload = mock_retry.call_args[1]["json"]
+        assert payload["embeds"][0]["color"] == COLORS["success"]
+
+    @patch("agent.notifications.retry_request")
+    def test_falls_back_to_discord_webhook_url(self, mock_retry, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(
+                executor_summary_webhook="",
+                discord_webhook_url="https://fallback.test",
+            ),
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+
+        send_executor_summary({
+            "run_id": "rid", "jira_key": "TK-1",
+            "status": "success", "duration_ms": 1, "cost_usd": 0,
+        })
+        assert mock_retry.call_args[0][1] == "https://fallback.test"
+
+    @patch("agent.notifications.retry_request")
+    def test_override_webhook_takes_precedence(self, mock_retry, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(
+                executor_summary_webhook="https://dedicated.test",
+                discord_webhook_url="https://default.test",
+            ),
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+
+        send_executor_summary(
+            {
+                "run_id": "rid", "jira_key": "TK-1",
+                "status": "success", "duration_ms": 1, "cost_usd": 0,
+            },
+            webhook_url="https://override.test",
+        )
+        assert mock_retry.call_args[0][1] == "https://override.test"
+
+    def test_no_webhook_configured(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings", _fake_settings()
+        )
+        result = send_executor_summary({
+            "run_id": "rid", "jira_key": "TK-1",
+            "status": "success", "duration_ms": 1, "cost_usd": 0,
+        })
+        assert "No executor summary webhook" in result
+
+    def test_no_requests_library(self, monkeypatch):
+        monkeypatch.setattr("agent.notifications.requests", None)
+        result = send_executor_summary({
+            "run_id": "rid", "jira_key": "TK-1",
+            "status": "success", "duration_ms": 1, "cost_usd": 0,
+        })
+        assert "not installed" in result
+
+    @patch("agent.notifications.retry_request")
+    def test_failure_payload_includes_stderr_tail(self, mock_retry, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(executor_summary_webhook="https://t"),
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+        stderr = "\n".join(f"err{i}" for i in range(25))
+        send_executor_summary({
+            "run_id": "rid", "jira_key": "TK-1",
+            "status": "failure", "duration_ms": 1, "cost_usd": 0,
+            "stderr": stderr,
+        })
+        payload = mock_retry.call_args[1]["json"]
+        description = payload["embeds"][0]["description"]
+        assert "err24" in description
+        assert "err4" not in description
+
+    @patch("agent.notifications.retry_request")
+    def test_non_2xx_returns_error_string(self, mock_retry, monkeypatch):
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(executor_summary_webhook="https://t"),
+        )
+        mock_retry.return_value = MagicMock(status_code=500, text="boom")
+        result = send_executor_summary({
+            "run_id": "rid", "jira_key": "TK-1",
+            "status": "success", "duration_ms": 1, "cost_usd": 0,
+        })
+        assert "500" in result
 
 
 class TestGetNotificationTools:
