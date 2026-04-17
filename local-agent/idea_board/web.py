@@ -17,6 +17,10 @@ Routes:
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
     GET  /api/jira/dlq             — Recent Jira-sync dead-letter queue entries
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
+    GET  /api/performance/breakdown — Last N runs with per-phase durations (stacked-bar feed)
+    GET  /api/performance/percentiles — Per-phase p50/p95/p99 aggregated over N days
+    GET  /api/performance/idle-gaps — Top-N idle gaps between consecutive phases
+    GET  /performance/breakdown   — HTML dashboard: stacked bars + percentiles + idle gaps
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
@@ -3107,6 +3111,89 @@ def api_perf_functions() -> Response:
     })
 
 
+@app.route("/api/performance/breakdown")
+def api_performance_breakdown() -> Response:
+    """GET /api/performance/breakdown?limit=N — last N runs with phase rows.
+
+    Feeds the stacked-bar chart on /performance/breakdown. ``limit``
+    defaults to 50 and is clamped to ``[1, 500]`` so a curious ``?limit=9999``
+    can't accidentally pull every row in the DB.
+    """
+    try:
+        limit = int(request.args.get("limit", "50"))
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 500))
+
+    from agent import story_timings
+    return jsonify({
+        "runs": story_timings.get_recent_runs_breakdown(limit=limit),
+        "limit": limit,
+    })
+
+
+@app.route("/api/performance/percentiles")
+def api_performance_percentiles() -> Response:
+    """GET /api/performance/percentiles?days=N — per-phase p50/p95/p99.
+
+    Aggregates every ``story_phase_timings`` row from the last ``days``
+    days (default 7). ``days`` is clamped to ``[1, 90]`` so the range
+    stays bounded. Returned rows are sorted by ``p50_ms`` descending —
+    the slowest phase surfaces first.
+    """
+    try:
+        days = int(request.args.get("days", "7"))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 90))
+
+    from agent import story_timings
+    return jsonify({
+        "rows": story_timings.get_phase_percentiles(days=days),
+        "days": days,
+    })
+
+
+@app.route("/api/performance/idle-gaps")
+def api_performance_idle_gaps() -> Response:
+    """GET /api/performance/idle-gaps?days=N&limit=M — top-M idle gaps.
+
+    Computes the biggest gaps between consecutive phases within a single
+    run over the last ``days`` days. Surfaces places where the executor
+    is waiting (queue, retry backoff, deadlock) rather than doing work.
+    """
+    try:
+        days = int(request.args.get("days", "7"))
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(days, 90))
+    try:
+        limit = int(request.args.get("limit", "10"))
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 100))
+
+    from agent import story_timings
+    return jsonify({
+        "gaps": story_timings.get_idle_gaps(days=days, limit=limit),
+        "days": days,
+        "limit": limit,
+    })
+
+
+@app.route("/performance/breakdown")
+def performance_breakdown_page() -> str:
+    """GET /performance/breakdown — HTML dashboard of story execution timing.
+
+    Renders three views: a stacked-bar chart of the last 50 runs (one
+    bar per run, each phase coloured), a percentile table aggregated
+    over 7 days, and a list of the top 10 biggest idle gaps. Data is
+    fetched live from the companion JSON endpoints so the table stays
+    current without cache invalidation.
+    """
+    return _render_performance_breakdown()
+
+
 @app.route("/api/claude_vault/stats")
 def api_claude_vault_stats() -> Response:
     """GET /api/claude_vault/stats — process-wide prompt-cache stats.
@@ -5760,6 +5847,312 @@ def _render_executor_runs() -> str:
 </html>"""
 
 
+PERFORMANCE_BREAKDOWN_CSS = """
+:root {
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --orange: #ff9800;
+    --border: #333;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.6; }
+h1 { margin-bottom: 0.5rem; color: var(--accent); }
+h2 { font-size: 1.1rem; margin: 1.5rem 0 0.8rem; color: var(--accent); }
+.subtitle { color: var(--muted); margin-bottom: 1.5rem; }
+.subtitle a { color: var(--accent); text-decoration: none; }
+.panel { background: var(--surface); border-radius: 8px; padding: 1.25rem;
+         border-left: 4px solid var(--accent); margin-bottom: 1.5rem; }
+.panel.orange { border-left-color: var(--orange); }
+.panel.green { border-left-color: var(--green); }
+.chart-wrap { position: relative; height: 560px; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem;
+     text-transform: uppercase; letter-spacing: 0.5px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.phase { font-family: monospace; color: var(--accent); }
+.empty { color: var(--muted); font-style: italic; padding: 1rem 0; }
+.badge { font-size: 0.75rem; background: #333; padding: 3px 9px; border-radius: 4px;
+         color: var(--muted); margin-left: 6px; }
+#fetch-error { color: var(--red); margin-bottom: 1rem; display: none; }
+#fetch-error.visible { display: block; }
+.run-label { font-family: monospace; color: var(--muted); font-size: 0.8rem; }
+@media (max-width: 700px) {
+    body { padding: 12px; }
+    .chart-wrap { height: 420px; }
+}
+"""
+
+
+def _fmt_ms_for_badge(ms: int) -> str:
+    """Human-readable duration — milliseconds for tiny numbers, seconds otherwise."""
+    if ms <= 0:
+        return "no data"
+    if ms < 1000:
+        return f"{ms}ms"
+    secs = ms / 1000.0
+    if secs < 60:
+        return f"{secs:.1f}s"
+    mins = secs / 60.0
+    return f"{mins:.1f}m"
+
+
+def _render_performance_breakdown() -> str:
+    """Render the /performance/breakdown HTML page.
+
+    Static shell; all three panels (stacked bars, percentile table, idle
+    gaps) fetch their data via the companion JSON endpoints so the table
+    stays live without cache invalidation.
+    """
+    now = datetime.now().strftime("%H:%M:%S")
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Performance Breakdown</title>
+    <style>{PERFORMANCE_BREAKDOWN_CSS}</style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <h1>Performance Breakdown</h1>
+    <p class="subtitle">
+        <a href="/">&larr; Hub</a> &middot;
+        <a href="/executor-runs">Executor runs</a> &middot;
+        Where time is spent during story execution &middot;
+        <a href="/api/performance/breakdown">API</a>
+    </p>
+
+    <div id="fetch-error"></div>
+
+    <section class="panel">
+        <h2>Last 50 runs — stacked phase breakdown</h2>
+        <div class="chart-wrap">
+            <canvas id="stacked-chart"></canvas>
+        </div>
+    </section>
+
+    <section class="panel orange">
+        <h2>Percentiles by phase <span class="badge" id="percentile-meta">last 7d</span></h2>
+        <table id="percentile-table">
+            <thead>
+                <tr>
+                    <th>Phase</th>
+                    <th class="num">p50</th>
+                    <th class="num">p95</th>
+                    <th class="num">p99</th>
+                    <th class="num">Samples</th>
+                </tr>
+            </thead>
+            <tbody id="percentile-tbody">
+                <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="panel green">
+        <h2>Top 10 idle gaps <span class="badge" id="gap-meta">last 7d</span></h2>
+        <table id="gap-table">
+            <thead>
+                <tr>
+                    <th>Run</th>
+                    <th>Story</th>
+                    <th>Transition</th>
+                    <th class="num">Gap</th>
+                    <th>Started at</th>
+                </tr>
+            </thead>
+            <tbody id="gap-tbody">
+                <tr><td colspan="5" class="empty">Loading&hellip;</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <p style="color:var(--muted);font-size:0.8rem;margin-top:1.5rem">
+        Page loaded at {now} &middot; Data live from
+        <a href="/api/performance/breakdown">/api/performance/breakdown</a>,
+        <a href="/api/performance/percentiles">/percentiles</a>,
+        <a href="/api/performance/idle-gaps">/idle-gaps</a>
+    </p>
+
+    <script>
+    const PHASE_COLORS = [
+        '#4caf50', '#66b3ff', '#ff9800', '#e94560', '#9c27b0',
+        '#00bcd4', '#ffc107', '#8bc34a', '#f06292', '#607d8b',
+        '#795548', '#3f51b5', '#cddc39', '#ff5722', '#009688',
+    ];
+    function colorForPhase(name, phaseOrder) {{
+        const idx = phaseOrder.indexOf(name);
+        if (idx === -1) return '#888';
+        return PHASE_COLORS[idx % PHASE_COLORS.length];
+    }}
+
+    function showError(msg) {{
+        const el = document.getElementById('fetch-error');
+        el.textContent = msg;
+        el.classList.add('visible');
+    }}
+
+    function escapeHtml(s) {{
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }}
+
+    function fmtMs(ms) {{
+        if (ms == null || isNaN(ms)) return '—';
+        const n = Number(ms);
+        if (n < 1000) return n + 'ms';
+        const secs = n / 1000;
+        if (secs < 60) return secs.toFixed(1) + 's';
+        const mins = Math.floor(secs / 60);
+        const rem = Math.round(secs - mins * 60);
+        return mins + 'm ' + rem + 's';
+    }}
+
+    function fmtTs(v) {{
+        if (!v) return '—';
+        return String(v).replace('T', ' ').slice(0, 19);
+    }}
+
+    async function loadBreakdown() {{
+        try {{
+            const resp = await fetch('/api/performance/breakdown', {{cache: 'no-store'}});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            const runs = Array.isArray(data.runs) ? data.runs : [];
+            renderStacked(runs);
+        }} catch (e) {{
+            showError('Failed to load breakdown: ' + e.message);
+        }}
+    }}
+
+    function renderStacked(runs) {{
+        // Oldest -> newest (runs come newest-first).
+        const ordered = runs.slice().reverse();
+        const phaseOrder = [];
+        for (const r of ordered) {{
+            for (const p of (r.phases || [])) {{
+                if (p.phase && !phaseOrder.includes(p.phase)) phaseOrder.push(p.phase);
+            }}
+        }}
+        const labels = ordered.map(r => {{
+            const short = (r.run_id || '').slice(-12);
+            const flag = r.success ? '' : ' \u2717';
+            return short + flag;
+        }});
+        const datasets = phaseOrder.map(phase => ({{
+            label: phase,
+            data: ordered.map(r => {{
+                const match = (r.phases || []).find(p => p.phase === phase);
+                return match ? (match.duration_ms || 0) / 1000 : 0;
+            }}),
+            backgroundColor: colorForPhase(phase, phaseOrder),
+            borderWidth: 0,
+        }}));
+
+        const ctx = document.getElementById('stacked-chart').getContext('2d');
+        if (window._stackedChart) window._stackedChart.destroy();
+        window._stackedChart = new Chart(ctx, {{
+            type: 'bar',
+            data: {{labels, datasets}},
+            options: {{
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {{
+                    legend: {{position: 'bottom', labels: {{color: '#e0e0e0'}}}},
+                    tooltip: {{
+                        callbacks: {{
+                            label: (ctx) => ctx.dataset.label + ': ' + ctx.parsed.x.toFixed(2) + 's'
+                        }}
+                    }},
+                }},
+                scales: {{
+                    x: {{stacked: true, ticks: {{color: '#888'}},
+                         grid: {{color: '#333'}},
+                         title: {{display: true, text: 'seconds', color: '#888'}}}},
+                    y: {{stacked: true, ticks: {{color: '#888', font: {{family: 'monospace'}}}},
+                         grid: {{color: '#333'}}}},
+                }},
+            }},
+        }});
+    }}
+
+    async function loadPercentiles() {{
+        try {{
+            const resp = await fetch('/api/performance/percentiles', {{cache: 'no-store'}});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderPercentiles(data);
+        }} catch (e) {{
+            showError('Failed to load percentiles: ' + e.message);
+        }}
+    }}
+
+    function renderPercentiles(data) {{
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        document.getElementById('percentile-meta').textContent =
+            'last ' + (data.days || 7) + 'd';
+        const tbody = document.getElementById('percentile-tbody');
+        if (!rows.length) {{
+            tbody.innerHTML = '<tr><td colspan="5" class="empty">No data yet</td></tr>';
+            return;
+        }}
+        tbody.innerHTML = rows.map(r =>
+            '<tr>' +
+                '<td class="phase">' + escapeHtml(r.phase || '') + '</td>' +
+                '<td class="num">' + fmtMs(r.p50_ms) + '</td>' +
+                '<td class="num">' + fmtMs(r.p95_ms) + '</td>' +
+                '<td class="num">' + fmtMs(r.p99_ms) + '</td>' +
+                '<td class="num">' + (r.count || 0) + '</td>' +
+            '</tr>'
+        ).join('');
+    }}
+
+    async function loadIdleGaps() {{
+        try {{
+            const resp = await fetch('/api/performance/idle-gaps', {{cache: 'no-store'}});
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            renderIdleGaps(data);
+        }} catch (e) {{
+            showError('Failed to load idle gaps: ' + e.message);
+        }}
+    }}
+
+    function renderIdleGaps(data) {{
+        const gaps = Array.isArray(data.gaps) ? data.gaps : [];
+        document.getElementById('gap-meta').textContent =
+            'last ' + (data.days || 7) + 'd';
+        const tbody = document.getElementById('gap-tbody');
+        if (!gaps.length) {{
+            tbody.innerHTML = '<tr><td colspan="5" class="empty">No idle gaps detected</td></tr>';
+            return;
+        }}
+        tbody.innerHTML = gaps.map(g =>
+            '<tr>' +
+                '<td class="run-label">' + escapeHtml((g.run_id || '').slice(-16)) + '</td>' +
+                '<td>' + escapeHtml(g.story_id || '—') + '</td>' +
+                '<td><span class="phase" style="color:var(--accent)">' +
+                    escapeHtml(g.from_phase || '') + '</span> &rarr; ' +
+                    '<span class="phase" style="color:var(--orange)">' +
+                    escapeHtml(g.to_phase || '') + '</span></td>' +
+                '<td class="num">' + fmtMs(g.gap_ms) + '</td>' +
+                '<td>' + escapeHtml(fmtTs(g.from_ended_at)) + '</td>' +
+            '</tr>'
+        ).join('');
+    }}
+
+    loadBreakdown();
+    loadPercentiles();
+    loadIdleGaps();
+    </script>
+</body>
+</html>"""
+
+
 def _render_hub() -> str:
     """Render the central hub page with links to all services."""
     ideas = load_ideas()
@@ -5769,6 +6162,15 @@ def _render_hub() -> str:
     executing = len([i for i in ideas if i.state == "executing"])
     completion_pct = round(done / total * 100) if total else 0
     generated_at = datetime.now().strftime("%H:%M")
+
+    # p50 badge for executor.claude_work — read fresh on every hub load so
+    # the signal reflects current-day execution, not a cached snapshot.
+    try:
+        from agent import story_timings as _st
+        claude_work_p50_ms = _st.get_phase_p50("executor.claude_work", days=1)
+    except Exception:
+        claude_work_p50_ms = 0
+    claude_work_badge = _fmt_ms_for_badge(claude_work_p50_ms)
 
     try:
         git_hash = subprocess.run(
@@ -5906,6 +6308,11 @@ def _render_hub() -> str:
         <a href="/live" class="card" style="border-left: 4px solid var(--orange);">
             <h2>View Live Executions</h2>
             <p>Browse in-flight work across projects and tail the latest runs.</p>
+        </a>
+        <a href="/performance/breakdown" class="card" style="border-left: 4px solid #9c27b0;">
+            <h2>Performance Breakdown</h2>
+            <p>Stacked phase timing, percentiles, and idle gaps across recent story runs.</p>
+            <span class="badge">claude_work p50: {claude_work_badge}</span>
         </a>
         <a href="http://{settings.server_host}:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>

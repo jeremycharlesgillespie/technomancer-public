@@ -37,8 +37,9 @@ import logging
 import sqlite3
 import threading
 import time
+from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -230,3 +231,212 @@ def get_phases_for_story(story_id: str) -> list[dict[str, Any]]:
         (story_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# =============================================================================
+# AGGREGATION HELPERS — feed the /performance/breakdown dashboard.
+# =============================================================================
+
+
+def _percentile(sorted_values: list[int], pct: float) -> int:
+    """Inclusive linear-interpolation percentile on a pre-sorted list.
+
+    Returns ``0`` for an empty list; returns the lone element when the list
+    has exactly one value. SQLite has no ``percentile_cont`` so the dashboard
+    computes percentiles in Python — this helper keeps the formula in one
+    place so tests can pin its contract.
+    """
+    if not sorted_values:
+        return 0
+    if len(sorted_values) == 1:
+        return int(sorted_values[0])
+    k = (len(sorted_values) - 1) * (pct / 100.0)
+    f = int(k)
+    c = min(f + 1, len(sorted_values) - 1)
+    if f == c:
+        return int(sorted_values[f])
+    return int(round(sorted_values[f] * (c - k) + sorted_values[c] * (k - f)))
+
+
+def get_recent_runs_breakdown(limit: int = 50) -> list[dict[str, Any]]:
+    """Return up to ``limit`` recent runs newest-first with their phase rows.
+
+    Each run dict has ``run_id``, ``story_id``, ``project``, ``started_at``
+    (earliest phase start), ``total_ms`` (sum of phase durations),
+    ``success`` (True only if every phase succeeded), and ``phases`` — a
+    list ordered by ``started_at`` ASC of
+    ``{phase, duration_ms, started_at, ended_at, success}``.
+
+    Rows without a ``run_id`` are skipped because the stacked-bar view uses
+    ``run_id`` as the bar identity.
+    """
+    init_db()
+    conn = _get_conn()
+    limit = max(1, int(limit))
+
+    run_id_rows = conn.execute(
+        """SELECT run_id, MAX(started_at) AS last_ts
+           FROM story_phase_timings
+           WHERE run_id IS NOT NULL
+           GROUP BY run_id
+           ORDER BY last_ts DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    run_ids = [r["run_id"] for r in run_id_rows]
+    if not run_ids:
+        return []
+
+    placeholders = ",".join("?" * len(run_ids))
+    phase_rows = conn.execute(
+        f"""SELECT run_id, story_id, project, phase, started_at, ended_at,
+                   duration_ms, success
+            FROM story_phase_timings
+            WHERE run_id IN ({placeholders})
+            ORDER BY started_at ASC, id ASC""",
+        run_ids,
+    ).fetchall()
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for r in phase_rows:
+        grouped[r["run_id"]].append(dict(r))
+
+    out: list[dict[str, Any]] = []
+    for rid in run_ids:
+        phases = grouped.get(rid, [])
+        if not phases:
+            continue
+        started_candidates = [p["started_at"] for p in phases if p["started_at"]]
+        out.append({
+            "run_id": rid,
+            "story_id": phases[0]["story_id"],
+            "project": phases[0]["project"],
+            "started_at": min(started_candidates) if started_candidates else None,
+            "total_ms": sum(int(p["duration_ms"] or 0) for p in phases),
+            "success": all(bool(p["success"]) for p in phases),
+            "phases": [
+                {
+                    "phase": p["phase"],
+                    "duration_ms": int(p["duration_ms"] or 0),
+                    "started_at": p["started_at"],
+                    "ended_at": p["ended_at"],
+                    "success": bool(p["success"]),
+                }
+                for p in phases
+            ],
+        })
+    return out
+
+
+def get_phase_percentiles(days: int = 7) -> list[dict[str, Any]]:
+    """Aggregate phase durations over the last ``days`` days.
+
+    Returns one row per phase with ``count``, ``p50_ms``, ``p95_ms``,
+    ``p99_ms`` — sorted by ``p50_ms`` descending so the slowest phases
+    surface first in the breakdown table.
+    """
+    init_db()
+    conn = _get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT phase, duration_ms
+           FROM story_phase_timings
+           WHERE started_at >= ?
+             AND phase IS NOT NULL
+             AND duration_ms IS NOT NULL""",
+        (cutoff,),
+    ).fetchall()
+
+    by_phase: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        by_phase[r["phase"]].append(int(r["duration_ms"]))
+
+    out: list[dict[str, Any]] = []
+    for phase, values in by_phase.items():
+        values.sort()
+        out.append({
+            "phase": phase,
+            "count": len(values),
+            "p50_ms": _percentile(values, 50),
+            "p95_ms": _percentile(values, 95),
+            "p99_ms": _percentile(values, 99),
+        })
+    out.sort(key=lambda x: x["p50_ms"], reverse=True)
+    return out
+
+
+def get_phase_p50(phase: str, days: int = 1) -> int:
+    """Return the p50 ``duration_ms`` for one phase over the last N days.
+
+    Returns ``0`` when no rows match. Used by the hub card to show a
+    freshness badge without pulling the full percentile table.
+    """
+    init_db()
+    conn = _get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT duration_ms FROM story_phase_timings
+           WHERE phase = ?
+             AND started_at >= ?
+             AND duration_ms IS NOT NULL""",
+        (phase, cutoff),
+    ).fetchall()
+    values = sorted(int(r["duration_ms"]) for r in rows)
+    return _percentile(values, 50)
+
+
+def get_idle_gaps(days: int = 7, limit: int = 10) -> list[dict[str, Any]]:
+    """Top-N biggest idle gaps between consecutive phases within a run.
+
+    For each run_id, phases are ordered by ``started_at``; each gap is
+    ``next.started_at - prev.ended_at`` in milliseconds. Negative or zero
+    gaps (overlapping or back-to-back phases) are dropped. Unparseable
+    timestamps are skipped rather than raising — instrumentation failure
+    must never break the dashboard.
+
+    Returned dicts include ``from_phase``, ``to_phase``, ``from_ended_at``,
+    ``to_started_at``, ``gap_ms``, plus ``run_id``, ``story_id``, ``project``
+    so the UI can link back to the relevant run.
+    """
+    init_db()
+    conn = _get_conn()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        """SELECT run_id, story_id, project, phase, started_at, ended_at
+           FROM story_phase_timings
+           WHERE run_id IS NOT NULL
+             AND started_at >= ?
+           ORDER BY run_id, started_at ASC, id ASC""",
+        (cutoff,),
+    ).fetchall()
+
+    by_run: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for r in rows:
+        by_run[r["run_id"]].append(r)
+
+    gaps: list[dict[str, Any]] = []
+    for rid, phases in by_run.items():
+        for i in range(len(phases) - 1):
+            prev, curr = phases[i], phases[i + 1]
+            if not prev["ended_at"] or not curr["started_at"]:
+                continue
+            try:
+                prev_end = datetime.fromisoformat(prev["ended_at"])
+                curr_start = datetime.fromisoformat(curr["started_at"])
+            except (TypeError, ValueError):
+                continue
+            gap_ms = int((curr_start - prev_end).total_seconds() * 1000)
+            if gap_ms <= 0:
+                continue
+            gaps.append({
+                "run_id": rid,
+                "story_id": curr["story_id"],
+                "project": curr["project"],
+                "from_phase": prev["phase"],
+                "to_phase": curr["phase"],
+                "from_ended_at": prev["ended_at"],
+                "to_started_at": curr["started_at"],
+                "gap_ms": gap_ms,
+            })
+    gaps.sort(key=lambda g: g["gap_ms"], reverse=True)
+    return gaps[: max(1, int(limit))]
