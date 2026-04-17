@@ -8,6 +8,7 @@ This agent can:
 - Run with safe_update.py workflow for tested deployments
 """
 
+import contextvars
 import json
 import re
 import threading
@@ -207,7 +208,25 @@ except ImportError:
     raise ImportError("Install ollama: pip install ollama")
 
 from .config import settings as _settings
+from .logging_config import (
+    DEFAULT_REQUEST_ID as _DEFAULT_REQUEST_ID,
+    request_id_var as _request_id_var,
+)
 from .ollama_health import ollama_call_with_retries
+
+
+def _seed_request_id_if_unset() -> None:
+    """Generate and set a UUID4 request id when no caller has seeded one.
+
+    Discord's ``on_message`` handler (and other entry points) seed a
+    descriptive id like ``discord-{message.id}`` before invoking the agent
+    so the whole exchange shares one id. Standalone callers (news_digest,
+    background tasks, tests) don't, so Agent.run() falls back to a fresh
+    UUID4 — guaranteeing every run() correlates its logs and downstream
+    HTTP calls under a single id.
+    """
+    if _request_id_var.get() == _DEFAULT_REQUEST_ID:
+        _request_id_var.set(uuid.uuid4().hex)
 
 
 def _build_ollama_client() -> "ollama.Client":
@@ -449,8 +468,16 @@ If you need to perform multiple steps, do them one at a time."""
         if parallel:
             self._log(f"Running {len(tool_calls)} tool calls in parallel")
             max_workers = min(len(tool_calls), max(1, self.config.max_parallel_tools))
+
+            # Each worker thread needs its own context copy — a single Context
+            # cannot be entered concurrently from multiple threads. Copying
+            # per-call propagates the active request_id ContextVar so tool
+            # functions and downstream Claude HTTP calls see the same id.
+            def _run_with_ctx(tc: dict) -> str:
+                return contextvars.copy_context().run(_run_one, tc)
+
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = list(executor.map(_run_one, tool_calls))
+                results = list(executor.map(_run_with_ctx, tool_calls))
         else:
             results = [_run_one(tc) for tc in tool_calls]
 
@@ -600,6 +627,11 @@ If you need to perform multiple steps, do them one at a time."""
         Returns:
             The agent's final response
         """
+        # Seed the request-id ContextVar for this run if no caller has
+        # already done so. Logs emitted from this point on (including from
+        # tools and the Claude bridge) will carry the id.
+        _seed_request_id_if_unset()
+
         # Initialize conversation
         self.messages = [{"role": "system", "content": self.config.system_prompt}]
 

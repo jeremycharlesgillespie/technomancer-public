@@ -1,5 +1,6 @@
 """Tests for the logging_config module — logger setup and configuration."""
 
+import contextvars
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -7,14 +8,30 @@ import pytest
 
 from agent.logging_config import (
     BACKUP_COUNT,
+    DEFAULT_REQUEST_ID,
     MAX_LOG_SIZE,
+    RequestIdFilter,
     get_agent_logger,
     get_bot_service_logger,
     get_discord_bot_logger,
     get_logger,
+    get_request_id,
     get_safe_update_logger,
+    request_id_var,
+    set_request_id,
     setup_logger,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_request_id():
+    """Run each test in a fresh ContextVar copy so leakage across tests
+    can't make a passing test depend on ordering."""
+    token = request_id_var.set(DEFAULT_REQUEST_ID)
+    try:
+        yield
+    finally:
+        request_id_var.reset(token)
 
 
 class TestSetupLogger:
@@ -152,3 +169,127 @@ class TestRotatingFileHandler:
         # Primary must be under the cap. Allow a small formatter-overhead
         # margin since rotation is checked after each record is emitted.
         assert primary.stat().st_size <= 10_000_000 + 4096
+
+
+def _make_record(name: str = "test", msg: str = "hello") -> logging.LogRecord:
+    """Build a minimal LogRecord for filter testing."""
+    return logging.LogRecord(
+        name=name, level=logging.INFO, pathname=__file__, lineno=1,
+        msg=msg, args=None, exc_info=None,
+    )
+
+
+class TestRequestIdContextVar:
+    """ContextVar default and set/get behavior."""
+
+    def test_default_value_is_dash(self):
+        assert get_request_id() == DEFAULT_REQUEST_ID
+        assert DEFAULT_REQUEST_ID == "-"
+
+    def test_set_and_get_round_trip(self):
+        token = set_request_id("abc-123")
+        try:
+            assert get_request_id() == "abc-123"
+        finally:
+            request_id_var.reset(token)
+        assert get_request_id() == DEFAULT_REQUEST_ID
+
+    def test_isolated_across_contexts(self):
+        """Each Context.copy() gets its own isolated value."""
+        set_request_id("outer")
+
+        def _inner_run() -> str:
+            set_request_id("inner")
+            return get_request_id()
+
+        ctx = contextvars.copy_context()
+        inner_value = ctx.run(_inner_run)
+        assert inner_value == "inner"
+        # Outer context unchanged — Context.run() does not bleed back.
+        assert get_request_id() == "outer"
+
+
+class TestRequestIdFilter:
+    """Filter injects request_id onto LogRecords."""
+
+    def test_filter_injects_default_when_unset(self):
+        rid_filter = RequestIdFilter()
+        record = _make_record()
+        assert rid_filter.filter(record) is True
+        assert record.request_id == DEFAULT_REQUEST_ID
+
+    def test_filter_injects_seeded_value(self):
+        rid_filter = RequestIdFilter()
+        set_request_id("discord-12345")
+        record = _make_record()
+        rid_filter.filter(record)
+        assert record.request_id == "discord-12345"
+
+    def test_filter_returns_true_to_pass_record_through(self):
+        """A logging.Filter must return truthy to allow the record through."""
+        rid_filter = RequestIdFilter()
+        record = _make_record()
+        assert rid_filter.filter(record) is True
+
+    def test_filter_respects_existing_attribute(self):
+        """An explicit ``extra={'request_id': ...}`` should not be overwritten."""
+        rid_filter = RequestIdFilter()
+        set_request_id("from-contextvar")
+        record = _make_record()
+        record.request_id = "from-extra"
+        rid_filter.filter(record)
+        assert record.request_id == "from-extra"
+
+
+class TestRequestIdInLogOutput:
+    """End-to-end: configured loggers emit ``[rid=<id>]`` formatted output."""
+
+    def test_log_line_includes_default_rid(self, tmp_path):
+        logger = setup_logger(
+            "test_rid_default_unique",
+            log_file="rid_default.log",
+            log_dir=tmp_path,
+            console=False,
+        )
+        logger.info("default test")
+        for h in logger.handlers:
+            h.flush()
+        content = (tmp_path / "rid_default.log").read_text()
+        assert "[rid=-]" in content
+        assert "default test" in content
+
+    def test_log_line_includes_seeded_rid(self, tmp_path):
+        logger = setup_logger(
+            "test_rid_seeded_unique",
+            log_file="rid_seeded.log",
+            log_dir=tmp_path,
+            console=False,
+        )
+        set_request_id("discord-999")
+        logger.info("seeded test")
+        for h in logger.handlers:
+            h.flush()
+        content = (tmp_path / "rid_seeded.log").read_text()
+        assert "[rid=discord-999]" in content
+        assert "seeded test" in content
+
+    def test_filter_is_installed_on_handlers(self, tmp_path):
+        """Each handler created by setup_logger carries the RequestIdFilter."""
+        logger = setup_logger(
+            "test_rid_filter_installed_unique",
+            log_file="rid_installed.log",
+            log_dir=tmp_path,
+            console=True,
+        )
+        for handler in logger.handlers:
+            filter_types = {type(f).__name__ for f in handler.filters}
+            assert "RequestIdFilter" in filter_types, (
+                f"handler {type(handler).__name__} missing RequestIdFilter"
+            )
+
+    def test_get_logger_also_installs_filter(self):
+        """``get_logger`` for an unconfigured name installs the filter."""
+        logger = get_logger("test_rid_get_logger_unique")
+        for handler in logger.handlers:
+            filter_types = {type(f).__name__ for f in handler.filters}
+            assert "RequestIdFilter" in filter_types

@@ -39,6 +39,7 @@ from .claude_bridge import ClaudeBridge
 from .config import settings
 from .core import Agent, AgentConfig
 from .dev_learning import start_dev_learning
+from .logging_config import request_id_var
 from .bot_commands import (
     handle_better_dev,
     handle_blocker,
@@ -901,6 +902,11 @@ async def on_message(message: discord.Message) -> None:
     # Bot listens to both llm_chat and claude-code channels
     if channel_name not in (ALLOWED_CHANNEL, CLAUDE_CODE_CHANNEL):
         return
+
+    # Seed the request-id ContextVar so every log line and downstream
+    # Claude HTTP call (X-Request-ID header) tied to this Discord
+    # exchange can be correlated end-to-end.
+    request_id_var.set(f"discord-{message.id}")
 
     content = message.content.strip()
     user = str(message.author.name)

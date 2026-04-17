@@ -30,7 +30,16 @@ except ImportError:
     HAS_ANTHROPIC = False
 
 from .config import settings
+from .logging_config import DEFAULT_REQUEST_ID, request_id_var
 from .perf_monitor import record_llm_call as _record_perf
+
+
+def _request_id_headers() -> dict[str, str]:
+    """Return ``{"X-Request-ID": <id>}`` when a non-default rid is set."""
+    rid = request_id_var.get()
+    if rid and rid != DEFAULT_REQUEST_ID:
+        return {"X-Request-ID": rid}
+    return {}
 
 # Approximate pricing per 1M tokens (Sonnet 4)
 _PRICE_INPUT = 3.00  # $/1M input tokens
@@ -238,6 +247,7 @@ Please provide a clear answer."""
                 model=self.model,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
+                extra_headers=_request_id_headers(),
             )
             latency = _time.perf_counter() - api_start
             in_tokens = getattr(response.usage, "input_tokens", 0)

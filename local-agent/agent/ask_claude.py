@@ -20,8 +20,23 @@ except ImportError:
     HAS_ANTHROPIC = False
 
 from .config import settings
+from .logging_config import DEFAULT_REQUEST_ID, request_id_var
 
 logger = logging.getLogger(__name__)
+
+
+def _request_id_headers() -> dict[str, str]:
+    """Return ``{"X-Request-ID": <id>}`` when a non-default rid is set.
+
+    Skipping the header when the ContextVar holds the sentinel default
+    keeps Anthropic's request inspector free of meaningless ``-`` ids
+    while still propagating real ids set by callers (Discord on_message,
+    Agent.run, news_digest, etc.).
+    """
+    rid = request_id_var.get()
+    if rid and rid != DEFAULT_REQUEST_ID:
+        return {"X-Request-ID": rid}
+    return {}
 
 # Log file for tracking Claude queries
 LOG_FILE = Path(__file__).parent.parent / "claude_queries.log"
@@ -134,6 +149,7 @@ def ask_claude(question: str, context: str = "") -> str:
             system=_build_system_blocks(),
             messages=[{"role": "user", "content": full_prompt}],
             timeout=DEFAULT_TIMEOUT,
+            extra_headers=_request_id_headers(),
         )
         _log_cache_usage(response)
         text = response.content[0].text.strip()
