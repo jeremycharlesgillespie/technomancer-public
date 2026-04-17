@@ -28,6 +28,7 @@ from typing import Any, Callable
 import requests
 
 from agent.config import settings
+from agent.jira_retry import jira_request
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,17 @@ def _post_with_retry(
             sleep_fn(delay)
             continue
 
+        # jira_request returns None once its own retries exhaust a
+        # ConnectionError / ReadTimeout / 5xx run; treat that as a
+        # retryable failure at this layer as well.
+        if resp is None:
+            last_status = None
+            last_body = "jira_request exhausted retries"
+            if attempt >= max_attempts:
+                break
+            sleep_fn(_backoff_for(attempt))
+            continue
+
         if resp.status_code not in RETRY_STATUS_CODES:
             return resp
 
@@ -213,12 +225,30 @@ def _auth() -> tuple[str, str]:
     return (settings.jira_email, settings.jira_api_token)
 
 
-def _api(method: str, path: str, **kwargs) -> requests.Response:
-    """Make a Jira API request."""
+def _api(
+    method: str,
+    path: str,
+    *,
+    idea_id: str | None = None,
+    jira_key: str | None = None,
+    **kwargs,
+) -> requests.Response | None:
+    """Make a Jira API request via ``jira_request``.
+
+    Returns the :class:`requests.Response` on success or non-retryable
+    failure, or ``None`` when all bounded retries were exhausted.
+    Transient failures (ConnectionError / ReadTimeout / 5xx) and their
+    recording to ``jira_sync_failures`` are handled in ``jira_request``.
+    """
     url = f"{settings.jira_url}/rest/api/3{path}"
-    kwargs.setdefault("timeout", 15)
     kwargs.setdefault("auth", _auth())
-    return getattr(requests, method)(url, **kwargs)
+    return jira_request(
+        method,
+        url,
+        idea_id=idea_id,
+        jira_key=jira_key,
+        **kwargs,
+    )
 
 
 def _build_description_adf(text: str) -> dict:
@@ -247,6 +277,7 @@ def find_jira_issue(idea_id: str) -> str | None:
         resp = _api(
             "post",
             "/search/jql",
+            idea_id=idea_id,
             json={
                 "jql": (
                     f'project = {settings.jira_project_key} '
@@ -257,7 +288,7 @@ def find_jira_issue(idea_id: str) -> str | None:
                 "fields": ["summary"],
             },
         )
-        if resp.status_code == 200:
+        if resp is not None and resp.status_code == 200:
             issues = resp.json().get("issues", [])
             if issues:
                 return issues[0]["key"]
@@ -401,8 +432,8 @@ def transition_jira_issue(jira_key: str, target_status: str) -> bool:
         return False
 
     try:
-        resp = _api("get", f"/issue/{jira_key}/transitions")
-        if resp.status_code != 200:
+        resp = _api("get", f"/issue/{jira_key}/transitions", jira_key=jira_key)
+        if resp is None or resp.status_code != 200:
             return False
 
         transitions = resp.json().get("transitions", [])
@@ -422,7 +453,9 @@ def transition_jira_issue(jira_key: str, target_status: str) -> bool:
                 {"transition": {"id": available["In Progress"]}},
             )
             # Re-fetch transitions from In Progress
-            resp = _api("get", f"/issue/{jira_key}/transitions")
+            resp = _api("get", f"/issue/{jira_key}/transitions", jira_key=jira_key)
+            if resp is None:
+                return False
             transitions = resp.json().get("transitions", [])
             available = {t["name"]: t["id"] for t in transitions}
             if "Done" in available:
