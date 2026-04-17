@@ -54,6 +54,64 @@ _TOP_RANKED_STATE: str = "approved"
 
 
 # ---------------------------------------------------------------------------
+# SLO thresholds — walked by agent.alerts.check_slo_violations()
+# ---------------------------------------------------------------------------
+
+# Each entry describes one SLO:
+#   path       — tuple of keys to walk inside the snapshot
+#   comparator — "lt" breaches when value < threshold; "gt" when value > threshold
+#   threshold  — numeric bound
+#   label      — human-readable short name for alert text
+#   unit       — string appended to the value in the alert ("ms", "s", "", ...)
+#   severity   — alert level ("info" | "warning" | "error" | "critical")
+#
+# Values of ``None`` in the snapshot (e.g. ``oldest_top_ranked_wait_seconds``
+# when the queue is empty) are treated as "no signal" and never breach.
+SLO_THRESHOLDS: dict[str, dict[str, Any]] = {
+    "executor_success_rate": {
+        "path": ("executor", "success_rate"),
+        "comparator": "lt",
+        "threshold": 0.8,
+        "label": "Executor success rate",
+        "unit": "",
+        "severity": "warning",
+    },
+    "executor_p95_latency_ms": {
+        "path": ("executor", "p95_latency_ms"),
+        "comparator": "gt",
+        "threshold": 300_000.0,
+        "label": "Executor p95 latency",
+        "unit": "ms",
+        "severity": "warning",
+    },
+    "board_queue_depth": {
+        "path": ("board", "queue_depth"),
+        "comparator": "gt",
+        "threshold": 50,
+        "label": "Board queue depth",
+        "unit": " items",
+        "severity": "warning",
+    },
+    "board_oldest_wait_seconds": {
+        "path": ("board", "oldest_top_ranked_wait_seconds"),
+        "comparator": "gt",
+        "threshold": 86_400.0,
+        "label": "Oldest approved item age",
+        "unit": "s",
+        "severity": "warning",
+    },
+    "ollama_consecutive_failures": {
+        "path": ("ollama", "consecutive_failures"),
+        "comparator": "gt",
+        "threshold": 3,
+        "label": "Ollama consecutive failures",
+        "unit": "",
+        "severity": "error",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Cache state — guarded by _cache_lock
 # ---------------------------------------------------------------------------
 

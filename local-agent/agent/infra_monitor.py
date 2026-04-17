@@ -490,6 +490,15 @@ async def infra_monitor_loop(client: Any, channel_name: str) -> None:
             if changes:
                 log.debug("[InfraMonitor] %d vault files changed", len(changes))
 
+            # SLO violation alerts (de-duped for 30min inside alerts.py)
+            try:
+                from . import alerts
+                fired = alerts.check_slo_violations()
+                if fired:
+                    log.info("[InfraMonitor] SLO alerts fired: %s", fired)
+            except Exception:
+                log.exception("[InfraMonitor] SLO check failed")
+
             await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
 
         except Exception:
