@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OWASP Top 10: common vulnerabilities - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>OWASP Top 10: common vulnerabilities</h1>
+            <p class="meta">best_practices &bull; April 17, 2026</p>
+        </header>
+        <main>
+<h1>OWASP Top 10: Common Vulnerabilities</h1>
+
+<h2>Quick Overview</h2>
+
+<p>The OWASP Top 10 is a community-driven list of the most critical security risks to web applications, published by the Open Web Application Security Project. It&#x27;s not a checklist you complete once â€” it&#x27;s a taxonomy of how applications get broken, updated every few years based on real-world breach data and CWE (Common Weakness Enumeration) telemetry. The current categories are Broken Access Control, Cryptographic Failures, Injection, Insecure Design, Security Misconfiguration, Vulnerable Components, Authentication Failures, Software/Data Integrity Failures, Security Logging Failures, and Server-Side Request Forgery (SSRF).</p>
+
+<p>It matters because most production breaches aren&#x27;t zero-days â€” they&#x27;re boring mistakes from this list. An intern&#x27;s SQL injection in a Django view, a Flask app exposing <code>/admin</code> without auth, an AWS S3 bucket set to public, a <code>pickle.loads()</code> on untrusted input. Understanding the Top 10 lets you recognize these failure modes <em>before</em> they ship, and it gives you a shared vocabulary with security reviewers, pentesters, and compliance auditors.</p>
+
+<p>Here&#x27;s the archetype â€” a textbook injection bug that still shows up in code review:</p>
+
+<pre><code class="language-python"># VULNERABLE â€” string concatenation into SQL
+def get_user(conn, username):
+    cursor = conn.cursor()
+    cursor.execute(f&quot;SELECT * FROM users WHERE username = &#x27;{username}&#x27;&quot;)
+    return cursor.fetchone()
+
+<h1>SAFE â€” parameterized query, driver handles escaping</h1>
+def get_user(conn, username):
+    cursor = conn.cursor()
+    cursor.execute(&quot;SELECT * FROM users WHERE username = %s&quot;, (username,))
+    return cursor.fetchone()
+</code></pre>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>For someone building autonomous systems on Python/Django/Postgres/AWS, the Top 10 is a lens that sharpens architectural decisions. A Discord bot that runs shell commands from user input is an Injection risk waiting to happen. An Ollama-backed agent that fetches URLs it gets from an LLM is SSRF-prone by construction. A Flask hub exposing a Jira-creation endpoint without auth is Broken Access Control. The same pattern â€” <em>trust boundary crossed without validation</em> â€” appears everywhere once you know to look.</p>
+
+<p>Career-wise, this knowledge separates senior engineers from mid-level ones. Writing a feature is table stakes; writing a feature that survives adversarial input, rotated credentials, and a misconfigured IAM role is what gets you trusted with production. It&#x27;s also the fastest path to credibility in code review: catching a timing-safe comparison miss or a missing <code>SameSite=Lax</code> cookie flag signals you think about systems the way security teams do. For autonomous agents specifically, you become the person who recognizes that <em>the LLM is an untrusted input source</em> â€” its outputs need the same validation as a form field.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Start by mapping each Top 10 category to concrete controls in your stack. Here&#x27;s a working reference for a Python/Django/Flask codebase.</p>
+
+<p><strong>A01: Broken Access Control</strong> â€” Enforce authorization on every endpoint, default-deny.</p>
+
+<pre><code class="language-python">from functools import wraps
+from flask import request, abort, g
+
+<p>def require_owner(f):<br>
+    @wraps(f)<br>
+    def wrapper(<em>args, </em>*kwargs):<br>
+        token = request.headers.get(&quot;X-API-Token&quot;)<br>
+        if not token or not constant_time_eq(token, settings.api_token):<br>
+            abort(401)<br>
+        g.is_owner = True<br>
+        return f(<em>args, </em>*kwargs)<br>
+    return wrapper</p>
+
+<p>@app.route(&quot;/api/jira/create&quot;, methods=[&quot;POST&quot;])<br>
+@require_owner<br>
+def create_jira_ticket():<br>
+    ...<br>
+</code></pre></p>
+
+<p>In Django, prefer <code>PermissionRequiredMixin</code> or <code>@permission_required</code> over hand-rolled checks. For object-level access, use <code>get_object_or_404(Model, pk=pk, owner=request.user)</code> â€” the <code>owner=</code> filter turns &quot;someone else&#x27;s record&quot; into a 404 automatically.</p>
+
+<p><strong>A02: Cryptographic Failures</strong> â€” Never roll your own. Use <code>secrets</code> for tokens, <code>bcrypt</code>/<code>argon2</code> for passwords, and TLS for every network hop.</p>
+
+<pre><code class="language-python">import secrets, hmac
+from argon2 import PasswordHasher
+
+<p>ph = PasswordHasher()</p>
+
+<p>def hash_password(pw: str) -&gt; str:<br>
+    return ph.hash(pw)</p>
+
+<p>def verify_password(pw: str, stored_hash: str) -&gt; bool:<br>
+    try:<br>
+        return ph.verify(stored_hash, pw)<br>
+    except Exception:<br>
+        return False</p>
+
+<p>def new_api_token() -&gt; str:<br>
+    return secrets.token_urlsafe(32)</p>
+
+<p>def constant_time_eq(a: str, b: str) -&gt; bool:<br>
+    return hmac.compare_digest(a.encode(), b.encode())<br>
+</code></pre></p>
+
+<p><strong>A03: Injection</strong> â€” Parameterize queries, escape shell args, sanitize template input.</p>
+
+<pre><code class="language-python"># SQL â€” always use the driver&#x27;s placeholder
+cursor.execute(&quot;SELECT * FROM ideas WHERE status = %s&quot;, (status,))
+
+<h1>Shell â€” use subprocess with a list, never shell=True on user input</h1>
+import subprocess
+subprocess.run([&quot;git&quot;, &quot;checkout&quot;, branch_name], check=True)  # SAFE
+<h1>subprocess.run(f&quot;git checkout {branch_name}&quot;, shell=True)    # VULNERABLE</h1>
+
+<h1>Django ORM â€” .raw() is fine if parameterized, .extra() rarely is</h1>
+User.objects.raw(&quot;SELECT * FROM users WHERE id = %s&quot;, [user_id])
+</code></pre>
+
+<p>For autonomous agents: treat LLM output as untrusted. If your Ollama agent generates a shell command, run it through an allowlist, not an LLM-based &quot;is this safe?&quot; check.</p>
+
+<p><strong>A05: Security Misconfiguration</strong> â€” Ship with secure defaults. For Django, that means <code>DEBUG=False</code>, <code>SECURE_HSTS_SECONDS</code> set, <code>SESSION_COOKIE_SECURE=True</code>, <code>CSRF_COOKIE_SECURE=True</code>. For AWS, block public S3 access at the account level and use IAM least-privilege.</p>
+
+<pre><code class="language-python"># settings.py â€” production
+DEBUG = False
+ALLOWED_HOSTS = [&quot;api.example.com&quot;]
+SECURE_SSL_REDIRECT = True
+SECURE_HSTS_SECONDS = 31536000
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SESSION_COOKIE_SECURE = True
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = &quot;Lax&quot;
+CSRF_COOKIE_SECURE = True
+X_FRAME_OPTIONS = &quot;DENY&quot;
+</code></pre>
+
+<p><strong>A08: Software/Data Integrity Failures</strong> â€” Never deserialize untrusted data with <code>pickle</code>, <code>yaml.load</code> (use <code>safe_load</code>), or <code>marshal</code>. Pin dependencies and verify signatures.</p>
+
+<pre><code class="language-python"># VULNERABLE â€” pickle on untrusted bytes is RCE
+cached = pickle.loads(redis_client.get(key))
+
+<h1>SAFE â€” use JSON for cross-process serialization</h1>
+cached = json.loads(redis_client.get(key))
+</code></pre>
+
+<p><strong>A10: SSRF</strong> â€” Critical for any agent that fetches URLs. Validate that the resolved IP isn&#x27;t internal before the request.</p>
+
+<pre><code class="language-python">import socket, ipaddress
+from urllib.parse import urlparse
+import requests
+
+<p>BLOCKED_NETS = [<br>
+    ipaddress.ip_network(&quot;127.0.0.0/8&quot;),<br>
+    ipaddress.ip_network(&quot;10.0.0.0/8&quot;),<br>
+    ipaddress.ip_network(&quot;172.16.0.0/12&quot;),<br>
+    ipaddress.ip_network(&quot;192.168.0.0/16&quot;),<br>
+    ipaddress.ip_network(&quot;169.254.0.0/16&quot;),  # AWS metadata!<br>
+    ipaddress.ip_network(&quot;::1/128&quot;),<br>
+]</p>
+
+<p>def safe_fetch(url: str, timeout: int = 5) -&gt; requests.Response:<br>
+    parsed = urlparse(url)<br>
+    if parsed.scheme not in (&quot;http&quot;, &quot;https&quot;):<br>
+        raise ValueError(&quot;scheme not allowed&quot;)<br>
+    ip = ipaddress.ip_address(socket.gethostbyname(parsed.hostname))<br>
+    if any(ip in net for net in BLOCKED_NETS):<br>
+        raise ValueError(f&quot;blocked network: {ip}&quot;)<br>
+    return requests.get(url, timeout=timeout, allow_redirects=False)<br>
+</code></pre></p>
+
+<p>The <code>169.254.169.254</code> AWS metadata endpoint is the SSRF crown jewel â€” one unchecked URL fetch and an attacker reads IAM credentials off your EC2 instance.</p>
+
+<p><strong>Automate the checks.</strong> Add <code>bandit</code> and <code>pip-audit</code> to your pre-commit hooks and CI:</p>
+
+<pre><code class="language-yaml"># .pre-commit-config.yaml
+<ul>
+<li>repo: https://github.com/PyCQA/bandit</li>
+</ul>  rev: &#x27;1.7.9&#x27;
+  hooks:
+    - id: bandit
+      args: [&quot;-c&quot;, &quot;pyproject.toml&quot;]
+<ul>
+<li>repo: https://github.com/pypa/pip-audit</li>
+</ul>  rev: v2.7.3
+  hooks:
+    - id: pip-audit
+</code></pre>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li>Any Flask/Django endpoint that accepts user input â€” especially ones exposed via Tailscale or the public internet</li><br>
+<li>Autonomous agents that execute tool calls (shell, SQL, HTTP) based on LLM output â€” the LLM is an untrusted input source</li><br>
+<li>Discord bot commands that interpolate user text into file paths, shell args, or API calls</li><br>
+<li>CI/CD pipelines â€” run <code>bandit</code>, <code>pip-audit</code>, and <code>trufflehog</code> on every PR</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li>Treating the Top 10 as a compliance checklist â€” it&#x27;s a heuristic, not a spec. &quot;We handled A03&quot; doesn&#x27;t mean you&#x27;re safe from injection; it means you handled the cases you thought of.</li><br>
+<li>Security-theater controls that annoy users without reducing risk â€” a 24-character password requirement with 30-day rotation is worse than a passphrase + MFA.</li><br>
+<li>Rolling custom crypto because &quot;the library is too slow&quot; â€” you will lose this fight.</li><br>
+</ul><br>
+<strong>Common pitfalls:</strong><br>
+<ul><br>
+<li><strong>Trusting authenticated users too much.</strong> Auth is not authz. A logged-in user modifying <code>/api/users/42/profile</code> when they&#x27;re user 17 is still Broken Access Control.</li><br>
+<li><strong>Logging secrets.</strong> A stack trace with the full request body in <code>crash_log.md</code> is a credential leak waiting to be grepped.</li><br>
+<li><strong><code>DEBUG=True</code> in prod.</strong> Django&#x27;s debug page renders settings and stack traces â€” one misrouted request and an attacker has your <code>SECRET_KEY</code>.</li><br>
+<li><strong>Using <code>==</code> on tokens.</strong> Timing attacks are real; use <code>hmac.compare_digest</code>.</li><br>
+<li><strong>Forgetting that LLM output is untrusted.</strong> Prompt injection means an attacker who controls <em>any</em> text the LLM reads (a fetched webpage, a Discord message, an RSS feed) can control its output. Validate downstream.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>The Top 10 is a taxonomy of failure modes, not a checklist.</strong> Use it as a lens during design and review, not a box to tick before release.</li>
+<li><strong>Every trust boundary needs validation.</strong> User input, LLM output, third-party APIs, cached data â€” if it crossed a boundary, validate it on arrival.</li>
+<li><strong>Parameterize, don&#x27;t concatenate.</strong> SQL, shell, HTML, URLs â€” if you&#x27;re building a string with untrusted data, you&#x27;re one edge case from a CVE.</li>
+<li><strong>SSRF is the sleeper hit for agent builders.</strong> Any tool that fetches URLs from LLM-chosen inputs needs IP allowlisting and redirect control, or it&#x27;s one prompt injection away from reading <code>169.254.169.254</code>.</li>
+<li><strong>Automate the boring checks.</strong> <code>bandit</code>, <code>pip-audit</code>, <code>trufflehog</code>, and <code>django-check --deploy</code> catch 80% of the Top 10 before human review â€” wire them into pre-commit and CI so they run without discipline.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>

@@ -1,27 +1,27 @@
 """
-News Configuration — JSON-backed preferences for news digest filtering.
+News Configuration — SQLite-backed preferences for news digest filtering.
 
 Manages RSS feeds, topic likes/dislikes, and schedule settings.
 Provides a Flask Blueprint with API routes and a web UI for configuration.
 
-Storage: news_config.json (same directory as ideas.json)
+Storage: ``agent.news_prefs_db`` (single-row ``news_prefs`` table). The
+flat ``news_config.json`` file is auto-migrated on first load and then
+renamed to ``news_config.json.migrated.bak``.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from agent import news_prefs_db
+
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE: Path = Path(__file__).parent / "news_config.json"
 _lock = threading.Lock()
 
 # Default feeds — migrated from news_digest.py hardcoded list
@@ -82,29 +82,31 @@ class NewsConfig:
 
 
 # ============================================================================
-# JSON PERSISTENCE
+# PERSISTENCE (thin wrappers over agent.news_prefs_db)
 # ============================================================================
 
 def load_news_config() -> NewsConfig:
-    """Load news config from JSON file. Thread-safe."""
+    """Load news config from the SQLite-backed prefs store. Thread-safe.
+
+    If no row exists (fresh install, no legacy JSON), returns a default
+    ``NewsConfig``. On first access after upgrading from the JSON-backed
+    version, ``news_prefs_db`` migrates ``news_config.json`` automatically.
+    """
     with _lock:
-        if not CONFIG_FILE.exists():
+        data = news_prefs_db.load_prefs()
+        if data is None:
             return NewsConfig()
         try:
-            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             return NewsConfig.from_dict(data)
-        except (json.JSONDecodeError, KeyError) as e:
+        except (TypeError, KeyError) as e:
             logger.error(f"Error loading news config: {e}")
             return NewsConfig()
 
 
 def save_news_config(config: NewsConfig) -> None:
-    """Save news config to JSON file. Thread-safe."""
+    """Save news config to the SQLite-backed prefs store. Thread-safe."""
     with _lock:
-        CONFIG_FILE.write_text(
-            json.dumps(config.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        news_prefs_db.save_prefs(config.to_dict())
 
 
 # ============================================================================
