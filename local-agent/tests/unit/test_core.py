@@ -1324,6 +1324,90 @@ class TestCircuitBreaker:
             # Circuit is immediately blocking again.
             assert cb.is_open() is True
 
+    # TK-538 spec tests — exercise the four acceptance scenarios at the
+    # default configuration (threshold=5, window=60s, reset=30s) using
+    # monkeypatch on the clock core.py reads from.
+
+    def test_spec_five_consecutive_failures_within_60s_open_breaker(
+        self, monkeypatch
+    ):
+        """(1) 5 consecutive failures within 60s open the breaker at defaults."""
+        cb = CircuitBreaker()  # defaults: threshold=5, window=60s
+        now = [1000.0]
+        monkeypatch.setattr("agent.core._time.monotonic", lambda: now[0])
+
+        # Four failures spread across 45s — still closed.
+        for _ in range(4):
+            cb.record_failure()
+            now[0] += 15.0  # cumulative: 0, 15, 30, 45
+            assert cb.state == "closed"
+
+        # Fifth failure at t=60s (inclusive boundary still counts as "within").
+        cb.record_failure()
+        assert cb.state == "open"
+        assert cb.failure_count == 5
+        assert cb.opened_at == now[0]
+        assert cb.is_open() is True
+
+    def test_spec_is_open_true_for_full_reset_seconds_window(
+        self, monkeypatch
+    ):
+        """(2) is_open() returns True for the full reset_seconds window."""
+        cb = CircuitBreaker()  # reset_seconds=30.0
+        now = [0.0]
+        monkeypatch.setattr("agent.core._time.monotonic", lambda: now[0])
+
+        for _ in range(5):
+            cb.record_failure()
+        assert cb.state == "open"
+        opened = now[0]
+
+        # Probe the breaker at several points strictly inside the reset window.
+        # Each probe must report open without flipping state to half-open.
+        for elapsed in (0.0, 1.0, 10.0, 20.0, 29.999):
+            now[0] = opened + elapsed
+            assert cb.is_open() is True, f"breaker flipped at +{elapsed}s"
+            assert cb.state == "open"
+
+    def test_spec_half_open_success_resets_to_closed(self, monkeypatch):
+        """(3) After reset_seconds, half-open + success → closed."""
+        cb = CircuitBreaker()  # defaults
+        now = [500.0]
+        monkeypatch.setattr("agent.core._time.monotonic", lambda: now[0])
+
+        for _ in range(5):
+            cb.record_failure()
+        assert cb.state == "open"
+
+        # Advance past the reset window — is_open flips the state to half-open
+        # and permits a trial call by returning False.
+        now[0] += 30.0
+        assert cb.is_open() is False
+        assert cb.state == "half-open"
+
+        # A successful trial call fully closes the circuit.
+        cb.record_success()
+        assert cb.state == "closed"
+        assert cb.failure_count == 0
+        assert cb.opened_at == 0.0
+        assert cb.is_open() is False
+
+    def test_spec_failures_outside_60s_window_do_not_accumulate(
+        self, monkeypatch
+    ):
+        """(4) Failures spaced beyond the rolling window never reach threshold."""
+        cb = CircuitBreaker()  # window_seconds=60.0, threshold=5
+        now = [100.0]
+        monkeypatch.setattr("agent.core._time.monotonic", lambda: now[0])
+
+        # Ten failures spaced 61s apart — each resets the rolling window, so
+        # failure_count stays at 1 and the breaker never opens.
+        for _ in range(10):
+            cb.record_failure()
+            assert cb.state == "closed"
+            assert cb.failure_count == 1
+            now[0] += 61.0
+
 
 class TestAgentCircuitOpenFallback:
     """Agent.run() / Agent.chat() must return a canned fallback when
