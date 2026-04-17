@@ -2065,10 +2065,15 @@ def execute_idea(
             try:
                 # Merge to main
                 state.log("Merging to main...")
-                project_root = str(Path(__file__).parent.parent.parent)
+                # Stay in the resolved project_root from earlier (40Acres,
+                # Technomancer, etc.). The previous hardcode here would
+                # silently redirect every deploy to Technomancer/main, so
+                # external projects' feature branches (FA-10, etc.) got
+                # reported as "0 commits ahead of main" because the check
+                # was run in the wrong repo.
                 branch = subprocess.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    capture_output=True, text=True, cwd=project_root,
+                    capture_output=True, text=True, cwd=str(project_root),
                 ).stdout.strip()
 
                 # Defense-in-depth: verify the branch still has commits
