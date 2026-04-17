@@ -2,6 +2,13 @@
 
 Tests CRUD operations (add, remove, list, detail, blocker, update),
 Discord command handlers, and GitHub API sync.
+
+Network policy: a module-level autouse fixture replaces
+``agent.project_tracker.aiohttp.ClientSession`` with a guard that raises on
+construction. Tests that exercise ``github_fetch`` override this via the
+``mock_aiohttp_session`` fixture (for direct HTTP mocking) or
+``mock_github_fetch`` (to mock at the function boundary). Either way, no
+test in this file opens a real socket.
 """
 
 import asyncio
@@ -55,8 +62,55 @@ def _make_msg(content="test", user="TestUser"):
 
 
 # ---------------------------------------------------------------------------
-# Fixture: isolated in-memory DB per test
+# Helpers for building mock aiohttp responses / sessions
 # ---------------------------------------------------------------------------
+
+def _make_mock_response(status, json_data, headers=None):
+    """Create a mock aiohttp response with async context manager support."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.json = AsyncMock(return_value=json_data)
+    resp.headers = headers or {}
+    # Wrap as async context manager so `async with session.get() as r:` works
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+def _mock_session(*responses):
+    """Build a mock aiohttp.ClientSession with sequenced get() responses."""
+    session = AsyncMock()
+    if len(responses) == 1:
+        session.get = MagicMock(return_value=responses[0])
+    else:
+        session.get = MagicMock(side_effect=list(responses))
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+# ---------------------------------------------------------------------------
+# Module-level fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _block_real_http(monkeypatch):
+    """Default guard: any code path that opens ``aiohttp.ClientSession``
+    without an explicit in-test mock raises immediately.
+
+    Tests that need to exercise ``github_fetch`` (or anything calling it)
+    use ``mock_aiohttp_session`` / ``mock_github_fetch``.
+    """
+
+    def _blocked(*_a, **_kw):
+        raise AssertionError(
+            "Real aiohttp.ClientSession() opened in a test. "
+            "Use the mock_aiohttp_session or mock_github_fetch fixture."
+        )
+
+    monkeypatch.setattr("agent.project_tracker.aiohttp.ClientSession", _blocked)
+
 
 @pytest.fixture(autouse=True)
 def _isolated_db(monkeypatch, tmp_path):
@@ -80,6 +134,54 @@ def _isolated_db(monkeypatch, tmp_path):
         except Exception:
             pass
         del _local.conn
+
+
+@pytest.fixture
+def fake_github_token(monkeypatch):
+    """Set a fake GitHub token on the shared settings instance."""
+    monkeypatch.setattr(
+        "agent.project_tracker.settings.github_token", "fake-token", raising=False
+    )
+
+
+@pytest.fixture
+def mock_github_fetch():
+    """Patch ``agent.project_tracker.github_fetch`` with an AsyncMock.
+
+    Usage:
+        def test_foo(mock_github_fetch):
+            mock_github_fetch.return_value = {"stars": 10, ...}
+            # ... code that calls sync_project_github / sync_all_projects ...
+    """
+    with patch(
+        "agent.project_tracker.github_fetch", new_callable=AsyncMock
+    ) as mock:
+        yield mock
+
+
+@pytest.fixture
+def mock_aiohttp_session():
+    """Factory fixture that replaces ``aiohttp.ClientSession`` with a mock
+    session returning a sequence of responses.
+
+    Usage:
+        def test_foo(mock_aiohttp_session):
+            mock_aiohttp_session(
+                _make_mock_response(200, {"stargazers_count": 1}),
+                _make_mock_response(200, []),
+                _make_mock_response(200, []),
+            )
+            result = _run(github_fetch("https://github.com/u/r"))
+    """
+
+    with patch("agent.project_tracker.aiohttp.ClientSession") as mock_cs:
+
+        def install(*responses):
+            session = _mock_session(*responses)
+            mock_cs.return_value = session
+            return session
+
+        yield install
 
 
 # ================================================================
@@ -547,57 +649,33 @@ class TestGetGithubData:
 
 
 # ================================================================
-# github_fetch tests (mocked aiohttp)
+# github_fetch tests — uses mock_aiohttp_session fixture so no real HTTP
 # ================================================================
-
-
-def _make_mock_response(status, json_data, headers=None):
-    """Create a mock aiohttp response with async context manager support."""
-    resp = AsyncMock()
-    resp.status = status
-    resp.json = AsyncMock(return_value=json_data)
-    resp.headers = headers or {}
-    # Wrap as async context manager so `async with session.get() as r:` works
-    cm = AsyncMock()
-    cm.__aenter__ = AsyncMock(return_value=resp)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    return cm
-
-
-def _mock_session(*responses):
-    """Build a mock aiohttp.ClientSession with sequenced get() responses."""
-    session = AsyncMock()
-    if len(responses) == 1:
-        session.get = MagicMock(return_value=responses[0])
-    else:
-        session.get = MagicMock(side_effect=list(responses))
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=False)
-    return session
 
 
 class TestGithubFetch:
     def test_non_github_url(self):
+        # parse_github_repo returns None before aiohttp is ever touched.
         result = _run(github_fetch("https://gitlab.com/u/r"))
         assert result is None
 
-    def test_successful_fetch(self):
-        repo_resp = _make_mock_response(200, {
-            "description": "A cool project",
-            "stargazers_count": 42,
-            "open_issues_count": 7,
-        })
-        pr_resp = _make_mock_response(200, [{"id": 1}], {
-            "Link": '<https://api.github.com/repos/u/r/pulls?page=3>; rel="last"'
-        })
-        commit_resp = _make_mock_response(200, [{
-            "sha": "abc1234567890",
-            "commit": {"committer": {"date": "2026-04-10T12:00:00Z"}},
-        }])
+    def test_successful_fetch(self, mock_aiohttp_session):
+        mock_aiohttp_session(
+            _make_mock_response(200, {
+                "description": "A cool project",
+                "stargazers_count": 42,
+                "open_issues_count": 7,
+            }),
+            _make_mock_response(200, [{"id": 1}], {
+                "Link": '<https://api.github.com/repos/u/r/pulls?page=3>; rel="last"'
+            }),
+            _make_mock_response(200, [{
+                "sha": "abc1234567890",
+                "commit": {"committer": {"date": "2026-04-10T12:00:00Z"}},
+            }]),
+        )
 
-        session = _mock_session(repo_resp, pr_resp, commit_resp)
-        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
-            result = _run(github_fetch("https://github.com/user/repo", token="test-token"))
+        result = _run(github_fetch("https://github.com/user/repo", token="test-token"))
 
         assert result is not None
         assert result["description"] == "A cool project"
@@ -607,25 +685,23 @@ class TestGithubFetch:
         assert result["last_commit_sha"] == "abc1234"
         assert result["last_commit_date"] == "2026-04-10T12:00:00Z"
 
-    def test_repo_api_failure(self):
-        repo_resp = _make_mock_response(404, {})
-        session = _mock_session(repo_resp)
-        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
-            result = _run(github_fetch("https://github.com/user/repo"))
+    def test_repo_api_failure(self, mock_aiohttp_session):
+        mock_aiohttp_session(_make_mock_response(404, {}))
+        result = _run(github_fetch("https://github.com/user/repo"))
         assert result is None
 
-    def test_no_prs(self):
-        repo_resp = _make_mock_response(200, {
-            "description": "Empty",
-            "stargazers_count": 0,
-            "open_issues_count": 0,
-        })
-        pr_resp = _make_mock_response(200, [])
-        commit_resp = _make_mock_response(200, [])
+    def test_no_prs(self, mock_aiohttp_session):
+        mock_aiohttp_session(
+            _make_mock_response(200, {
+                "description": "Empty",
+                "stargazers_count": 0,
+                "open_issues_count": 0,
+            }),
+            _make_mock_response(200, []),
+            _make_mock_response(200, []),
+        )
 
-        session = _mock_session(repo_resp, pr_resp, commit_resp)
-        with patch("agent.project_tracker.aiohttp.ClientSession", return_value=session):
-            result = _run(github_fetch("https://github.com/user/repo"))
+        result = _run(github_fetch("https://github.com/user/repo"))
 
         assert result is not None
         assert result["open_prs"] == 0
@@ -633,12 +709,12 @@ class TestGithubFetch:
 
 
 # ================================================================
-# sync_project_github tests
+# sync_project_github tests — uses mock_github_fetch
 # ================================================================
 
 
 class TestSyncProjectGithub:
-    def test_sync_stores_data(self):
+    def test_sync_stores_data(self, mock_github_fetch, fake_github_token):
         add_project("myproj", "https://github.com/user/myproj")
         gh_data = {
             "description": "Test",
@@ -648,10 +724,9 @@ class TestSyncProjectGithub:
             "last_commit_sha": "abc1234",
             "last_commit_date": "2026-04-10T12:00:00Z",
         }
-        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=gh_data), \
-             patch("agent.project_tracker.settings") as mock_settings:
-            mock_settings.github_token = "fake-token"
-            result = _run(sync_project_github("myproj", "https://github.com/user/myproj"))
+        mock_github_fetch.return_value = gh_data
+
+        result = _run(sync_project_github("myproj", "https://github.com/user/myproj"))
 
         assert result is True
         # Verify data was stored
@@ -662,28 +737,31 @@ class TestSyncProjectGithub:
         assert stored["open_prs"] == 2
         assert stored["stars"] == 10
 
-    def test_sync_returns_false_on_fetch_failure(self):
+    def test_sync_returns_false_on_fetch_failure(
+        self, mock_github_fetch, fake_github_token
+    ):
         add_project("failproj", "https://github.com/user/failproj")
-        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=None), \
-             patch("agent.project_tracker.settings") as mock_settings:
-            mock_settings.github_token = "fake-token"
-            result = _run(sync_project_github("failproj", "https://github.com/user/failproj"))
+        mock_github_fetch.return_value = None
+
+        result = _run(
+            sync_project_github("failproj", "https://github.com/user/failproj")
+        )
 
         assert result is False
 
 
 # ================================================================
-# sync_all_projects tests
+# sync_all_projects tests — uses mock_github_fetch
 # ================================================================
 
 
 class TestSyncAllProjects:
-    def test_syncs_github_projects_only(self):
+    def test_syncs_github_projects_only(self, mock_github_fetch, fake_github_token):
         add_project("with_gh", "https://github.com/user/with_gh")
         add_project("no_url")
         add_project("gitlab", "https://gitlab.com/user/gitlab")
 
-        gh_data = {
+        mock_github_fetch.return_value = {
             "description": "Test",
             "stars": 1,
             "open_issues": 0,
@@ -692,10 +770,7 @@ class TestSyncAllProjects:
             "last_commit_date": "",
         }
 
-        with patch("agent.project_tracker.github_fetch", new_callable=AsyncMock, return_value=gh_data), \
-             patch("agent.project_tracker.settings") as mock_settings:
-            mock_settings.github_token = "fake-token"
-            results = _run(sync_all_projects())
+        results = _run(sync_all_projects())
 
         # Only the GitHub project should be in results
         assert "with_gh" in results
@@ -798,17 +873,21 @@ class TestHealthSummaryWithGithub:
 
 
 class TestStartGithubSync:
-    def test_no_token_does_not_start(self):
-        with patch("agent.project_tracker.settings") as mock_settings, \
-             patch("agent.task_manager.create_monitored_task") as mock_task:
-            mock_settings.github_token = None
+    def test_no_token_does_not_start(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.project_tracker.settings.github_token", None, raising=False
+        )
+        with patch("agent.task_manager.create_monitored_task") as mock_task:
             start_github_sync()
             mock_task.assert_not_called()
 
-    def test_with_token_starts_task(self):
-        with patch("agent.project_tracker.settings") as mock_settings, \
-             patch("agent.task_manager.create_monitored_task") as mock_task:
-            mock_settings.github_token = "ghp_test123"
+    def test_with_token_starts_task(self, fake_github_token):
+        # Replace the loop factory with a plain callable so we don't leak an
+        # unawaited coroutine (patch() on an async function defaults to an
+        # AsyncMock whose return is itself an un-awaited coroutine).
+        with patch(
+            "agent.project_tracker._github_sync_loop", new=lambda: None
+        ), patch("agent.task_manager.create_monitored_task") as mock_task:
             start_github_sync()
             mock_task.assert_called_once()
 
