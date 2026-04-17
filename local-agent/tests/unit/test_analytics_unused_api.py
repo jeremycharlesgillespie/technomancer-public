@@ -95,3 +95,43 @@ class TestAnalyticsPageRendersClickableCard:
         resp = client.get("/analytics")
         body = resp.get_data(as_text=True)
         assert "/api/analytics/unused" in body
+
+
+class TestAnalyticsStatCardTooltips:
+    """TK-550: every stat card on /analytics has a title tooltip with a
+    one-sentence definition of the metric plus its time window."""
+
+    def test_every_stat_card_has_title_attribute(self, client):
+        import re
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        # Find every stat-card opening tag and confirm each one has title=.
+        # Pattern matches both <div class="stat-card" ...> and the clickable variant.
+        card_tags = re.findall(r'<div class="stat-card[^"]*"[^>]*>', body)
+        assert len(card_tags) == 4, f"expected 4 stat cards, found {len(card_tags)}"
+        for tag in card_tags:
+            assert 'title="' in tag, f"stat card missing title tooltip: {tag}"
+
+    def test_commands_card_tooltip_mentions_time_window(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert 'title="Total Discord bot command invocations' in body
+        assert "in the last 14 days" in body
+
+    def test_messages_card_tooltip_defines_metric(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert 'title="Total Discord messages sent in watched channels' in body
+
+    def test_unique_commands_card_tooltip_defines_metric(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert 'title="Number of distinct commands' in body
+
+    def test_unused_card_tooltip_defines_metric_and_action(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        # The tooltip should describe what the metric means *and* hint at
+        # the click action (which still opens the modal).
+        assert "received zero invocations" in body
+        assert "Click to see the list" in body

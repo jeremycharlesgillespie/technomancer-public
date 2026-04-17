@@ -4335,10 +4335,10 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
     </div>
 
     <div class="stats-grid">
-        <div class="stat-card"><div class="number">{total_cmds}</div><div class="label">Commands ({days}d)</div></div>
-        <div class="stat-card"><div class="number">{total_msgs}</div><div class="label">Messages ({days}d)</div></div>
-        <div class="stat-card"><div class="number">{len(cmd_stats)}</div><div class="label">Unique Commands</div></div>
-        <div class="stat-card clickable" id="unused-card" onclick="openUnusedModal()" title="Click to see which commands haven't been used in {days} days">
+        <div class="stat-card" title="Total Discord bot command invocations (e.g. !status, !betterDev) in the last {days} days."><div class="number">{total_cmds}</div><div class="label">Commands ({days}d)</div></div>
+        <div class="stat-card" title="Total Discord messages sent in watched channels in the last {days} days (includes commands and regular chat)."><div class="number">{total_msgs}</div><div class="label">Messages ({days}d)</div></div>
+        <div class="stat-card" title="Number of distinct commands that received at least one invocation in the last {days} days."><div class="number">{len(cmd_stats)}</div><div class="label">Unique Commands</div></div>
+        <div class="stat-card clickable" id="unused-card" onclick="openUnusedModal()" title="Commands registered with the Discord bot that received zero invocations in the last {days} days. Click to see the list.">
             <div class="number">{len(underused)}</div>
             <div class="label">Unused Features</div>
             <div class="hint">Click for list &rarr;</div>
