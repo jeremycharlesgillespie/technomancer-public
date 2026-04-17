@@ -66,6 +66,7 @@ _COLUMNS: frozenset[str] = frozenset({
     "tests_passed",
     "deployed",
     "artifacts_path",
+    "pid",
 })
 
 # Whitelist of legal column names for the executor_tool_calls table.
@@ -119,7 +120,11 @@ def init_db() -> None:
     # Migrate older databases that pre-date run_id / artifacts_path. ALTER TABLE
     # raises OperationalError if the column is already present — that's the
     # expected idempotency signal, so swallow it.
-    for col, decl in (("run_id", "TEXT"), ("artifacts_path", "TEXT")):
+    for col, decl in (
+        ("run_id", "TEXT"),
+        ("artifacts_path", "TEXT"),
+        ("pid", "INTEGER"),
+    ):
         try:
             conn.execute(f"ALTER TABLE executor_runs ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
@@ -335,13 +340,34 @@ def get_recent(limit: int = 20) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT id, run_id, jira_key, branch, started_at, ended_at,
                   duration_ms, cost_usd, status, exit_code,
-                  tests_passed, deployed, artifacts_path
+                  tests_passed, deployed, artifacts_path, pid
            FROM executor_runs
            ORDER BY id DESC
            LIMIT ?""",
         (int(limit),),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_run_by_run_id(run_id: str) -> dict[str, Any] | None:
+    """Look up a run by its sortable artifact ``run_id`` (not the row id).
+
+    Returns the full row as a dict, or ``None`` if no row matches. Used by
+    the cancel endpoint to find the pid of a still-running subprocess.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT id, run_id, jira_key, branch, started_at, ended_at,
+                  duration_ms, cost_usd, status, exit_code,
+                  tests_passed, deployed, artifacts_path, pid
+           FROM executor_runs
+           WHERE run_id = ?
+           ORDER BY id DESC
+           LIMIT 1""",
+        (str(run_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------
