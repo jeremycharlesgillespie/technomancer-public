@@ -87,3 +87,65 @@ class TestGetDailyActivity:
     def test_empty_returns_empty(self):
         activity = ea.get_daily_activity(days=1)
         assert isinstance(activity, list)
+
+
+class TestGetUnusedCommandsDetailed:
+    def test_returns_list_of_dicts(self):
+        result = ea.get_unused_commands_detailed(days=14)
+        assert isinstance(result, list)
+        # The command registry has real commands, so at least one should exist
+        # and it should be unused (no data in fresh DB).
+        assert len(result) > 0
+        for row in result:
+            assert "name" in row
+            assert "description" in row
+            assert "category" in row
+            assert "last_seen" in row
+            assert "invocations" in row
+            assert "days" in row
+
+    def test_excludes_recently_used_commands(self):
+        # Pick a real command from the registry and record usage
+        from agent.command_suggestions import COMMANDS
+        name = COMMANDS[0].name
+        ea.track_command(name, user="bob")
+        result = ea.get_unused_commands_detailed(days=14)
+        names_lower = {r["name"].lower() for r in result}
+        assert name.lower() not in names_lower
+
+    def test_last_seen_none_for_never_used(self):
+        result = ea.get_unused_commands_detailed(days=14)
+        # In a fresh DB, everything should be "never"
+        assert all(r["last_seen"] is None for r in result)
+        assert all(r["invocations"] == 0 for r in result)
+
+    def test_last_seen_populated_from_older_usage(self, monkeypatch):
+        # Track a command, then check that with days=1 it still shows up as
+        # unused (no recent usage) but last_seen reflects the older call.
+        from agent.command_suggestions import COMMANDS
+        name = COMMANDS[0].name
+
+        # Insert a row with a timestamp well outside the 1-day window
+        from datetime import datetime, timedelta
+        old_ts = (datetime.now() - timedelta(days=30)).isoformat()
+        conn = ea._get_conn()
+        conn.execute(
+            "INSERT INTO command_usage (timestamp, command, user_name, args, success, duration_ms) VALUES (?, ?, ?, ?, ?, ?)",
+            (old_ts, name, "bob", "", 1, None),
+        )
+        conn.commit()
+
+        result = ea.get_unused_commands_detailed(days=1)
+        hit = next((r for r in result if r["name"].lower() == name.lower()), None)
+        assert hit is not None, f"{name} should be listed as unused"
+        assert hit["last_seen"] == old_ts
+        assert hit["invocations"] == 1
+
+    def test_sorted_by_name(self):
+        result = ea.get_unused_commands_detailed(days=14)
+        names = [r["name"].lower() for r in result]
+        assert names == sorted(names)
+
+    def test_days_field_matches_input(self):
+        result = ea.get_unused_commands_detailed(days=7)
+        assert all(r["days"] == 7 for r in result)

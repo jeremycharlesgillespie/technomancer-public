@@ -144,6 +144,47 @@ def get_underused_commands(days: int = 14) -> list[str]:
     return sorted(all_commands - used)
 
 
+def get_unused_commands_detailed(days: int = 14) -> list[dict[str, Any]]:
+    """Detailed info for each unused command.
+
+    Returns a list of dicts with: name, description, category, last_seen (ISO
+    string or None), invocations. "Unused" means zero invocations in the last
+    ``days`` days. ``last_seen`` looks at all history, not just the window.
+    """
+    try:
+        from .command_suggestions import COMMANDS
+    except Exception:
+        return []
+
+    stats = get_command_stats(days)
+    used = {row["command"].lower() for row in stats}
+
+    init_db()
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT command, MAX(timestamp) AS last_seen, COUNT(*) AS total "
+        "FROM command_usage GROUP BY command"
+    ).fetchall()
+    history = {r["command"].lower(): (r["last_seen"], r["total"]) for r in rows}
+
+    result: list[dict[str, Any]] = []
+    for cmd in COMMANDS:
+        key = cmd.name.lower()
+        if key in used:
+            continue
+        last_seen, total = history.get(key, (None, 0))
+        result.append({
+            "name": cmd.name,
+            "description": cmd.description,
+            "category": cmd.category,
+            "last_seen": last_seen,
+            "invocations": total,
+            "days": days,
+        })
+    result.sort(key=lambda r: r["name"].lower())
+    return result
+
+
 def get_daily_activity(days: int = 14) -> list[dict[str, Any]]:
     """Get daily message and command counts."""
     init_db()

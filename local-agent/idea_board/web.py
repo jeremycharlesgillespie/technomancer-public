@@ -1148,6 +1148,18 @@ def api_analytics() -> tuple:
     })
 
 
+@app.route("/api/analytics/unused")
+def api_analytics_unused() -> tuple:
+    """GET /api/analytics/unused — detailed list of commands with zero invocations."""
+    days = int(request.args.get("days", 14))
+    from agent.engagement_analytics import get_unused_commands_detailed
+    return jsonify({
+        "days": days,
+        "definition": f"Commands with zero invocations in the last {days} days",
+        "commands": get_unused_commands_detailed(days),
+    })
+
+
 @app.route("/")
 def hub() -> str:
     """Serve the central Technomancer hub page."""
@@ -3992,6 +4004,29 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
 .stat-card {{ background: var(--surface); padding: 1rem; border-radius: 8px; text-align: center; }}
 .stat-card .number {{ font-size: 1.8rem; font-weight: 700; color: var(--accent); }}
 .stat-card .label {{ font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }}
+.stat-card.clickable {{ cursor: pointer; transition: transform 0.1s, background 0.2s; }}
+.stat-card.clickable:hover {{ background: #2e2e2e; transform: translateY(-1px); }}
+.stat-card.clickable .hint {{ font-size: 0.7rem; color: var(--accent); margin-top: 4px; }}
+.modal-backdrop {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+                    z-index: 50; align-items: flex-start; justify-content: center; padding: 40px 16px;
+                    overflow-y: auto; }}
+.modal-backdrop.open {{ display: flex; }}
+.modal {{ background: var(--surface); border-radius: 10px; max-width: 720px; width: 100%;
+          padding: 1.5rem; border: 1px solid var(--border); }}
+.modal-head {{ display: flex; justify-content: space-between; align-items: baseline;
+               gap: 12px; margin-bottom: 0.5rem; }}
+.modal-head h2 {{ margin: 0; color: var(--accent); }}
+.modal-close {{ background: none; border: none; color: var(--muted); font-size: 1.4rem;
+                cursor: pointer; padding: 0 4px; }}
+.modal-close:hover {{ color: var(--text); }}
+.modal-def {{ font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem;
+              padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }}
+.modal .cmd-row {{ padding: 8px 0; border-bottom: 1px solid var(--border); }}
+.modal .cmd-row:last-child {{ border-bottom: none; }}
+.modal .cmd-name {{ font-family: 'Cascadia Code', 'Fira Code', monospace;
+                     color: var(--accent); font-weight: 600; }}
+.modal .cmd-meta {{ font-size: 0.75rem; color: var(--muted); margin-top: 2px; }}
+.modal .cmd-desc {{ font-size: 0.85rem; color: var(--text); margin-top: 2px; }}
 </style></head>
 <body>
     <h1>Engagement Analytics</h1>
@@ -4007,7 +4042,22 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
         <div class="stat-card"><div class="number">{total_cmds}</div><div class="label">Commands ({days}d)</div></div>
         <div class="stat-card"><div class="number">{total_msgs}</div><div class="label">Messages ({days}d)</div></div>
         <div class="stat-card"><div class="number">{len(cmd_stats)}</div><div class="label">Unique Commands</div></div>
-        <div class="stat-card"><div class="number">{len(underused)}</div><div class="label">Unused Features</div></div>
+        <div class="stat-card clickable" id="unused-card" onclick="openUnusedModal()" title="Click to see which commands haven't been used in {days} days">
+            <div class="number">{len(underused)}</div>
+            <div class="label">Unused Features</div>
+            <div class="hint">Click for list &rarr;</div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="unused-modal" onclick="if(event.target===this)closeUnusedModal()">
+        <div class="modal" role="dialog" aria-labelledby="unused-modal-title">
+            <div class="modal-head">
+                <h2 id="unused-modal-title">Unused Features</h2>
+                <button class="modal-close" onclick="closeUnusedModal()" aria-label="Close">&times;</button>
+            </div>
+            <div class="modal-def" id="unused-modal-def">Loading&hellip;</div>
+            <div id="unused-modal-body">Loading&hellip;</div>
+        </div>
     </div>
 
     <h2>Command Usage</h2>
@@ -4034,6 +4084,55 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
     {fb_html}
 
     <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Last refresh: {now} &bull; Data period: {days} days</p>
+
+    <script>
+    function escapeHtml(s) {{
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }}
+    async function openUnusedModal() {{
+        const modal = document.getElementById('unused-modal');
+        const body = document.getElementById('unused-modal-body');
+        const defEl = document.getElementById('unused-modal-def');
+        modal.classList.add('open');
+        body.textContent = 'Loading...';
+        defEl.textContent = '';
+        try {{
+            const resp = await fetch('/api/analytics/unused?days={days}');
+            const data = await resp.json();
+            defEl.textContent = data.definition || '';
+            const cmds = data.commands || [];
+            if (!cmds.length) {{
+                body.innerHTML = '<p style="color:var(--muted)">Every command has been used recently.</p>';
+                return;
+            }}
+            body.innerHTML = cmds.map(function(c) {{
+                const lastSeen = c.last_seen
+                    ? escapeHtml(String(c.last_seen).slice(0, 10))
+                    : 'never';
+                const cat = c.category ? ' &bull; ' + escapeHtml(c.category) : '';
+                const desc = c.description
+                    ? '<div class="cmd-desc">' + escapeHtml(c.description) + '</div>'
+                    : '';
+                return '<div class="cmd-row">'
+                    + '<span class="cmd-name">' + escapeHtml(c.name) + '</span>'
+                    + '<div class="cmd-meta">Last seen: ' + lastSeen + cat + '</div>'
+                    + desc
+                    + '</div>';
+            }}).join('');
+        }} catch (err) {{
+            body.innerHTML = '<p style="color:var(--red)">Failed to load: '
+                + escapeHtml(err.message || String(err)) + '</p>';
+        }}
+    }}
+    function closeUnusedModal() {{
+        document.getElementById('unused-modal').classList.remove('open');
+    }}
+    document.addEventListener('keydown', function(e) {{
+        if (e.key === 'Escape') closeUnusedModal();
+    }});
+    </script>
 </body></html>"""
 
 
