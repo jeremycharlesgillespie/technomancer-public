@@ -8,6 +8,15 @@ Provides mocks for:
 - Memory system initialized with temp vault
 """
 
+# Install the claude -p shims before any test module imports ollama /
+# anthropic. Production wires them in agent/__init__.py; this ensures
+# tests that import ollama directly (without going through the agent
+# package first) also pick them up.
+from agent.ollama_shim import install_as_ollama as _install_ollama_shim
+from agent.anthropic_shim import install_as_anthropic as _install_anthropic_shim
+_install_ollama_shim()
+_install_anthropic_shim()
+
 from unittest.mock import MagicMock, patch
 
 import pytest
