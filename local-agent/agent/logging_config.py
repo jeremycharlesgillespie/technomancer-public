@@ -22,8 +22,8 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Rotation settings
-MAX_LOG_SIZE = 5 * 1024 * 1024  # 5 MB
-BACKUP_COUNT = 3  # Keep 3 old log files
+MAX_LOG_SIZE = 10_000_000  # 10 MB per file
+BACKUP_COUNT = 5  # Keep 5 old log files
 
 
 def setup_logger(

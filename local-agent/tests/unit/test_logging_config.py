@@ -1,10 +1,13 @@
 """Tests for the logging_config module — logger setup and configuration."""
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 import pytest
 
 from agent.logging_config import (
+    BACKUP_COUNT,
+    MAX_LOG_SIZE,
     get_agent_logger,
     get_bot_service_logger,
     get_discord_bot_logger,
@@ -98,3 +101,54 @@ class TestPreConfiguredLoggers:
     def test_agent_logger(self):
         logger = get_agent_logger()
         assert isinstance(logger, logging.Logger)
+
+
+class TestRotatingFileHandler:
+    """Verify RotatingFileHandler is configured and actually rotates."""
+
+    def test_rotating_handler_params(self, tmp_path):
+        """Handler type is RotatingFileHandler with the specified parameters."""
+        logger = setup_logger(
+            "test_rotating_params_unique",
+            log_file="params.log",
+            log_dir=tmp_path,
+            console=False,
+        )
+        rotating_handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(rotating_handlers) == 1
+        handler = rotating_handlers[0]
+        assert handler.maxBytes == 10_000_000
+        assert handler.backupCount == 5
+        assert handler.encoding == "utf-8"
+
+    def test_module_constants(self):
+        """Module constants match the spec (10MB / 5 backups)."""
+        assert MAX_LOG_SIZE == 10_000_000
+        assert BACKUP_COUNT == 5
+
+    def test_rotating_handler_configured(self, tmp_path):
+        """Writing >10MB of log lines triggers rotation; agent.log.1 exists and
+        the primary file stays under the configured cap."""
+        logger = setup_logger(
+            "test_rotating_triggers_unique",
+            log_file="agent.log",
+            log_dir=tmp_path,
+            console=False,
+        )
+        # Write slightly more than 10MB of log content. Each line is ~130 bytes
+        # after formatting, so 100k lines of 100-byte payload comfortably
+        # crosses the 10MB threshold.
+        payload = "x" * 100
+        for i in range(100_000):
+            logger.info("%d %s", i, payload)
+        for h in logger.handlers:
+            h.flush()
+
+        primary = tmp_path / "agent.log"
+        backup = tmp_path / "agent.log.1"
+
+        assert primary.exists()
+        assert backup.exists(), "expected at least one backup file (agent.log.1)"
+        # Primary must be under the cap. Allow a small formatter-overhead
+        # margin since rotation is checked after each record is emitted.
+        assert primary.stat().st_size <= 10_000_000 + 4096
