@@ -120,6 +120,7 @@ from .discord_errors import (
 )
 from .knowledge_enrichment import get_knowledge_enrichment_tools, start_knowledge_enrichment
 from .knowledge_search import get_knowledge_search_tools, init_knowledge_index
+from .startup_checks import ReadinessReport, run_readiness_checks
 from .task_manager import create_monitored_task, register_shutdown_callback, shutdown_sync, start_health_checker
 from .command_suggestions import (
     find_closest_command,
@@ -374,12 +375,111 @@ async def on_resumed() -> None:
     log("[Gateway] Resumed")
 
 
+def _append_readiness_failure_to_crash_log(
+    failed: list[Any], vault_path: Path
+) -> Path:
+    """Append a structured readiness-failure entry to ``crash_log.md``.
+
+    Uses a distinct ``# Readiness Gate Failure`` header so ``crash_triage.py``
+    (which splits on ``# Bot Crash Report``) does not mistake gate failures
+    for genuine crashes and file duplicate Jira stories.
+    """
+    crash_file = Path(vault_path) / "LLM Memory" / "Permanent" / "crash_log.md"
+    crash_file.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "",
+        "# Readiness Gate Failure",
+        "",
+        f"**Timestamp:** {timestamp}",
+        f"**Failed Checks:** {len(failed)}",
+        "",
+        "## Failed Checks",
+    ]
+    for result in failed:
+        error = result.error or "no error detail"
+        lines.append(
+            f"- `{result.name}` ({result.status}) "
+            f"after {result.attempts} attempt(s): {error}"
+        )
+    lines.append("")
+    with crash_file.open("a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    return crash_file
+
+
+async def _dm_owner_about_readiness_failure(
+    discord_client: Any, failed: list[Any]
+) -> bool:
+    """DM ``settings.bot_owner`` with the list of failing readiness checks.
+
+    Returns True on delivery, False if the owner could not be located in any
+    guild or if the DM raised. Errors are logged but never re-raised — the
+    caller still needs to reach ``sys.exit(1)`` on failure.
+    """
+    owner_name = settings.bot_owner
+    if not owner_name:
+        return False
+
+    lines = [
+        ":red_circle: **Readiness gate failed — bot did not come online**",
+        "",
+        "Failed checks:",
+    ]
+    for result in failed:
+        error = result.error or "no error detail"
+        lines.append(f"- `{result.name}` ({result.status}): {error}")
+    body = "\n".join(lines)
+
+    for guild in getattr(discord_client, "guilds", []) or []:
+        member = next(
+            (
+                m
+                for m in getattr(guild, "members", []) or []
+                if getattr(m, "name", None) == owner_name
+                or getattr(m, "display_name", None) == owner_name
+            ),
+            None,
+        )
+        if member is None:
+            continue
+        try:
+            await member.send(body)
+            return True
+        except Exception:
+            log(f"[Readiness] Failed to DM owner {owner_name}")
+    return False
+
+
+async def _handle_readiness_failure(report: ReadinessReport) -> None:
+    """On required readiness-check failure: log, DM owner, exit.
+
+    Order is deliberate: append the crash-log entry first so post-mortem data
+    survives even if the DM raises, then attempt the DM, then ``sys.exit(1)``
+    so ``bot_service.py``'s restart/backoff engages.
+    """
+    failed = report.failed_required()
+    names = [r.name for r in failed]
+    log(f"[Readiness] Required checks failed: {names}")
+    _append_readiness_failure_to_crash_log(failed, VAULT_PATH)
+    await _dm_owner_about_readiness_failure(client, failed)
+    sys.exit(1)
+
+
 @client.event
 async def on_ready() -> None:
     global agent, memory
     log(f"Connected as {client.user}")
     send_lifecycle_notification("online", f"Connected as {client.user}")
     get_gateway_health().record_connect()
+
+    # Readiness gate — verify Ollama, vault, and executor_db before continuing.
+    # On required failure: write crash log, DM owner, sys.exit(1) so
+    # bot_service.py restart/backoff engages.
+    report = await asyncio.to_thread(run_readiness_checks)
+    if not report.ok:
+        await _handle_readiness_failure(report)
+        return  # unreachable — _handle_readiness_failure calls sys.exit(1)
 
     # Initialize memory system (compaction started after agent is created below)
     memory = init_memory_system(VAULT_PATH)
