@@ -23,6 +23,7 @@ Routes:
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
+    GET  /live                    — Landing page listing in-flight + recent executions
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
     GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
@@ -2007,6 +2008,200 @@ _LIVE_LOG_HTML = """<!doctype html>
 """
 
 
+# Local-agent root — aim/ state files live under here (primary + per-project).
+_AGENT_ROOT: Path = Path(__file__).resolve().parent.parent
+
+
+def _collect_live_executions() -> dict[str, list[dict[str, Any]]]:
+    """Scan AIM state files across projects for live execution data.
+
+    Reads the primary ``aim/.aim_state.json`` plus any per-project state
+    files under ``aim/projects/<name>/.aim_state.json``. Returns:
+      - ``executing``: workers with a current_idea_id and a non-idle status
+      - ``recent``: last 10 completed items merged across projects, sorted
+        by ``resolved`` descending (from each project's board_snapshot)
+    """
+    state_files: list[tuple[str, Path]] = []
+
+    primary_path = _AGENT_ROOT / "aim" / ".aim_state.json"
+    if primary_path.exists():
+        primary_label = settings.jira_project_key or "primary"
+        state_files.append((primary_label, primary_path))
+
+    projects_dir = _AGENT_ROOT / "aim" / "projects"
+    if projects_dir.is_dir():
+        for sub in sorted(projects_dir.iterdir()):
+            if not sub.is_dir():
+                continue
+            sub_path = sub / ".aim_state.json"
+            if sub_path.exists():
+                state_files.append((sub.name, sub_path))
+
+    active_statuses = {"assigned", "executing", "watching"}
+    executing: list[dict[str, Any]] = []
+    recent: list[dict[str, Any]] = []
+
+    for label, path in state_files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "[LiveLanding] Skipping unreadable state file %s: %s", path, exc
+            )
+            continue
+
+        worker = data.get("worker") or {}
+        current_id = worker.get("current_idea_id")
+        status = worker.get("status") or ""
+        if current_id and status in active_statuses:
+            executing.append({
+                "project": label,
+                "key": current_id,
+                "status": status,
+                "started_at": worker.get("started_at") or "",
+                "last_observation": worker.get("last_observation") or "",
+            })
+
+        snapshot = data.get("board_snapshot") or {}
+        for item in snapshot.get("recent_completions", []) or []:
+            key = item.get("key")
+            if not key:
+                continue
+            recent.append({
+                "project": label,
+                "key": key,
+                "title": item.get("summary") or "",
+                "resolved": item.get("resolved") or "",
+            })
+
+    recent.sort(key=lambda x: x.get("resolved") or "", reverse=True)
+    return {"executing": executing, "recent": recent[:10]}
+
+
+def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
+    """Render the /live landing page HTML from collected execution data."""
+    executing = data.get("executing") or []
+    recent = data.get("recent") or []
+
+    if executing:
+        rows = []
+        for row in executing:
+            key = html.escape(row["key"])
+            project = html.escape(row["project"])
+            status = html.escape(row["status"])
+            started = html.escape(row["started_at"])
+            observation = html.escape(row["last_observation"])[:120]
+            rows.append(
+                f'<tr><td>{project}</td>'
+                f'<td><a href="/live/{key}">{key}</a></td>'
+                f'<td><span class="status-pill {status}">{status}</span></td>'
+                f'<td>{started}</td>'
+                f'<td class="obs">{observation}</td></tr>'
+            )
+        executing_body = "".join(rows)
+    else:
+        executing_body = (
+            '<tr><td colspan="5" class="empty">No executions in flight.</td></tr>'
+        )
+
+    if recent:
+        rows = []
+        for row in recent:
+            key = html.escape(row["key"])
+            project = html.escape(row["project"])
+            title = html.escape(row["title"])[:100]
+            resolved = html.escape(row["resolved"])[:19].replace("T", " ")
+            rows.append(
+                f'<tr><td>{project}</td>'
+                f'<td><a href="/live/{key}">{key}</a></td>'
+                f'<td>{title}</td>'
+                f'<td>{resolved}</td></tr>'
+            )
+        recent_body = "".join(rows)
+    else:
+        recent_body = (
+            '<tr><td colspan="4" class="empty">No recent completions recorded.</td></tr>'
+        )
+
+    now = datetime.now().strftime("%H:%M:%S")
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Executions — Technomancer Hub</title>
+    <style>{HUB_CSS}
+    .nav {{ margin-bottom: 1.5rem; display: flex; gap: 12px; flex-wrap: wrap; }}
+    .nav a {{ color: var(--accent); text-decoration: none; padding: 6px 14px;
+             border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; }}
+    .nav a:hover {{ background: var(--accent); color: #000; }}
+    section {{ background: var(--surface); border-radius: 8px; padding: 1.25rem 1.5rem;
+               border-left: 4px solid var(--accent); margin-bottom: 1.5rem; }}
+    section h2 {{ font-size: 1.05rem; margin-bottom: 0.75rem; color: var(--accent); }}
+    table {{ width: 100%; border-collapse: collapse; }}
+    th, td {{ padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border);
+              font-size: 0.9rem; vertical-align: top; }}
+    th {{ color: var(--muted); font-weight: 600; font-size: 0.75rem;
+          text-transform: uppercase; letter-spacing: 0.05em; }}
+    td.empty {{ color: var(--muted); font-style: italic; text-align: center; }}
+    td.obs {{ color: var(--muted); font-size: 0.8rem; }}
+    td a {{ color: var(--accent); text-decoration: none; font-family: 'Cascadia Code', monospace; }}
+    td a:hover {{ text-decoration: underline; }}
+    .status-pill {{ display: inline-block; padding: 2px 8px; border-radius: 4px;
+                    font-size: 0.75rem; background: #333; color: var(--text); }}
+    .status-pill.executing {{ background: var(--orange); color: #000; }}
+    .status-pill.watching {{ background: var(--accent); color: #000; }}
+    .status-pill.assigned {{ background: var(--muted); color: #000; }}
+    </style>
+</head>
+<body>
+    <h1>Live Executions</h1>
+    <p class="subtitle">In-flight work + the last 10 completed stories across all projects.</p>
+
+    <div class="nav">
+        <a href="/">&larr; Hub</a>
+        <a href="/aim">AIM Timeline</a>
+        <a href="/aim/dashboard">AI Dev Team</a>
+        <a href="/executor-runs">Executor Runs</a>
+    </div>
+
+    <section>
+        <h2>Currently Executing ({len(executing)})</h2>
+        <table>
+            <thead>
+                <tr><th>Project</th><th>Key</th><th>Status</th><th>Started</th><th>Last Observation</th></tr>
+            </thead>
+            <tbody>{executing_body}</tbody>
+        </table>
+    </section>
+
+    <section>
+        <h2>Recently Completed ({len(recent)})</h2>
+        <table>
+            <thead>
+                <tr><th>Project</th><th>Key</th><th>Title</th><th>Resolved</th></tr>
+            </thead>
+            <tbody>{recent_body}</tbody>
+        </table>
+    </section>
+
+    <p style="color:var(--muted);font-size:0.8rem">Refreshed at {now} &middot; click a key to tail its live log.</p>
+</body>
+</html>"""
+
+
+@app.route("/live")
+def live_executions_landing() -> Response:
+    """Landing page listing in-flight executions and recent completions.
+
+    Aggregates ``aim/.aim_state.json`` plus each ``aim/projects/*/.aim_state.json``
+    into a single browsable view. Each row links to ``/live/<key>`` for the
+    per-story live log already served by :func:`live_log_viewer`.
+    """
+    data = _collect_live_executions()
+    return Response(_render_live_landing(data), mimetype="text/html")
+
+
 @app.route("/live/<item_id>")
 def live_log_viewer(item_id: str) -> Response:
     """Live "look over the shoulder" log viewer for an executing item.
@@ -2014,8 +2209,8 @@ def live_log_viewer(item_id: str) -> Response:
     Works for both local idea IDs (idea-XXX) and Jira keys (TK-XXX).
     Streams from the existing /api/ideas/<id>/log/stream SSE endpoint.
     """
-    html = _LIVE_LOG_HTML.format(item_id=item_id)
-    return Response(html, mimetype="text/html")
+    html_body = _LIVE_LOG_HTML.format(item_id=item_id)
+    return Response(html_body, mimetype="text/html")
 
 
 @app.route("/api/health")
@@ -5439,6 +5634,10 @@ def _render_hub() -> str:
         <a href="/errors" class="card" style="border-left: 4px solid var(--red);">
             <h2>Errors &amp; Crashes</h2>
             <p>Recent crash reports with stack traces.</p>
+        </a>
+        <a href="/live" class="card" style="border-left: 4px solid var(--orange);">
+            <h2>View Live Executions</h2>
+            <p>Browse in-flight work across projects and tail the latest runs.</p>
         </a>
         <a href="http://{settings.server_host}:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>
