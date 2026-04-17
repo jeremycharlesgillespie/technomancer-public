@@ -626,6 +626,81 @@ def _has_branch_commits(project_root: Path, base: str = "main") -> bool:
         return False
 
 
+def _auto_commit_uncommitted(
+    project_root: Path | str,
+    idea_id: str,
+    state: "ExecutionState",
+) -> bool:
+    """Commit any uncommitted changes left behind by ``claude -p``.
+
+    Claude sometimes narrates edits — "Now let me add X", "Let me verify
+    Y", "Final result" — and exits without invoking ``git commit``.
+    Real work on disk, zero commits on the branch, executor marks the
+    story failed. We make the commit step unavoidable in code rather
+    than beg Claude in the prompt.
+
+    Runs BEFORE the success check so ``git rev-list --count main..HEAD``
+    sees a commit instead of zero.
+
+    Returns True if an auto-commit landed (so callers can log it as a
+    real event rather than a silent save).
+    """
+    cwd = str(project_root)
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        )
+    except Exception as exc:
+        state.log(f"Auto-commit: status check failed ({exc}) — skipping")
+        return False
+
+    dirty = (status.stdout or "").strip()
+    if not dirty:
+        return False
+
+    changed_lines = [ln for ln in dirty.splitlines() if ln.strip()]
+    state.log(
+        f"Auto-commit: {len(changed_lines)} uncommitted path(s) left by "
+        f"Claude — committing so success check sees the work"
+    )
+
+    try:
+        subprocess.run(
+            ["git", "add", "-A"],
+            capture_output=True, text=True, timeout=15, cwd=cwd,
+        )
+        commit = subprocess.run(
+            [
+                "git", "commit",
+                "-m",
+                f"[{idea_id}] Auto-commit from claude -p session\n\n"
+                f"Claude exited without running git commit. Executor captured "
+                f"uncommitted changes automatically.",
+            ],
+            capture_output=True, text=True, timeout=15, cwd=cwd,
+        )
+    except Exception as exc:
+        state.log(f"Auto-commit: subprocess failed ({exc})")
+        return False
+
+    if commit.returncode != 0:
+        stderr_tail = (commit.stderr or commit.stdout or "")[-200:]
+        state.log(f"Auto-commit: git commit failed — {stderr_tail}")
+        return False
+
+    # Show the new SHA so it's easy to find in the story's git log.
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10, cwd=cwd,
+        ).stdout.strip()
+        state.log(f"Auto-commit landed as {sha}")
+    except Exception:
+        pass
+    return True
+
+
 def _classify_rate_limit(
     state: ExecutionState,
     claude_succeeded: bool,
@@ -1729,6 +1804,14 @@ def execute_idea(
                     pass
             # Brief pause to let OS fully release resources
             time.sleep(2)
+
+            # Claude sometimes edits files without running ``git commit``
+            # — narrates its changes, says "Final result", exits. The
+            # success check counts commits on the branch, so that work
+            # gets marked failed. Turn the commit step into code rather
+            # than a prompt instruction: if the working tree is dirty
+            # after Claude exits, auto-commit before checking.
+            _auto_commit_uncommitted(project_root, idea_id, state)
 
             # Success is authoritatively determined by whether the feature
             # branch has commits ahead of main. Claude's stdout is a weak
