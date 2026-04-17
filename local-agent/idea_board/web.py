@@ -20,6 +20,7 @@ Routes:
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
+    POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
     GET  /api/metrics             — Unified observability snapshot as JSON (30s cached)
@@ -2680,6 +2681,85 @@ def api_executor_runs() -> Response:
             if fail is not None:
                 row["error_message"] = fail["error_message"]
     return jsonify(rows)
+
+
+@app.route("/api/executor/run/<int:run_id>/kill", methods=["POST"])
+def api_executor_run_kill(run_id: int) -> Response:
+    """POST /api/executor/run/<id>/kill — stop a runaway executor run.
+
+    Looks up the run's recorded PID, sends SIGTERM, waits 10 seconds, and
+    escalates to SIGKILL if the process is still alive. The row is then
+    marked ``status='killed'`` with ``killed_at`` and an optional
+    ``kill_reason`` (POST body: ``{"reason": "..."}``).
+
+    Status codes:
+        * 404 — no run row with this id
+        * 409 — run is already terminal (body includes current status)
+        * 202 — kill initiated; the actual SIGTERM/SIGKILL dance runs on a
+          background thread so operators don't wait for the full 10-second
+          grace period on the HTTP round-trip
+    """
+    from agent import executor_runs_db
+
+    body = request.get_json(silent=True) or {}
+    reason = None
+    if isinstance(body, dict):
+        raw_reason = body.get("reason")
+        if isinstance(raw_reason, str) and raw_reason.strip():
+            reason = raw_reason.strip()
+
+    row = executor_runs_db.get_run(run_id)
+    if row is None:
+        return jsonify({"error": f"executor run {run_id} not found"}), 404
+
+    status = (row.get("status") or "").lower()
+    if status in executor_runs_db.TERMINAL_RUN_STATUSES:
+        return jsonify({
+            "error": f"executor run {run_id} is already terminal",
+            "status": row.get("status"),
+        }), 409
+
+    # Push the signal + wait + DB update to a daemon thread so the HTTP
+    # response is immediate regardless of how long SIGTERM takes to settle.
+    threading.Thread(
+        target=_run_kill_background,
+        args=(int(run_id), reason),
+        daemon=True,
+        name=f"kill-run-{run_id}",
+    ).start()
+
+    return jsonify({
+        "status": "killing",
+        "run_id": int(run_id),
+        "pid": row.get("pid"),
+    }), 202
+
+
+def _run_kill_background(run_id: int, reason: str | None) -> None:
+    """Thread target — invoke :func:`executor_runs_db.kill_run` and log errors.
+
+    Exceptions are swallowed; operators see the outcome via the DB row (status
+    stays at ``running`` if the kill failed) and the structured log line.
+    """
+    from agent import executor_runs_db
+
+    try:
+        result = executor_runs_db.kill_run(int(run_id), reason=reason)
+        logger.info(
+            "kill-run-background: %s",
+            {"run_id": run_id, **result},
+        )
+    except executor_runs_db.RunNotFoundError:
+        logger.warning("kill-run-background: run %s disappeared", run_id)
+    except executor_runs_db.RunAlreadyTerminalError as exc:
+        logger.info(
+            "kill-run-background: run %s already terminal (%s)",
+            run_id, exc.status,
+        )
+    except Exception:
+        logger.exception(
+            "kill-run-background: unexpected failure for run %s", run_id,
+        )
 
 
 @app.route("/executor-runs")

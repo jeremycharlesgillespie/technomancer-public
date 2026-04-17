@@ -255,7 +255,13 @@ def _get_default() -> Client:
     return _default_client
 
 
-def chat(
+# IMPORTANT: these are named with a leading underscore to avoid shadowing
+# the builtin ``list`` inside this module. The real ``ollama`` package
+# exposes them as ``ollama.chat``, ``ollama.list`` etc.; we register those
+# names on the fake module in install_as_ollama() without shadowing
+# builtins in module scope.
+
+def _mod_chat(
     model: str | None = None,
     messages: list[dict[str, Any]] | None = None,
     **kwargs: Any,
@@ -263,7 +269,7 @@ def chat(
     return _get_default().chat(model=model, messages=messages, **kwargs)
 
 
-def generate(
+def _mod_generate(
     model: str | None = None,
     prompt: str | None = None,
     **kwargs: Any,
@@ -271,23 +277,23 @@ def generate(
     return _get_default().generate(model=model, prompt=prompt, **kwargs)
 
 
-def list() -> dict[str, Any]:  # noqa: A001
+def _mod_list() -> dict[str, Any]:
     return _get_default().list()
 
 
-def show(model: str | None = None) -> dict[str, Any]:
+def _mod_show(model: str | None = None) -> dict[str, Any]:
     return _get_default().show(model=model)
 
 
-def ps() -> dict[str, Any]:
+def _mod_ps() -> dict[str, Any]:
     return _get_default().ps()
 
 
-def embeddings(model: str | None = None, prompt: str | None = None) -> dict[str, Any]:
+def _mod_embeddings(model: str | None = None, prompt: str | None = None) -> dict[str, Any]:
     return _get_default().embeddings(model=model, prompt=prompt)
 
 
-def embed(*args: Any, **kwargs: Any) -> dict[str, Any]:
+def _mod_embed(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _get_default().embed(*args, **kwargs)
 
 
@@ -322,13 +328,13 @@ def install_as_ollama() -> None:
 
     mod = _t.ModuleType("ollama")
     mod.Client = Client
-    mod.chat = chat
-    mod.generate = generate
-    mod.list = list
-    mod.show = show
-    mod.ps = ps
-    mod.embeddings = embeddings
-    mod.embed = embed
+    mod.chat = _mod_chat
+    mod.generate = _mod_generate
+    mod.list = _mod_list
+    mod.show = _mod_show
+    mod.ps = _mod_ps
+    mod.embeddings = _mod_embeddings
+    mod.embed = _mod_embed
     mod.ResponseError = ResponseError
     mod.RequestError = RequestError
     mod._types = _types  # noqa: SLF001

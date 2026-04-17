@@ -30,9 +30,12 @@ Database: ``local-agent/data/executor_runs.db``
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -67,7 +70,28 @@ _COLUMNS: frozenset[str] = frozenset({
     "deployed",
     "artifacts_path",
     "pid",
+    "killed_at",
+    "kill_reason",
 })
+
+# Status values that mean the run is finished — the kill endpoint refuses to
+# re-signal these (returns 409) and the nightly purge treats them as settled.
+TERMINAL_RUN_STATUSES: frozenset[str] = frozenset({
+    "success",
+    "failed",
+    "error",
+    "crashed",
+    "killed",
+    "timeout",
+    "done",
+    "cancelled",
+    "canceled",
+})
+
+# SIGTERM grace period before escalating to SIGKILL. Exposed as a module
+# attribute so tests can patch it down to avoid a 10-second wait.
+KILL_SIGTERM_TIMEOUT_SECONDS: float = 10.0
+KILL_POLL_INTERVAL_SECONDS: float = 0.25
 
 # Whitelist of legal column names for the executor_tool_calls table.
 _TOOL_COLUMNS: frozenset[str] = frozenset({
@@ -115,13 +139,22 @@ def init_db() -> None:
             deployed       INTEGER,
             run_id         TEXT,
             artifacts_path TEXT,
-            pid            INTEGER
+            pid            INTEGER,
+            killed_at      TEXT,
+            kill_reason    TEXT
         )
     """)
-    # Migrate older databases that pre-date run_id / artifacts_path / pid.
-    # ALTER TABLE raises OperationalError if the column is already present —
-    # that's the expected idempotency signal, so swallow it.
-    for col, decl in (("run_id", "TEXT"), ("artifacts_path", "TEXT"), ("pid", "INTEGER")):
+    # Migrate older databases that pre-date run_id / artifacts_path / pid /
+    # killed_at / kill_reason. ALTER TABLE raises OperationalError if the
+    # column is already present — that's the expected idempotency signal, so
+    # swallow it.
+    for col, decl in (
+        ("run_id", "TEXT"),
+        ("artifacts_path", "TEXT"),
+        ("pid", "INTEGER"),
+        ("killed_at", "TEXT"),
+        ("kill_reason", "TEXT"),
+    ):
         try:
             conn.execute(f"ALTER TABLE executor_runs ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:
@@ -462,6 +495,218 @@ def get_recent(limit: int = 20) -> list[dict[str, Any]]:
         (int(limit),),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Kill a running executor — SIGTERM, wait, SIGKILL escalation
+# ---------------------------------------------------------------------------
+
+
+def _is_process_alive(pid: int | None) -> bool:
+    """Return True if ``pid`` still corresponds to a running process.
+
+    Cross-platform — uses ``OpenProcess`` + ``GetExitCodeProcess`` on Windows
+    (``os.kill(pid, 0)`` is not reliable there) and ``os.kill(pid, 0)`` on
+    POSIX. Never raises; missing pids, invalid pids, and permission errors
+    all collapse to a boolean.
+
+    ``PermissionError`` on POSIX means the pid exists but we don't own it —
+    the process is alive from the caller's point of view, so return True.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(  # type: ignore[attr-defined]
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid),
+            )
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                ok = ctypes.windll.kernel32.GetExitCodeProcess(  # type: ignore[attr-defined]
+                    handle, ctypes.byref(exit_code),
+                )
+                if not ok:
+                    return False
+                return exit_code.value == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    except OSError:
+        return False
+
+
+def _send_sigterm(pid: int) -> None:
+    """Ask the process to terminate gracefully.
+
+    On POSIX this is literally ``os.kill(pid, SIGTERM)``. On Windows,
+    ``taskkill`` without ``/F`` sends a close event that well-behaved console
+    apps can trap — the Windows analogue of SIGTERM. Never raises; all errors
+    are logged and swallowed so the escalation loop can still observe
+    ``_is_process_alive`` and escalate.
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid))],
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            os.kill(int(pid), signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("kill_run: SIGTERM to pid %s failed: %s", pid, exc)
+
+
+def _send_sigkill(pid: int) -> None:
+    """Force-terminate the process tree.
+
+    On POSIX sends ``SIGKILL``; on Windows uses ``taskkill /F /T`` which
+    TerminateProcess()-es the pid and its descendants. Never raises.
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+                capture_output=True,
+                timeout=5,
+            )
+        else:
+            os.kill(int(pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("kill_run: SIGKILL to pid %s failed: %s", pid, exc)
+
+
+def get_run(run_id: int) -> dict[str, Any] | None:
+    """Fetch a single run row by integer ``executor_runs.id``.
+
+    Returns the row as a dict (including ``pid``, ``status``, and the
+    ``killed_at`` / ``kill_reason`` columns), or ``None`` when no row exists.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT id, run_id, jira_key, branch, started_at, ended_at,
+                  duration_ms, cost_usd, status, exit_code,
+                  tests_passed, deployed, artifacts_path, pid,
+                  killed_at, kill_reason
+           FROM executor_runs
+           WHERE id = ?""",
+        (int(run_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+class RunNotFoundError(LookupError):
+    """Raised by :func:`kill_run` when the run id doesn't exist."""
+
+
+class RunAlreadyTerminalError(RuntimeError):
+    """Raised by :func:`kill_run` when the run is already in a terminal state.
+
+    The ``status`` attribute holds the row's current status so the HTTP layer
+    can surface it in a 409 response body.
+    """
+
+    def __init__(self, run_id: int, status: str) -> None:
+        super().__init__(
+            f"executor run {run_id} is already terminal (status={status!r})"
+        )
+        self.run_id = run_id
+        self.status = status
+
+
+def kill_run(
+    run_id: int,
+    reason: str | None = None,
+    sigterm_timeout: float | None = None,
+    poll_interval: float | None = None,
+) -> dict[str, Any]:
+    """Kill a running executor and mark the DB row ``killed``.
+
+    Sends SIGTERM to the row's ``pid`` (if any), waits up to
+    ``sigterm_timeout`` seconds polling for the process to exit, then
+    escalates to SIGKILL if still alive. Updates the row with
+    ``status='killed'``, ``killed_at=<now>``, ``kill_reason=reason``, and
+    ``ended_at=<now>``.
+
+    Args:
+        run_id: ``executor_runs.id`` of the run to kill.
+        reason: Optional free-text reason persisted to ``kill_reason``.
+        sigterm_timeout: Grace period before SIGKILL. Defaults to
+            :data:`KILL_SIGTERM_TIMEOUT_SECONDS` (10s).
+        poll_interval: How often to re-check liveness during the grace
+            period. Defaults to :data:`KILL_POLL_INTERVAL_SECONDS`.
+
+    Returns:
+        ``{"run_id", "pid", "escalated", "status"}`` where ``escalated`` is
+        True iff SIGKILL had to be sent.
+
+    Raises:
+        RunNotFoundError: No row matches ``run_id``.
+        RunAlreadyTerminalError: The row's status is already terminal.
+    """
+    if sigterm_timeout is None:
+        sigterm_timeout = KILL_SIGTERM_TIMEOUT_SECONDS
+    if poll_interval is None:
+        poll_interval = KILL_POLL_INTERVAL_SECONDS
+
+    init_db()
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT id, pid, status FROM executor_runs WHERE id = ?",
+        (int(run_id),),
+    ).fetchone()
+    if row is None:
+        raise RunNotFoundError(f"No executor run with id {run_id}")
+
+    current_status = (row["status"] or "").lower()
+    if current_status in TERMINAL_RUN_STATUSES:
+        raise RunAlreadyTerminalError(int(run_id), row["status"] or "")
+
+    pid = row["pid"]
+    escalated = False
+    if pid:
+        _send_sigterm(int(pid))
+        deadline = time.monotonic() + max(float(sigterm_timeout), 0.0)
+        while time.monotonic() < deadline:
+            if not _is_process_alive(pid):
+                break
+            time.sleep(max(float(poll_interval), 0.01))
+        if _is_process_alive(pid):
+            escalated = True
+            _send_sigkill(int(pid))
+
+    now_iso = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE executor_runs "
+        "SET status = ?, killed_at = ?, kill_reason = ?, ended_at = ? "
+        "WHERE id = ?",
+        ("killed", now_iso, reason, now_iso, int(run_id)),
+    )
+    conn.commit()
+
+    log.info(
+        "kill_run: run_id=%s pid=%s escalated=%s reason=%r",
+        run_id, pid, escalated, reason,
+    )
+    return {
+        "run_id": int(run_id),
+        "pid": pid,
+        "escalated": escalated,
+        "status": "killed",
+    }
 
 
 # ---------------------------------------------------------------------------
