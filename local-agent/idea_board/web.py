@@ -5345,6 +5345,22 @@ def _render_hub() -> str:
     except Exception:
         pass
 
+    # Idea Board card links out to Jira when configured — Jira is the source of truth.
+    if settings.jira_url and settings.jira_project_key:
+        idea_board_href = (
+            f"{settings.jira_url.rstrip('/')}"
+            f"/jira/software/projects/{settings.jira_project_key}/boards"
+        )
+        idea_board_target_attr = ' target="_blank" rel="noopener"'
+        idea_board_subtext = (
+            f'<p style="color:var(--muted);font-size:0.8rem;margin-top:0.25rem">'
+            f'Using Jira — idea board backed by the {settings.jira_project_key} project.</p>'
+        )
+    else:
+        idea_board_href = "/ideas"
+        idea_board_target_attr = ""
+        idea_board_subtext = ""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5402,10 +5418,11 @@ def _render_hub() -> str:
     </div>
 
     <div class="grid">
-        <a href="/ideas" class="card green">
+        <a href="{idea_board_href}"{idea_board_target_attr} class="card green">
             <h2>Idea Board</h2>
             <p>View, vote, and discuss improvement ideas.</p>
             <span class="badge">{done}/{total} done ({completion_pct}%) &middot; {proposed} pending &middot; {executing} running</span>
+            {idea_board_subtext}
         </a>
         <a href="/news" class="card orange">
             <h2>News Config</h2>
