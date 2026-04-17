@@ -19,6 +19,7 @@ Routes:
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
+    GET  /api/executor/run/<run_id>/status — State snapshot for a single run
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
@@ -2647,6 +2648,47 @@ def api_executor_run_tools(run_id: int) -> Response:
     return jsonify({
         "run_id": run_id,
         "tool_calls": executor_runs_db.get_tool_calls(run_id),
+    })
+
+
+@app.route("/api/executor/run/<run_id>/status")
+def api_executor_run_status(run_id: str) -> Response:
+    """GET /api/executor/run/<run_id>/status — state snapshot for one run.
+
+    Cheap single-row lookup so external monitors (Discord /status command,
+    SLO alerts, dashboards) can poll a run without loading the full runs
+    list or subscribing to the streaming log.
+
+    ``run_id`` is the artifact-style sortable id (``YYYYMMDD-HHMMSS-<key>``),
+    not the integer primary key — the other per-run endpoints use the int id
+    for compatibility reasons, but external callers only ever have the
+    sortable string on hand.
+
+    Status codes:
+        * 200 — run found; body is ``{run_id, idea_id, status, started_at,
+          ended_at, exit_code, pid}``
+        * 404 — ``{"error": "not_found"}`` for an unknown run_id
+        * 500 — ``{"error": "db_error"}`` on any DB failure
+    """
+    from agent import executor_runs_db
+
+    try:
+        row = executor_runs_db.get_run_by_run_id(run_id)
+    except Exception:
+        logger.exception("api_executor_run_status: db lookup failed for %s", run_id)
+        return jsonify({"error": "db_error"}), 500
+
+    if row is None:
+        return jsonify({"error": "not_found"}), 404
+
+    return jsonify({
+        "run_id": row.get("run_id"),
+        "idea_id": row.get("jira_key"),
+        "status": row.get("status"),
+        "started_at": row.get("started_at"),
+        "ended_at": row.get("ended_at"),
+        "exit_code": row.get("exit_code"),
+        "pid": row.get("pid"),
     })
 
 
