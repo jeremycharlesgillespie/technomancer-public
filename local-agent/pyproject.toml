@@ -99,6 +99,7 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "unit: marks tests as unit tests",
     "integration: marks tests as integration tests",
+    "allow_network: permit real network calls in this test",
 ]
 
 [tool.coverage.run]
