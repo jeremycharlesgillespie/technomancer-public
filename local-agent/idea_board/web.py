@@ -29,9 +29,7 @@ import asyncio
 import html
 import json
 import logging
-import os
 import re
-import signal
 import subprocess
 import sys
 import threading
