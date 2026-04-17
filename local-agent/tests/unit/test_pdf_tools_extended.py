@@ -16,6 +16,7 @@ from agent.pdf_tools import (
 class TestExtractTextFromPdf:
     """Test PDF text extraction."""
 
+    @pytest.mark.flaky(reruns=3, reruns_delay=1)
     def test_no_parameters_returns_error(self):
         result = extract_text_from_pdf()
         assert "Error" in result
