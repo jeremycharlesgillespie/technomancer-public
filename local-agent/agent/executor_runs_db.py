@@ -138,6 +138,12 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_executor_runs_run_id
         ON executor_runs (run_id)
     """)
+    # Dashboard and /api/executor/runs filter by status and order by recency —
+    # a composite index avoids a full table scan as run history grows.
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executor_runs_status_started
+        ON executor_runs (status, started_at DESC)
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS executor_tool_calls (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,

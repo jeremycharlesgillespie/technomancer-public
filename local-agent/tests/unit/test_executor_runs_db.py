@@ -55,6 +55,108 @@ class TestInitDb:
         assert expected.issubset(cols)
 
 
+class TestStatusStartedIndex:
+    """Composite index on (status, started_at DESC) — dashboard queries filter
+    by status and order by recency; without this, the table scan grows
+    linearly with run history."""
+
+    def test_index_exists(self):
+        """PRAGMA index_list exposes the composite index on a fresh DB."""
+        conn = executor_runs_db._get_conn()
+        names = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA index_list('executor_runs')"
+            ).fetchall()
+        }
+        assert "idx_executor_runs_status_started" in names
+
+    def test_index_covers_status_and_started_at(self):
+        """The composite index must cover status first, then started_at."""
+        conn = executor_runs_db._get_conn()
+        cols = [
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA index_info('idx_executor_runs_status_started')"
+            ).fetchall()
+        ]
+        assert cols == ["status", "started_at"]
+
+    def test_query_plan_uses_index(self):
+        """EXPLAIN QUERY PLAN for a status-filtered recency query must use
+        the composite index, not scan the whole table."""
+        conn = executor_runs_db._get_conn()
+        # Seed enough rows that the planner has a reason to pick the index.
+        for i in range(20):
+            executor_runs_db.record_run(
+                jira_key=f"TK-{i}",
+                status="success" if i % 2 == 0 else "running",
+                started_at=f"2026-04-{(i % 28) + 1:02d}T10:00:00",
+            )
+        conn.execute("ANALYZE")
+
+        plan_rows = conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT id FROM executor_runs "
+            "WHERE status = ? "
+            "ORDER BY started_at DESC LIMIT 10",
+            ("success",),
+        ).fetchall()
+        plan_text = " ".join(str(r["detail"]) for r in plan_rows)
+        assert "idx_executor_runs_status_started" in plan_text
+
+    def test_migration_on_preexisting_db(self, tmp_path, monkeypatch):
+        """A DB created before this index existed gets the index on next
+        init_db() call — idempotent migration via IF NOT EXISTS."""
+        # Close the fixture's cached connection so we can build a fresh DB
+        # that's missing the new index.
+        existing = getattr(executor_runs_db._local, "conn", None)
+        if existing:
+            existing.close()
+            executor_runs_db._local.conn = None
+
+        legacy_path = tmp_path / "legacy.db"
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", legacy_path)
+
+        # Simulate an older DB: table + old indexes only, no composite index.
+        legacy = sqlite3.connect(str(legacy_path))
+        legacy.execute("""
+            CREATE TABLE executor_runs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                jira_key       TEXT,
+                branch         TEXT,
+                started_at     TEXT,
+                ended_at       TEXT,
+                duration_ms    INTEGER,
+                cost_usd       REAL,
+                status         TEXT,
+                exit_code      INTEGER,
+                tests_passed   INTEGER,
+                deployed       INTEGER
+            )
+        """)
+        legacy.commit()
+        names_before = {
+            r[0] for r in legacy.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='executor_runs'"
+            ).fetchall()
+        }
+        legacy.close()
+        assert "idx_executor_runs_status_started" not in names_before
+
+        # Running init_db() against the legacy DB must add the index.
+        executor_runs_db.init_db()
+        conn = executor_runs_db._get_conn()
+        names_after = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA index_list('executor_runs')"
+            ).fetchall()
+        }
+        assert "idx_executor_runs_status_started" in names_after
+
+
 class TestRecordRun:
     def test_insert_returns_row_id(self):
         run_id = executor_runs_db.record_run(
