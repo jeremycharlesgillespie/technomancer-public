@@ -506,3 +506,79 @@ class TestErrorsEmptyStateRedesign:
         assert data["stats"]["counts_7d"] == 1
         assert data["stats"]["counts_30d"] == 1
         assert data["stats"]["total"] == 1
+
+
+class TestPillStyleCounters:
+    """TK-544: top-of-page counters render as pill-style elements regardless of list content."""
+
+    def test_three_pills_render_with_no_crashes(self, client, tmp_path):
+        """Empty /errors still shows the three counter pills."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert page_html.count('class="stat pill zero"') == 3
+
+    def test_pills_render_before_error_cards(self, client, tmp_path):
+        """Summary bar with pills appears above the error cards."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [now - timedelta(hours=1)])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # Look at the DOM nodes, not the embedded CSS rules.
+        bar_pos = page_html.find('<div class="summary-bar')
+        card_pos = page_html.find('<div class="error-card"')
+        assert bar_pos != -1
+        assert card_pos != -1
+        assert bar_pos < card_pos
+
+    def test_pill_severity_classes_when_crashes_exist(self, client, tmp_path):
+        """Each active window is tagged with a distinct severity class."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [
+            now - timedelta(hours=1),
+            now - timedelta(days=3),
+            now - timedelta(days=15),
+        ])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert "stat pill severity-high" in page_html
+        assert "stat pill severity-medium" in page_html
+        assert "stat pill severity-low" in page_html
+
+    def test_pill_zero_class_when_window_quiet(self, client, tmp_path):
+        """Only the populated windows get severity classes; quiet ones stay zero."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [now - timedelta(days=15)])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert page_html.count('class="stat pill zero"') == 2
+        assert "stat pill severity-low" in page_html
+        assert "stat pill severity-high" not in page_html
+        assert "stat pill severity-medium" not in page_html
+
+    def test_pill_css_uses_border_radius(self, client, tmp_path):
+        """Pill styling requires a rounded border-radius on the stat elements."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert ".summary-bar .stat.pill" in page_html
+        assert "border-radius: 999px" in page_html
+
+    def test_pills_dropped_middot_separators(self, client, tmp_path):
+        """The old `&middot;` separators are gone — pills separate themselves."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert '<span class="sep">' not in page_html

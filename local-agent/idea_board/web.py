@@ -4473,14 +4473,25 @@ a { color: var(--accent); }
 .empty-state .notes { font-size: 0.85rem; line-height: 1.5; }
 .empty-state .notes a { color: var(--accent); }
 .summary-bar { background: var(--surface); border-radius: 10px; padding: 0.9rem 1.1rem;
-               margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem;
-               align-items: baseline; border-left: 4px solid var(--green); }
+               margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem 0.65rem;
+               align-items: center; border-left: 4px solid var(--green); }
 .summary-bar.has-recent { border-left-color: var(--red); }
 .summary-bar.has-week { border-left-color: var(--orange); }
-.summary-bar .stat { font-size: 0.9rem; color: var(--text); }
-.summary-bar .stat .num { font-weight: 700; color: var(--accent); margin-right: 4px; }
-.summary-bar .stat.zero .num { color: var(--muted); }
-.summary-bar .sep { color: var(--muted); }
+.summary-bar .stat.pill {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    padding: 4px 12px; border-radius: 999px;
+    font-size: 0.85rem; color: var(--text);
+    background: #2e2e2e; border: 1px solid var(--border);
+    line-height: 1.4;
+}
+.summary-bar .stat.pill .num { font-weight: 700; color: var(--accent); }
+.summary-bar .stat.pill.zero { background: transparent; border-color: var(--border); }
+.summary-bar .stat.pill.zero .num { color: var(--muted); }
+.summary-bar .stat.pill.severity-high { background: rgba(244, 67, 54, 0.15); border-color: var(--red); }
+.summary-bar .stat.pill.severity-high .num { color: var(--red); }
+.summary-bar .stat.pill.severity-medium { background: rgba(255, 152, 0, 0.15); border-color: var(--orange); }
+.summary-bar .stat.pill.severity-medium .num { color: var(--orange); }
+.summary-bar .stat.pill.severity-low { background: rgba(102, 179, 255, 0.12); border-color: var(--accent); }
 .summary-bar .last-check { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
 @media (max-width: 600px) {
     body { padding: 12px; }
@@ -4504,9 +4515,9 @@ def _render_errors() -> str:
     elif c7 > 0:
         bar_class += " has-week"
 
-    def _stat(num: int, label: str) -> str:
-        zero = " zero" if num == 0 else ""
-        return f'<div class="stat{zero}"><span class="num">{num}</span>{label}</div>'
+    def _stat(num: int, label: str, severity: str) -> str:
+        mods = " zero" if num == 0 else f" {severity}"
+        return f'<div class="stat pill{mods}"><span class="num">{num}</span>{label}</div>'
 
     last_check_html = (
         f'<div class="last-check">last checked {html.escape(last_check)}</div>'
@@ -4514,11 +4525,9 @@ def _render_errors() -> str:
         else '<div class="last-check">no crash log yet</div>'
     )
     summary_bar = f"""<div class="{bar_class}">
-        {_stat(c24, " crashes in 24h")}
-        <span class="sep">&middot;</span>
-        {_stat(c7, " in 7d")}
-        <span class="sep">&middot;</span>
-        {_stat(c30, " in 30d")}
+        {_stat(c24, " crashes in 24h", "severity-high")}
+        {_stat(c7, " in 7d", "severity-medium")}
+        {_stat(c30, " in 30d", "severity-low")}
         {last_check_html}
     </div>"""
 
