@@ -2,6 +2,10 @@
 Integration tests for full agent workflow with mocked Ollama.
 """
 
+from unittest.mock import MagicMock
+
+import requests
+
 from agent.core import Agent, AgentConfig, create_tool
 
 
@@ -288,3 +292,80 @@ class TestAgentSystemPrompt:
         call = mock_ollama_client.call_history[0]
         system_msg = next(m for m in call["messages"] if m["role"] == "system")
         assert "autonomous" in system_msg["content"].lower()
+
+
+class TestOllamaOutageGracefulFallback:
+    """A sustained Ollama outage must produce a clean fallback string and must
+    not corrupt the vault's crash log with records of expected transport errors.
+    """
+
+    def test_repeated_connection_errors_return_fallback_not_traceback(
+        self, mock_ollama_client, tmp_path, monkeypatch
+    ):
+        """Agent.run() swallows requests.ConnectionError and returns a string.
+
+        Patches ``_ollama_client.chat`` to always raise, fires six consecutive
+        ``Agent.run()`` calls, and asserts:
+
+        * every result (including the 6th) is a short fallback string — never
+          a raw Python traceback leaked back to the caller;
+        * ``crash_log.md`` pre-seeded in a temp vault is not touched by
+          Agent.run() — mtime and contents stay at the baseline, confirming
+          expected Ollama outages don't poison the crash log.
+        """
+        import agent.ollama_health as health_module
+
+        # Keep the test fast: zero retries means one attempt per call, no
+        # exponential-backoff sleep between them. The retry path itself is
+        # already covered by ollama_health unit tests; here we care about
+        # the failure being wrapped cleanly by Agent.run().
+        monkeypatch.setattr(health_module.settings, "ollama_max_retries", 0)
+
+        # Reset the singleton health monitor so prior tests that marked
+        # Ollama ``down`` don't leak into this one, and so we leave a clean
+        # state behind.
+        fresh_state = health_module._HealthState()
+        monkeypatch.setattr(health_module._monitor, "_state", fresh_state)
+
+        # Every chat call blows up with a transport-layer error that
+        # ``is_transient_error`` recognizes — the retry path will burn through
+        # its budget and re-raise, then Agent.run() catches it.
+        mock_ollama_client.chat = MagicMock(
+            side_effect=requests.ConnectionError("Ollama unreachable")
+        )
+
+        # Seed a crash_log.md in a temp vault so we can prove Agent.run()
+        # didn't touch it. We check both mtime and contents — mtime alone is
+        # a weak signal on filesystems with coarse timestamp resolution.
+        crash_log = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        crash_log.parent.mkdir(parents=True)
+        crash_log.write_text("# sentinel — must not be overwritten\n", encoding="utf-8")
+        baseline_mtime = crash_log.stat().st_mtime
+        baseline_contents = crash_log.read_text(encoding="utf-8")
+
+        agent = Agent(AgentConfig(verbose=False))
+
+        results = [agent.run("ping") for _ in range(6)]
+
+        # Each call attempted Ollama exactly once (max_retries=0 → 1 attempt).
+        assert mock_ollama_client.chat.call_count == 6
+
+        # Every result — crucially the 6th — is a clean fallback string.
+        for idx, result in enumerate(results):
+            assert isinstance(result, str), f"call {idx + 1} did not return a string"
+            assert result, f"call {idx + 1} returned an empty string"
+            assert "Traceback" not in result, (
+                f"call {idx + 1} leaked a Python traceback: {result!r}"
+            )
+
+        sixth = results[5]
+        assert "Agent error" in sixth, (
+            f"6th call missing fallback sentinel: {sixth!r}"
+        )
+
+        # The vault's crash_log.md was not written to by Agent.run(): the
+        # fallback path lives entirely in-process. write_crash_log is reserved
+        # for uncaught exceptions escaping to sys.excepthook — not expected
+        # transport failures that the agent handles gracefully.
+        assert crash_log.stat().st_mtime == baseline_mtime
+        assert crash_log.read_text(encoding="utf-8") == baseline_contents
