@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from agent import executor_runs_db
+from agent import executor_runs_db, tracing
 
 
 @pytest.fixture(autouse=True)
@@ -748,3 +748,160 @@ class TestStartThenCompleteFlow:
         assert row["exit_code"] == 0
         assert row["tests_passed"] == 1
         assert row["deployed"] == 1
+
+
+class TestTraceIdColumn:
+    """trace_id column + idx_executor_runs_trace_id — correlate executor
+    runs back to the request/trace that spawned them."""
+
+    def test_column_exists(self):
+        """PRAGMA table_info exposes trace_id on a fresh DB."""
+        conn = executor_runs_db._get_conn()
+        cols = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA table_info(executor_runs)"
+            ).fetchall()
+        }
+        assert "trace_id" in cols
+
+    def test_index_exists(self):
+        """PRAGMA index_list exposes idx_executor_runs_trace_id."""
+        conn = executor_runs_db._get_conn()
+        names = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA index_list('executor_runs')"
+            ).fetchall()
+        }
+        assert "idx_executor_runs_trace_id" in names
+
+    def test_migration_on_legacy_db_adds_column_and_index(
+        self, tmp_path, monkeypatch
+    ):
+        """An older DB without trace_id gets both the column and index on
+        the next init_db() call, and the migration is idempotent — running
+        init_db() twice must not raise."""
+        existing = getattr(executor_runs_db._local, "conn", None)
+        if existing:
+            existing.close()
+            executor_runs_db._local.conn = None
+
+        legacy_path = tmp_path / "legacy.db"
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", legacy_path)
+
+        legacy = sqlite3.connect(str(legacy_path))
+        legacy.execute("""
+            CREATE TABLE executor_runs (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                jira_key       TEXT,
+                branch         TEXT,
+                started_at     TEXT,
+                ended_at       TEXT,
+                duration_ms    INTEGER,
+                cost_usd       REAL,
+                status         TEXT,
+                exit_code      INTEGER,
+                tests_passed   INTEGER,
+                deployed       INTEGER
+            )
+        """)
+        legacy.commit()
+        cols_before = {
+            r[1] for r in legacy.execute(
+                "PRAGMA table_info(executor_runs)"
+            ).fetchall()
+        }
+        legacy.close()
+        assert "trace_id" not in cols_before
+
+        # First migration — adds column + index.
+        executor_runs_db.init_db()
+        conn = executor_runs_db._get_conn()
+        cols_after = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA table_info(executor_runs)"
+            ).fetchall()
+        }
+        index_names = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA index_list('executor_runs')"
+            ).fetchall()
+        }
+        assert "trace_id" in cols_after
+        assert "idx_executor_runs_trace_id" in index_names
+
+        # Second call must be a no-op — the ALTER TABLE path swallows the
+        # "duplicate column" OperationalError.
+        executor_runs_db.init_db()
+        executor_runs_db.init_db()
+
+    def test_insert_captures_current_context_var_trace_id(self):
+        """When a trace_id is bound to the context, new rows record it."""
+        with tracing.with_trace_id() as tid:
+            run_id = executor_runs_db.record_run(
+                jira_key="TK-562", status="running",
+            )
+
+        rows = executor_runs_db.get_recent()
+        match = [r for r in rows if r["id"] == run_id][0]
+        assert match["trace_id"] == tid
+
+    def test_insert_without_bound_trace_stores_null(self):
+        """When no trace_id is bound, the sentinel "-" is stored as NULL so
+        queries can distinguish untraced rows from traced ones."""
+        # Fixture scope has no bound trace_id — the ContextVar default is
+        # the sentinel.
+        assert tracing.get_trace_id() == tracing.DEFAULT_TRACE_ID
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-562-null", status="running",
+        )
+        rows = executor_runs_db.get_recent()
+        match = [r for r in rows if r["id"] == run_id][0]
+        assert match["trace_id"] is None
+
+    def test_explicit_trace_id_overrides_context(self):
+        """A caller-supplied trace_id wins over the ContextVar — useful for
+        back-filling runs or correlating with an external trace."""
+        with tracing.with_trace_id("EXPLICITTRACE01234567890123"):
+            run_id = executor_runs_db.record_run(
+                jira_key="TK-562-ex",
+                status="running",
+                trace_id="OVERRIDETRACE0123456789ABCD",
+            )
+        row = executor_runs_db.get_run(run_id)
+        assert row is not None
+        assert row["trace_id"] == "OVERRIDETRACE0123456789ABCD"
+
+    def test_get_runs_by_trace_id_returns_all_matches(self):
+        """Querying by trace_id returns every run sharing that trace,
+        newest first, and excludes rows with different trace ids."""
+        with tracing.with_trace_id() as tid_a:
+            a1 = executor_runs_db.record_run(jira_key="TK-A1", status="running")
+            a2 = executor_runs_db.record_run(jira_key="TK-A2", status="running")
+        with tracing.with_trace_id() as tid_b:
+            b1 = executor_runs_db.record_run(jira_key="TK-B1", status="running")
+
+        rows_a = executor_runs_db.get_runs_by_trace_id(tid_a)
+        assert [r["id"] for r in rows_a] == [a2, a1]
+        assert all(r["trace_id"] == tid_a for r in rows_a)
+
+        rows_b = executor_runs_db.get_runs_by_trace_id(tid_b)
+        assert [r["id"] for r in rows_b] == [b1]
+
+    def test_get_runs_by_trace_id_empty_for_unknown(self):
+        assert executor_runs_db.get_runs_by_trace_id("NOPETRACENOPETRACENOPETRACE") == []
+
+    def test_get_run_by_run_id_exposes_trace_id(self):
+        """The single-row lookup helpers include trace_id in the result."""
+        with tracing.with_trace_id() as tid:
+            executor_runs_db.record_run(
+                jira_key="TK-562-byrun",
+                status="running",
+                run_id="20260417-100000-TK-562",
+            )
+        row = executor_runs_db.get_run_by_run_id("20260417-100000-TK-562")
+        assert row is not None
+        assert row["trace_id"] == tid

@@ -42,6 +42,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .tracing import DEFAULT_TRACE_ID, get_trace_id
+
 log = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent / "data"
@@ -72,6 +74,7 @@ _COLUMNS: frozenset[str] = frozenset({
     "pid",
     "killed_at",
     "kill_reason",
+    "trace_id",
 })
 
 # Status values that mean the run is finished — the kill endpoint refuses to
@@ -141,19 +144,21 @@ def init_db() -> None:
             artifacts_path TEXT,
             pid            INTEGER,
             killed_at      TEXT,
-            kill_reason    TEXT
+            kill_reason    TEXT,
+            trace_id       TEXT
         )
     """)
     # Migrate older databases that pre-date run_id / artifacts_path / pid /
-    # killed_at / kill_reason. ALTER TABLE raises OperationalError if the
-    # column is already present — that's the expected idempotency signal, so
-    # swallow it.
+    # killed_at / kill_reason / trace_id. ALTER TABLE raises OperationalError
+    # if the column is already present — that's the expected idempotency
+    # signal, so swallow it.
     for col, decl in (
         ("run_id", "TEXT"),
         ("artifacts_path", "TEXT"),
         ("pid", "INTEGER"),
         ("killed_at", "TEXT"),
         ("kill_reason", "TEXT"),
+        ("trace_id", "TEXT"),
     ):
         try:
             conn.execute(f"ALTER TABLE executor_runs ADD COLUMN {col} {decl}")
@@ -170,6 +175,10 @@ def init_db() -> None:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_executor_runs_run_id
         ON executor_runs (run_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_executor_runs_trace_id
+        ON executor_runs (trace_id)
     """)
     # Dashboard and /api/executor/runs filter by status and order by recency —
     # a composite index avoids a full table scan as run history grows.
@@ -324,6 +333,14 @@ def record_run(**fields: Any) -> int:
     if "started_at" not in safe_fields:
         safe_fields["started_at"] = datetime.now().isoformat()
 
+    # Default trace_id from the current ContextVar so executor runs inherit
+    # the trace of the request that spawned them. The sentinel means "no
+    # trace bound" — store NULL instead so queries can distinguish between
+    # "untraced" and "traced with '-'".
+    if "trace_id" not in safe_fields:
+        current = get_trace_id()
+        safe_fields["trace_id"] = None if current == DEFAULT_TRACE_ID else current
+
     columns = ", ".join(safe_fields.keys())
     placeholders = ", ".join("?" * len(safe_fields))
     cursor = conn.execute(
@@ -467,7 +484,7 @@ def get_run_by_run_id(run_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         """SELECT id, run_id, jira_key, branch, started_at, ended_at,
                   duration_ms, cost_usd, status, exit_code,
-                  tests_passed, deployed, artifacts_path, pid
+                  tests_passed, deployed, artifacts_path, pid, trace_id
            FROM executor_runs
            WHERE run_id = ?
            ORDER BY id DESC
@@ -475,6 +492,29 @@ def get_run_by_run_id(run_id: str) -> dict[str, Any] | None:
         (str(run_id),),
     ).fetchone()
     return dict(row) if row is not None else None
+
+
+def get_runs_by_trace_id(trace_id: str) -> list[dict[str, Any]]:
+    """Return all runs tagged with the given ``trace_id``, newest first.
+
+    Args:
+        trace_id: Crockford base32 ULID from :mod:`agent.tracing`.
+
+    Returns:
+        List of run rows as dicts. Empty when no runs carry this trace.
+    """
+    init_db()
+    conn = _get_conn()
+    rows = conn.execute(
+        """SELECT id, run_id, jira_key, branch, started_at, ended_at,
+                  duration_ms, cost_usd, status, exit_code,
+                  tests_passed, deployed, artifacts_path, pid, trace_id
+           FROM executor_runs
+           WHERE trace_id = ?
+           ORDER BY id DESC""",
+        (str(trace_id),),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_recent(limit: int = 20) -> list[dict[str, Any]]:
@@ -488,7 +528,7 @@ def get_recent(limit: int = 20) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT id, run_id, jira_key, branch, started_at, ended_at,
                   duration_ms, cost_usd, status, exit_code,
-                  tests_passed, deployed, artifacts_path
+                  tests_passed, deployed, artifacts_path, trace_id
            FROM executor_runs
            ORDER BY id DESC
            LIMIT ?""",
@@ -600,7 +640,7 @@ def get_run(run_id: int) -> dict[str, Any] | None:
         """SELECT id, run_id, jira_key, branch, started_at, ended_at,
                   duration_ms, cost_usd, status, exit_code,
                   tests_passed, deployed, artifacts_path, pid,
-                  killed_at, kill_reason
+                  killed_at, kill_reason, trace_id
            FROM executor_runs
            WHERE id = ?""",
         (int(run_id),),
