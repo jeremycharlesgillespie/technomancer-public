@@ -50,6 +50,7 @@ def load_state() -> dict:
     """Load service state from file."""
     default = {
         "bot_pid": None,
+        "bot_started_at": None,
         "consecutive_failures": 0,
         "last_failure_time": None,
         "last_error": None,
@@ -205,6 +206,11 @@ def start_bot() -> tuple[bool, str]:
         if process.poll() is None:
             # Process still running
             PID_FILE.write_text(str(process.pid))
+            # Record start time so /api/metrics can report uptime.
+            state = load_state()
+            state["bot_pid"] = process.pid
+            state["bot_started_at"] = datetime.now().isoformat()
+            save_state(state)
             log(f"Bot started successfully (PID: {process.pid})")
             return True, ""
         else:

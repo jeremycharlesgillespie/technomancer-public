@@ -24,7 +24,7 @@ Routes:
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
-    GET  /api/metrics             — Unified observability snapshot as JSON (30s cached)
+    GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
 """
 
@@ -35,6 +35,7 @@ import html
 import json
 import logging
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -2858,15 +2859,150 @@ def api_memory_integrity() -> Response:
     return jsonify(_collect_memory_integrity(backups_root, crash_log))
 
 
+# ---------------------------------------------------------------------------
+# Flat counter metrics — scrape-friendly operational totals.
+# ---------------------------------------------------------------------------
+# These paths are module-level so tests can monkeypatch them at temp SQLite
+# files without touching the production data directory.
+
+_REPO_ROOT: Path = Path(__file__).resolve().parent.parent
+_DATA_DIR: Path = _REPO_ROOT / "data"
+_EXECUTOR_RUNS_DB: Path = _DATA_DIR / "executor_runs.db"
+_CRASH_TRIAGE_DB: Path = _DATA_DIR / "crash_triage_seen.db"
+_JIRA_SYNC_DLQ_DB: Path = _DATA_DIR / "jira_sync_dlq.db"
+_EMBEDDINGS_DB: Path = _DATA_DIR / "embeddings.db"
+_SERVICE_STATE_FILE: Path = _REPO_ROOT / "service_state.json"
+
+
+def _scalar_count(db_path: Path, sql: str, params: tuple = ()) -> int:
+    """Run a COUNT query against ``db_path`` and return the result as int.
+
+    Returns 0 if the database file is missing, the target table does not
+    exist yet, or the query fails — callers want a number, not an error.
+    """
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.OperationalError:
+        return 0
+    try:
+        try:
+            row = conn.execute(sql, params).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
+def _executor_runs_totals_by_status() -> dict[str, int]:
+    """Return ``{status: count}`` for every row in ``executor_runs``.
+
+    A NULL status column bucket is surfaced as ``"unknown"`` rather than
+    dropped, so the totals always sum to the true row count.
+    """
+    if not _EXECUTOR_RUNS_DB.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(
+            f"file:{_EXECUTOR_RUNS_DB}?mode=ro", uri=True, timeout=5
+        )
+    except sqlite3.OperationalError:
+        return {}
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT COALESCE(status, 'unknown') AS status, COUNT(*) "
+                "FROM executor_runs GROUP BY COALESCE(status, 'unknown')"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {str(status): int(count) for status, count in rows}
+    finally:
+        conn.close()
+
+
+def _bot_uptime_seconds() -> int | None:
+    """Seconds since the bot was last started.
+
+    Reads ``bot_started_at`` from ``service_state.json`` (written by
+    ``bot_service.start_bot``). Returns ``None`` if the file is missing,
+    unreadable, or has no start timestamp — callers render that as a JSON
+    null rather than pretending the bot is running.
+    """
+    if not _SERVICE_STATE_FILE.exists():
+        return None
+    try:
+        state = json.loads(_SERVICE_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    raw = state.get("bot_started_at")
+    if not raw:
+        return None
+    try:
+        started = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return max(0, int((datetime.now() - started).total_seconds()))
+
+
+def _collect_metrics() -> dict[str, Any]:
+    """Aggregate flat operational counters from SQLite tables + service state.
+
+    Returns a dict with:
+      * ``executor_runs_total``          — ``{status: count}`` across all rows
+      * ``executor_runs_last_24h``       — rows in ``executor_runs`` with
+        ``started_at`` within the past 24 hours
+      * ``crash_triage_stories_last_24h`` — rows in ``crash_triage_seen``
+        with ``first_seen`` within the past 24 hours
+      * ``jira_sync_dlq_depth``          — total rows in ``jira_sync_dlq``
+      * ``embedding_store_rows``         — total rows in ``embeddings``
+      * ``bot_uptime_seconds``           — int or ``None`` if unknown
+    """
+    cutoff_iso = (datetime.now() - timedelta(hours=24)).isoformat(
+        sep=" ", timespec="seconds"
+    )
+    # crash_triage writes ISO 8601 with a "T" separator to ``first_seen``;
+    # SQLite's ``datetime()`` normalizes both forms so comparisons work.
+    return {
+        "executor_runs_total": _executor_runs_totals_by_status(),
+        "executor_runs_last_24h": _scalar_count(
+            _EXECUTOR_RUNS_DB,
+            "SELECT COUNT(*) FROM executor_runs "
+            "WHERE started_at IS NOT NULL "
+            "AND datetime(started_at) >= datetime(?)",
+            (cutoff_iso,),
+        ),
+        "crash_triage_stories_last_24h": _scalar_count(
+            _CRASH_TRIAGE_DB,
+            "SELECT COUNT(*) FROM crash_triage_seen "
+            "WHERE first_seen IS NOT NULL "
+            "AND datetime(first_seen) >= datetime(?)",
+            (cutoff_iso,),
+        ),
+        "jira_sync_dlq_depth": _scalar_count(
+            _JIRA_SYNC_DLQ_DB, "SELECT COUNT(*) FROM jira_sync_dlq"
+        ),
+        "embedding_store_rows": _scalar_count(
+            _EMBEDDINGS_DB, "SELECT COUNT(*) FROM embeddings"
+        ),
+        "bot_uptime_seconds": _bot_uptime_seconds(),
+    }
+
+
 @app.route("/api/metrics")
 def api_metrics() -> Response:
     """GET /api/metrics — unified observability snapshot as JSON.
 
-    Thin wrapper around ``agent.metrics.get_snapshot`` which is backed by a
-    30-second in-memory cache, so this endpoint is safe to hammer from
-    polling dashboards without re-hitting SQLite or Jira on every call.
+    Combines the cached observability snapshot from ``agent.metrics`` (30-
+    second TTL) with a set of flat operational counters read live from the
+    supporting SQLite tables via :func:`_collect_metrics`. Safe to poll from
+    external alerting pipelines without re-hitting Jira.
     """
-    return jsonify(metrics.get_snapshot())
+    payload = dict(metrics.get_snapshot())
+    payload.update(_collect_metrics())
+    return jsonify(payload)
 
 
 @app.route("/metrics")
