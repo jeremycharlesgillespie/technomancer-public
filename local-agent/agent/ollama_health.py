@@ -193,6 +193,10 @@ class _HealthState:
     last_success: float = 0.0
     last_error: str = ""
     consecutive_failures: int = 0
+    # Counts successful probes while status is ``down``. Drives the
+    # hysteresis that prevents a single lucky probe from flipping a
+    # flapping server back to healthy.
+    recovery_successes: int = 0
     # Guards every field above so reads/writes are atomic across threads.
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -205,6 +209,7 @@ class _HealthState:
                 "last_success": self.last_success,
                 "last_error": self.last_error,
                 "consecutive_failures": self.consecutive_failures,
+                "recovery_successes": self.recovery_successes,
             }
 
 
@@ -259,12 +264,30 @@ class OllamaHealthMonitor:
         return self.get_status() == STATUS_HEALTHY
 
     def mark_healthy(self) -> None:
-        """Record a successful Ollama interaction."""
+        """Record a successful Ollama interaction.
+
+        Applies hysteresis when the current status is ``down``: requires
+        ``settings.ollama_recovery_successes`` consecutive successes before
+        flipping back to healthy. Transitions from ``unknown`` or
+        ``degraded`` flip immediately because those states have already
+        seen a working server, so one green check is enough.
+        """
+        threshold = max(1, int(settings.ollama_recovery_successes))
         with self._state._lock:
             prior = self._state.status
+            if prior == STATUS_DOWN:
+                self._state.recovery_successes += 1
+                progress = self._state.recovery_successes
+                if progress < threshold:
+                    log.info(
+                        "Ollama recovery probe %d/%d — staying down",
+                        progress, threshold,
+                    )
+                    return
             self._state.status = STATUS_HEALTHY
             self._state.last_success = time.time()
             self._state.consecutive_failures = 0
+            self._state.recovery_successes = 0
             self._state.last_error = ""
         if prior != STATUS_HEALTHY:
             log.info("Ollama health: %s -> healthy", prior)
@@ -276,6 +299,9 @@ class OllamaHealthMonitor:
                 self._state.status = STATUS_DEGRADED
             self._state.last_error = reason
             self._state.consecutive_failures += 1
+            # Any failure resets recovery progress — hysteresis requires
+            # *consecutive* successes, not a running total.
+            self._state.recovery_successes = 0
             current = self._state.status
         log.debug("Ollama health: %s (%s)", current, reason)
 
@@ -286,6 +312,7 @@ class OllamaHealthMonitor:
             self._state.status = STATUS_DOWN
             self._state.last_error = reason
             self._state.consecutive_failures += 1
+            self._state.recovery_successes = 0
         if prior != STATUS_DOWN:
             log.warning("Ollama health: %s -> down (%s)", prior, reason)
 
@@ -446,3 +473,199 @@ def check_ollama_ready(model: str, timeout: float = 5.0) -> tuple[bool, str]:
 
     elapsed = time.monotonic() - start
     return True, f"ready (warmup {elapsed:.2f}s)"
+
+
+# ---------------------------------------------------------------------------
+# OllamaUnavailable — structured exception for gated call sites
+# ---------------------------------------------------------------------------
+
+
+class OllamaUnavailable(Exception):
+    """Raised by :class:`OllamaHealthGate` when Ollama cannot serve a call.
+
+    Carries a snapshot of the health state at the time of failure so
+    upstream handlers can format user-facing messages without a second
+    round-trip to the monitor. Handlers decide the degradation path:
+
+    - chat → route the turn through Claude (``ask_claude``)
+    - news digest → skip commentary, post headlines-only
+    - image identification → skip local stage, go straight to Claude
+    """
+
+    def __init__(self, reason: str, state: dict[str, Any]):
+        super().__init__(reason)
+        self.reason = reason
+        self.state = state
+
+    @property
+    def status(self) -> str:
+        """Shorthand for ``self.state['status']`` with an ``unknown`` fallback."""
+        return self.state.get("status", STATUS_UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# OllamaHealthGate — unified entry point for every Ollama call site
+# ---------------------------------------------------------------------------
+
+
+class OllamaHealthGate:
+    """Gate every Ollama call through a single, health-aware entry point.
+
+    State-driven behavior:
+
+    - ``healthy``  → pass through with normal retry/backoff settings.
+    - ``degraded`` → pass through with a shorter retry budget so we don't
+      hammer a struggling server (settings: ``ollama_degraded_*``).
+    - ``down``     → fast-fail with :class:`OllamaUnavailable` *without*
+      invoking ``fn``. Recovery is driven by the health monitor's probes,
+      which require ``ollama_recovery_successes`` consecutive greens to
+      flip state back to healthy (hysteresis).
+
+    Rate-limited Claude escalations are tracked here too — callers that
+    catch ``OllamaUnavailable`` ask :meth:`should_escalate` before paying
+    for a Claude request, and notify :meth:`record_escalation` afterward
+    so the hourly count stays accurate and visible to operators.
+    """
+
+    def __init__(self, monitor: OllamaHealthMonitor | None = None) -> None:
+        self._monitor = monitor if monitor is not None else _monitor
+        self._escalation_lock = threading.Lock()
+        self._escalation_times: list[float] = []
+
+    # -- call path --------------------------------------------------------
+
+    def call(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        max_retries: int | None = None,
+        base_delay: float | None = None,
+        max_delay: float | None = None,
+        on_transient_error: Callable[[BaseException, int], None] | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute ``fn(*args, **kwargs)`` through the health gate.
+
+        Raises
+        ------
+        OllamaUnavailable
+            When the gate is ``down`` (fast-fail, ``fn`` is never invoked),
+            or when retries exhaust and the monitor flips to ``down`` mid-call.
+        Exception
+            Any non-transient exception raised by ``fn`` (e.g. bad args,
+            unknown model) is propagated unchanged.
+        """
+        status = self._monitor.get_status()
+        if status == STATUS_DOWN:
+            state = self._monitor.get_state()
+            reason = state.get("last_error") or "Ollama unreachable"
+            raise OllamaUnavailable(f"Ollama is down: {reason}", state)
+
+        if status == STATUS_DEGRADED:
+            if max_retries is None:
+                max_retries = settings.ollama_degraded_max_retries
+            if base_delay is None:
+                base_delay = settings.ollama_degraded_base_delay
+            if max_delay is None:
+                max_delay = settings.ollama_degraded_max_delay
+
+        try:
+            return ollama_call_with_retries(
+                fn,
+                *args,
+                max_retries=max_retries,
+                base_delay=base_delay,
+                max_delay=max_delay,
+                on_transient_error=on_transient_error,
+                **kwargs,
+            )
+        except OllamaUnavailable:
+            raise
+        except Exception as exc:
+            # Retries exhausted on a transient error → monitor flipped to
+            # down. Translate so callers have one type to catch.
+            if self._monitor.get_status() == STATUS_DOWN:
+                state = self._monitor.get_state()
+                raise OllamaUnavailable(
+                    f"Ollama unavailable: {type(exc).__name__}: {exc}",
+                    state,
+                ) from exc
+            raise
+
+    # -- escalation tracking ---------------------------------------------
+
+    def record_escalation(self, reason: str = "") -> int:
+        """Log one Ollama→Claude auto-escalation; returns rolling-hour count.
+
+        Emits a WARN log with the running count so operators can see the
+        bot trading Ollama outages for Claude credits in real time.
+        """
+        now = time.time()
+        cutoff = now - 3600.0
+        with self._escalation_lock:
+            self._escalation_times = [t for t in self._escalation_times if t >= cutoff]
+            self._escalation_times.append(now)
+            count = len(self._escalation_times)
+        log.warning(
+            "Ollama→Claude escalation #%d in past hour%s",
+            count,
+            f" (reason={reason})" if reason else "",
+        )
+        return count
+
+    def escalation_rate(self, window_seconds: float = 3600.0) -> int:
+        """Return the number of escalations in the trailing ``window_seconds``."""
+        cutoff = time.time() - window_seconds
+        with self._escalation_lock:
+            self._escalation_times = [t for t in self._escalation_times if t >= cutoff]
+            return len(self._escalation_times)
+
+    def should_escalate(
+        self,
+        max_per_window: int | None = None,
+        window_seconds: float = 3600.0,
+    ) -> tuple[bool, str]:
+        """Gate a Claude escalation by the configured rate-limit.
+
+        Returns ``(allowed, reason)``. ``reason`` is suitable for logging
+        or surfacing to Discord so the user sees why the bot did (or
+        didn't) fall through to Claude.
+        """
+        limit = (
+            settings.ollama_escalation_max_per_hour
+            if max_per_window is None
+            else max_per_window
+        )
+        count = self.escalation_rate(window_seconds)
+        if count >= limit:
+            return False, (
+                f"escalation rate-limit hit ({count}/{limit} in "
+                f"{int(window_seconds)}s) — serving fallback without Claude"
+            )
+        return True, f"escalation allowed ({count}/{limit} used in window)"
+
+    # -- inspection -------------------------------------------------------
+
+    def get_state(self) -> dict[str, Any]:
+        """Return the monitor snapshot plus gate-specific counters."""
+        snap = self._monitor.get_state()
+        snap["escalations_last_hour"] = self.escalation_rate(3600.0)
+        return snap
+
+
+# Module-level singleton — follow-up stories migrate individual call
+# sites from ``ollama_call_with_retries`` to ``gated_call``.
+_gate = OllamaHealthGate()
+
+
+def get_gate() -> OllamaHealthGate:
+    """Return the singleton :class:`OllamaHealthGate`."""
+    return _gate
+
+
+def gated_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Shortcut for ``get_gate().call(fn, *args, **kwargs)``.
+
+    Intended as the canonical entry point for every Ollama call site.
+    """
+    return _gate.call(fn, *args, **kwargs)

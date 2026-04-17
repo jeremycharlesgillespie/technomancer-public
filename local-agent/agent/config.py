@@ -109,6 +109,37 @@ class Settings(BaseSettings):
         default=5.0,
         description="HTTP timeout (seconds) for a single Ollama health probe.",
     )
+    ollama_recovery_successes: int = Field(
+        default=3,
+        description=(
+            "Hysteresis: consecutive successful probes required to leave the "
+            "'down' state. Prevents flapping when Ollama is mid-recovery "
+            "(e.g. a GPU driver is still stabilising)."
+        ),
+    )
+    ollama_degraded_max_retries: int = Field(
+        default=1,
+        description=(
+            "Max retries for Ollama calls while the gate is in 'degraded' "
+            "state. Shorter than healthy-mode retries so we don't hammer "
+            "a struggling server."
+        ),
+    )
+    ollama_degraded_base_delay: float = Field(
+        default=0.5,
+        description="Base retry delay (seconds) when the gate is in 'degraded' state.",
+    )
+    ollama_degraded_max_delay: float = Field(
+        default=2.0,
+        description="Cap on retry delay (seconds) when the gate is in 'degraded' state.",
+    )
+    ollama_escalation_max_per_hour: int = Field(
+        default=20,
+        description=(
+            "Rate limit on Ollama→Claude auto-escalations per rolling hour. "
+            "Protects against runaway API spend when Ollama is flapping."
+        ),
+    )
 
     # Obsidian vault settings
     vault_path: Path = Field(
