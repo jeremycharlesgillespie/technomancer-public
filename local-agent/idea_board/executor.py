@@ -1482,7 +1482,19 @@ def execute_idea(
         # TEST_COMMAND + optional TEST_CWD in their project env.
         import shlex as _shlex
         if _settings.test_command:
-            base_test_cmd = _shlex.split(_settings.test_command)
+            # posix=False on Windows so backslashes in paths are preserved
+            # (POSIX shlex treats `\` as an escape character and eats them).
+            base_test_cmd = _shlex.split(
+                _settings.test_command, posix=(os.name != "nt")
+            )
+            # non-POSIX shlex keeps surrounding quotes; strip them.
+            base_test_cmd = [
+                tok[1:-1] if len(tok) >= 2
+                and tok[0] == tok[-1]
+                and tok[0] in ('"', "'")
+                else tok
+                for tok in base_test_cmd
+            ]
         else:
             base_test_cmd = [sys.executable, "-m", "pytest"]
         if _settings.test_cwd:
