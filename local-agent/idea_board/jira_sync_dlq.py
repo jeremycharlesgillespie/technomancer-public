@@ -88,3 +88,49 @@ def add_dlq_entry(
     )
     conn.commit()
     return int(cur.lastrowid or 0)
+
+
+def get_jira_dlq_entries(limit: int = 100) -> list[dict[str, Any]]:
+    """Return the most recent dead-letter entries, newest first.
+
+    Each entry is a dict with the row columns plus a ``payload`` field
+    holding the parsed JSON payload. If ``payload_json`` cannot be parsed
+    (shouldn't happen, but guard anyway), ``payload`` is ``None`` and the
+    raw string is preserved in ``payload_json``.
+    """
+    init_db()
+    conn = _get_conn()
+    try:
+        safe_limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        safe_limit = 100
+
+    rows = conn.execute(
+        """
+        SELECT id, idea_id, payload_json, error, attempts,
+               first_failed_at, last_failed_at
+        FROM jira_sync_dlq
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (safe_limit,),
+    ).fetchall()
+
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        raw_payload = row["payload_json"]
+        try:
+            parsed = json.loads(raw_payload) if raw_payload else None
+        except (TypeError, ValueError):
+            parsed = None
+        entries.append({
+            "id": row["id"],
+            "idea_id": row["idea_id"],
+            "payload_json": raw_payload,
+            "payload": parsed,
+            "error": row["error"],
+            "attempts": row["attempts"],
+            "first_failed_at": row["first_failed_at"],
+            "last_failed_at": row["last_failed_at"],
+        })
+    return entries

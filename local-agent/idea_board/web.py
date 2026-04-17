@@ -14,6 +14,7 @@ Routes:
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
+    GET  /api/jira/dlq             — Recent Jira-sync dead-letter queue entries
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
     GET  /api/claude_vault/stats  — Process-wide claude_vault prompt-cache stats
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
@@ -55,6 +56,7 @@ from .models import Idea, save_ideas
 
 from board import get_provider as _get_board_provider
 from idea_board.jira_sync import is_jira_configured, _api as _jira_api
+from idea_board.jira_sync_dlq import get_jira_dlq_entries
 
 from aim import event_log as aim_event_log, jira_reader as aim_jira_reader, state as aim_state
 
@@ -3785,6 +3787,21 @@ def api_jira_create() -> tuple:
             result["rank_result"] = "ok"
 
     return jsonify(result), 201
+
+
+@app.route("/api/jira/dlq", methods=["GET"])
+def api_jira_dlq() -> tuple:
+    """GET /api/jira/dlq — recent Jira-sync dead-letter entries.
+
+    Read-only view of ``jira_sync_dlq`` rows with parsed payloads, newest
+    first, capped at 100 entries. Returns ``{"entries": [...]}`` JSON.
+    """
+    try:
+        entries = get_jira_dlq_entries(limit=100)
+    except Exception as exc:
+        logger.error("[JiraDLQ] get_jira_dlq_entries failed: %s", exc)
+        return jsonify({"error": f"Failed to read DLQ: {exc}"}), 500
+    return jsonify({"entries": entries}), 200
 
 
 # ============================================================================
