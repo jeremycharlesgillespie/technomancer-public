@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from idea_board.jira_sync import sync_idea_to_jira
+from idea_board.models import get_idea
+
 logger = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent / "data"
@@ -110,7 +113,7 @@ def get_jira_dlq_entries(limit: int = 100) -> list[dict[str, Any]]:
         SELECT id, idea_id, payload_json, error, attempts,
                first_failed_at, last_failed_at
         FROM jira_sync_dlq
-        ORDER BY id DESC
+        ORDER BY last_failed_at DESC, id DESC
         LIMIT ?
         """,
         (safe_limit,),
@@ -134,3 +137,54 @@ def get_jira_dlq_entries(limit: int = 100) -> list[dict[str, Any]]:
             "last_failed_at": row["last_failed_at"],
         })
     return entries
+
+
+def retry_jira_dlq_entry(entry_id: int) -> bool:
+    """Re-invoke the Jira sync for a single dead-letter row.
+
+    Loads the row by ``entry_id``, resolves the associated idea via
+    :func:`idea_board.models.get_idea`, and calls
+    :func:`idea_board.jira_sync.sync_idea_to_jira`. On success (sync
+    returns a truthy Jira key) the row is deleted and ``True`` is
+    returned. On any failure — unknown entry id, missing idea, raised
+    exception, or a falsy sync result — the row is left in place with
+    ``last_failed_at`` bumped to the current UTC time and ``False`` is
+    returned.
+    """
+    init_db()
+    conn = _get_conn()
+
+    row = conn.execute(
+        "SELECT id, idea_id FROM jira_sync_dlq WHERE id = ?",
+        (int(entry_id),),
+    ).fetchone()
+    if row is None:
+        return False
+
+    idea = get_idea(row["idea_id"])
+    jira_key: str | None = None
+    if idea is not None:
+        try:
+            jira_key = sync_idea_to_jira(idea)
+        except Exception as exc:
+            logger.warning(
+                "[JiraDLQ] Retry raised for row %s (%s): %s",
+                row["id"], row["idea_id"], exc,
+            )
+            jira_key = None
+
+    if jira_key:
+        conn.execute(
+            "DELETE FROM jira_sync_dlq WHERE id = ?",
+            (int(entry_id),),
+        )
+        conn.commit()
+        return True
+
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE jira_sync_dlq SET last_failed_at = ? WHERE id = ?",
+        (now, int(entry_id)),
+    )
+    conn.commit()
+    return False

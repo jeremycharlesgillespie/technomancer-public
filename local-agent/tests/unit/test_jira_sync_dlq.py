@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -156,3 +157,185 @@ class TestAddDlqEntry:
         ).fetchone()
         # default=str converts unknown objects, so this should be the repr.
         assert "Thing" in row["payload_json"]
+
+
+def _set_last_failed_at(entry_id: int, value: str) -> None:
+    """Directly set ``last_failed_at`` on an existing DLQ row.
+
+    Lets tests simulate distinct timestamps without waiting for the
+    clock to tick.
+    """
+    conn = jira_sync_dlq._get_conn()
+    conn.execute(
+        "UPDATE jira_sync_dlq SET last_failed_at = ? WHERE id = ?",
+        (value, int(entry_id)),
+    )
+    conn.commit()
+
+
+class TestGetJiraDlqEntries:
+    def test_empty_db_returns_empty_list(self):
+        """With no rows, get_jira_dlq_entries returns []."""
+        assert jira_sync_dlq.get_jira_dlq_entries() == []
+
+    def test_orders_by_last_failed_at_desc(self):
+        """Rows come back newest-first by last_failed_at."""
+        # Insert three rows, then mutate last_failed_at so the most
+        # recently failed row is the one inserted FIRST. This proves
+        # we're ordering by last_failed_at, not by id.
+        a = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-A", payload={"x": "a"}, error="e", attempts=1
+        )
+        b = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-B", payload={"x": "b"}, error="e", attempts=1
+        )
+        c = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-C", payload={"x": "c"}, error="e", attempts=1
+        )
+        _set_last_failed_at(a, "2026-04-17T12:00:03+00:00")
+        _set_last_failed_at(b, "2026-04-17T12:00:02+00:00")
+        _set_last_failed_at(c, "2026-04-17T12:00:01+00:00")
+
+        entries = jira_sync_dlq.get_jira_dlq_entries()
+        assert [e["idea_id"] for e in entries] == ["TK-A", "TK-B", "TK-C"]
+
+    def test_limit_is_honoured(self):
+        """Only ``limit`` rows come back, still newest-first."""
+        for i in range(5):
+            jira_sync_dlq.add_dlq_entry(
+                idea_id=f"TK-{i}",
+                payload={"i": i},
+                error=f"err-{i}",
+                attempts=1,
+            )
+        entries = jira_sync_dlq.get_jira_dlq_entries(limit=2)
+        assert len(entries) == 2
+        # Highest id wins the same-timestamp tiebreaker.
+        assert [e["idea_id"] for e in entries] == ["TK-4", "TK-3"]
+
+    def test_payload_is_parsed_into_dict(self):
+        """payload_json is parsed back into ``payload`` as a dict."""
+        payload = {"summary": "hi", "fields": {"priority": "High"}}
+        jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-42", payload=payload, error="x", attempts=1
+        )
+        [entry] = jira_sync_dlq.get_jira_dlq_entries()
+        assert entry["payload"] == payload
+        assert json.loads(entry["payload_json"]) == payload
+
+
+class TestRetryJiraDlqEntry:
+    def test_unknown_entry_id_returns_false(self):
+        """Retrying an id that doesn't exist returns False."""
+        assert jira_sync_dlq.retry_jira_dlq_entry(9999) is False
+
+    def test_success_deletes_row(self):
+        """A successful sync deletes the DLQ row and returns True."""
+        rowid = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-100",
+            payload={"summary": "retry me"},
+            error="transient",
+            attempts=2,
+        )
+        fake_idea = MagicMock(id="TK-100")
+        with patch.object(
+            jira_sync_dlq, "get_idea", return_value=fake_idea
+        ) as gi, patch.object(
+            jira_sync_dlq, "sync_idea_to_jira", return_value="TK-100"
+        ) as sync:
+            ok = jira_sync_dlq.retry_jira_dlq_entry(rowid)
+
+        assert ok is True
+        gi.assert_called_once_with("TK-100")
+        sync.assert_called_once_with(fake_idea)
+
+        conn = jira_sync_dlq._get_conn()
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM jira_sync_dlq WHERE id = ?", (rowid,)
+        ).fetchone()
+        assert remaining[0] == 0
+
+    def test_failure_leaves_row_and_updates_last_failed_at(self):
+        """A failed sync must leave the row and bump last_failed_at."""
+        rowid = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-200",
+            payload={"summary": "still broken"},
+            error="connection refused",
+            attempts=3,
+        )
+        # Pin the original timestamp to a clearly-older value so we can
+        # tell whether the retry bumped it forward.
+        _set_last_failed_at(rowid, "2020-01-01T00:00:00+00:00")
+
+        fake_idea = MagicMock(id="TK-200")
+        with patch.object(
+            jira_sync_dlq, "get_idea", return_value=fake_idea
+        ), patch.object(
+            jira_sync_dlq, "sync_idea_to_jira", return_value=None
+        ):
+            ok = jira_sync_dlq.retry_jira_dlq_entry(rowid)
+
+        assert ok is False
+        conn = jira_sync_dlq._get_conn()
+        row = conn.execute(
+            "SELECT idea_id, last_failed_at, first_failed_at "
+            "FROM jira_sync_dlq WHERE id = ?",
+            (rowid,),
+        ).fetchone()
+        assert row is not None
+        assert row["idea_id"] == "TK-200"
+        assert row["last_failed_at"] != "2020-01-01T00:00:00+00:00"
+        # first_failed_at must not move.
+        assert row["last_failed_at"] >= row["first_failed_at"]
+
+    def test_sync_exception_treated_as_failure(self):
+        """If sync raises, the row stays and last_failed_at is updated."""
+        rowid = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-300",
+            payload={"summary": "raises"},
+            error="boom",
+            attempts=1,
+        )
+        _set_last_failed_at(rowid, "2020-01-01T00:00:00+00:00")
+
+        fake_idea = MagicMock(id="TK-300")
+        with patch.object(
+            jira_sync_dlq, "get_idea", return_value=fake_idea
+        ), patch.object(
+            jira_sync_dlq, "sync_idea_to_jira",
+            side_effect=RuntimeError("kaboom"),
+        ):
+            ok = jira_sync_dlq.retry_jira_dlq_entry(rowid)
+
+        assert ok is False
+        conn = jira_sync_dlq._get_conn()
+        row = conn.execute(
+            "SELECT last_failed_at FROM jira_sync_dlq WHERE id = ?",
+            (rowid,),
+        ).fetchone()
+        assert row is not None
+        assert row["last_failed_at"] != "2020-01-01T00:00:00+00:00"
+
+    def test_missing_idea_leaves_row(self):
+        """If get_idea returns None, sync is never called and row stays."""
+        rowid = jira_sync_dlq.add_dlq_entry(
+            idea_id="TK-GONE",
+            payload={"summary": "idea deleted"},
+            error="x",
+            attempts=1,
+        )
+        with patch.object(
+            jira_sync_dlq, "get_idea", return_value=None
+        ), patch.object(
+            jira_sync_dlq, "sync_idea_to_jira"
+        ) as sync:
+            ok = jira_sync_dlq.retry_jira_dlq_entry(rowid)
+
+        assert ok is False
+        sync.assert_not_called()
+
+        conn = jira_sync_dlq._get_conn()
+        exists = conn.execute(
+            "SELECT COUNT(*) FROM jira_sync_dlq WHERE id = ?", (rowid,)
+        ).fetchone()
+        assert exists[0] == 1
