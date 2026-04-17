@@ -1,10 +1,12 @@
 """Tests for idea_board.jira_sync — Jira integration."""
 
 import json
+import sqlite3
 from unittest.mock import MagicMock, patch, call
 import pytest
 import requests
 
+from idea_board import jira_sync_dlq
 from idea_board.jira_sync import (
     is_jira_configured,
     find_jira_issue,
@@ -23,6 +25,35 @@ from idea_board.jira_sync import (
     BACKOFF_SECONDS,
     RETRY_STATUS_CODES,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dlq_db(tmp_path, monkeypatch):
+    """Redirect the jira_sync_dlq SQLite DB at a temp path for each test.
+
+    jira_sync now writes to the DLQ from the permanent-4xx branch of
+    ``create_jira_issue`` and the JiraRetryExhausted handler of
+    ``sync_idea_to_jira``. Without this fixture those writes would land
+    in the real ``data/jira_sync_dlq.db`` during the test run.
+    """
+    db_path = tmp_path / "jira_sync_dlq.db"
+    monkeypatch.setattr(jira_sync_dlq, "DB_DIR", tmp_path)
+    monkeypatch.setattr(jira_sync_dlq, "DB_PATH", db_path)
+    conn = getattr(jira_sync_dlq._local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    jira_sync_dlq._local.__dict__.pop("conn", None)
+    yield
+    conn = getattr(jira_sync_dlq._local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        jira_sync_dlq._local.__dict__.pop("conn", None)
 
 
 def _resp(status: int, text: str = "", headers: dict | None = None):
@@ -639,3 +670,40 @@ class TestWritesPropagateExhaustion:
         with patch("idea_board.jira_sync.time.sleep"):
             with pytest.raises(JiraRetryExhausted):
                 transition_jira_issue("TK-1", "Done")
+
+
+# ---------------------------------------------------------------------------
+# DLQ writes from permanent-4xx branches
+# ---------------------------------------------------------------------------
+
+
+class TestCreate4xxWritesDlq:
+    @patch("idea_board.jira_sync._api")
+    @patch("idea_board.jira_sync.find_jira_issue", return_value=None)
+    @patch("idea_board.jira_sync.is_jira_configured", return_value=True)
+    @patch("idea_board.jira_sync.settings")
+    def test_400_lands_one_dlq_row(
+        self, mock_settings, mock_conf, mock_find, mock_api
+    ):
+        """A permanent 400 from Jira lands exactly one DLQ row.
+
+        ``_post_with_retry`` doesn't retry non-429 4xx responses, so
+        ``create_jira_issue`` sees the 400 on the first attempt. The
+        DLQ row must carry the idea_id and ``attempts=1``.
+        """
+        mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "localhost"
+        mock_api.return_value = _resp(400, text="Bad Request")
+
+        result = create_jira_issue("idea-400", "Broken", "desc")
+
+        assert result is None
+
+        conn = jira_sync_dlq._get_conn()
+        rows = conn.execute(
+            "SELECT idea_id, attempts, error FROM jira_sync_dlq"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["idea_id"] == "idea-400"
+        assert rows[0]["attempts"] == 1
+        assert "400" in rows[0]["error"]

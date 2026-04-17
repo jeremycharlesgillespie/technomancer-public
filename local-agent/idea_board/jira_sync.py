@@ -177,6 +177,28 @@ def _write_deadletter(
         )
 
 
+def _dlq_add(
+    idea_id: str,
+    payload: dict,
+    error: str,
+    attempts: int,
+) -> None:
+    """Record a failed Jira write to the SQLite dead-letter queue.
+
+    Imported lazily to break the circular dependency with
+    :mod:`idea_board.jira_sync_dlq`, which itself imports
+    :func:`sync_idea_to_jira`. Any failure here is swallowed so a broken
+    DLQ never blocks the caller's normal control flow.
+    """
+    try:
+        from idea_board.jira_sync_dlq import add_dlq_entry
+        add_dlq_entry(idea_id, payload, error, attempts)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error(
+            "[JiraSync] Failed to add DLQ entry for %s: %s", idea_id, exc
+        )
+
+
 def is_jira_configured() -> bool:
     """Check if Jira credentials are configured."""
     return bool(
@@ -287,6 +309,17 @@ def create_jira_issue(
             "[JiraSync] Create failed (%d): %s",
             resp.status_code,
             resp.text[:200],
+        )
+        _dlq_add(
+            idea_id=idea_id,
+            payload={
+                "endpoint": "/issue",
+                "body": {"fields": fields},
+                "target_state": STATE_MAP.get("proposed", "To Do"),
+                "idea_type": idea_type,
+            },
+            error=f"HTTP {resp.status_code}: {(resp.text or '')[:500]}",
+            attempts=1,
         )
     except JiraRetryExhausted:
         raise
@@ -461,5 +494,20 @@ def sync_idea_to_jira(idea: Any) -> str | None:
             idea_id=idea_id,
             target_state=target_status,
             last_error=str(exc),
+        )
+        _dlq_add(
+            idea_id=idea_id,
+            payload={
+                "endpoint": exc.path or "",
+                "body": {
+                    "title": title,
+                    "state": state,
+                    "idea_type": idea_type,
+                },
+                "target_state": target_status,
+                "idea_type": idea_type,
+            },
+            error=str(exc),
+            attempts=exc.attempts,
         )
         return None
