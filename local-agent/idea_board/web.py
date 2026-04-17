@@ -4287,7 +4287,7 @@ def _render_analytics() -> str:
 <html lang="en"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Analytics - Technomancer Hub</title>
+    <title>Discord Analytics - Technomancer Hub</title>
     <style>{DASHBOARD_CSS}
 .nav {{ margin-bottom: 1.5rem; display: flex; gap: 12px; flex-wrap: wrap; }}
 .nav a {{ color: var(--accent); text-decoration: none; padding: 6px 14px;
@@ -4325,7 +4325,7 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
 .modal .cmd-desc {{ font-size: 0.85rem; color: var(--text); margin-top: 2px; }}
 </style></head>
 <body>
-    <h1>Engagement Analytics</h1>
+    <h1>Discord Analytics</h1>
     <div class="nav">
         <a href="/">Hub</a>
         <a href="/ideas">Ideas</a>
@@ -5433,8 +5433,8 @@ def _render_hub() -> str:
             <p>Submit complaints. They get turned into improvement ideas.</p>
         </a>
         <a href="/analytics" class="card" style="border-left: 4px solid #5865F2;">
-            <h2>Analytics</h2>
-            <p>Command usage, engagement trends, and feature adoption.</p>
+            <h2>Discord Analytics</h2>
+            <p>Discord command usage, engagement trends, and feature adoption.</p>
         </a>
         <a href="/errors" class="card" style="border-left: 4px solid var(--red);">
             <h2>Errors &amp; Crashes</h2>
