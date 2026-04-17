@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,8 +31,102 @@ from typing import Any
 
 from agent.config import settings
 from agent.fn_profiler import profile_fn
+from agent.story_timings import phase_timer, record_phase
 
 from board import get_provider as _get_board_provider
+
+
+def _project_key_for(idea_id: str | None) -> str | None:
+    """Return the project key for story-timing rows (e.g. ``TK``, ``FA``).
+
+    Prefers the explicit Jira project setting when configured; otherwise
+    falls back to the alpha prefix of ``idea_id`` (so ``FA-12`` → ``"FA"``
+    works even on hosts that haven't wired up Jira yet). Returns ``None``
+    when nothing parses — phase timers accept ``None`` and store NULL.
+    """
+    try:
+        if settings.jira_project_key:
+            return settings.jira_project_key
+    except Exception:
+        pass
+    if idea_id and "-" in idea_id:
+        prefix = idea_id.split("-", 1)[0]
+        if prefix.isalpha():
+            return prefix.upper()
+    return None
+
+
+def _state_timer(state: "ExecutionState", phase: str, metadata: Any = None):
+    """Shortcut: ``phase_timer`` pre-populated from an ``ExecutionState``.
+
+    Inherits ``run_id``, ``story_id``, and ``project`` from the state so
+    callers inside ``_run()`` don't have to repeat them at every phase
+    boundary.
+    """
+    return phase_timer(
+        run_id=state.run_id,
+        story_id=state.idea_id,
+        project=_project_key_for(state.idea_id),
+        phase=phase,
+        metadata=metadata,
+    )
+
+
+class _PhaseMarker:
+    """Manual phase-timing helper for blocks that can't cleanly be wrapped
+    in a ``with`` statement — typically long while-loops with early returns
+    where re-indenting the body would add more noise than signal.
+
+    Usage::
+
+        marker = _PhaseMarker(state, "executor.claude_work", metadata)
+        try:
+            ... work ...
+        finally:
+            marker.finish()  # idempotent
+
+    Metadata is a mutable dict filled during the phase; the dict object
+    handed to ``_PhaseMarker`` is the one serialized at ``finish`` time,
+    so callers can mutate it after construction.
+
+    ``finish`` is idempotent so the finally block stays safe even when an
+    earlier `return` inside the phase already closed the marker.
+    """
+
+    def __init__(
+        self,
+        state: "ExecutionState",
+        phase: str,
+        metadata: Any = None,
+    ) -> None:
+        self._state = state
+        self._phase = phase
+        self._metadata = metadata
+        self._started_wall = datetime.now().isoformat()
+        self._started_mono = time.monotonic()
+        self._closed = False
+
+    def finish(self, success: bool = True) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            record_phase(
+                run_id=self._state.run_id,
+                story_id=self._state.idea_id,
+                project=_project_key_for(self._state.idea_id),
+                phase=self._phase,
+                started_at=self._started_wall,
+                ended_at=datetime.now().isoformat(),
+                duration_ms=int((time.monotonic() - self._started_mono) * 1000),
+                success=success,
+                metadata=self._metadata,
+            )
+        except Exception:
+            logger.warning(
+                "[Executor] phase marker %s failed to record", self._phase,
+                exc_info=True,
+            )
 
 
 def get_idea(idea_id):
@@ -239,6 +334,7 @@ class ExecutionState:
     cancelled: bool = False
     baseline_failures: set[str] = field(default_factory=set)
     rate_limited: bool = False
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def log(self, msg: str) -> None:
         """Append a timestamped message to the execution log."""
@@ -1476,6 +1572,7 @@ def execute_idea(
     extra_context: str = "",
     epic_context: str = "",
     previous_results: list[dict[str, str]] | None = None,
+    run_id: str | None = None,
 ) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -1488,6 +1585,10 @@ def execute_idea(
         extra_context: Optional flat context string (legacy, still supported)
         epic_context: Optional epic narrative for story-in-epic execution
         previous_results: Optional list of prior story results (id, title, state, summary)
+        run_id: Correlation id generated at ``worker.pickup`` so every phase
+            timing row across brain/worker/executor shares the same run.
+            When ``None`` (e.g. ad-hoc execution without a worker) the
+            ExecutionState default_factory assigns a fresh uuid.
 
     Returns:
         ExecutionState for tracking, or None if idea not found
@@ -1504,6 +1605,8 @@ def execute_idea(
     _clear_execution_artifacts(idea_id)
 
     state = ExecutionState(idea_id=idea_id)
+    if run_id:
+        state.run_id = run_id
     _active[idea_id] = state
 
     # Build the rich prompt
@@ -1613,76 +1716,85 @@ def execute_idea(
                     cwd=str(project_root),
                 )
 
-            try:
-                state.log("--- Setting up fresh branch ---")
+            _branch_meta: dict[str, Any] = {"branch": branch_name}
+            with _state_timer(state, "executor.branch_create", metadata=_branch_meta):
+                try:
+                    state.log("--- Setting up fresh branch ---")
 
-                # Step 1: Force switch to main
-                current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
-                if current != "main":
-                    state.log(f"Resetting from {current} to main...")
+                    # Step 1: Force switch to main
+                    current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+                    if current != "main":
+                        state.log(f"Resetting from {current} to main...")
+                        _git(["checkout", "--force", "main"])
+                        _git(["branch", "-D", current])
+                        state.log(f"Deleted old branch {current}")
+
+                    # Step 2: Clean working directory
                     _git(["checkout", "--force", "main"])
-                    _git(["branch", "-D", current])
-                    state.log(f"Deleted old branch {current}")
+                    _git(["clean", "-fd"], timeout=30)
+                    state.log("Working directory clean")
 
-                # Step 2: Clean working directory
-                _git(["checkout", "--force", "main"])
-                _git(["clean", "-fd"], timeout=30)
-                state.log("Working directory clean")
+                    # Step 3: Clean stale safe_update state
+                    state_file = Path(local_agent_dir) / ".safe_update_state"
+                    if state_file.exists():
+                        state_file.unlink(missing_ok=True)
 
-                # Step 3: Clean stale safe_update state
-                state_file = Path(local_agent_dir) / ".safe_update_state"
-                if state_file.exists():
-                    state_file.unlink(missing_ok=True)
+                    # Step 4: Pull latest
+                    state.log("Pulling latest main...")
+                    _git(["pull", "origin", "main"], timeout=30)
 
-                # Step 4: Pull latest
-                state.log("Pulling latest main...")
-                _git(["pull", "origin", "main"], timeout=30)
+                    # Step 5: Create branch
+                    state.log(f"Creating branch {branch_name}...")
+                    result = _git(["checkout", "-b", branch_name])
+                    if result.returncode != 0:
+                        raise RuntimeError(result.stderr or result.stdout)
 
-                # Step 5: Create branch
-                state.log(f"Creating branch {branch_name}...")
-                result = _git(["checkout", "-b", branch_name])
-                if result.returncode != 0:
-                    raise RuntimeError(result.stderr or result.stdout)
+                    # Step 6: Write safe_update state file (so safe_update.py continue works)
+                    state_file.write_text(branch_name)
 
-                # Step 6: Write safe_update state file (so safe_update.py continue works)
-                state_file.write_text(branch_name)
+                    state.log(f"Branch created: {branch_name}")
+                    _branch_meta["status"] = "ok"
 
-                state.log(f"Branch created: {branch_name}")
-
-            except Exception as e:
-                msg = f"Branch creation failed: {e}"
-                state.log(msg)
-                _notify_discord(f"[{idea_id}] {msg}")
-                mark_failed(idea_id, state.log_text)
-                return
+                except Exception as e:
+                    _branch_meta["status"] = "failed"
+                    _branch_meta["error"] = str(e)[:200]
+                    msg = f"Branch creation failed: {e}"
+                    state.log(msg)
+                    _notify_discord(f"[{idea_id}] {msg}")
+                    mark_failed(idea_id, state.log_text)
+                    return
 
             # branch_name already set above in Phase 0b
             # --- Phase 1: Build codebase context (code, not LLM) ---
-            state.log("--- Building codebase context ---")
-            codebase_context = _build_codebase_context(idea, project_root)
-            context_chars = len(codebase_context)
-            state.log(
-                f"Context built: {context_chars} chars "
-                f"(~{context_chars // 4} tokens)"
-            )
-
-            # Inject context into the prompt
-            epic_ctx_section = ""
-            if extra_context:
-                epic_ctx_section = (
-                    f"## Epic Execution Context\n\n"
-                    f"{extra_context}\n\n"
+            _ctx_meta: dict[str, Any] = {}
+            with _state_timer(state, "executor.context_build", metadata=_ctx_meta):
+                state.log("--- Building codebase context ---")
+                codebase_context = _build_codebase_context(idea, project_root)
+                context_chars = len(codebase_context)
+                state.log(
+                    f"Context built: {context_chars} chars "
+                    f"(~{context_chars // 4} tokens)"
                 )
 
-            full_prompt = (
-                f"## Codebase Context (pre-built)\n\n"
-                f"{codebase_context}\n\n"
-                f"{epic_ctx_section}"
-                f"---\n\n"
-                f"{prompt}"
-            )
-            full_prompt_chars = len(full_prompt)
-            full_prompt_tokens = full_prompt_chars // 4
+                # Inject context into the prompt
+                epic_ctx_section = ""
+                if extra_context:
+                    epic_ctx_section = (
+                        f"## Epic Execution Context\n\n"
+                        f"{extra_context}\n\n"
+                    )
+
+                full_prompt = (
+                    f"## Codebase Context (pre-built)\n\n"
+                    f"{codebase_context}\n\n"
+                    f"{epic_ctx_section}"
+                    f"---\n\n"
+                    f"{prompt}"
+                )
+                full_prompt_chars = len(full_prompt)
+                full_prompt_tokens = full_prompt_chars // 4
+                _ctx_meta["context_chars"] = context_chars
+                _ctx_meta["prompt_chars"] = full_prompt_chars
 
             if state.cancelled:
                 state.log("CANCELLED by user")
@@ -1700,42 +1812,52 @@ def execute_idea(
 
             # Write prompt to temp file — Windows has 32K command-line limit
             import tempfile
-            prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
-            prompt_file.write_text(full_prompt, encoding="utf-8")
+            with _state_timer(state, "executor.claude_spawn"):
+                prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
+                prompt_file.write_text(full_prompt, encoding="utf-8")
 
-            cmd = [
-                str(binary), "-p", "-",
-                "--output-format", "stream-json",
-                "--verbose",
-                "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
-                "--max-turns", "50",
-            ]
-            state.log("Starting Claude Code with pre-built context...")
+                cmd = [
+                    str(binary), "-p", "-",
+                    "--output-format", "stream-json",
+                    "--verbose",
+                    "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
+                    "--max-turns", "50",
+                ]
+                state.log("Starting Claude Code with pre-built context...")
 
-            prompt_input = open(prompt_file, "r", encoding="utf-8")
-            proc = subprocess.Popen(
-                cmd,
-                stdin=prompt_input,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=str(project_root),
-                env=env,
-            )
-            state.pid = proc.pid
-            state.log(f"Claude Code started (PID: {proc.pid})")
-            state.log(f"Working on: {idea.title}")
-            logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
+                prompt_input = open(prompt_file, "r", encoding="utf-8")
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=prompt_input,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(project_root),
+                    env=env,
+                )
+                state.pid = proc.pid
+                state.log(f"Claude Code started (PID: {proc.pid})")
+                state.log(f"Working on: {idea.title}")
+                logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
 
             # Stream stdout line-by-line, parsing JSON events as they arrive
             last_discord_time = 0.0
             last_jira_progress_time = 0.0
             final_result = ""
 
+            # Time the Claude-work phase manually so the existing while-loop
+            # structure (with its early-return cancellation/timeout paths)
+            # stays flat — wrapping it in a `with` block would force a full
+            # reindent for a negligible readability win.
+            _claude_meta: dict[str, Any] = {}
+            _claude_work_phase = _PhaseMarker(state, "executor.claude_work", _claude_meta)
+
             while True:
                 # Check cancellation and timeout before blocking on readline
                 if state.cancelled:
                     proc.kill()
                     state.log("CANCELLED by user")
+                    _claude_meta["outcome"] = "cancelled"
+                    _claude_work_phase.finish(success=False)
                     mark_failed(idea_id, state.log_text)
                     _notify_discord(f"Execution of {idea_id} was cancelled.")
                     _active.pop(idea_id, None)
@@ -1744,6 +1866,8 @@ def execute_idea(
                 if state.elapsed > EXECUTION_TIMEOUT:
                     proc.kill()
                     state.log(f"TIMEOUT after {EXECUTION_TIMEOUT}s")
+                    _claude_meta["outcome"] = "timeout"
+                    _claude_work_phase.finish(success=False)
                     mark_failed(idea_id, state.log_text)
                     _notify_discord(
                         f"Execution of {idea_id} timed out after "
@@ -1804,6 +1928,9 @@ def execute_idea(
                     pass
             # Brief pause to let OS fully release resources
             time.sleep(2)
+            _claude_meta["outcome"] = "completed"
+            _claude_meta["final_result"] = bool(final_result)
+            _claude_work_phase.finish(success=True)
 
             # Claude sometimes edits files without running ``git commit``
             # — narrates its changes, says "Final result", exits. The
@@ -1811,7 +1938,8 @@ def execute_idea(
             # gets marked failed. Turn the commit step into code rather
             # than a prompt instruction: if the working tree is dirty
             # after Claude exits, auto-commit before checking.
-            _auto_commit_uncommitted(project_root, idea_id, state)
+            with _state_timer(state, "executor.auto_commit"):
+                _auto_commit_uncommitted(project_root, idea_id, state)
 
             # Success is authoritatively determined by whether the feature
             # branch has commits ahead of main. Claude's stdout is a weak
@@ -1820,24 +1948,32 @@ def execute_idea(
             # in unrelated output. Commits on the branch are the ground
             # truth that Claude can't fake. The stream-json final_result
             # stays as a secondary hint that's logged but not load-bearing.
-            project_root_str = str(project_root)
-            current_branch_check = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                capture_output=True, text=True, cwd=project_root_str,
-            )
-            current_branch = current_branch_check.stdout.strip()
-            commits_ahead = 0
-            if current_branch and current_branch != "main":
-                ahead = subprocess.run(
-                    ["git", "rev-list", "--count", f"main..{current_branch}"],
+            _success_meta: dict[str, Any] = {}
+            with _state_timer(state, "executor.success_check", metadata=_success_meta):
+                project_root_str = str(project_root)
+                current_branch_check = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                     capture_output=True, text=True, cwd=project_root_str,
                 )
-                commits_ahead = int((ahead.stdout or "0").strip() or "0")
-            claude_succeeded = commits_ahead > 0
-            state.log(
-                f"Success check: {commits_ahead} commit(s) on {current_branch} "
-                f"ahead of main (final_result={'set' if final_result else 'empty'})"
-            )
+                current_branch = current_branch_check.stdout.strip()
+                commits_ahead = 0
+                if current_branch and current_branch != "main":
+                    ahead = subprocess.run(
+                        ["git", "rev-list", "--count", f"main..{current_branch}"],
+                        capture_output=True, text=True, cwd=project_root_str,
+                    )
+                    commits_ahead = int((ahead.stdout or "0").strip() or "0")
+                claude_succeeded = commits_ahead > 0
+                _success_meta["commits_ahead"] = commits_ahead
+                _success_meta["branch"] = current_branch
+                # Keep this piece of metadata on the claude_work row too so
+                # the dashboard can surface "commits created during Claude
+                # run" without having to cross-join two phase rows.
+                _claude_meta["commits_created"] = commits_ahead
+                state.log(
+                    f"Success check: {commits_ahead} commit(s) on {current_branch} "
+                    f"ahead of main (final_result={'set' if final_result else 'empty'})"
+                )
 
             if not claude_succeeded:
                 # Distinguish "Claude hit a usage/rate limit and bailed" from
