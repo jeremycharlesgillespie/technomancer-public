@@ -705,6 +705,13 @@ Keep responses concise for Discord but thorough when they need depth.""",
 
     log(f"Ready with {len(agent.tools)} tools")
 
+    # Fire-and-forget warmup so the first user message doesn't eat a 20-40s
+    # cold-start while Ollama loads model weights into VRAM.
+    from .ollama_warmup import warmup_models
+    asyncio.create_task(
+        warmup_models([settings.ollama_model, settings.ollama_vision_model])
+    )
+
     # Start background compaction with a SEPARATE agent for summarization.
     # CRITICAL: Must NOT share the main agent — otherwise compaction's agent.run()
     # resets self.messages and contaminates user conversations with daily briefings.
