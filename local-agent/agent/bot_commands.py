@@ -30,6 +30,7 @@ from .dev_learning import (
     handle_show_learning_command,
     handle_suggest_learning_command,
 )
+from . import metrics
 from .news_digest import handle_technews_command
 from .metrics_db import get_summary as get_metrics_summary
 from .perf_monitor import get_endpoint_summary
@@ -83,6 +84,102 @@ async def handle_metrics(message: Any, send_response: Any) -> None:
     """Show persistent LLM metrics with trend analysis from SQLite."""
     summary = get_metrics_summary(hours=24)
     await send_response(message, summary)
+
+
+def _fmt_duration_ms(value: Any) -> str:
+    """Render a millisecond duration as a short minutes-or-seconds string."""
+    if value is None:
+        return "n/a"
+    try:
+        ms = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if ms < 60_000.0:
+        return f"{ms / 1000.0:.1f}s"
+    return f"{ms / 60_000.0:.1f}m"
+
+
+def _fmt_pct(value: Any) -> str:
+    """Render a 0..1 ratio as a percentage with one decimal."""
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _current_slo_breaches(snapshot: dict[str, Any]) -> list[str]:
+    """Return the SLO ids currently breaching in ``snapshot`` (no side effects).
+
+    Unlike ``alerts.check_slo_violations`` this doesn't dispatch alerts or touch
+    dedup state — it just inspects the snapshot so the status command can show
+    what's red right now without firing webhooks.
+    """
+    breaches: list[str] = []
+    for slo_id, spec in metrics.SLO_THRESHOLDS.items():
+        node: Any = snapshot
+        for key in spec.get("path", ()):
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = node[key]
+        if isinstance(node, bool) or not isinstance(node, (int, float)):
+            continue
+        comparator = spec.get("comparator")
+        threshold = spec.get("threshold")
+        if comparator == "lt" and node < threshold:
+            breaches.append(slo_id)
+        elif comparator == "gt" and node > threshold:
+            breaches.append(slo_id)
+    return breaches
+
+
+def format_status_snapshot(snapshot: dict[str, Any]) -> str:
+    """Render a :func:`metrics.get_snapshot` payload as a Discord code block."""
+    executor = snapshot.get("executor") or {}
+    board = snapshot.get("board") or {}
+    vault = snapshot.get("claude_vault") or {}
+    ollama = snapshot.get("ollama") or {}
+
+    success_rate = _fmt_pct(executor.get("success_rate"))
+    total = executor.get("total_runs_24h", 0) or 0
+    succ = executor.get("successes_24h", 0) or 0
+    p50 = _fmt_duration_ms(executor.get("p50_latency_ms"))
+    p95 = _fmt_duration_ms(executor.get("p95_latency_ms"))
+
+    queue_depth = board.get("queue_depth", 0) or 0
+    cache_hit = _fmt_pct(vault.get("cache_hit_rate"))
+
+    status = (ollama.get("status") or "unknown").lower()
+    ollama_healthy = "yes" if status == "healthy" else f"no ({status})"
+
+    breaches = _current_slo_breaches(snapshot)
+    violations_line = ", ".join(breaches) if breaches else "none"
+
+    stale = snapshot.get("stale_seconds")
+    stale_line = f"{stale:.1f}s" if isinstance(stale, (int, float)) else "n/a"
+    generated_at = snapshot.get("generated_at") or "unknown"
+
+    body = (
+        "Technomancer Status\n"
+        "-------------------\n"
+        f"executor.success_rate_24h : {success_rate} ({succ}/{total} runs)\n"
+        f"executor.p50_latency      : {p50}\n"
+        f"executor.p95_latency      : {p95}\n"
+        f"board.queue_depth         : {queue_depth}\n"
+        f"claude_vault.cache_hit    : {cache_hit}\n"
+        f"ollama.healthy            : {ollama_healthy}\n"
+        f"slo_violations            : {violations_line}\n"
+        f"snapshot_age              : {stale_line}  (generated {generated_at})\n"
+    )
+    return f"```\n{body}```"
+
+
+async def handle_status(message: Any, send_response: Any) -> None:
+    """Show the unified metrics snapshot (cache, queue, SLO violations)."""
+    snapshot = metrics.get_snapshot()
+    await send_response(message, format_status_snapshot(snapshot))
 
 
 async def handle_idea(message: Any, send_response: Any) -> None:
@@ -292,6 +389,7 @@ async def handle_show_commands(message: Any) -> None:
 **Performance**
 `perf` - Show current session profiling data
 `metrics` - Show persistent LLM latency trends (SQLite-backed)
+`status` - Show unified metrics snapshot (executor, queue, cache, Ollama, SLOs)
 
 **Info**
 `showCommands` - Show this help message

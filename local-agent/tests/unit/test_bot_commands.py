@@ -9,11 +9,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.bot_commands import (
+    _current_slo_breaches,
+    _fmt_duration_ms,
+    _fmt_pct,
+    format_status_snapshot,
     handle_learning_history,
     handle_perf,
     handle_show_commands,
     handle_show_ideas,
     handle_show_learning,
+    handle_status,
 )
 from tests.conftest import MockDiscordMessage
 
@@ -271,3 +276,186 @@ class TestHandleDlCovers:
         msg = _make_msg("dlcovers")
         _run(handle_dl_covers(msg, msg.content, "TestUser"))
         assert "Usage" in msg.replied_to
+
+
+# ---------------------------------------------------------------------------
+# status command — formatter + handler
+# ---------------------------------------------------------------------------
+
+
+def _sample_snapshot(**overrides):
+    """Build a baseline healthy snapshot; pass nested keys to override."""
+    snap = {
+        "executor": {
+            "total_runs_24h": 20,
+            "successes_24h": 19,
+            "success_rate": 0.95,
+            "p50_latency_ms": 72_000.0,     # 1.2m
+            "p95_latency_ms": 240_000.0,    # 4.0m
+        },
+        "claude_vault": {
+            "calls": 100,
+            "cache_hit_rate": 0.84,
+            "input_tokens": 1_000_000,
+            "cache_read_tokens": 840_000,
+            "cache_creation_tokens": 40_000,
+        },
+        "board": {
+            "queue_depth": 5,
+            "oldest_top_ranked_wait_seconds": 3_600.0,
+        },
+        "ollama": {
+            "status": "healthy",
+            "consecutive_failures": 0,
+            "last_checked": None,
+            "last_success": None,
+            "last_error": None,
+        },
+        "generated_at": "2026-04-17T00:23:31",
+        "stale_seconds": 0.0,
+    }
+    for path, value in overrides.items():
+        node = snap
+        parts = path.split(".")
+        for key in parts[:-1]:
+            node = node.setdefault(key, {})
+        node[parts[-1]] = value
+    return snap
+
+
+class TestFormatHelpers:
+    def test_fmt_duration_handles_none(self):
+        assert _fmt_duration_ms(None) == "n/a"
+
+    def test_fmt_duration_handles_garbage(self):
+        assert _fmt_duration_ms("not-a-number") == "n/a"
+
+    def test_fmt_duration_seconds_under_one_minute(self):
+        assert _fmt_duration_ms(45_000.0) == "45.0s"
+
+    def test_fmt_duration_minutes_over_one_minute(self):
+        assert _fmt_duration_ms(120_000.0) == "2.0m"
+
+    def test_fmt_pct_handles_none(self):
+        assert _fmt_pct(None) == "n/a"
+
+    def test_fmt_pct_formats_ratio(self):
+        assert _fmt_pct(0.923) == "92.3%"
+
+    def test_fmt_pct_handles_garbage(self):
+        assert _fmt_pct("nope") == "n/a"
+
+
+class TestCurrentSloBreaches:
+    def test_no_breaches_on_healthy_snapshot(self):
+        assert _current_slo_breaches(_sample_snapshot()) == []
+
+    def test_low_success_rate_breaches(self):
+        snap = _sample_snapshot()
+        snap["executor"]["success_rate"] = 0.5  # below 0.8 threshold
+        breaches = _current_slo_breaches(snap)
+        assert "executor_success_rate" in breaches
+
+    def test_queue_depth_over_threshold_breaches(self):
+        snap = _sample_snapshot()
+        snap["board"]["queue_depth"] = 200  # above 50
+        breaches = _current_slo_breaches(snap)
+        assert "board_queue_depth" in breaches
+
+    def test_none_value_never_breaches(self):
+        snap = _sample_snapshot()
+        snap["board"]["oldest_top_ranked_wait_seconds"] = None
+        assert "board_oldest_wait_seconds" not in _current_slo_breaches(snap)
+
+    def test_missing_path_never_breaches(self):
+        # Drop the whole executor block — every executor SLO should be skipped
+        # rather than exploding on the missing dict.
+        snap = _sample_snapshot()
+        del snap["executor"]
+        breaches = _current_slo_breaches(snap)
+        assert not any(b.startswith("executor_") for b in breaches)
+
+
+class TestFormatStatusSnapshot:
+    def test_wraps_in_code_block(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert rendered.startswith("```\n")
+        assert rendered.rstrip().endswith("```")
+
+    def test_includes_header(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "Technomancer Status" in rendered
+
+    def test_includes_success_rate_and_runs(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "95.0%" in rendered
+        assert "19/20" in rendered
+
+    def test_includes_latency_in_minutes(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "1.2m" in rendered     # p50
+        assert "4.0m" in rendered     # p95
+
+    def test_includes_queue_depth(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "queue_depth" in rendered
+        assert ": 5" in rendered
+
+    def test_includes_cache_hit_rate(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "84.0%" in rendered
+
+    def test_reports_ollama_healthy_when_status_is_healthy(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "ollama.healthy" in rendered
+        assert ": yes" in rendered
+
+    def test_reports_ollama_unhealthy_with_status_reason(self):
+        snap = _sample_snapshot()
+        snap["ollama"]["status"] = "down"
+        rendered = format_status_snapshot(snap)
+        assert "no (down)" in rendered
+
+    def test_shows_none_when_no_slo_violations(self):
+        rendered = format_status_snapshot(_sample_snapshot())
+        assert "slo_violations" in rendered
+        assert "none" in rendered
+
+    def test_lists_active_slo_violations(self):
+        snap = _sample_snapshot()
+        snap["executor"]["success_rate"] = 0.2   # breach success rate
+        snap["board"]["queue_depth"] = 500        # breach queue depth
+        rendered = format_status_snapshot(snap)
+        assert "executor_success_rate" in rendered
+        assert "board_queue_depth" in rendered
+
+    def test_handles_empty_snapshot_gracefully(self):
+        # Mirrors the "no prior good payload" failure mode from metrics.
+        rendered = format_status_snapshot({
+            "executor": {}, "claude_vault": {}, "board": {}, "ollama": {},
+            "generated_at": "n/a", "stale_seconds": None,
+        })
+        assert "```" in rendered
+        # n/a appears for ratios + durations that weren't provided
+        assert "n/a" in rendered
+
+
+class TestHandleStatus:
+    @patch("agent.bot_commands.metrics.get_snapshot")
+    def test_renders_snapshot_in_reply(self, mock_snapshot):
+        mock_snapshot.return_value = _sample_snapshot()
+        msg = _make_msg("status")
+        _run(handle_status(msg, _send_response))
+        assert msg._last_response.startswith("```")
+        assert "Technomancer Status" in msg._last_response
+        assert "95.0%" in msg._last_response
+        mock_snapshot.assert_called_once()
+
+    @patch("agent.bot_commands.metrics.get_snapshot")
+    def test_reports_slo_breaches(self, mock_snapshot):
+        snap = _sample_snapshot()
+        snap["executor"]["success_rate"] = 0.1
+        mock_snapshot.return_value = snap
+        msg = _make_msg("status")
+        _run(handle_status(msg, _send_response))
+        assert "executor_success_rate" in msg._last_response

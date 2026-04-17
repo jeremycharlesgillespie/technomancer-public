@@ -62,6 +62,7 @@ from .bot_commands import (
     handle_show_commands,
     handle_show_ideas,
     handle_show_learning,
+    handle_status,
     handle_tech_news,
     handle_think,
     handle_track,
@@ -1011,6 +1012,10 @@ async def on_message(message: discord.Message) -> None:
     if lower == "metrics":
         _track_cmd("metrics")
         await handle_metrics(message, send_response)
+        return
+    if lower == "status":
+        _track_cmd("status")
+        await handle_status(message, send_response)
         return
     if lower == "idea":
         _track_cmd("idea")
