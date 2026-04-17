@@ -166,6 +166,51 @@ class TestGetRecent:
         assert len(executor_runs_db.get_recent()) == 20
 
 
+class TestGetRunByRunId:
+    """Lookup a run by its sortable ``run_id`` string."""
+
+    def test_returns_row_as_dict(self):
+        """Inserting via record_run and retrieving via the helper returns
+        the expected fields as a dict."""
+        run_id_str = "20260416-120000-TK-491"
+        executor_runs_db.record_run(
+            jira_key="TK-491",
+            branch="2026-04-16-test",
+            started_at="2026-04-16T12:00:00",
+            status="running",
+            run_id=run_id_str,
+            pid=4242,
+        )
+
+        row = executor_runs_db.get_run_by_run_id(run_id_str)
+
+        assert row is not None
+        assert isinstance(row, dict)
+        assert row["run_id"] == run_id_str
+        assert row["pid"] == 4242
+        assert row["status"] == "running"
+
+    def test_returns_none_when_missing(self):
+        assert executor_runs_db.get_run_by_run_id("does-not-exist") is None
+
+    def test_returns_most_recent_on_duplicate_run_ids(self):
+        """If two rows somehow share the same run_id, the newest (highest id)
+        wins — the column isn't UNIQUE so we must be deterministic."""
+        run_id_str = "20260416-120000-TK-dup"
+        first = executor_runs_db.record_run(
+            jira_key="TK-dup", status="running", run_id=run_id_str,
+        )
+        second = executor_runs_db.record_run(
+            jira_key="TK-dup", status="success", run_id=run_id_str,
+        )
+        assert second > first
+
+        row = executor_runs_db.get_run_by_run_id(run_id_str)
+        assert row is not None
+        assert row["id"] == second
+        assert row["status"] == "success"
+
+
 class TestWalMode:
     """WAL journal mode must be active so reads and writes don't serialize."""
 

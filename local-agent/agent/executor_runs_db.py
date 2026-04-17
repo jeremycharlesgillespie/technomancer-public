@@ -326,6 +326,32 @@ def executor_run_summary(run_id: int | str) -> dict[str, Any]:
     }
 
 
+def get_run_by_run_id(run_id: str) -> dict[str, Any] | None:
+    """Look up a single run row by its sortable ``run_id`` string.
+
+    Args:
+        run_id: Artifact-style ID like ``YYYYMMDD-HHMMSS-<jira_key>``.
+
+    Returns:
+        The matching row as a dict, or ``None`` if no row exists. When the
+        index has duplicates (shouldn't happen, but the column isn't UNIQUE)
+        the most recent row wins.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT id, run_id, jira_key, branch, started_at, ended_at,
+                  duration_ms, cost_usd, status, exit_code,
+                  tests_passed, deployed, artifacts_path, pid
+           FROM executor_runs
+           WHERE run_id = ?
+           ORDER BY id DESC
+           LIMIT 1""",
+        (str(run_id),),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def get_recent(limit: int = 20) -> list[dict[str, Any]]:
     """Return the most recent runs, newest first.
 
