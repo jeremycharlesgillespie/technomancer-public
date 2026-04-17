@@ -1,4 +1,12 @@
-"""Tests for news_digest.py - relevance filtering, article selection, memory cross-reference, and retry."""
+"""Tests for news_digest.py - relevance filtering, article selection, memory cross-reference, and retry.
+
+Network policy: a module-level autouse fixture replaces
+``agent.news_digest.aiohttp.ClientSession`` with a guard that raises on
+construction, and ``agent.news_digest.feedparser.parse`` with a guard that
+rejects URL-like inputs. No test in this file opens a real socket; the
+``TestFetchFeedRetry`` tests drive ``fetch_feed`` directly with a
+``MagicMock`` session whose ``get`` is the stand-in for ``requests.get``.
+"""
 
 import asyncio
 import json
@@ -31,6 +39,42 @@ from agent.news_digest import (
 # =============================================================================
 # FIXTURES
 # =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _block_real_http(monkeypatch):
+    """Default guard: any code path that opens ``aiohttp.ClientSession`` or
+    asks ``feedparser.parse`` to fetch a URL raises immediately.
+
+    ``TestFetchFeedRetry`` drives ``fetch_feed`` with a ``MagicMock`` session
+    whose ``get`` returns pre-built async context managers, so no real socket
+    is opened. This guard makes that invariant explicit and durable: if
+    anyone later slips a real ``aiohttp.ClientSession()`` or a URL-arg
+    ``feedparser.parse()`` into the test path, it fails loudly instead of
+    hitting the network.
+    """
+
+    def _blocked_session(*_a, **_kw):
+        raise AssertionError(
+            "Real aiohttp.ClientSession() opened in a test. "
+            "Pass a MagicMock session to fetch_feed instead."
+        )
+
+    monkeypatch.setattr("agent.news_digest.aiohttp.ClientSession", _blocked_session)
+
+    import agent.news_digest as _nd
+
+    real_parse = _nd.feedparser.parse
+
+    def _guarded_parse(source, *args, **kwargs):
+        if isinstance(source, str) and source.lower().startswith(("http://", "https://")):
+            raise AssertionError(
+                f"feedparser.parse() called with URL {source!r} in a test. "
+                "Pass feed text, not a URL."
+            )
+        return real_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(_nd.feedparser, "parse", _guarded_parse)
 
 
 @pytest.fixture
@@ -582,7 +626,15 @@ class TestSentArticlesExtended:
 
 
 class TestFetchFeedRetry:
-    """Tests for fetch_feed retry logic on transient failures."""
+    """Tests for fetch_feed retry logic on transient failures.
+
+    Every test here drives ``fetch_feed`` with a ``MagicMock`` session in
+    place of the real ``aiohttp.ClientSession``. The module-level
+    ``_block_real_http`` fixture also replaces
+    ``agent.news_digest.aiohttp.ClientSession`` with a raising guard, so
+    even an accidental ``aiohttp.ClientSession()`` call from within
+    ``fetch_feed`` would fail loudly instead of opening a socket.
+    """
 
     def _make_mock_response(self, status=200, body=""):
         """Create an async context manager mock for aiohttp response."""
@@ -594,8 +646,16 @@ class TestFetchFeedRetry:
         cm.__aexit__ = AsyncMock(return_value=False)
         return cm
 
+    def test_network_guard_blocks_real_clientsession(self):
+        """Safety net: the autouse guard replaces aiohttp.ClientSession."""
+        import agent.news_digest as nd
+
+        with pytest.raises(AssertionError, match="Real aiohttp.ClientSession"):
+            nd.aiohttp.ClientSession()
+
     def test_success_on_first_attempt(self):
-        """Successful fetch returns articles without retrying."""
+        """Successful fetch returns articles without retrying, and the
+        mocked ``session.get`` (not a real client) is what's invoked."""
         rss_body = """<?xml version="1.0"?>
         <rss version="2.0"><channel>
             <item><title>Test Article</title><link>https://example.com/1</link>
@@ -609,10 +669,18 @@ class TestFetchFeedRetry:
         assert len(result) == 1
         assert result[0]["title"] == "Test Article"
         assert session.get.call_count == 1
+        # The URL was routed to the mock, not a real HTTP client.
+        session.get.assert_called_once()
+        args, _kwargs = session.get.call_args
+        assert args[0] == "https://feed.example.com"
 
     @patch("agent.news_digest.asyncio.sleep", new_callable=AsyncMock)
     def test_retries_on_exception(self, mock_sleep):
-        """Should retry on network errors and succeed on last attempt."""
+        """Should retry on network errors and succeed on last attempt.
+
+        Uses a ``MagicMock`` session (in place of ``requests.get`` /
+        ``aiohttp.ClientSession.get``) so no real socket is opened.
+        """
         rss_body = """<?xml version="1.0"?>
         <rss version="2.0"><channel>
             <item><title>Retry Article</title><link>https://example.com/2</link>
