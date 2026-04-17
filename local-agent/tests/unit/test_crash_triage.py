@@ -17,6 +17,8 @@ from agent.crash_triage import (
     DEDUPE_DAYS,
     JIRA_TIMEOUT_SECONDS,
     MAX_DESCRIPTION_BYTES,
+    SIGNATURE_DEDUP_HOURS,
+    _signature_crash,
     _truncate_bytes,
 )
 
@@ -83,14 +85,25 @@ Traceback (most recent call last):
 
 
 @pytest.fixture
-def watcher(tmp_path):
+def watcher(tmp_path, monkeypatch):
+    # Isolate executor_runs_db so the new crash_signatures table writes
+    # don't touch the production data/executor_runs.db.
+    from agent import executor_runs_db as erd
+    monkeypatch.setattr(erd, "DB_DIR", tmp_path)
+    monkeypatch.setattr(erd, "DB_PATH", tmp_path / "executor_runs.db")
+    erd._local.__dict__.pop("conn", None)
+
     crash_log = tmp_path / "crash_log.md"
     state_dir = tmp_path / "state"
-    return CrashWatcher(
+    yield CrashWatcher(
         crash_log_path=crash_log,
         state_dir=state_dir,
         jira_endpoint="http://localhost:8322/api/jira/create",
     )
+    conn = getattr(erd._local, "conn", None)
+    if conn:
+        conn.close()
+        erd._local.conn = None
 
 
 @pytest.fixture
@@ -360,7 +373,10 @@ class TestSeenTable:
         watcher.check_once()
         assert mock_post.call_count == 1
 
-        # Backdate the stored first_seen beyond the 7-day window.
+        # Backdate both dedup layers: the legacy crash_triage_seen (7-day
+        # MD5 window) AND the newer crash_signatures (24-hour SHA1 window)
+        # in the executor_runs DB. A stale row in either alone would be
+        # suppressed by the other, so both must age out.
         old = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
         conn = sqlite3.connect(str(watcher.db_path))
         try:
@@ -371,6 +387,18 @@ class TestSeenTable:
             conn.commit()
         finally:
             conn.close()
+
+        from agent import executor_runs_db as erd
+        sig_conn = sqlite3.connect(str(erd.DB_PATH))
+        try:
+            sig_conn.execute(
+                "UPDATE crash_signatures SET last_seen = ?",
+                (old,),
+            )
+            sig_conn.commit()
+        finally:
+            sig_conn.close()
+        erd._local.__dict__.pop("conn", None)
 
         # Same crash appended again — stale row, should re-post.
         watcher.crash_log_path.write_text(crash + crash, encoding="utf-8")
@@ -483,6 +511,147 @@ class TestCreateJiraForCrash:
 # ---------------------------------------------------------------------------
 # _truncate_bytes helper
 # ---------------------------------------------------------------------------
+
+
+class TestSignatureDedup:
+    """24-hour signature dedup against crash_signatures in executor_runs DB."""
+
+    def test_signature_is_sha1_of_exc_type_and_top_frames(self, watcher):
+        """Signature is sha1 over exception_type + top-3 file:function tuples
+        (basename only, line numbers excluded)."""
+        import hashlib
+
+        crash = watcher._parse_crashes(_make_crash_multi_frame())[0]
+        sig = _signature_crash(crash)
+
+        expected = hashlib.sha1(
+            "ValueError|a.py:outer|b.py:middle|c.py:inner".encode("utf-8")
+        ).hexdigest()
+        assert sig == expected
+
+    def test_second_call_within_24h_suppresses_post(self, watcher, mock_post):
+        """Same synthetic traceback twice within 24h → Jira POST exactly once."""
+        crash = _make_crash()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+        assert mock_post.call_count == 1
+
+        # Reset position so parsing runs again, and wipe the legacy MD5 dedup
+        # so the signature layer is the sole gatekeeper for the second call.
+        watcher.state_path.write_text('{"position": 0}', encoding="utf-8")
+        db_conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            db_conn.execute("DELETE FROM crash_triage_seen")
+            db_conn.commit()
+        finally:
+            db_conn.close()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+
+        assert mock_post.call_count == 1
+
+    def test_stale_signature_after_25h_reposts(self, watcher, mock_post):
+        """After backdating last_seen to 25h ago, a second POST fires."""
+        crash = _make_crash()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+        assert mock_post.call_count == 1
+
+        # Backdate the crash_signatures.last_seen past the 24h window.
+        from agent import executor_runs_db as erd
+
+        stale = (datetime.now() - timedelta(hours=25)).isoformat()
+        conn = sqlite3.connect(str(erd.DB_PATH))
+        try:
+            conn.execute(
+                "UPDATE crash_signatures SET last_seen = ?", (stale,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        erd._local.__dict__.pop("conn", None)
+
+        # Clear the legacy 7-day dedup too so the signature layer is what
+        # controls whether the second POST fires.
+        old = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
+        db_conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            db_conn.execute(
+                "UPDATE crash_triage_seen SET first_seen = ?", (old,)
+            )
+            db_conn.commit()
+        finally:
+            db_conn.close()
+
+        watcher.state_path.write_text('{"position": 0}', encoding="utf-8")
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+
+        assert mock_post.call_count == 2
+
+    def test_dedup_hit_bumps_count_and_last_seen(self, watcher, mock_post):
+        """A dedup-suppressed call must still increment count + last_seen."""
+        from agent import executor_runs_db as erd
+
+        crash = _make_crash()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+
+        # Reset position + clear legacy MD5 dedup so the signature layer
+        # is what suppresses the second POST.
+        watcher.state_path.write_text('{"position": 0}', encoding="utf-8")
+        md5_conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            md5_conn.execute("DELETE FROM crash_triage_seen")
+            md5_conn.commit()
+        finally:
+            md5_conn.close()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+
+        conn = sqlite3.connect(str(erd.DB_PATH))
+        try:
+            row = conn.execute(
+                "SELECT count, jira_key FROM crash_signatures"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row[0] == 2
+        # jira_key preserved on dedup hit (not overwritten).
+        assert row[1] == "TK-999"
+
+    def test_empty_signature_skips_check(self, watcher):
+        """Crashes without exception_type produce empty signature → no dedup."""
+        assert _signature_crash({}) == ""
+
+    def test_dedup_hit_logs_sig_and_count(self, watcher, mock_post, caplog):
+        """Dedup-suppressed call logs `crash_triage: dedup hit sig=... count=N jira=...`."""
+        import logging as _logging
+
+        crash = _make_crash()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+
+        watcher.state_path.write_text('{"position": 0}', encoding="utf-8")
+        md5_conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            md5_conn.execute("DELETE FROM crash_triage_seen")
+            md5_conn.commit()
+        finally:
+            md5_conn.close()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        with caplog.at_level(_logging.INFO, logger="agent.crash_triage"):
+            watcher.check_once()
+
+        assert any(
+            "crash_triage: dedup hit sig=" in rec.message
+            and "count=2" in rec.message
+            and "jira=TK-999" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_constant_is_24_hours(self):
+        assert SIGNATURE_DEDUP_HOURS == 24
 
 
 class TestTruncateBytes:

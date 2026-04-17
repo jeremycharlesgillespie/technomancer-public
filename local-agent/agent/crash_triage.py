@@ -31,6 +31,8 @@ from typing import Any
 
 import requests
 
+from . import executor_runs_db
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,7 @@ DEDUPE_DAYS = 7
 MAX_DESCRIPTION_BYTES = 4096
 JIRA_TIMEOUT_SECONDS = 5
 TOP_FRAMES_FOR_HASH = 3
+SIGNATURE_DEDUP_HOURS = 24
 
 _FRAME_RE = re.compile(r'File "([^"]+)", line \d+, in (\S+)')
 _TRUNCATED_SUFFIX = "\n... (truncated)"
@@ -144,9 +147,25 @@ class CrashWatcher:
             h = self._hash_crash(crash)
             if not h or self._seen_recently(h):
                 continue
+
+            # Signature-based 24h dedup: a recurring UnboundLocalError with the
+            # same top-3 frames should file one story per day, not one per crash.
+            sig = _signature_crash(crash)
+            if sig and _signature_within_window(sig):
+                row = executor_runs_db.upsert_crash_signature(sig, jira_key=None)
+                logger.info(
+                    "crash_triage: dedup hit sig=%s count=%s jira=%s",
+                    sig,
+                    row.get("count"),
+                    row.get("jira_key") or "-",
+                )
+                continue
+
             jira_key = self._create_jira_for_crash(crash)
             if jira_key is None:
                 continue
+            if sig:
+                executor_runs_db.upsert_crash_signature(sig, jira_key=jira_key)
             self._mark_seen(h, jira_key)
             filed += 1
 
@@ -314,6 +333,44 @@ class CrashWatcher:
 
     def _save_state(self, state: dict[str, Any]) -> None:
         _write_json(self.state_path, state)
+
+
+def _signature_crash(crash: dict[str, Any]) -> str:
+    """SHA1 signature of ``exception_type`` + top-3 frame ``basename:function`` tuples.
+
+    Line numbers are intentionally excluded so a crash that recurs after a
+    nearby code edit (which shifts line numbers without changing the
+    callstack) still maps to the same signature. Returns an empty string
+    when ``exception_type`` is missing.
+    """
+    exc_type = crash.get("exception_type", "")
+    if not exc_type:
+        return ""
+    frames: list[tuple[str, str]] = list(crash.get("frames", []))
+    top = frames[-TOP_FRAMES_FOR_HASH:]
+    parts: list[str] = [exc_type]
+    for fname, func in top:
+        parts.append(f"{Path(fname).name}:{func}")
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _signature_within_window(
+    signature: str, hours: int = SIGNATURE_DEDUP_HOURS
+) -> bool:
+    """True if ``signature`` has a ``last_seen`` within the last ``hours``."""
+    if not signature:
+        return False
+    row = executor_runs_db.get_crash_signature(signature)
+    if row is None:
+        return False
+    last_seen = row.get("last_seen")
+    if not last_seen:
+        return False
+    try:
+        last_dt = datetime.fromisoformat(str(last_seen))
+    except ValueError:
+        return False
+    return (datetime.now() - last_dt) < timedelta(hours=hours)
 
 
 def _extract_traceback_block(part: str) -> list[str]:

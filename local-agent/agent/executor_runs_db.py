@@ -161,7 +161,93 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_executor_tool_calls_run_id
         ON executor_tool_calls (run_id, started_at)
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS crash_signatures (
+            signature   TEXT PRIMARY KEY,
+            first_seen  TEXT NOT NULL,
+            last_seen   TEXT NOT NULL,
+            jira_key    TEXT,
+            count       INTEGER NOT NULL DEFAULT 1
+        )
+    """)
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Crash signature dedup — used by agent.crash_triage to suppress repeat
+# Jira stories for identical stack signatures within a time window.
+# ---------------------------------------------------------------------------
+
+
+def get_crash_signature(signature: str) -> dict[str, Any] | None:
+    """Fetch the ``crash_signatures`` row for ``signature``, or ``None``."""
+    if not signature:
+        return None
+    init_db()
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT signature, first_seen, last_seen, jira_key, count "
+        "FROM crash_signatures WHERE signature = ?",
+        (signature,),
+    ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def upsert_crash_signature(
+    signature: str,
+    jira_key: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Insert a new crash_signatures row or bump an existing one.
+
+    On insert, ``first_seen`` and ``last_seen`` are both set to ``now`` and
+    ``count`` starts at 1. On update, ``last_seen`` is set to ``now`` and
+    ``count`` is incremented by one; ``jira_key`` is only overwritten when
+    the caller passes a non-None value, so dedup-hit bumps (which don't
+    create a new Jira story) preserve the original ``jira_key``.
+
+    Returns the resulting row as a dict.
+    """
+    if not signature:
+        raise ValueError("signature must be non-empty")
+    init_db()
+    conn = _get_conn()
+    now_iso = (now or datetime.now()).isoformat()
+
+    existing = conn.execute(
+        "SELECT jira_key, count FROM crash_signatures WHERE signature = ?",
+        (signature,),
+    ).fetchone()
+
+    if existing is None:
+        conn.execute(
+            "INSERT INTO crash_signatures "
+            "(signature, first_seen, last_seen, jira_key, count) "
+            "VALUES (?, ?, ?, ?, 1)",
+            (signature, now_iso, now_iso, jira_key),
+        )
+    elif jira_key is not None:
+        conn.execute(
+            "UPDATE crash_signatures "
+            "SET last_seen = ?, count = count + 1, jira_key = ? "
+            "WHERE signature = ?",
+            (now_iso, jira_key, signature),
+        )
+    else:
+        conn.execute(
+            "UPDATE crash_signatures "
+            "SET last_seen = ?, count = count + 1 "
+            "WHERE signature = ?",
+            (now_iso, signature),
+        )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT signature, first_seen, last_seen, jira_key, count "
+        "FROM crash_signatures WHERE signature = ?",
+        (signature,),
+    ).fetchone()
+    return dict(row) if row is not None else {}
 
 
 def _coerce(key: str, value: Any) -> Any:
