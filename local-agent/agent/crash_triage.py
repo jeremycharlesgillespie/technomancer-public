@@ -2,18 +2,19 @@
 Crash Triage — Auto-file Jira stories when new crashes land in crash_log.md.
 
 A ``CrashWatcher`` thread polls ``Permanent/crash_log.md`` every 60 seconds,
-parses each crash report, and POSTs unique crashes to the Jira-creation
-endpoint (``/api/jira/create`` on the local idea-board hub).
+parses each crash report, fingerprints it, and POSTs unique crashes to the
+Jira-creation endpoint (``/api/jira/create`` on the local idea-board hub).
 
-Dedup is two-layered:
+Dedup is backed by SQLite at ``crash_triage_seen.db`` (``crash_triage_seen``
+table: ``hash TEXT PRIMARY KEY, first_seen TIMESTAMP, jira_key TEXT``) with a
+7-day TTL.  ``_hash_crash`` hashes the exception type plus the deepest three
+stack frames (basename + function), so a retry of the same crash is silently
+dropped but a genuinely new callstack for the same exception does produce a
+story.
 
-1. **Byte position** — ``crash_watcher_state.json`` stores the offset already
-   scanned so a second poll skips content seen before. If the file shrinks
-   (``write_crash_log`` overwrites instead of appending), the offset resets
-   to 0 and the fingerprint cache catches anything already reported.
-2. **Fingerprint cache** — ``crash_fingerprints.json`` keeps an MD5 over
-   ``basename(filename) | function | exception_type`` for every crash filed
-   in the last 30 days. This is the real dedup guarantee.
+The Jira POST is best-effort: it has a 5-second timeout and every failure
+path (network error, non-2xx response, unparsable body) returns ``None`` so
+a temporarily unreachable hub never raises.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,10 +36,32 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_JIRA_ENDPOINT = "http://localhost:8322/api/jira/create"
 DEFAULT_POLL_INTERVAL = 60
-DEDUPE_DAYS = 30
-TRACEBACK_TAIL_LINES = 30
+DEDUPE_DAYS = 7
+MAX_DESCRIPTION_BYTES = 4096
+JIRA_TIMEOUT_SECONDS = 5
+TOP_FRAMES_FOR_HASH = 3
 
 _FRAME_RE = re.compile(r'File "([^"]+)", line \d+, in (\S+)')
+_TRUNCATED_SUFFIX = "\n... (truncated)"
+
+
+def _init_seen_db(db_path: Path) -> None:
+    """Create the crash_triage_seen table if absent. Idempotent."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS crash_triage_seen (
+                hash TEXT PRIMARY KEY,
+                first_seen TIMESTAMP NOT NULL,
+                jira_key TEXT
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class CrashWatcher:
@@ -49,12 +73,16 @@ class CrashWatcher:
         state_dir: str | Path,
         jira_endpoint: str = DEFAULT_JIRA_ENDPOINT,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        db_path: str | Path | None = None,
     ) -> None:
         self.crash_log_path = Path(crash_log_path)
         state_root = Path(state_dir)
         state_root.mkdir(parents=True, exist_ok=True)
         self.state_path = state_root / "crash_watcher_state.json"
-        self.fingerprints_path = state_root / "crash_fingerprints.json"
+        self.db_path = (
+            Path(db_path) if db_path else state_root / "crash_triage_seen.db"
+        )
+        _init_seen_db(self.db_path)
         self.jira_endpoint = jira_endpoint
         self.poll_interval = poll_interval
         self._thread: threading.Thread | None = None
@@ -108,40 +136,39 @@ class CrashWatcher:
         if file_size < last_position:
             last_position = 0
 
-        new_bytes = encoded[last_position:]
-        new_content = new_bytes.decode("utf-8", errors="replace")
-
+        new_content = encoded[last_position:].decode("utf-8", errors="replace")
         crashes = self._parse_crashes(new_content)
-        fingerprints = self._prune_fingerprints(self._load_fingerprints())
 
         filed = 0
-        now_iso = datetime.now().isoformat()
         for crash in crashes:
-            fp = self._compute_fingerprint(crash)
-            if not fp or fp in fingerprints:
+            h = self._hash_crash(crash)
+            if not h or self._seen_recently(h):
                 continue
-            if self._post_to_jira(crash):
-                fingerprints[fp] = now_iso
-                filed += 1
+            jira_key = self._create_jira_for_crash(crash)
+            if jira_key is None:
+                continue
+            self._mark_seen(h, jira_key)
+            filed += 1
 
-        self._save_fingerprints(fingerprints)
-        self._save_state({"position": file_size, "updated_at": now_iso})
+        self._save_state(
+            {"position": file_size, "updated_at": datetime.now().isoformat()}
+        )
         return filed
 
     # ------------------------------------------------------------------ parsing
-    def _parse_crashes(self, text: str) -> list[dict[str, str]]:
+    def _parse_crashes(self, text: str) -> list[dict[str, Any]]:
         """Split text by '# Bot Crash Report' and extract fields from each."""
         if not text or "# Bot Crash Report" not in text:
             return []
 
         parts = text.split("# Bot Crash Report")
-        crashes: list[dict[str, str]] = []
+        crashes: list[dict[str, Any]] = []
         for part in parts:
             part = part.strip()
             if not part:
                 continue
 
-            crash: dict[str, str] = {}
+            crash: dict[str, Any] = {}
             for line in part.splitlines():
                 if line.startswith("**Exception Type:**"):
                     crash["exception_type"] = line.replace(
@@ -157,68 +184,129 @@ class CrashWatcher:
             trace_lines = _extract_traceback_block(part)
             crash["traceback"] = "\n".join(trace_lines)
 
-            deepest = None
+            frames: list[tuple[str, str]] = []
             for line in trace_lines:
                 m = _FRAME_RE.search(line)
                 if m:
-                    deepest = (m.group(1), m.group(2))
-            if deepest is not None:
-                crash["top_filename"] = deepest[0]
-                crash["top_function"] = deepest[1]
+                    frames.append((m.group(1), m.group(2)))
+            crash["frames"] = frames
+
+            crash["locals_block"] = _extract_locals_block(part)
 
             if not crash.get("exception_type"):
                 continue
             crashes.append(crash)
         return crashes
 
-    def _compute_fingerprint(self, crash: dict[str, str]) -> str:
+    def _hash_crash(self, crash: dict[str, Any]) -> str:
+        """Hash (exception_type, basename+function of top 3 frames)."""
         exc_type = crash.get("exception_type", "")
         if not exc_type:
             return ""
-        filename = crash.get("top_filename", "")
-        func = crash.get("top_function", "")
-        basename = Path(filename).name if filename else ""
-        key = f"{basename}|{func}|{exc_type}"
-        return hashlib.md5(key.encode("utf-8")).hexdigest()
+        frames: list[tuple[str, str]] = list(crash.get("frames", []))
+        top = frames[-TOP_FRAMES_FOR_HASH:]
+        parts: list[str] = [exc_type]
+        for fname, func in top:
+            parts.append(f"{Path(fname).name}:{func}")
+        return hashlib.md5("|".join(parts).encode("utf-8")).hexdigest()
+
+    # ------------------------------------------------------------------ dedup
+    def _seen_recently(self, h: str, days: int = DEDUPE_DAYS) -> bool:
+        """Return True if this hash was recorded within the last ``days``."""
+        if not h:
+            return False
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        conn = sqlite3.connect(str(self.db_path), timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM crash_triage_seen "
+                "WHERE hash = ? AND first_seen > ?",
+                (h, cutoff),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def _mark_seen(self, h: str, jira_key: str | None) -> None:
+        if not h:
+            return
+        conn = sqlite3.connect(str(self.db_path), timeout=5)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO crash_triage_seen "
+                "(hash, first_seen, jira_key) VALUES (?, ?, ?)",
+                (h, datetime.now().isoformat(), jira_key),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     # ------------------------------------------------------------------ Jira
-    def _build_story_payload(self, crash: dict[str, str]) -> dict[str, Any]:
+    def _build_story_payload(self, crash: dict[str, Any]) -> dict[str, Any]:
         exc_type = crash.get("exception_type", "UnknownError")
-        filename = crash.get("top_filename", "")
-        func = crash.get("top_function", "unknown")
+        frames: list[tuple[str, str]] = list(crash.get("frames", []))
+        if frames:
+            filename, func = frames[-1]
+        else:
+            filename, func = "", "unknown"
         module = Path(filename).stem if filename else "unknown"
         title = f"Crash: {exc_type} in {module}.{func}"
 
-        tb_lines = crash.get("traceback", "").splitlines()
-        tail = tb_lines[-TRACEBACK_TAIL_LINES:]
         exc_msg = crash.get("exception_message", "")
-        description = (
+        tb = crash.get("traceback", "")
+        locals_block = crash.get("locals_block", "")
+
+        desc = (
             f"**Exception:** {exc_type}: {exc_msg}\n\n"
-            f"**Traceback (last {TRACEBACK_TAIL_LINES} lines):**\n\n"
-            "```\n" + "\n".join(tail) + "\n```\n"
+            f"**Traceback:**\n\n```\n{tb}\n```\n"
         )
+        if locals_block:
+            desc += f"\n**Local Variables:**\n\n```\n{locals_block}\n```\n"
+
+        desc = _truncate_bytes(desc, MAX_DESCRIPTION_BYTES)
+
         return {
             "title": title,
-            "description": description,
+            "description": desc,
             "category": "quality",
-            "source": "crash",
+            "source": "crash_triage",
             "idea_type": "story",
         }
 
-    def _post_to_jira(self, crash: dict[str, str]) -> bool:
+    def _create_jira_for_crash(self, crash: dict[str, Any]) -> str | None:
+        """POST the crash to Jira. Returns the Jira key on success, ``None``
+        on any failure (network error, non-2xx status, unparsable body).
+
+        The 5-second timeout and blanket exception swallowing are intentional:
+        the idea-board hub may be temporarily unreachable, and a crash
+        watcher that raises during its poll would hide the original crash it
+        was trying to file.
+        """
         payload = self._build_story_payload(crash)
         try:
-            resp = requests.post(self.jira_endpoint, json=payload, timeout=10)
-        except requests.RequestException as exc:
-            logger.warning("Jira POST failed: %s", exc)
-            return False
-        if resp.status_code in (200, 201):
-            logger.info("Filed crash story: %s", payload["title"])
-            return True
-        logger.warning(
-            "Jira POST returned %s for %s", resp.status_code, payload["title"]
-        )
-        return False
+            resp = requests.post(
+                self.jira_endpoint,
+                json=payload,
+                timeout=JIRA_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("crash_triage: Jira POST errored: %s", exc)
+            return None
+
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "crash_triage: Jira POST returned %s for %s",
+                resp.status_code,
+                payload["title"],
+            )
+            return None
+
+        try:
+            body = resp.json() or {}
+        except Exception:
+            return None
+        key = body.get("key")
+        return str(key) if key else None
 
     # ------------------------------------------------------------------ persistence
     def _load_state(self) -> dict[str, Any]:
@@ -226,24 +314,6 @@ class CrashWatcher:
 
     def _save_state(self, state: dict[str, Any]) -> None:
         _write_json(self.state_path, state)
-
-    def _load_fingerprints(self) -> dict[str, str]:
-        data = _read_json(self.fingerprints_path)
-        return {k: str(v) for k, v in data.items()} if data else {}
-
-    def _save_fingerprints(self, fp: dict[str, str]) -> None:
-        _write_json(self.fingerprints_path, fp)
-
-    def _prune_fingerprints(self, fp: dict[str, str]) -> dict[str, str]:
-        cutoff = datetime.now() - timedelta(days=DEDUPE_DAYS)
-        result: dict[str, str] = {}
-        for key, ts in fp.items():
-            try:
-                if datetime.fromisoformat(ts) > cutoff:
-                    result[key] = ts
-            except (TypeError, ValueError):
-                continue
-        return result
 
 
 def _extract_traceback_block(part: str) -> list[str]:
@@ -266,6 +336,36 @@ def _extract_traceback_block(part: str) -> list[str]:
         if in_code:
             out.append(line)
     return out
+
+
+def _extract_locals_block(part: str) -> str:
+    """Return the text of the '## Local Variables by Frame' section, if any.
+
+    The section runs from its heading to the end of the crash report (i.e.
+    the end of the buffer, since ``_parse_crashes`` already split on
+    '# Bot Crash Report').
+    """
+    marker = "## Local Variables by Frame"
+    idx = part.find(marker)
+    if idx == -1:
+        return ""
+    return part[idx + len(marker):].strip()
+
+
+def _truncate_bytes(text: str, limit: int) -> str:
+    """Truncate ``text`` so its UTF-8 length is at most ``limit`` bytes.
+
+    Appends ``_TRUNCATED_SUFFIX`` when truncation occurs. The suffix itself
+    is counted against the byte budget so the total length stays within
+    ``limit``.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    suffix_bytes = _TRUNCATED_SUFFIX.encode("utf-8")
+    budget = max(0, limit - len(suffix_bytes))
+    head = encoded[:budget].decode("utf-8", errors="ignore")
+    return head + _TRUNCATED_SUFFIX
 
 
 def _read_json(path: Path) -> dict[str, Any]:

@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.crash_triage import CrashWatcher, DEDUPE_DAYS
+import requests as _requests_lib
+
+from agent.crash_triage import (
+    CrashWatcher,
+    DEDUPE_DAYS,
+    JIRA_TIMEOUT_SECONDS,
+    MAX_DESCRIPTION_BYTES,
+    _truncate_bytes,
+)
 
 
 CRASH_TEMPLATE = """# Bot Crash Report
@@ -51,6 +60,28 @@ def _make_crash(
     )
 
 
+def _make_crash_multi_frame(exc_type: str = "ValueError") -> str:
+    """Crash report with three stack frames for top-3-frame hash testing."""
+    return f"""# Bot Crash Report
+
+**Timestamp:** 2026-04-16 10:00:00
+**Exception Type:** {exc_type}
+**Exception Message:** oops
+
+## Full Stack Trace
+```python
+Traceback (most recent call last):
+  File "a.py", line 1, in outer
+    middle()
+  File "b.py", line 2, in middle
+    inner()
+  File "c.py", line 3, in inner
+    boom()
+{exc_type}: oops
+```
+"""
+
+
 @pytest.fixture
 def watcher(tmp_path):
     crash_log = tmp_path / "crash_log.md"
@@ -67,13 +98,17 @@ def mock_post():
     with patch("agent.crash_triage.requests.post") as mock:
         resp = MagicMock()
         resp.status_code = 201
+        resp.json.return_value = {"key": "TK-999"}
         mock.return_value = resp
         yield mock
 
 
-class TestCheckOnceAppend:
-    """Acceptance: one POST per unique fingerprint, zero on duplicate append."""
+# ---------------------------------------------------------------------------
+# check_once — dedup + POST behavior
+# ---------------------------------------------------------------------------
 
+
+class TestCheckOnce:
     def test_single_new_crash_posts_once(self, watcher, mock_post):
         watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
 
@@ -88,7 +123,7 @@ class TestCheckOnceAppend:
         watcher.check_once()
         assert mock_post.call_count == 1
 
-        # Append the same crash again — fingerprint matches, so no new POST.
+        # Append the same crash again — hash matches, SQLite dedup blocks it.
         watcher.crash_log_path.write_text(crash + crash, encoding="utf-8")
         filed = watcher.check_once()
 
@@ -100,7 +135,7 @@ class TestCheckOnceAppend:
         watcher.check_once()
         assert mock_post.call_count == 1
 
-        # Append a different exception type — new fingerprint.
+        # Different exception type → new hash.
         second = _make_crash(exc_type="KeyError", exc_msg="'missing'")
         watcher.crash_log_path.write_text(
             _make_crash() + "\n" + second, encoding="utf-8"
@@ -109,6 +144,16 @@ class TestCheckOnceAppend:
 
         assert filed == 1
         assert mock_post.call_count == 2
+
+    def test_missing_log_returns_zero(self, watcher, mock_post):
+        assert not watcher.crash_log_path.exists()
+        assert watcher.check_once() == 0
+        assert mock_post.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Payload fields
+# ---------------------------------------------------------------------------
 
 
 class TestPayload:
@@ -132,13 +177,21 @@ class TestPayload:
 
         payload = mock_post.call_args.kwargs["json"]
         assert payload["category"] == "quality"
-        assert payload["source"] == "crash"
+        assert payload["source"] == "crash_triage"
         assert payload["idea_type"] == "story"
-        assert "Traceback" in payload["description"] or "traceback" in payload["description"].lower()
+        assert "Traceback" in payload["description"]
 
-    def test_description_truncates_to_tail(self, watcher, mock_post):
-        # Craft a traceback with >30 lines between the ```python fences.
-        filler = "\n".join(f"  frame_line_{i}" for i in range(40))
+    def test_description_includes_local_variables(self, watcher, mock_post):
+        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
+        watcher.check_once()
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert "Local Variables" in payload["description"]
+        assert "x = 1" in payload["description"]
+
+    def test_description_truncates_to_4kb(self, watcher, mock_post):
+        # Build a traceback whose combined description exceeds 4 KB.
+        filler = "\n".join(f"  frame_line_{i}" for i in range(500))
         tb = (
             "```python\n"
             "Traceback (most recent call last):\n"
@@ -158,9 +211,13 @@ class TestPayload:
         watcher.check_once()
 
         payload = mock_post.call_args.kwargs["json"]
-        # frame_line_0 is far enough from the end to be dropped.
-        assert "frame_line_0" not in payload["description"]
-        assert "frame_line_39" in payload["description"]
+        assert len(payload["description"].encode("utf-8")) <= MAX_DESCRIPTION_BYTES
+        assert "truncated" in payload["description"]
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
 
 
 class TestParseCrashes:
@@ -174,29 +231,156 @@ class TestParseCrashes:
         crashes = watcher._parse_crashes(_make_crash(exc_type="TypeError"))
         assert len(crashes) == 1
         assert crashes[0]["exception_type"] == "TypeError"
-        assert crashes[0]["top_function"] == "on_message"
+        # Single-frame crash → frames list has one (filename, function) tuple
+        # where function is "on_message".  The filename's exact form varies
+        # with the template's backslash-escaping; we only assert the function.
+        frames = crashes[0]["frames"]
+        assert len(frames) == 1
+        assert frames[0][1] == "on_message"
+
+    def test_parses_multi_frame(self, watcher):
+        crashes = watcher._parse_crashes(_make_crash_multi_frame())
+        assert len(crashes) == 1
+        frames = crashes[0]["frames"]
+        assert frames == [("a.py", "outer"), ("b.py", "middle"), ("c.py", "inner")]
 
 
-class TestFingerprint:
-    def test_same_frames_same_fingerprint(self, watcher):
+# ---------------------------------------------------------------------------
+# Hashing — exception_type + top 3 frames
+# ---------------------------------------------------------------------------
+
+
+class TestHashCrash:
+    def test_same_frames_same_hash(self, watcher):
         crash1 = watcher._parse_crashes(_make_crash())[0]
         crash2 = watcher._parse_crashes(
             _make_crash(exc_msg="different message but same type")
         )[0]
-        assert watcher._compute_fingerprint(crash1) == watcher._compute_fingerprint(crash2)
+        assert watcher._hash_crash(crash1) == watcher._hash_crash(crash2)
 
-    def test_different_exception_type_different_fingerprint(self, watcher):
+    def test_different_exception_type_different_hash(self, watcher):
         crash1 = watcher._parse_crashes(_make_crash(exc_type="ValueError"))[0]
         crash2 = watcher._parse_crashes(_make_crash(exc_type="KeyError"))[0]
-        assert watcher._compute_fingerprint(crash1) != watcher._compute_fingerprint(crash2)
+        assert watcher._hash_crash(crash1) != watcher._hash_crash(crash2)
 
-    def test_different_function_different_fingerprint(self, watcher):
+    def test_different_function_different_hash(self, watcher):
         crash1 = watcher._parse_crashes(_make_crash(func="on_message"))[0]
         crash2 = watcher._parse_crashes(_make_crash(func="on_ready"))[0]
-        assert watcher._compute_fingerprint(crash1) != watcher._compute_fingerprint(crash2)
+        assert watcher._hash_crash(crash1) != watcher._hash_crash(crash2)
 
-    def test_missing_exception_type_empty_fingerprint(self, watcher):
-        assert watcher._compute_fingerprint({}) == ""
+    def test_missing_exception_type_empty_hash(self, watcher):
+        assert watcher._hash_crash({}) == ""
+
+    def test_hash_uses_top_3_frames(self, watcher):
+        """Frames beyond the deepest 3 must not affect the hash."""
+        deep = """# Bot Crash Report
+
+**Timestamp:** 2026-04-16 10:00:00
+**Exception Type:** ValueError
+**Exception Message:** oops
+
+## Full Stack Trace
+```python
+Traceback (most recent call last):
+  File "unrelated.py", line 1, in z1
+    a()
+  File "different.py", line 2, in z2
+    b()
+  File "a.py", line 1, in outer
+    middle()
+  File "b.py", line 2, in middle
+    inner()
+  File "c.py", line 3, in inner
+    boom()
+ValueError: oops
+```
+"""
+        crash_deep = watcher._parse_crashes(deep)[0]
+        crash_top3 = watcher._parse_crashes(_make_crash_multi_frame())[0]
+        # Both have the same deepest 3 frames (outer/middle/inner).
+        assert watcher._hash_crash(crash_deep) == watcher._hash_crash(crash_top3)
+
+
+# ---------------------------------------------------------------------------
+# SQLite dedup table
+# ---------------------------------------------------------------------------
+
+
+class TestSeenTable:
+    def test_table_created_on_init(self, watcher):
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(crash_triage_seen)"
+            )}
+        finally:
+            conn.close()
+        assert cols == {"hash", "first_seen", "jira_key"}
+
+    def test_successful_post_persists_row(self, watcher, mock_post):
+        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
+        watcher.check_once()
+
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            rows = conn.execute(
+                "SELECT hash, jira_key FROM crash_triage_seen"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert len(rows) == 1
+        assert rows[0][1] == "TK-999"
+
+    def test_seen_recently_within_window(self, watcher):
+        watcher._mark_seen("abc", "TK-1")
+        assert watcher._seen_recently("abc") is True
+
+    def test_seen_recently_outside_window(self, watcher):
+        # Insert with a first_seen past the 7-day window.
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            old = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
+            conn.execute(
+                "INSERT OR REPLACE INTO crash_triage_seen "
+                "(hash, first_seen, jira_key) VALUES (?, ?, ?)",
+                ("stale", old, "TK-OLD"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert watcher._seen_recently("stale") is False
+
+    def test_seen_recently_empty_hash_returns_false(self, watcher):
+        assert watcher._seen_recently("") is False
+
+    def test_expired_hash_allows_repost(self, watcher, mock_post):
+        crash = _make_crash()
+        watcher.crash_log_path.write_text(crash, encoding="utf-8")
+        watcher.check_once()
+        assert mock_post.call_count == 1
+
+        # Backdate the stored first_seen beyond the 7-day window.
+        old = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            conn.execute(
+                "UPDATE crash_triage_seen SET first_seen = ?",
+                (old,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Same crash appended again — stale row, should re-post.
+        watcher.crash_log_path.write_text(crash + crash, encoding="utf-8")
+        watcher.check_once()
+        assert mock_post.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# State file (byte-position tracking)
+# ---------------------------------------------------------------------------
 
 
 class TestStatePersistence:
@@ -209,63 +393,30 @@ class TestStatePersistence:
         assert state["position"] == size
 
     def test_position_resets_when_file_truncated(self, watcher, mock_post):
-        # Start with two different crashes so position advances past the first.
-        big = _make_crash(exc_type="ValueError") + "\n" + _make_crash(exc_type="KeyError")
+        big = _make_crash(exc_type="ValueError") + "\n" + _make_crash(
+            exc_type="KeyError"
+        )
         watcher.crash_log_path.write_text(big, encoding="utf-8")
         watcher.check_once()
         assert mock_post.call_count == 2
 
-        # File gets overwritten with a smaller, BRAND-NEW crash.
+        # File shrinks to a brand-new crash → byte offset resets, new hash posts.
         watcher.crash_log_path.write_text(
             _make_crash(exc_type="RuntimeError"), encoding="utf-8"
         )
         filed = watcher.check_once()
 
-        # Offset reset to 0, but the RuntimeError fingerprint is new — one POST.
         assert filed == 1
         assert mock_post.call_count == 3
 
-    def test_fingerprint_file_persists(self, watcher, mock_post):
-        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
-        watcher.check_once()
 
-        data = json.loads(watcher.fingerprints_path.read_text(encoding="utf-8"))
-        assert len(data) == 1
+# ---------------------------------------------------------------------------
+# _create_jira_for_crash — network failure modes must be silent
+# ---------------------------------------------------------------------------
 
 
-class TestDedupExpiry:
-    def test_prune_removes_old_fingerprints(self, watcher):
-        old = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
-        fresh = datetime.now().isoformat()
-        pruned = watcher._prune_fingerprints({"old_fp": old, "fresh_fp": fresh})
-        assert "old_fp" not in pruned
-        assert "fresh_fp" in pruned
-
-    def test_expired_fingerprint_allows_repost(self, watcher, mock_post):
-        crash = _make_crash()
-        watcher.crash_log_path.write_text(crash, encoding="utf-8")
-        watcher.check_once()
-        assert mock_post.call_count == 1
-
-        # Backdate the saved fingerprint past the dedup window.
-        data = json.loads(watcher.fingerprints_path.read_text(encoding="utf-8"))
-        key = next(iter(data))
-        data[key] = (datetime.now() - timedelta(days=DEDUPE_DAYS + 1)).isoformat()
-        watcher.fingerprints_path.write_text(json.dumps(data), encoding="utf-8")
-
-        # Same crash appended again — stale fingerprint was pruned, so it posts.
-        watcher.crash_log_path.write_text(crash + crash, encoding="utf-8")
-        watcher.check_once()
-        assert mock_post.call_count == 2
-
-
-class TestFailure:
-    def test_missing_log_returns_zero(self, watcher, mock_post):
-        assert not watcher.crash_log_path.exists()
-        assert watcher.check_once() == 0
-        assert mock_post.call_count == 0
-
-    def test_jira_post_failure_does_not_cache_fingerprint(self, watcher):
+class TestCreateJiraForCrash:
+    def test_jira_post_failure_does_not_cache(self, watcher):
         watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
 
         with patch("agent.crash_triage.requests.post") as mock:
@@ -275,17 +426,76 @@ class TestFailure:
             filed = watcher.check_once()
 
         assert filed == 0
-        # No fingerprint cached because the POST failed.
-        data = json.loads(watcher.fingerprints_path.read_text(encoding="utf-8"))
-        assert data == {}
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            rows = conn.execute("SELECT COUNT(*) FROM crash_triage_seen").fetchone()
+        finally:
+            conn.close()
+        assert rows[0] == 0
 
-    def test_jira_network_error_handled(self, watcher):
-        import requests as req
-
+    def test_jira_network_error_handled_silently(self, watcher):
         watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
 
         with patch("agent.crash_triage.requests.post") as mock:
-            mock.side_effect = req.ConnectionError("down")
+            mock.side_effect = _requests_lib.ConnectionError("down")
+            # The whole thing must not raise.
             filed = watcher.check_once()
 
         assert filed == 0
+
+    def test_jira_timeout_handled_silently(self, watcher):
+        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
+
+        with patch("agent.crash_triage.requests.post") as mock:
+            mock.side_effect = _requests_lib.Timeout("slow")
+            filed = watcher.check_once()
+
+        assert filed == 0
+
+    def test_jira_post_uses_5_second_timeout(self, watcher, mock_post):
+        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
+        watcher.check_once()
+
+        assert mock_post.call_args.kwargs["timeout"] == JIRA_TIMEOUT_SECONDS
+        assert JIRA_TIMEOUT_SECONDS == 5
+
+    def test_unparsable_body_returns_none_but_does_not_raise(self, watcher):
+        watcher.crash_log_path.write_text(_make_crash(), encoding="utf-8")
+
+        with patch("agent.crash_triage.requests.post") as mock:
+            resp = MagicMock()
+            resp.status_code = 201
+            resp.json.side_effect = ValueError("not json")
+            mock.return_value = resp
+
+            filed = watcher.check_once()
+
+        # No key in body → not cached, not counted as filed.
+        assert filed == 0
+        conn = sqlite3.connect(str(watcher.db_path))
+        try:
+            rows = conn.execute("SELECT COUNT(*) FROM crash_triage_seen").fetchone()
+        finally:
+            conn.close()
+        assert rows[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# _truncate_bytes helper
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateBytes:
+    def test_short_text_unchanged(self):
+        assert _truncate_bytes("hi", 100) == "hi"
+
+    def test_long_text_truncated_and_marked(self):
+        long = "x" * 10_000
+        out = _truncate_bytes(long, MAX_DESCRIPTION_BYTES)
+        assert len(out.encode("utf-8")) <= MAX_DESCRIPTION_BYTES
+        assert out.endswith("(truncated)")
+
+    def test_truncation_budget_includes_suffix(self):
+        """The encoded output — head + suffix — must fit within the limit."""
+        out = _truncate_bytes("a" * 5000, 100)
+        assert len(out.encode("utf-8")) <= 100
