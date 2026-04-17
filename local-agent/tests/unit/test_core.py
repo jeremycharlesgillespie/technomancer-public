@@ -13,6 +13,7 @@ from agent.core import (
     Agent,
     AgentConfig,
     CircuitBreaker,
+    OLLAMA_UNAVAILABLE_MESSAGE,
     OllamaCircuitOpenError,
     Tool,
     ToolResultStorage,
@@ -1322,3 +1323,83 @@ class TestCircuitBreaker:
             assert cb.opened_at == t[0]
             # Circuit is immediately blocking again.
             assert cb.is_open() is True
+
+
+class TestAgentCircuitOpenFallback:
+    """Agent.run() / Agent.chat() must return a canned fallback when
+    the Ollama circuit is open, not propagate a traceback or spam crash_log.
+    """
+
+    def test_run_returns_canned_message_on_circuit_open(self, caplog):
+        """A forced circuit-open raises OllamaCircuitOpenError; run() returns
+        the canned fallback string instead of propagating."""
+        with patch(
+            "agent.core.ollama_call_with_retries",
+            side_effect=OllamaCircuitOpenError("circuit open"),
+        ):
+            agent = Agent(AgentConfig(verbose=False))
+            with caplog.at_level("WARNING", logger="agent.core"):
+                result = agent.run("Hello")
+
+        assert result == OLLAMA_UNAVAILABLE_MESSAGE
+
+    def test_run_logs_at_warning_not_error(self, caplog):
+        """Circuit-open is logged at WARNING (not ERROR) — prevents
+        crash_log spam from routine degraded states."""
+        with patch(
+            "agent.core.ollama_call_with_retries",
+            side_effect=OllamaCircuitOpenError("tripped"),
+        ):
+            agent = Agent(AgentConfig(verbose=False))
+            with caplog.at_level("WARNING", logger="agent.core"):
+                agent.run("Hi")
+
+        circuit_records = [
+            r for r in caplog.records
+            if r.name == "agent.core" and "circuit open" in r.getMessage().lower()
+        ]
+        assert circuit_records, "expected a WARNING-level circuit-open log record"
+        for r in circuit_records:
+            assert r.levelname == "WARNING"
+
+    def test_run_does_not_raise_on_circuit_open(self):
+        """run() must not raise — the canned string is the only outcome."""
+        with patch(
+            "agent.core.ollama_call_with_retries",
+            side_effect=OllamaCircuitOpenError("boom"),
+        ):
+            agent = Agent(AgentConfig(verbose=False))
+            # No pytest.raises — a raised exception here is the failure mode.
+            result = agent.run("Hello")
+            assert isinstance(result, str)
+            assert result == OLLAMA_UNAVAILABLE_MESSAGE
+
+    def test_chat_returns_canned_message_on_circuit_open(self):
+        """Agent.chat() short-circuits to the canned message on circuit-open."""
+        with patch(
+            "agent.core.ollama_call_with_retries",
+            side_effect=OllamaCircuitOpenError("open"),
+        ):
+            agent = Agent(AgentConfig(verbose=False))
+            result = agent.chat("Hello")
+
+        assert result == OLLAMA_UNAVAILABLE_MESSAGE
+
+    def test_run_still_handles_generic_errors_separately(self):
+        """A non-circuit-open exception keeps the existing 'Agent error' path —
+        our new branch must not swallow unrelated errors."""
+        with patch(
+            "agent.core.ollama_call_with_retries",
+            side_effect=RuntimeError("unrelated"),
+        ):
+            agent = Agent(AgentConfig(verbose=False))
+            result = agent.run("Hi")
+
+        assert result.startswith("Agent error:")
+        assert result != OLLAMA_UNAVAILABLE_MESSAGE
+
+    def test_canned_message_mentions_ollama(self):
+        """Sanity-check: the user-visible string actually tells the user
+        what's wrong. If this string ever gets dropped, the fix is visible."""
+        assert "Ollama" in OLLAMA_UNAVAILABLE_MESSAGE
+        assert "unavailable" in OLLAMA_UNAVAILABLE_MESSAGE.lower()

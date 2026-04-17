@@ -10,6 +10,7 @@ This agent can:
 
 import contextvars
 import json
+import logging
 import re
 import threading
 import time as _time
@@ -208,11 +209,20 @@ except ImportError:
     raise ImportError("Install ollama: pip install ollama")
 
 from .config import settings as _settings
+from .fallback_orchestrator import get_orchestrator
 from .logging_config import (
     DEFAULT_REQUEST_ID as _DEFAULT_REQUEST_ID,
     request_id_var as _request_id_var,
 )
 from .ollama_health import ollama_call_with_retries
+
+logger = logging.getLogger(__name__)
+
+# Canned user-facing message when the Ollama circuit breaker is open.
+# Kept short and friendly — users see this in Discord when Ollama is down.
+OLLAMA_UNAVAILABLE_MESSAGE = (
+    "Ollama is temporarily unavailable — please try again in a moment."
+)
 
 
 def _seed_request_id_if_unset() -> None:
@@ -769,6 +779,15 @@ If you need to perform multiple steps, do them one at a time."""
                     keep_alive=-1,
                     think=True,
                 )
+            except OllamaCircuitOpenError as e:
+                llm_duration = _time.perf_counter() - llm_start
+                _record_perf("ollama", llm_duration, success=False,
+                             model=self.config.model, error=str(e))
+                # WARNING (not ERROR/exception) — circuit-open is an expected
+                # degraded state, not a crash. Avoids spamming crash_log.md.
+                logger.warning("Ollama circuit open — returning fallback: %s", e)
+                get_orchestrator()  # ensure orchestrator is initialized for observability
+                return OLLAMA_UNAVAILABLE_MESSAGE
             except Exception as e:
                 llm_duration = _time.perf_counter() - llm_start
                 _record_perf("ollama", llm_duration, success=False,
@@ -852,6 +871,12 @@ If you need to perform multiple steps, do them one at a time."""
                 keep_alive=-1,
                 think=True,
             )
+        except OllamaCircuitOpenError as e:
+            _record_perf("ollama", _time.perf_counter() - chat_start,
+                         success=False, model=self.config.model, error=str(e))
+            logger.warning("Ollama circuit open — returning fallback: %s", e)
+            get_orchestrator()
+            return OLLAMA_UNAVAILABLE_MESSAGE
         except Exception as e:
             _record_perf("ollama", _time.perf_counter() - chat_start,
                          success=False, model=self.config.model, error=str(e))
@@ -885,6 +910,12 @@ If you need to perform multiple steps, do them one at a time."""
                 )
                 _record_perf("ollama", _time.perf_counter() - chat_start2,
                              success=True, model=self.config.model)
+            except OllamaCircuitOpenError as e:
+                _record_perf("ollama", _time.perf_counter() - chat_start2,
+                             success=False, model=self.config.model, error=str(e))
+                logger.warning("Ollama circuit open — returning fallback: %s", e)
+                get_orchestrator()
+                return OLLAMA_UNAVAILABLE_MESSAGE
             except Exception as e:
                 _record_perf("ollama", _time.perf_counter() - chat_start2,
                              success=False, model=self.config.model, error=str(e))
