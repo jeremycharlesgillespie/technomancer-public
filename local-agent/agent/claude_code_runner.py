@@ -657,6 +657,8 @@ async def run_claude_code(
                 cwd=work_dir,
                 env=env,
             )
+            if db_id is not None:
+                _safe_record(id=db_id, pid=proc.pid)
 
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=effective_timeout

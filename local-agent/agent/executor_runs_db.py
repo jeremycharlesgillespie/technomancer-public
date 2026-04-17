@@ -66,6 +66,7 @@ _COLUMNS: frozenset[str] = frozenset({
     "tests_passed",
     "deployed",
     "artifacts_path",
+    "pid",
 })
 
 # Whitelist of legal column names for the executor_tool_calls table.
@@ -113,13 +114,14 @@ def init_db() -> None:
             tests_passed   INTEGER,
             deployed       INTEGER,
             run_id         TEXT,
-            artifacts_path TEXT
+            artifacts_path TEXT,
+            pid            INTEGER
         )
     """)
-    # Migrate older databases that pre-date run_id / artifacts_path. ALTER TABLE
-    # raises OperationalError if the column is already present — that's the
-    # expected idempotency signal, so swallow it.
-    for col, decl in (("run_id", "TEXT"), ("artifacts_path", "TEXT")):
+    # Migrate older databases that pre-date run_id / artifacts_path / pid.
+    # ALTER TABLE raises OperationalError if the column is already present —
+    # that's the expected idempotency signal, so swallow it.
+    for col, decl in (("run_id", "TEXT"), ("artifacts_path", "TEXT"), ("pid", "INTEGER")):
         try:
             conn.execute(f"ALTER TABLE executor_runs ADD COLUMN {col} {decl}")
         except sqlite3.OperationalError:

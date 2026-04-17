@@ -1419,6 +1419,49 @@ class TestRunClaudeCodeRecordsCostAndDuration:
         assert bnf[0]["duration_ms"] == 0
 
 
+class TestRunClaudeCodeRecordsPid:
+    """TK-492 — record subprocess pid on the executor run row after spawn."""
+
+    @pytest.mark.asyncio
+    async def test_pid_recorded_after_spawn(self, monkeypatch):
+        """The fake proc's .pid must land in an executor_runs_db.record_run call."""
+        import agent.claude_code_runner as runner
+
+        db_records: list[dict] = []
+
+        def fake_record(**fields):
+            db_records.append(dict(fields))
+            return 42  # stable db_id so the update-with-pid path keys off it
+
+        monkeypatch.setattr(runner.executor_runs_db, "record_run", fake_record)
+        monkeypatch.setattr(
+            runner.executor_runs_db, "archive_run", lambda *a, **k: None
+        )
+        monkeypatch.setattr(runner, "_detect_branch", lambda cwd: None)
+
+        expected_pid = 987654
+        proc = _make_async_proc(returncode=0, stdout=b'{"result": "ok"}')
+        proc.pid = expected_pid
+
+        with patch(
+            "agent.claude_code_runner._find_claude_binary",
+            return_value=Path("/fake/claude"),
+        ):
+            with patch(
+                "asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+            ):
+                await runner.run_claude_code("task", jira_key="TK-492")
+
+        pid_calls = [
+            r for r in db_records
+            if r.get("pid") == expected_pid and r.get("id") == 42
+        ]
+        assert len(pid_calls) == 1, (
+            f"Expected one record_run(id=42, pid={expected_pid}) call, "
+            f"got records={db_records}"
+        )
+
+
 class TestExecutorRunSummary:
     """executor_run_summary helper returns the four-field summary dict."""
 
