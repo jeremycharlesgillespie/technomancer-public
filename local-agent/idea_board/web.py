@@ -21,6 +21,8 @@ Routes:
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
     GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
+    GET  /api/metrics             — Unified observability snapshot as JSON (30s cached)
+    GET  /metrics                 — Prometheus exposition of the same snapshot
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ import requests as _requests_lib
 
 from flask import Flask, Response, jsonify, request
 
-from agent import fn_profiler
+from agent import fn_profiler, metrics
 from agent.config import settings
 from agent.run_context import with_run_context
 
@@ -2794,6 +2796,31 @@ def api_memory_integrity() -> Response:
     backups_root = settings.vault_path / "Backups" / "memory"
     crash_log = settings.vault_path / "LLM Memory" / "Permanent" / "crash_log.md"
     return jsonify(_collect_memory_integrity(backups_root, crash_log))
+
+
+@app.route("/api/metrics")
+def api_metrics() -> Response:
+    """GET /api/metrics — unified observability snapshot as JSON.
+
+    Thin wrapper around ``agent.metrics.get_snapshot`` which is backed by a
+    30-second in-memory cache, so this endpoint is safe to hammer from
+    polling dashboards without re-hitting SQLite or Jira on every call.
+    """
+    return jsonify(metrics.get_snapshot())
+
+
+@app.route("/metrics")
+def prometheus_metrics() -> Response:
+    """GET /metrics — Prometheus exposition of the same snapshot.
+
+    Renders ``agent.metrics.render_prometheus`` as plain text with the
+    standard Prometheus content type so a scraper can consume it directly.
+    Served from the same 30-second cache as ``/api/metrics``.
+    """
+    return Response(
+        metrics.render_prometheus(),
+        mimetype="text/plain; version=0.0.4",
+    )
 
 
 @app.route("/aim")
