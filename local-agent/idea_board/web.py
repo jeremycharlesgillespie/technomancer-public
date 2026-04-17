@@ -2128,11 +2128,125 @@ def _parse_crash_log() -> list[dict]:
     return entries[:10]
 
 
+def _format_relative_time(delta: timedelta) -> str:
+    """Human-readable relative time like '2m ago', '3h ago', '5d ago'."""
+    total = int(delta.total_seconds())
+    if total < 0:
+        total = 0
+    if total < 60:
+        return "just now"
+    if total < 3600:
+        return f"{total // 60}m ago"
+    if total < 86400:
+        return f"{total // 3600}h ago"
+    return f"{total // 86400}d ago"
+
+
+def _crash_log_stats() -> dict[str, Any]:
+    """Summarize crash_log.md — per-window counts and last-modified time.
+
+    Used by :func:`_render_errors` so the /errors page can show a top-of-page
+    summary header (``0 crashes in 24h · 0 in 7d · 2 in 30d``) plus a
+    ``last checked Nm ago`` timestamp. This reads the whole file — not just
+    the last 10 entries — so the 30-day count is accurate. Returned dict:
+
+      - ``total``        — int, all parseable crashes in file
+      - ``counts_24h``   — int, within trailing 24 hours
+      - ``counts_7d``    — int, within trailing 7 days
+      - ``counts_30d``   — int, within trailing 30 days
+      - ``last_mtime``   — ISO string of crash_log.md's mtime, or ``None``
+      - ``last_check``   — human relative string (``"2m ago"``) or
+                           ``"never"`` when the file has never existed
+      - ``file_exists``  — bool
+      - ``days_since_last_crash`` — int|None; uses the newest parsed
+                           timestamp, not mtime, so it reflects real
+                           crash history and not unrelated file touches
+    """
+    crash_file = settings.vault_path / "LLM Memory" / "Permanent" / "crash_log.md"
+    stats: dict[str, Any] = {
+        "total": 0,
+        "counts_24h": 0,
+        "counts_7d": 0,
+        "counts_30d": 0,
+        "last_mtime": None,
+        "last_check": "never",
+        "file_exists": False,
+        "days_since_last_crash": None,
+    }
+    if not crash_file.exists():
+        return stats
+
+    stats["file_exists"] = True
+    now = datetime.now()
+
+    try:
+        mtime = datetime.fromtimestamp(crash_file.stat().st_mtime)
+        stats["last_mtime"] = mtime.isoformat(timespec="seconds")
+        stats["last_check"] = _format_relative_time(now - mtime)
+    except OSError:
+        pass
+
+    try:
+        content = crash_file.read_text(encoding="utf-8")
+    except OSError:
+        return stats
+
+    if not content.strip():
+        return stats
+
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d = now - timedelta(days=7)
+    cutoff_30d = now - timedelta(days=30)
+    newest_ts: datetime | None = None
+
+    for part in content.split("# Bot Crash Report"):
+        part = part.strip()
+        if not part:
+            continue
+        ts_str: str | None = None
+        for line in part.splitlines():
+            if line.startswith("**Timestamp:**"):
+                ts_str = line.replace("**Timestamp:**", "").strip()
+                break
+        if not ts_str:
+            continue
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        stats["total"] += 1
+        if ts >= cutoff_24h:
+            stats["counts_24h"] += 1
+        if ts >= cutoff_7d:
+            stats["counts_7d"] += 1
+        if ts >= cutoff_30d:
+            stats["counts_30d"] += 1
+        if newest_ts is None or ts > newest_ts:
+            newest_ts = ts
+
+    if newest_ts is not None:
+        stats["days_since_last_crash"] = max(0, (now - newest_ts).days)
+
+    return stats
+
+
 @app.route("/api/errors")
 def api_errors() -> tuple:
     """GET /api/errors — last 10 crash/error entries from crash_log.md."""
     entries = _parse_crash_log()
-    return jsonify({"errors": entries, "count": len(entries)})
+    stats = _crash_log_stats()
+    return jsonify({
+        "errors": entries,
+        "count": len(entries),
+        "stats": {
+            "total": stats["total"],
+            "counts_24h": stats["counts_24h"],
+            "counts_7d": stats["counts_7d"],
+            "counts_30d": stats["counts_30d"],
+            "last_mtime": stats["last_mtime"],
+            "last_check": stats["last_check"],
+        },
+    })
 
 
 @app.route("/errors")
@@ -4351,11 +4465,27 @@ a { color: var(--accent); }
                     -webkit-overflow-scrolling: touch; white-space: pre;
                     max-height: 500px; overflow-y: auto; }
 .error-detail h3 { font-size: 0.9rem; color: var(--accent); margin: 12px 0 6px; }
-.empty-state { text-align: center; padding: 4rem 2rem; color: var(--muted); }
-.empty-state .icon { font-size: 3rem; margin-bottom: 1rem; }
+.empty-state { text-align: center; padding: 2.5rem 2rem; color: var(--muted);
+               background: var(--surface); border-radius: 10px;
+               border: 1px solid var(--border); }
+.empty-state .icon { font-size: 2.5rem; margin-bottom: 0.75rem; color: var(--green); }
+.empty-state .headline { color: var(--text); font-size: 1rem; margin-bottom: 0.35rem; }
+.empty-state .notes { font-size: 0.85rem; line-height: 1.5; }
+.empty-state .notes a { color: var(--accent); }
+.summary-bar { background: var(--surface); border-radius: 10px; padding: 0.9rem 1.1rem;
+               margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem;
+               align-items: baseline; border-left: 4px solid var(--green); }
+.summary-bar.has-recent { border-left-color: var(--red); }
+.summary-bar.has-week { border-left-color: var(--orange); }
+.summary-bar .stat { font-size: 0.9rem; color: var(--text); }
+.summary-bar .stat .num { font-weight: 700; color: var(--accent); margin-right: 4px; }
+.summary-bar .stat.zero .num { color: var(--muted); }
+.summary-bar .sep { color: var(--muted); }
+.summary-bar .last-check { color: var(--muted); font-size: 0.85rem; margin-left: auto; }
 @media (max-width: 600px) {
     body { padding: 12px; }
     .error-detail pre { font-size: 0.7rem; padding: 8px; }
+    .summary-bar .last-check { margin-left: 0; width: 100%; }
 }
 """
 
@@ -4363,13 +4493,60 @@ a { color: var(--accent); }
 def _render_errors() -> str:
     """Render the crash log / errors viewer page."""
     entries = _parse_crash_log()
+    stats = _crash_log_stats()
     now = datetime.now().strftime("%H:%M")
 
+    c24, c7, c30 = stats["counts_24h"], stats["counts_7d"], stats["counts_30d"]
+    last_check = stats["last_check"]
+    bar_class = "summary-bar"
+    if c24 > 0:
+        bar_class += " has-recent"
+    elif c7 > 0:
+        bar_class += " has-week"
+
+    def _stat(num: int, label: str) -> str:
+        zero = " zero" if num == 0 else ""
+        return f'<div class="stat{zero}"><span class="num">{num}</span>{label}</div>'
+
+    last_check_html = (
+        f'<div class="last-check">last checked {html.escape(last_check)}</div>'
+        if stats["file_exists"]
+        else '<div class="last-check">no crash log yet</div>'
+    )
+    summary_bar = f"""<div class="{bar_class}">
+        {_stat(c24, " crashes in 24h")}
+        <span class="sep">&middot;</span>
+        {_stat(c7, " in 7d")}
+        <span class="sep">&middot;</span>
+        {_stat(c30, " in 30d")}
+        {last_check_html}
+    </div>"""
+
     if not entries:
-        cards_html = """<div class="empty-state">
+        alerts_channel = getattr(settings, "discord_alerts_channel", "")
+        if not isinstance(alerts_channel, str):
+            alerts_channel = ""
+        alerts_channel = alerts_channel.strip()
+        channel_line = (
+            f'<p class="notes">Crash alerts post to <code>#{html.escape(alerts_channel)}'
+            '</code> on Discord when they happen.</p>'
+            if alerts_channel
+            else ""
+        )
+        if stats["file_exists"]:
+            headline = "No crashes match the filter, and the page is working."
+            detail = (
+                f"Crash log was last written {html.escape(last_check)} "
+                f"({stats['total']} total entries since the log began)."
+            )
+        else:
+            headline = "The bot has never written a crash report."
+            detail = "<code>crash_log.md</code> does not exist yet — nothing has gone wrong."
+        cards_html = f"""<div class="empty-state">
             <div class="icon">&#10003;</div>
-            <p>No crash reports found.</p>
-            <p style="font-size:0.85rem;margin-top:0.5rem">crash_log.md is empty or doesn't exist.</p>
+            <p class="headline">{headline}</p>
+            <p class="notes">{detail}</p>
+            {channel_line}
         </div>"""
     else:
         card_parts = []
@@ -4408,6 +4585,8 @@ def _render_errors() -> str:
 <body>
     <h1>Errors &amp; Crashes</h1>
     <p class="subtitle"><a href="/">&larr; Hub</a> &middot; {len(entries)} recent error(s) &middot; <a href="/api/errors">API: /api/errors</a></p>
+
+    {summary_bar}
 
     {cards_html}
 

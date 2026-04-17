@@ -5,12 +5,19 @@ Validates crash log parsing, JSON response structure, and HTML rendering.
 """
 
 import html
+import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from idea_board.web import _parse_crash_log, app
+from idea_board.web import (
+    _crash_log_stats,
+    _format_relative_time,
+    _parse_crash_log,
+    app,
+)
 
 SAMPLE_CRASH_LOG = """# Bot Crash Report
 
@@ -248,8 +255,9 @@ class TestErrorsPage:
             mock_settings.vault_path = tmp_path
             resp = client.get("/errors")
             page_html = resp.data.decode()
-            assert "No crash reports found" in page_html
+            # Redesigned empty state: page reads as "working", not "broken".
             assert "empty-state" in page_html
+            assert "never written a crash report" in page_html
 
     def test_shows_crash_entry(self, client, tmp_path):
         """Renders crash entry as collapsible card."""
@@ -314,3 +322,187 @@ class TestHubErrorsLink:
             resp = client.get("/")
             page_html = resp.data.decode()
             assert "View errors" in page_html
+
+
+def _write_crash_entries(crash_file: Path, timestamps: list[datetime]) -> None:
+    """Write a crash_log.md with one entry per timestamp."""
+    parts = []
+    for i, ts in enumerate(timestamps):
+        parts.append(
+            "# Bot Crash Report\n\n"
+            f"**Timestamp:** {ts.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Exception Type:** Error{i}\n"
+            f"**Exception Message:** msg {i}\n\n"
+            "## Full Stack Trace\n"
+            "```python\nTraceback: error\n```\n"
+        )
+    crash_file.parent.mkdir(parents=True, exist_ok=True)
+    crash_file.write_text("\n".join(parts), encoding="utf-8")
+
+
+class TestFormatRelativeTime:
+    """Tests for the _format_relative_time helper."""
+
+    def test_seconds(self):
+        assert _format_relative_time(timedelta(seconds=30)) == "just now"
+
+    def test_minutes(self):
+        assert _format_relative_time(timedelta(minutes=2)) == "2m ago"
+
+    def test_hours(self):
+        assert _format_relative_time(timedelta(hours=3)) == "3h ago"
+
+    def test_days(self):
+        assert _format_relative_time(timedelta(days=5)) == "5d ago"
+
+    def test_negative_delta_is_just_now(self):
+        """Clock skew should not produce weird output."""
+        assert _format_relative_time(timedelta(seconds=-10)) == "just now"
+
+
+class TestCrashLogStats:
+    """Tests for the _crash_log_stats helper function."""
+
+    def test_no_file_returns_zeros(self, tmp_path):
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["total"] == 0
+        assert stats["counts_24h"] == 0
+        assert stats["counts_7d"] == 0
+        assert stats["counts_30d"] == 0
+        assert stats["file_exists"] is False
+        assert stats["last_check"] == "never"
+
+    def test_empty_file_returns_zeros_but_exists(self, tmp_path):
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        crash_file.parent.mkdir(parents=True)
+        crash_file.write_text("", encoding="utf-8")
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["total"] == 0
+        assert stats["file_exists"] is True
+        assert stats["last_check"] != "never"
+
+    def test_per_window_counts(self, tmp_path):
+        """Each window slices strictly on the 24h/7d/30d cutoffs."""
+        now = datetime.now()
+        timestamps = [
+            now - timedelta(hours=1),    # in 24h, 7d, 30d
+            now - timedelta(hours=12),   # in 24h, 7d, 30d
+            now - timedelta(days=2),     # in 7d, 30d only
+            now - timedelta(days=10),    # in 30d only
+            now - timedelta(days=40),    # out of all windows
+        ]
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, timestamps)
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["total"] == 5
+        assert stats["counts_24h"] == 2
+        assert stats["counts_7d"] == 3
+        assert stats["counts_30d"] == 4
+
+    def test_last_check_reflects_mtime(self, tmp_path):
+        """last_check is derived from the file's mtime, not entry timestamps."""
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [datetime.now() - timedelta(days=5)])
+        # Pin mtime to ~2 minutes ago so we can assert the relative string.
+        target = (datetime.now() - timedelta(minutes=2)).timestamp()
+        os.utime(crash_file, (target, target))
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["last_check"] == "2m ago"
+        assert stats["last_mtime"] is not None
+
+    def test_unparseable_timestamps_are_skipped(self, tmp_path):
+        """Entries with malformed timestamps do not crash or inflate counts."""
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        crash_file.parent.mkdir(parents=True)
+        crash_file.write_text(
+            "# Bot Crash Report\n\n"
+            "**Timestamp:** not a date\n"
+            "**Exception Type:** X\n",
+            encoding="utf-8",
+        )
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["total"] == 0
+        assert stats["counts_30d"] == 0
+
+
+class TestErrorsEmptyStateRedesign:
+    """TK-543: /errors empty state shows a summary header, not a broken page."""
+
+    def test_empty_state_shows_zero_counts_header(self, client, tmp_path):
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # Summary bar is present with all three windows.
+        assert "summary-bar" in page_html
+        assert "crashes in 24h" in page_html
+        assert "in 7d" in page_html
+        assert "in 30d" in page_html
+
+    def test_empty_state_headline_reassures(self, client, tmp_path):
+        """The zero-crash state should read as 'working', not 'broken'."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert "never written a crash report" in page_html
+
+    def test_empty_state_with_old_log_shows_last_check(self, client, tmp_path):
+        """When crash_log.md exists but has no recent crashes, show mtime."""
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [datetime.now() - timedelta(days=40)])
+        target = (datetime.now() - timedelta(minutes=2)).timestamp()
+        os.utime(crash_file, (target, target))
+        # _parse_crash_log still returns the old entry (10 newest), so we force
+        # an "empty" render by filtering on entries=[] via a tiny monkey-patch.
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch("idea_board.web._parse_crash_log", return_value=[]):
+            mock_settings.vault_path = tmp_path
+            mock_settings.discord_alerts_channel = "bot_alerts"
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert "last checked 2m ago" in page_html
+        assert "#bot_alerts" in page_html
+        # 30d window should show 1 since the only entry is 40d old → counts 0.
+        assert ">0</span> in 30d" in page_html
+
+    def test_counts_render_with_real_data(self, client, tmp_path):
+        """Summary bar reflects real windowed counts when crashes exist."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [
+            now - timedelta(hours=1),   # 24h
+            now - timedelta(days=3),    # 7d
+            now - timedelta(days=15),   # 30d
+        ])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert ">1</span> crashes in 24h" in page_html
+        assert ">2</span> in 7d" in page_html
+        assert ">3</span> in 30d" in page_html
+
+    def test_api_errors_includes_stats(self, client, tmp_path):
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [now - timedelta(hours=2)])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/api/errors")
+        data = resp.get_json()
+        assert "stats" in data
+        assert data["stats"]["counts_24h"] == 1
+        assert data["stats"]["counts_7d"] == 1
+        assert data["stats"]["counts_30d"] == 1
+        assert data["stats"]["total"] == 1
