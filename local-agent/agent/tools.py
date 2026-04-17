@@ -411,9 +411,12 @@ def get_system_tools() -> list[Tool]:
     ]
 
 
+# PDF tools were retired 2026-04-17 — claude -p handles PDFs directly.
+# Keep the import as a no-op (returns []) so any downstream caller doing
+# ``from agent.tools import get_pdf_tools`` continues to work.
 from .pdf_tools import get_pdf_tools  # noqa: E402
 
 
 def get_all_tools() -> list[Tool]:
-    """Get all available tools (file, system, PDF)."""
-    return get_file_tools() + get_system_tools() + get_pdf_tools()
+    """Get all available tools (file, system)."""
+    return get_file_tools() + get_system_tools()

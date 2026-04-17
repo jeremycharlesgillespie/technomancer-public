@@ -12,6 +12,7 @@ from aim.worker import (
     WatchResult,
     _check_git_clean,
     _post_rate_limit_comment,
+    _reconcile_with_board_state,
     _sleep_with_heartbeat,
     execute_assigned_idea,
     watch_execution,
@@ -326,6 +327,54 @@ class TestWatchExecutionRateLimited:
         assert "rate" in result.summary.lower()
 
 
+class TestReconcileWithBoardState:
+    """_reconcile_with_board_state protects shipped work from false-fail reports."""
+
+    def test_done_on_board_promotes_to_success(self):
+        provider = MagicMock()
+        provider.get.return_value = FakeIdea(state="done")
+        failure = WatchResult(
+            success=False, summary="Stalled — no output for 10 min",
+        )
+        with patch("board.get_provider", return_value=provider):
+            result = _reconcile_with_board_state("TK-567", failure)
+        assert result.success is True
+        assert "completed" in result.summary.lower()
+
+    def test_still_executing_preserves_failure(self):
+        provider = MagicMock()
+        provider.get.return_value = FakeIdea(state="executing")
+        failure = WatchResult(success=False, summary="Stalled")
+        with patch("board.get_provider", return_value=provider):
+            result = _reconcile_with_board_state("TK-567", failure)
+        assert result is failure
+
+    def test_failed_on_board_preserves_failure(self):
+        provider = MagicMock()
+        provider.get.return_value = FakeIdea(state="failed")
+        failure = WatchResult(success=False, summary="Timed out")
+        with patch("board.get_provider", return_value=provider):
+            result = _reconcile_with_board_state("TK-567", failure)
+        assert result is failure
+
+    def test_missing_idea_preserves_failure(self):
+        provider = MagicMock()
+        provider.get.return_value = None
+        failure = WatchResult(success=False, summary="Stalled")
+        with patch("board.get_provider", return_value=provider):
+            result = _reconcile_with_board_state("TK-567", failure)
+        assert result is failure
+
+    def test_provider_error_preserves_failure(self):
+        """If Jira is down, don't pretend work shipped — keep the failure."""
+        provider = MagicMock()
+        provider.get.side_effect = RuntimeError("jira down")
+        failure = WatchResult(success=False, summary="Stalled")
+        with patch("board.get_provider", return_value=provider):
+            result = _reconcile_with_board_state("TK-567", failure)
+        assert result is failure
+
+
 class TestSleepWithHeartbeat:
     """_sleep_with_heartbeat ticks the heartbeat periodically."""
 
@@ -512,6 +561,81 @@ class TestExecuteAssignedIdeaRateLimitRetry:
         assert result.success is True
         # Three sleeps before success on the 4th attempt
         assert waits == [15, 30, RATE_LIMIT_MAX_WAIT_MINUTES]
+
+    def test_stalled_but_shipped_reported_as_success(self):
+        """TK-567: watcher says Stalled but executor already marked idea done.
+
+        Simulates the race on FA-94 (2026-04-17): the claude -p subprocess
+        goes quiet past STALE_THRESHOLD while the executor thread is
+        committing+pushing+publishing, watcher cancels and returns
+        success=False, but the executor completed mark_done first.
+        The final WatchResult from execute_assigned_idea must be success
+        so the caller doesn't clobber a shipped story with mark_failed.
+        """
+        stalled = WatchResult(
+            success=False,
+            summary="Stalled — no output for 10 min",
+            rate_limited=False,
+        )
+        mock_watch = MagicMock(return_value=stalled)
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_mark_failed = MagicMock()
+        mock_mark_done = MagicMock()
+        mock_provider = MagicMock()
+        mock_provider.get.return_value = FakeIdea(state="done")
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed", mock_mark_failed), \
+             patch("idea_board.executor.mark_done", mock_mark_done), \
+             patch("board.get_provider", return_value=mock_provider), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 3
+            result = execute_assigned_idea("TK-567")
+
+        assert result.success is True
+        assert result.rate_limited is False
+        mock_mark_failed.assert_not_called()
+        mock_provider.get.assert_called_with("TK-567")
+
+    def test_genuine_stall_with_no_commits_still_fails(self):
+        """A real stall where executor never reached mark_done must stay failed.
+
+        Complements test_stalled_but_shipped_reported_as_success — ensures
+        the reconciliation only overrides the failure when the board
+        actually shows done. A story still in 'executing' or 'failed'
+        must surface as a failure so AIM's retry/split logic runs.
+        """
+        stalled = WatchResult(
+            success=False,
+            summary="Stalled — no output for 10 min",
+            rate_limited=False,
+        )
+        mock_watch = MagicMock(return_value=stalled)
+        mock_execute = MagicMock(return_value=FakeExecutionState())
+        mock_provider = MagicMock()
+        mock_provider.get.return_value = FakeIdea(state="executing")
+
+        with patch("aim.worker._check_git_clean", return_value=True), \
+             patch("aim.state.update_worker_status"), \
+             patch("aim.worker.time.sleep"), \
+             patch("idea_board.executor.is_any_executing", return_value=False), \
+             patch("aim.worker.watch_execution", mock_watch), \
+             patch("idea_board.executor.execute_idea", mock_execute), \
+             patch("idea_board.executor.mark_failed"), \
+             patch("board.get_provider", return_value=mock_provider), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.rate_limit_max_retries = 3
+            result = execute_assigned_idea("TK-567")
+
+        assert result.success is False
+        assert "stall" in result.summary.lower()
 
     def test_sets_rate_limited_worker_status_during_wait(self):
         """Worker status must be 'rate_limited' while we're sleeping so AIM

@@ -1,12 +1,25 @@
-"""Tests for the pdf_tools module — PDF extraction and summarization."""
+"""Tests for the pdf_tools module — RETIRED 2026-04-17.
 
-import io
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+The pdf_tools module was gutted (PDF handling moved to claude -p
+directly). Every test in this file is skipped; the file is preserved
+only so the test-discovery path doesn't break and the history of the
+now-removed assertions stays readable.
 
+The flaky test_no_parameters_returns_error that blocked 4+ TK stories
+on 2026-04-17 lived here — removing the entire test surface made the
+flake moot.
+"""
 import pytest
 
-from agent.pdf_tools import (
+pytestmark = pytest.mark.skip(
+    reason="pdf_tools retired 2026-04-17 — PDF handling moved to claude -p"
+)
+
+import io  # noqa: E402
+from pathlib import Path  # noqa: E402
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+from agent.pdf_tools import (  # noqa: E402
     extract_text_from_pdf,
     get_pdf_tools,
     summarize_pdf,

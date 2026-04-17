@@ -2185,27 +2185,33 @@ def execute_idea(
                     )
                     return
 
-                # Abort if the feature branch has uncommitted changes —
-                # git checkout would silently carry them to main and the
-                # auto-README commit would claim credit for uncommitted
-                # work. That's the exact failure mode that lost TK-410's
-                # rate-limit code. Prefer a loud failure.
+                # Capture any uncommitted changes left by the test phase
+                # BEFORE blocking the merge on dirt. The full test suite
+                # can legitimately mutate tracked files (db.sqlite3 in
+                # Django projects, coverage artifacts, __pycache__ races,
+                # etc.) which shouldn't kill a story whose real code
+                # already committed. Same pattern as the post-claude-p
+                # auto-commit — process step as code, not prompt.
+                _auto_commit_uncommitted(project_root, idea_id, state)
+
+                # Double-check: if _auto_commit_uncommitted couldn't land
+                # (git returned non-zero, no changes ever existed, etc.),
+                # abort loudly so we don't silently carry dirt onto main.
                 status_check = subprocess.run(
                     ["git", "status", "--porcelain"],
                     capture_output=True, text=True, cwd=project_root,
                 )
                 if status_check.stdout.strip():
                     state.log(
-                        "Merge aborted: feature branch has uncommitted changes "
+                        "Merge aborted: feature branch still has uncommitted "
+                        f"changes after auto-commit attempt "
                         f"({len(status_check.stdout.splitlines())} paths). "
-                        "Claude Code was supposed to commit. Refusing to "
-                        "checkout main and carry dirt onto the shipping branch."
+                        "Refusing to checkout main."
                     )
                     mark_failed(
                         idea_id,
-                        "Uncommitted working tree at merge time. "
-                        "The branch still has its changes — recover manually "
-                        "or let the story re-run.",
+                        "Uncommitted working tree at merge time (auto-commit "
+                        "did not resolve). Inspect the branch manually.",
                     )
                     _notify_discord(
                         f"Idea {idea_id} merge aborted — uncommitted changes.",
