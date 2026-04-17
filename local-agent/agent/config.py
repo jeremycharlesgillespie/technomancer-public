@@ -190,6 +190,21 @@ class Settings(BaseSettings):
     aim_state_dir: str = Field(
         default="", description="Directory for AIM state/lock/pid files (empty = aim/ default)"
     )
+    aim_story_generation_enabled: bool = Field(
+        default=True,
+        description=(
+            "Enable autonomous story generation (evergreen + CREATE_WORK). "
+            "Set False for projects where stories are created manually only."
+        ),
+    )
+    aim_story_generation_categories: str = Field(
+        default="quality,performance,test",
+        description=(
+            "Comma-separated categories the evergreen generator may produce. "
+            "Empty string = all categories allowed. Only checked when "
+            "aim_story_generation_enabled is True."
+        ),
+    )
 
     # AIM (AI Manager) settings
     aim_cycle_interval: int = Field(
