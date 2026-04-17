@@ -2019,99 +2019,23 @@ def live_log_viewer(item_id: str) -> Response:
 
 @app.route("/api/health")
 def api_health() -> tuple:
-    """GET /api/health — aggregated health status of all services.
+    """GET /api/health — aggregated health for external monitors.
 
-    Checks: Discord bot process, Ollama API, Discord Bridge, Idea Board (self).
-    Returns JSON with per-service status, uptime, and last error.
+    Shape:
+        {status: 'healthy'|'degraded'|'unhealthy',
+         checks: {bot, ollama, jira, executor, disk},
+         timestamp}
+
+    Each check carries ``{ok, latency_ms, detail, ...}``. Required checks
+    (bot) flip the overall status to ``unhealthy``; optional checks flip
+    it to ``degraded``. HTTP 200 when healthy or degraded, 503 when
+    unhealthy. Results are cached for ``health.CACHE_TTL_SECONDS``.
     """
-    import urllib.request
+    from . import health as _health
 
-    services: list[dict] = []
-
-    # 1. Discord Bot — read service_state.json + check PID
-    bot_status: dict[str, Any] = {"name": "Discord Bot", "id": "bot"}
-    state_file = Path(__file__).resolve().parent.parent / "service_state.json"
-    pid_file = Path(__file__).resolve().parent.parent / "bot.pid"
-    try:
-        pid_alive = False
-        if pid_file.exists():
-            pid = int(pid_file.read_text().strip())
-            result = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}"],
-                capture_output=True, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=5,
-            )
-            pid_alive = str(pid) in result.stdout
-
-        if state_file.exists():
-            state = json.loads(state_file.read_text())
-        else:
-            state = {}
-
-        bot_status["healthy"] = pid_alive
-        bot_status["status"] = "running" if pid_alive else "stopped"
-        bot_status["last_error"] = state.get("last_error")
-        bot_status["restarts"] = state.get("total_restarts", 0)
-        bot_status["consecutive_failures"] = state.get("consecutive_failures", 0)
-    except Exception as e:
-        bot_status["healthy"] = False
-        bot_status["status"] = "error"
-        bot_status["last_error"] = str(e)
-    services.append(bot_status)
-
-    # 2. Ollama — check /api/tags
-    ollama_status: dict[str, Any] = {"name": "Ollama", "id": "ollama"}
-    try:
-        with urllib.request.urlopen(f"{settings.ollama_host}/api/tags", timeout=3) as resp:
-            data = json.loads(resp.read())
-            models = [m.get("name", "?") for m in data.get("models", [])]
-            ollama_status["healthy"] = True
-            ollama_status["status"] = f"{len(models)} models loaded"
-            ollama_status["models"] = models
-    except Exception as e:
-        ollama_status["healthy"] = False
-        ollama_status["status"] = "unreachable"
-        ollama_status["last_error"] = str(e)[:200]
-    services.append(ollama_status)
-
-    # 3. Discord Bridge — check /api/health on port 8321
-    bridge_status: dict[str, Any] = {"name": "Discord Bridge", "id": "bridge"}
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8321/api/health", timeout=3) as resp:
-            data = json.loads(resp.read())
-            secs = int(data.get("uptime", 0))
-            bridge_status["healthy"] = data.get("status") == "ok"
-            bridge_status["status"] = "connected"
-            bridge_status["uptime_seconds"] = secs
-    except Exception as e:
-        bridge_status["healthy"] = False
-        bridge_status["status"] = "unreachable"
-        bridge_status["last_error"] = str(e)[:200]
-    services.append(bridge_status)
-
-    # 4. Idea Board — self-check (if we're responding, we're healthy)
-    board_status: dict[str, Any] = {
-        "name": "Idea Board",
-        "id": "idea_board",
-        "healthy": True,
-        "status": "running",
-    }
-    try:
-        ideas = load_ideas()
-        board_status["idea_count"] = len(ideas)
-    except Exception as e:
-        board_status["healthy"] = False
-        board_status["status"] = "error"
-        board_status["last_error"] = str(e)[:200]
-    services.append(board_status)
-
-    all_healthy = all(s["healthy"] for s in services)
-    return jsonify({
-        "overall": "healthy" if all_healthy else "degraded",
-        "services": services,
-        "checked_at": datetime.now().isoformat(),
-    })
+    payload = _health.run_checks()
+    status_code = 503 if payload["status"] == "unhealthy" else 200
+    return jsonify(payload), status_code
 
 
 # ============================================================================
@@ -5120,12 +5044,16 @@ def _render_hub() -> str:
                 <div class="svc-name"><span class="dot unknown"></span> Ollama</div>
                 <div class="svc-detail">Checking...</div>
             </div>
-            <div class="health-card" id="health-bridge">
-                <div class="svc-name"><span class="dot unknown"></span> Discord Bridge</div>
+            <div class="health-card" id="health-jira">
+                <div class="svc-name"><span class="dot unknown"></span> Jira Sync</div>
                 <div class="svc-detail">Checking...</div>
             </div>
-            <div class="health-card" id="health-idea_board">
-                <div class="svc-name"><span class="dot unknown"></span> Idea Board</div>
+            <div class="health-card" id="health-executor">
+                <div class="svc-name"><span class="dot unknown"></span> Executor</div>
+                <div class="svc-detail">Checking...</div>
+            </div>
+            <div class="health-card" id="health-disk">
+                <div class="svc-name"><span class="dot unknown"></span> Disk</div>
                 <div class="svc-detail">Checking...</div>
             </div>
         </div>
@@ -5210,23 +5138,25 @@ def _render_hub() -> str:
         try {{
             const resp = await fetch('/api/health');
             const data = await resp.json();
-            for (const svc of data.services) {{
-                const card = document.getElementById('health-' + svc.id);
+            const checks = data.checks || {{}};
+            for (const name of Object.keys(checks)) {{
+                const card = document.getElementById('health-' + name);
                 if (!card) continue;
                 const dot = card.querySelector('.dot');
                 const detail = card.querySelector('.svc-detail');
+                const svc = checks[name];
 
-                card.className = 'health-card ' + (svc.healthy ? 'up' : 'down');
-                dot.className = 'dot ' + (svc.healthy ? 'up' : 'down');
+                card.className = 'health-card ' + (svc.ok ? 'up' : 'down');
+                dot.className = 'dot ' + (svc.ok ? 'up' : 'down');
 
-                let info = svc.status;
-                if (svc.uptime_seconds) info += ' \u00b7 ' + formatUptime(svc.uptime_seconds);
-                if (svc.restarts) info += ' \u00b7 ' + svc.restarts + ' restarts';
-                if (svc.idea_count !== undefined) info += ' \u00b7 ' + svc.idea_count + ' ideas';
+                let info = svc.detail || '';
+                if (typeof svc.latency_ms === 'number') {{
+                    info += ' \u00b7 ' + svc.latency_ms + 'ms';
+                }}
                 detail.textContent = info;
 
                 let errEl = card.querySelector('.svc-error');
-                if (svc.last_error && !svc.healthy) {{
+                if (svc.last_error && !svc.ok) {{
                     if (!errEl) {{
                         errEl = document.createElement('div');
                         errEl.className = 'svc-error';
