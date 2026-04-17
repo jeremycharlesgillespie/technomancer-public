@@ -7,9 +7,13 @@ import threading
 import time
 from unittest.mock import patch
 
+import pytest
+
 from agent.core import (
     Agent,
     AgentConfig,
+    CircuitBreaker,
+    OllamaCircuitOpenError,
     Tool,
     ToolResultStorage,
     create_tool,
@@ -1163,3 +1167,158 @@ class TestParallelExecutionThreadSafety:
         for rid in ids:
             assert agent.result_storage.get_full_result(rid) == big
         assert agent.result_storage.stats["truncated_results"] == 8
+
+
+class TestOllamaCircuitOpenError:
+    """Tests for OllamaCircuitOpenError exception."""
+
+    def test_is_exception(self):
+        """OllamaCircuitOpenError is a plain Exception subclass."""
+        assert issubclass(OllamaCircuitOpenError, Exception)
+
+    def test_can_be_raised_and_caught(self):
+        """Can be raised and caught with a message."""
+        with pytest.raises(OllamaCircuitOpenError, match="nope"):
+            raise OllamaCircuitOpenError("nope")
+
+
+class TestCircuitBreaker:
+    """Tests for CircuitBreaker state machine."""
+
+    def test_defaults(self):
+        """Default fields match the spec."""
+        cb = CircuitBreaker()
+        assert cb.state == "closed"
+        assert cb.failure_count == 0
+        assert cb.opened_at == 0.0
+        assert cb.threshold == 5
+        assert cb.window_seconds == 60.0
+        assert cb.reset_seconds == 30.0
+
+    def test_closed_circuit_is_not_open(self):
+        """A fresh breaker does not block calls."""
+        cb = CircuitBreaker()
+        assert cb.is_open() is False
+
+    def test_record_failure_below_threshold_stays_closed(self):
+        """Failures below threshold keep the circuit closed."""
+        cb = CircuitBreaker(threshold=5)
+        for _ in range(4):
+            cb.record_failure()
+        assert cb.state == "closed"
+        assert cb.failure_count == 4
+        assert cb.is_open() is False
+
+    def test_record_failure_at_threshold_opens(self):
+        """Hitting threshold opens the circuit."""
+        cb = CircuitBreaker(threshold=3)
+        for _ in range(3):
+            cb.record_failure()
+        assert cb.state == "open"
+        assert cb.opened_at > 0.0
+        assert cb.is_open() is True
+
+    def test_record_success_resets(self):
+        """Success clears the failure count and closes the circuit."""
+        cb = CircuitBreaker(threshold=3)
+        cb.record_failure()
+        cb.record_failure()
+        cb.record_success()
+        assert cb.state == "closed"
+        assert cb.failure_count == 0
+        assert cb.opened_at == 0.0
+
+    def test_failures_outside_window_start_fresh_count(self):
+        """Failures older than window_seconds reset the rolling counter."""
+        cb = CircuitBreaker(threshold=5, window_seconds=60.0)
+        t = [1000.0]
+
+        def fake_monotonic():
+            return t[0]
+
+        with patch("agent.core._time.monotonic", fake_monotonic):
+            cb.record_failure()
+            cb.record_failure()
+            assert cb.failure_count == 2
+            # Jump past the window — next failure resets the count.
+            t[0] = 1000.0 + 61.0
+            cb.record_failure()
+            assert cb.failure_count == 1
+            assert cb.state == "closed"
+
+    def test_failures_inside_window_accumulate_and_open(self):
+        """Failures within the window accumulate to threshold and open."""
+        cb = CircuitBreaker(threshold=3, window_seconds=60.0)
+        t = [500.0]
+
+        def fake_monotonic():
+            return t[0]
+
+        with patch("agent.core._time.monotonic", fake_monotonic):
+            cb.record_failure()
+            t[0] += 10
+            cb.record_failure()
+            t[0] += 10
+            cb.record_failure()
+            assert cb.state == "open"
+            assert cb.opened_at == t[0]
+
+    def test_open_transitions_to_half_open_after_reset(self):
+        """After reset_seconds an open circuit transitions to half-open."""
+        cb = CircuitBreaker(threshold=2, reset_seconds=30.0)
+        t = [100.0]
+
+        def fake_monotonic():
+            return t[0]
+
+        with patch("agent.core._time.monotonic", fake_monotonic):
+            cb.record_failure()
+            cb.record_failure()
+            assert cb.state == "open"
+            # Still inside reset window — stays open.
+            t[0] += 29
+            assert cb.is_open() is True
+            # Past reset window — flips to half-open, is_open returns False.
+            t[0] += 2
+            assert cb.is_open() is False
+            assert cb.state == "half-open"
+
+    def test_half_open_success_closes(self):
+        """A success while half-open fully closes the circuit."""
+        cb = CircuitBreaker(threshold=2, reset_seconds=30.0)
+        t = [0.0]
+
+        def fake_monotonic():
+            return t[0]
+
+        with patch("agent.core._time.monotonic", fake_monotonic):
+            cb.record_failure()
+            cb.record_failure()
+            t[0] += 31
+            cb.is_open()  # transitions to half-open
+            assert cb.state == "half-open"
+            cb.record_success()
+            assert cb.state == "closed"
+            assert cb.failure_count == 0
+
+    def test_half_open_failure_reopens(self):
+        """A failure while half-open re-opens the circuit immediately."""
+        cb = CircuitBreaker(threshold=5, reset_seconds=30.0)
+        t = [0.0]
+
+        def fake_monotonic():
+            return t[0]
+
+        with patch("agent.core._time.monotonic", fake_monotonic):
+            for _ in range(5):
+                cb.record_failure()
+            assert cb.state == "open"
+            t[0] += 31
+            cb.is_open()
+            assert cb.state == "half-open"
+            t[0] += 1
+            cb.record_failure()
+            assert cb.state == "open"
+            assert cb.opened_at == t[0]
+            # Circuit is immediately blocking again.
+            assert cb.is_open() is True

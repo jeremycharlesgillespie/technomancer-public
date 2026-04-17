@@ -246,6 +246,90 @@ def _build_ollama_client() -> "ollama.Client":
 _ollama_client = _build_ollama_client()
 
 
+# =============================================================================
+# CIRCUIT BREAKER — Short-circuits Ollama calls when the server is unhealthy.
+# =============================================================================
+#
+# Primitive only: this story introduces the type and state machine. Wiring it
+# into real Ollama calls is a separate story — importing these names must not
+# change runtime behavior.
+
+
+class OllamaCircuitOpenError(Exception):
+    """Raised when a call is blocked because the Ollama circuit breaker is open."""
+
+
+@dataclass
+class CircuitBreaker:
+    """Failure-counting circuit breaker with closed / open / half-open states.
+
+    States:
+        closed     — calls pass through; failures accumulate in a rolling window.
+        open       — calls should short-circuit; transitions to half-open after
+                     ``reset_seconds`` elapse.
+        half-open  — one trial call allowed; success closes the circuit, another
+                     failure re-opens it.
+
+    Callers drive the state machine with ``record_success`` / ``record_failure``
+    after each attempt, and consult ``is_open`` before making a new call.
+    """
+
+    state: str = "closed"
+    failure_count: int = 0
+    opened_at: float = 0.0
+    threshold: int = 5
+    window_seconds: float = 60.0
+    reset_seconds: float = 30.0
+    # Private: start of the current rolling failure window. Not part of the
+    # public API — failures older than window_seconds are discarded via this.
+    _window_start: float = 0.0
+
+    def is_open(self) -> bool:
+        """Return True if the circuit currently blocks calls.
+
+        Transitions ``open`` → ``half-open`` when ``reset_seconds`` have
+        elapsed since the circuit opened. Returns False in the half-open state
+        so a single trial call is permitted.
+        """
+        if self.state == "open":
+            if _time.monotonic() - self.opened_at >= self.reset_seconds:
+                self.state = "half-open"
+                return False
+            return True
+        return False
+
+    def record_success(self) -> None:
+        """Record a successful call — closes the circuit and clears failures."""
+        self.state = "closed"
+        self.failure_count = 0
+        self.opened_at = 0.0
+        self._window_start = 0.0
+
+    def record_failure(self) -> None:
+        """Record a failed call.
+
+        In ``half-open`` any failure trips the breaker back to ``open``. In
+        ``closed`` the failure count accumulates within a rolling
+        ``window_seconds`` window — once ``threshold`` is reached the circuit
+        opens. Failures older than the window start a fresh window.
+        """
+        now = _time.monotonic()
+        if self.state == "half-open":
+            self.state = "open"
+            self.opened_at = now
+            self.failure_count = self.threshold
+            return
+        # closed state: rolling window
+        if self.failure_count == 0 or (now - self._window_start) > self.window_seconds:
+            self._window_start = now
+            self.failure_count = 1
+        else:
+            self.failure_count += 1
+        if self.failure_count >= self.threshold:
+            self.state = "open"
+            self.opened_at = now
+
+
 @dataclass
 class Tool:
     """A tool the agent can use."""
