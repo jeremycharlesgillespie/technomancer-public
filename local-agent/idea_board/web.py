@@ -11,6 +11,7 @@ Routes:
     POST /api/ideas/<id>/comment  — Add a comment
     POST /api/ideas/<id>/execute  — Trigger Claude Code execution
     GET  /api/ideas/<id>/log/stream — SSE stream for live execution log
+    GET  /api/aim/logs/tail       — SSE stream of aim.log + worker.log lines filtered by idea
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
@@ -1965,6 +1966,19 @@ _LIVE_LOG_HTML = """<!doctype html>
   #log {{ white-space:pre-wrap; word-break:break-word; font-size:0.8rem; }}
   .line {{ padding:0.05rem 0; border-left:2px solid transparent; padding-left:0.5rem; }}
   .line:hover {{ background:#161b22; border-left-color:#30363d; }}
+  details.aim-panel {{ margin-top:1rem; border:1px solid #30363d; border-radius:4px;
+                       background:#0b0f14; }}
+  details.aim-panel > summary {{ cursor:pointer; padding:0.4rem 0.75rem; color:#8b949e;
+                                 font-size:0.85rem; user-select:none; }}
+  details.aim-panel[open] > summary {{ border-bottom:1px solid #30363d;
+                                       color:#58a6ff; }}
+  .aim-status {{ float:right; font-size:0.75rem; color:#8b949e; }}
+  #aim-log {{ white-space:pre-wrap; word-break:break-word; font-size:0.75rem;
+              padding:0.5rem 0.75rem; max-height:400px; overflow-y:auto; }}
+  #aim-log .line {{ padding-left:0.5rem; }}
+  #aim-log .line.aim {{ border-left-color:#d29922; }}
+  #aim-log .line.worker {{ border-left-color:#3fb950; }}
+  #aim-log .empty {{ color:#6e7681; font-style:italic; }}
 </style>
 </head>
 <body>
@@ -1973,6 +1987,15 @@ _LIVE_LOG_HTML = """<!doctype html>
     <span class="status" id="status">connecting…</span>
   </header>
   <div id="log"></div>
+
+  <details class="aim-panel" id="aim-panel">
+    <summary>
+      AIM + Worker log (brain decisions, assignment, completion)
+      <span class="aim-status" id="aim-status"></span>
+    </summary>
+    <div id="aim-log"><div class="empty">Expand to start tailing aim.log + worker.log for {item_id}…</div></div>
+  </details>
+
 <script>
   const logEl = document.getElementById('log');
   const statusEl = document.getElementById('status');
@@ -2002,6 +2025,54 @@ _LIVE_LOG_HTML = """<!doctype html>
     src.close();
   }});
   src.onerror = () => {{ statusEl.textContent = 'disconnected'; statusEl.className = 'status'; }};
+
+  // AIM + Worker log panel — opens on demand so we only pay for the SSE
+  // when the user actually wants to see it.
+  const aimPanel = document.getElementById('aim-panel');
+  const aimLogEl = document.getElementById('aim-log');
+  const aimStatusEl = document.getElementById('aim-status');
+  let aimSrc = null;
+
+  aimPanel.addEventListener('toggle', () => {{
+    if (aimPanel.open && !aimSrc) {{
+      aimLogEl.innerHTML = '';
+      aimStatusEl.textContent = 'connecting…';
+      aimSrc = new EventSource('/api/aim/logs/tail?idea={item_id}');
+
+      aimSrc.addEventListener('log', e => {{
+        const lines = JSON.parse(e.data).lines || [];
+        const near = aimLogEl.scrollTop + aimLogEl.clientHeight + 40 >= aimLogEl.scrollHeight;
+        for (const line of lines) {{
+          const div = document.createElement('div');
+          div.className = 'line ' + (line.startsWith('[aim]') ? 'aim' : 'worker');
+          div.textContent = line;
+          aimLogEl.appendChild(div);
+        }}
+        if (near) aimLogEl.scrollTop = aimLogEl.scrollHeight;
+      }});
+
+      aimSrc.addEventListener('state', e => {{
+        const d = JSON.parse(e.data);
+        if (d.project) {{
+          aimStatusEl.textContent = 'project: ' + d.project;
+        }} else if (typeof d.elapsed === 'number') {{
+          aimStatusEl.textContent = 'tailing (' + (d.elapsed|0) + 's)';
+        }}
+      }});
+
+      aimSrc.addEventListener('done', e => {{
+        aimStatusEl.textContent = 'closed';
+        aimSrc.close();
+        aimSrc = null;
+      }});
+
+      aimSrc.onerror = () => {{ aimStatusEl.textContent = 'disconnected'; }};
+    }} else if (!aimPanel.open && aimSrc) {{
+      aimSrc.close();
+      aimSrc = null;
+      aimStatusEl.textContent = '';
+    }}
+  }});
 </script>
 </body>
 </html>
@@ -2010,6 +2081,203 @@ _LIVE_LOG_HTML = """<!doctype html>
 
 # Local-agent root — aim/ state files live under here (primary + per-project).
 _AGENT_ROOT: Path = Path(__file__).resolve().parent.parent
+
+
+def _aim_log_paths_for_project(project: str | None) -> list[tuple[str, Path]]:
+    """Return [(source, path)] for aim.log + worker.log in the given project.
+
+    ``project`` of ``None``, ``""``, or ``"primary"`` → top-level ``aim/``.
+    Any other value is treated as a per-project name under ``aim/projects/``.
+    Paths that don't exist on disk are still returned — the caller's tail
+    loop handles a missing file by waiting for it to appear.
+    """
+    if not project or project.lower() == "primary":
+        base = _AGENT_ROOT / "aim"
+    else:
+        base = _AGENT_ROOT / "aim" / "projects" / project
+    return [("aim", base / "aim.log"), ("worker", base / "worker.log")]
+
+
+def _detect_project_for_idea(idea_id: str) -> str | None:
+    """Best-effort lookup of which aim/ project an idea_id belongs to.
+
+    Scans the primary ``aim/.aim_state.json`` first, then each
+    ``aim/projects/<name>/.aim_state.json``.  Checks ``worker.current_idea_id``
+    and ``board_snapshot.recent_completions[*].key``.  Returns the project
+    label (``"primary"`` or the directory name) on match, or ``None`` if the
+    idea can't be located in any state file.
+    """
+    state_files: list[tuple[str, Path]] = []
+
+    primary_path = _AGENT_ROOT / "aim" / ".aim_state.json"
+    if primary_path.exists():
+        state_files.append(("primary", primary_path))
+
+    projects_dir = _AGENT_ROOT / "aim" / "projects"
+    if projects_dir.is_dir():
+        for sub in sorted(projects_dir.iterdir()):
+            if sub.is_dir() and (sub / ".aim_state.json").exists():
+                state_files.append((sub.name, sub / ".aim_state.json"))
+
+    for label, path in state_files:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        worker = data.get("worker") or {}
+        if worker.get("current_idea_id") == idea_id:
+            return label
+        snapshot = data.get("board_snapshot") or {}
+        for item in snapshot.get("recent_completions", []) or []:
+            if item.get("key") == idea_id:
+                return label
+    return None
+
+
+# Match line start: "YYYY-MM-DD HH:MM:SS". Used to extract sort keys and to
+# drop stack-trace continuation lines that don't carry their own timestamp.
+_AIM_LOG_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+# Safety nets for the AIM/Worker tail SSE — exposed as module attrs so tests
+# can shrink them to force the generator to terminate quickly.
+AIM_LOG_TAIL_MAX_IDLE_SECONDS = 900
+AIM_LOG_TAIL_MAX_TOTAL_SECONDS = 3600
+AIM_LOG_TAIL_POLL_INTERVAL = 1.0
+
+
+def _iter_matching_lines(
+    log_path: Path, fh, source: str, idea_id: str,
+) -> list[tuple[str, str, str]]:
+    """Pull every newly-available line from ``fh`` matching ``idea_id``.
+
+    Returns ``[(timestamp_prefix, source, rendered_line)]`` where
+    ``rendered_line`` is prefixed with the source label (``"[aim] "`` /
+    ``"[worker] "``) so the merged stream identifies which file each
+    line came from.  ``timestamp_prefix`` is the leading 19 chars of the
+    log line (``"YYYY-MM-DD HH:MM:SS"``) — used purely to interleave the
+    two streams by wall-clock order.  Lines without a timestamp prefix
+    are skipped (they're stack-trace continuations that don't carry
+    their own ``idea_id``).
+    """
+    out: list[tuple[str, str, str]] = []
+    while True:
+        line = fh.readline()
+        if not line:
+            break
+        stripped = line.rstrip("\n")
+        if not _AIM_LOG_TS_RE.match(stripped):
+            continue
+        if idea_id not in stripped:
+            continue
+        out.append((stripped[:19], source, f"[{source}] {stripped}"))
+    return out
+
+
+@app.route("/api/aim/logs/tail")
+def api_aim_logs_tail() -> Response:
+    """GET /api/aim/logs/tail?idea=<key>&project=<name> — SSE AIM/Worker tail.
+
+    Streams lines from ``aim.log`` + ``worker.log`` (per-project or primary)
+    filtered to those mentioning ``idea``, interleaved by their leading
+    ``YYYY-MM-DD HH:MM:SS`` timestamp.  First flush sends all historic
+    matches; the connection then tails both files for new lines.  Events:
+
+    - ``log``   : ``{"lines": [...]}`` — each string is already prefixed
+                  with ``"[aim]"`` or ``"[worker]"``.
+    - ``state`` : periodic heartbeats carrying ``{"project": ...}``.
+    - ``done``  : terminal event on idle-timeout / total-timeout.
+
+    ``project`` is optional — if omitted, the endpoint looks up which
+    project owns the idea via ``.aim_state.json`` files, falling back to
+    the primary ``aim/`` directory.
+    """
+    idea_id = (request.args.get("idea") or "").strip()
+    project = (request.args.get("project") or "").strip() or None
+
+    def _sse(event: str, data: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+    if not idea_id:
+        def _err_gen():
+            yield _sse("done", {"error": "missing 'idea' query param"})
+        return Response(
+            _err_gen(), mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    if project is None:
+        project = _detect_project_for_idea(idea_id) or "primary"
+
+    paths = _aim_log_paths_for_project(project)
+
+    def generate():
+        # Safety nets: close the connection even if the idea goes silent
+        # forever so we don't pin a gunicorn worker. Module-level attrs so
+        # tests can shrink them.
+        import idea_board.web as _self
+        max_idle_seconds = _self.AIM_LOG_TAIL_MAX_IDLE_SECONDS
+        max_total_seconds = _self.AIM_LOG_TAIL_MAX_TOTAL_SECONDS
+        poll_interval = _self.AIM_LOG_TAIL_POLL_INTERVAL
+
+        open_handles: list[tuple[str, Path, Any]] = []
+        for source, path in paths:
+            try:
+                fh = open(path, encoding="utf-8", errors="replace")
+                open_handles.append((source, path, fh))
+            except OSError:
+                # Missing log file is fine — just skip it. Live tail would
+                # need the file to exist to start reading, so we don't
+                # retry-open here; operators typically create both.
+                continue
+
+        # Initial tag lets the client show which project/logs it's tailing.
+        yield _sse("state", {
+            "project": project,
+            "idea": idea_id,
+            "sources": [src for src, _p, _fh in open_handles],
+        })
+
+        if not open_handles:
+            yield _sse("done", {"reason": "no_log_files"})
+            return
+
+        start = time.time()
+        last_progress = start
+
+        try:
+            while True:
+                new_lines: list[tuple[str, str, str]] = []
+                for source, path, fh in open_handles:
+                    new_lines.extend(_iter_matching_lines(path, fh, source, idea_id))
+
+                if new_lines:
+                    new_lines.sort(key=lambda x: x[0])
+                    yield _sse("log", {"lines": [ln for _ts, _src, ln in new_lines]})
+                    last_progress = time.time()
+
+                now = time.time()
+                if now - start > max_total_seconds:
+                    yield _sse("done", {"reason": "max_total"})
+                    return
+                if now - last_progress > max_idle_seconds:
+                    yield _sse("done", {"reason": "idle_timeout"})
+                    return
+
+                # Heartbeat so proxies don't drop the connection.
+                yield _sse("state", {"elapsed": round(now - start, 1)})
+                time.sleep(poll_interval)
+        finally:
+            for _src, _p, fh in open_handles:
+                try:
+                    fh.close()
+                except OSError:
+                    pass
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _collect_live_executions() -> dict[str, list[dict[str, Any]]]:
