@@ -242,6 +242,74 @@ class TestConcurrentWrites:
         assert count == N
 
 
+class TestSerializeMetadata:
+    """Direct tests for the private ``_serialize_metadata`` helper.
+
+    The helper is covered indirectly through ``phase_timer``/``record_phase``
+    elsewhere, but pinning its contract directly makes refactors safer and
+    surfaces failures at the helper level instead of bubbling up through the
+    full write path.
+    """
+
+    def test_none_returns_none(self):
+        """``None`` must stay ``None`` so the column stores SQL NULL, not
+        the string ``"null"``."""
+        assert story_timings._serialize_metadata(None) is None
+
+    def test_dict_round_trips_through_json(self):
+        out = story_timings._serialize_metadata({"a": 1, "b": "two"})
+        assert json.loads(out) == {"a": 1, "b": "two"}
+
+    def test_list_round_trips_through_json(self):
+        out = story_timings._serialize_metadata([1, 2, 3])
+        assert json.loads(out) == [1, 2, 3]
+
+    def test_primitive_values_serialize(self):
+        assert story_timings._serialize_metadata(42) == "42"
+        assert story_timings._serialize_metadata("hi") == '"hi"'
+        assert story_timings._serialize_metadata(True) == "true"
+        assert story_timings._serialize_metadata(False) == "false"
+
+    def test_keys_are_sorted(self):
+        """``sort_keys=True`` keeps output deterministic across platforms."""
+        out = story_timings._serialize_metadata({"c": 3, "a": 1, "b": 2})
+        assert out == '{"a": 1, "b": 2, "c": 3}'
+
+    def test_default_str_handles_nested_non_serializable(self):
+        """``default=str`` lets serialization succeed when a *value* inside
+        the payload is not JSON-native (e.g. datetimes, custom objects)."""
+        class Stamp:
+            def __str__(self):
+                return "STAMP"
+
+        out = story_timings._serialize_metadata({"when": Stamp()})
+        assert "STAMP" in out
+        assert json.loads(out) == {"when": "STAMP"}
+
+    def test_fully_non_serializable_top_level_falls_back_to_str(self):
+        """When ``json.dumps`` raises even with ``default=str``, the helper
+        must still return a string — instrumentation never breaks callers."""
+        class Bomb:
+            def __str__(self):
+                return "BOMB"
+
+        # Patch json.dumps to simulate a TypeError that default=str can't fix.
+        with patch.object(
+            story_timings.json, "dumps", side_effect=TypeError("unserializable")
+        ):
+            out = story_timings._serialize_metadata(Bomb())
+        assert out == "BOMB"
+
+    def test_value_error_also_falls_back_to_str(self):
+        """``ValueError`` (e.g. inf/nan edge cases) also triggers fallback."""
+        with patch.object(
+            story_timings.json, "dumps", side_effect=ValueError("bad float")
+        ):
+            out = story_timings._serialize_metadata({"x": 1})
+        # Fallback is ``str(metadata)`` — a dict repr, not a JSON string.
+        assert "x" in out and "1" in out
+
+
 class TestRecordPhase:
     def test_direct_insert(self):
         row_id = story_timings.record_phase(
