@@ -1476,7 +1476,29 @@ def execute_idea(
             project_root = Path(_settings.project_root)
         else:
             project_root = Path(__file__).parent.parent.parent
-        local_agent_dir = str(Path(__file__).parent.parent)
+
+        # Resolve the test invocation. Default is Technomancer's pytest run
+        # from local-agent/. External projects (e.g. 40Acres Django) set
+        # TEST_COMMAND + optional TEST_CWD in their project env.
+        import shlex as _shlex
+        if _settings.test_command:
+            base_test_cmd = _shlex.split(_settings.test_command)
+        else:
+            base_test_cmd = [sys.executable, "-m", "pytest"]
+        if _settings.test_cwd:
+            tc = Path(_settings.test_cwd)
+            test_cwd_path = tc if tc.is_absolute() else project_root / tc
+        elif _settings.test_command:
+            # External project with no TEST_CWD override — run at project root.
+            test_cwd_path = project_root
+        else:
+            # Technomancer default — local-agent/ subdirectory.
+            test_cwd_path = Path(__file__).parent.parent
+        local_agent_dir = str(test_cwd_path)
+        # Technomancer-specific tooling (validate.py, safe_update.py,
+        # README + publish) only runs when those files actually exist in
+        # test_cwd — keeps external projects from tripping on absent scripts.
+        _has_validate_py = (test_cwd_path / "validate.py").exists()
 
         _notify_discord(f"Starting execution of {idea_id}: {idea.title}")
 
@@ -1767,16 +1789,22 @@ def execute_idea(
                 failure_output = ""
                 delta: set[str] = set()
 
-                # Validate
+                # Validate (Technomancer's validate.py — skip for external projects)
                 state.log("")
-                state.log(
-                    f"--- Validation (attempt {attempt}) ---"
-                )
-                validate_result = subprocess.run(
-                    [sys.executable, "validate.py", "import"],
-                    capture_output=True, text=True, timeout=60,
-                    cwd=local_agent_dir,
-                )
+                if _has_validate_py:
+                    state.log(
+                        f"--- Validation (attempt {attempt}) ---"
+                    )
+                    validate_result = subprocess.run(
+                        [sys.executable, "validate.py", "import"],
+                        capture_output=True, text=True, timeout=60,
+                        cwd=local_agent_dir,
+                    )
+                else:
+                    # No validate.py in test_cwd — skip straight to tests.
+                    validate_result = subprocess.CompletedProcess(
+                        ["(no validate.py)"], 0, stdout="", stderr=""
+                    )
                 if validate_result.returncode != 0:
                     fail_lines = [
                         vline.strip()
@@ -1791,10 +1819,11 @@ def execute_idea(
                         + validate_result.stdout[-2000:]
                     )
                 else:
-                    state.log("Validation passed")
+                    if _has_validate_py:
+                        state.log("Validation passed")
 
-                    # Run targeted tests (fast feedback)
-                    if related_tests:
+                    # Run targeted tests (fast feedback, pytest only)
+                    if related_tests and not _settings.test_command:
                         state.log(
                             f"--- Targeted tests (attempt {attempt}) ---"
                         )
@@ -1966,9 +1995,17 @@ def execute_idea(
             state.log(f"Pre-test: {load_before}")
             full_start = time.time()
 
+            # Technomancer default adds pytest flags; external projects
+            # drop them (their test_command is whatever the user set).
+            if _settings.test_command:
+                full_cmd = base_test_cmd
+            else:
+                full_cmd = base_test_cmd + [
+                    "-q", "--tb=short",
+                    "--reruns", "2", "--reruns-delay", "1",
+                ]
             full_result = _run_pytest_with_progress(
-                [sys.executable, "-m", "pytest", "-q", "--tb=short",
-                 "--reruns", "2", "--reruns-delay", "1"],
+                full_cmd,
                 cwd=local_agent_dir,
                 state=state,
                 label="tests",

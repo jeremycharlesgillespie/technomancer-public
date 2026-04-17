@@ -190,6 +190,23 @@ class Settings(BaseSettings):
     aim_state_dir: str = Field(
         default="", description="Directory for AIM state/lock/pid files (empty = aim/ default)"
     )
+    test_command: str = Field(
+        default="",
+        description=(
+            "Shell-style command the executor runs to validate a branch "
+            "before merging. Parsed with shlex. Empty = Technomancer "
+            "default (pytest from local-agent/). Example for Django: "
+            "'python manage.py test'."
+        ),
+    )
+    test_cwd: str = Field(
+        default="",
+        description=(
+            "Working directory for test_command, relative to project_root "
+            "(or absolute). Empty = project_root/local-agent for the "
+            "Technomancer default, or project_root when test_command is set."
+        ),
+    )
     aim_story_generation_enabled: bool = Field(
         default=True,
         description=(
