@@ -5,8 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.image_identification import (
+    ImageIdentificationResult,
     analyze_with_vision_model,
     ask_claude_with_image,
+    identify_image,
 )
 
 
@@ -39,6 +41,41 @@ class TestAnalyzeWithVisionModel:
             with patch("agent.image_identification._record_perf"):
                 result = analyze_with_vision_model([FAKE_PNG])
                 assert "Error" in result or "error" in result.lower()
+
+    def test_accepts_prompt_none(self):
+        """Regression guard: prompt=None must be a valid call (PEP 484 implicit-Optional fix)."""
+        mock_client = MagicMock()
+        mock_client.chat.return_value = {"message": {"content": "Default prompt response."}}
+
+        with patch("agent.image_identification._vision_client", mock_client):
+            with patch("agent.image_identification._record_perf"):
+                result = analyze_with_vision_model([FAKE_PNG], prompt=None)
+                assert isinstance(result, str)
+
+
+class TestIdentifyImage:
+    def test_returns_typed_dict_shape_when_vision_identifies(self):
+        """identify_image must return exactly {'method', 'result', 'confidence'} keys."""
+        # Vision model response that hits the `has_specific_name` regex
+        # (lowercase "this is" + Capitalized name) and avoids generic-description signs.
+        vision_response = "Hello, this is Pikachu, the famous Pokemon."
+
+        with patch(
+            "agent.image_identification.analyze_with_vision_model",
+            return_value=vision_response,
+        ):
+            result = identify_image(FAKE_PNG)
+
+        assert isinstance(result, dict)
+        assert set(result.keys()) == {"method", "result", "confidence"}
+        assert result["method"] == "vision_model"
+        assert isinstance(result["result"], str)
+        assert isinstance(result["confidence"], float)
+
+    def test_typed_dict_class_has_expected_fields(self):
+        """ImageIdentificationResult TypedDict must declare the documented fields."""
+        annotations = ImageIdentificationResult.__annotations__
+        assert set(annotations.keys()) == {"method", "result", "confidence"}
 
 
 class TestAskClaudeWithImage:

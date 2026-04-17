@@ -7,6 +7,7 @@ Image Identification - Cascading approach for identifying images.
 
 import time as _time
 from datetime import datetime
+from typing import Literal, TypedDict
 
 import ollama
 
@@ -19,13 +20,19 @@ _vision_client = ollama.Client(host="http://127.0.0.1:11434")
 VISION_MODEL = "llava-llama3"
 
 
+class ImageIdentificationResult(TypedDict):
+    method: Literal["vision_model", "claude"]
+    result: str
+    confidence: float
+
+
 def log(msg: str) -> None:
     """Simple logging."""
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] [ImageID] {msg}", flush=True)
 
 
-def analyze_with_vision_model(image_bytes_list: list[bytes], prompt: str = None) -> str:
+def analyze_with_vision_model(image_bytes_list: list[bytes], prompt: str | None = None) -> str:
     """
     Use local vision model (llava-llama3) to analyze image.
     """
@@ -85,6 +92,7 @@ def ask_claude_with_image(image_bytes: bytes, question: str) -> str:
     elif image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP":
         suffix = ".webp"
 
+    tmp_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
             suffix=suffix, delete=False, prefix="technomancer_img_"
@@ -125,13 +133,16 @@ def ask_claude_with_image(image_bytes: bytes, question: str) -> str:
 
     finally:
         # Clean up temp file
-        try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        if tmp_path is not None:
+            try:
+                Path(tmp_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
-def identify_image(image_bytes: bytes, user_question: str = "Who is this?") -> dict:
+def identify_image(
+    image_bytes: bytes, user_question: str = "Who is this?"
+) -> ImageIdentificationResult:
     """
     Cascade through identification methods:
     1. Local vision model (llava-llama3)
