@@ -5414,6 +5414,91 @@ def api_aiv_flags() -> Response:
     return jsonify(_aiv_flag_counts(hours))
 
 
+_AIV_TREND_WINDOWS: dict[str, int | None] = {"7d": 7, "30d": 30, "all": None}
+_AIV_TREND_DEFAULT_WINDOW = "7d"
+
+
+def _aiv_fetch_trend(window: str) -> dict[str, Any]:
+    """Return the seven score axes averaged per day over ``window``.
+
+    ``window`` is one of ``"7d"``, ``"30d"``, ``"all"``. Unknown values
+    fall back to the default. The response shape is ::
+
+        {"window": <window>,
+         "series": [
+            {"axis": "meets_requirements",
+             "points": [{"date": "YYYY-MM-DD", "value": <float>}, ...]},
+            ... (seven entries total) ...
+         ]}
+
+    Sentinel ``-1`` and ``NULL`` scores are excluded from each day's mean
+    for their axis. A day with no non-sentinel score for a given axis
+    contributes no point to that axis's series.
+    """
+    if window not in _AIV_TREND_WINDOWS:
+        window = _AIV_TREND_DEFAULT_WINDOW
+
+    empty_series = [{"axis": axis, "points": []} for axis in _AIV_SCORE_AXES]
+    if not aiv_schema.DB_PATH.exists():
+        return {"window": window, "series": empty_series}
+
+    days = _AIV_TREND_WINDOWS[window]
+    params: list[Any] = []
+    where_clause = ""
+    if days is not None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=days)
+        ).isoformat()
+        where_clause = "WHERE validated_at >= ?"
+        params.append(cutoff)
+
+    # Axis names come from the hardcoded _AIV_SCORE_AXES tuple — no SQL
+    # injection surface.
+    axis_avg_cols = ", ".join(
+        f"AVG(CASE WHEN {axis} >= 0 THEN {axis} END) AS {axis}"
+        for axis in _AIV_SCORE_AXES
+    )
+
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            f"SELECT substr(validated_at, 1, 10) AS day, {axis_avg_cols} "
+            f"FROM story_quality {where_clause} "
+            "GROUP BY day ORDER BY day ASC",
+            params,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {"window": window, "series": empty_series}
+
+    series: list[dict[str, Any]] = []
+    for axis in _AIV_SCORE_AXES:
+        points: list[dict[str, Any]] = []
+        for r in rows:
+            day = r["day"]
+            val = r[axis]
+            if day is None or val is None:
+                continue
+            points.append({"date": str(day), "value": float(val)})
+        series.append({"axis": axis, "points": points})
+    return {"window": window, "series": series}
+
+
+@app.route("/api/aiv/trend")
+def api_aiv_trend() -> Response:
+    """GET /api/aiv/trend?window=7d|30d|all — per-axis daily means.
+
+    Feeds the /quality trend chart. Returns seven series (one per AIV
+    score axis); see :func:`_aiv_fetch_trend` for the envelope shape.
+    """
+    window = (
+        request.args.get("window") or _AIV_TREND_DEFAULT_WINDOW
+    ).strip().lower()
+    if window not in _AIV_TREND_WINDOWS:
+        window = _AIV_TREND_DEFAULT_WINDOW
+    return jsonify(_aiv_fetch_trend(window))
+
+
 def _aiv_fmt_score(value: Any) -> str:
     """Render an axis score for the HTML table.
 
@@ -5660,13 +5745,25 @@ td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
                             border: 1px solid var(--border); border-radius: 4px;
                             opacity: 0.5; }}
 .pagination .pg-info {{ color: var(--muted); }}
+.trend-section {{ background: var(--surface); border-radius: 8px;
+                  padding: 1rem 1.25rem; margin-bottom: 1.5rem;
+                  border-left: 4px solid var(--accent); }}
+.trend-section h2 {{ font-size: 1rem; margin-bottom: 0.5rem; color: var(--accent); }}
+.trend-controls {{ display: flex; gap: 8px; align-items: center;
+                   margin-bottom: 0.75rem; font-size: 0.85rem; color: var(--muted); }}
+.trend-controls select {{ background: #1a1a1a; color: var(--text);
+                          border: 1px solid var(--border); padding: 4px 8px;
+                          border-radius: 4px; font-size: 0.85rem; }}
+.trend-chart-wrapper {{ position: relative; height: 260px; }}
 @media (max-width: 720px) {{
     body {{ padding: 10px; }}
     td.title {{ max-width: 140px; }}
     th, td {{ padding: 6px; font-size: 0.8rem; }}
     .toolbar {{ gap: 8px; }}
+    .trend-chart-wrapper {{ height: 220px; }}
 }}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
 <h1>Recent Validations</h1>
@@ -5682,6 +5779,22 @@ td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
         {flag_summary['stories_with_flags']} story / stories.
     </div>
     <div id="flag-badges">{flag_badges}</div>
+</div>
+
+<div class="trend-section">
+    <h2>Quality trend &mdash; 7 axes, daily mean</h2>
+    <div class="trend-controls">
+        <label for="trend-window">Window</label>
+        <select id="trend-window">
+            <option value="7d" selected>Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="all">All time</option>
+        </select>
+        <span id="trend-status" class="muted"></span>
+    </div>
+    <div class="trend-chart-wrapper">
+        <canvas id="quality-trend-chart"></canvas>
+    </div>
 </div>
 
 <form class="toolbar" method="get" action="/quality">
@@ -5812,6 +5925,110 @@ function renderFlags(data) {{
         return '<span class="flag-badge">' + escapeHtml(kv[0]) + ': ' + kv[1] + '</span>';
     }}).join(' ');
 }}
+
+const AXIS_COLORS = {{
+    meets_requirements: '#66b3ff',
+    code_quality:       '#4caf50',
+    test_quality:       '#ff9800',
+    security_safety:    '#f44336',
+    scope_discipline:   '#ab47bc',
+    edge_cases:         '#26c6da',
+    product_impact:     '#ffca28',
+}};
+
+const AXIS_LABELS = {{
+    meets_requirements: 'Requirements',
+    code_quality:       'Code',
+    test_quality:       'Tests',
+    security_safety:    'Security',
+    scope_discipline:   'Scope',
+    edge_cases:         'Edge cases',
+    product_impact:     'Impact',
+}};
+
+let qualityTrendChart = null;
+
+function buildTrendDatasets(series, labels) {{
+    const labelIndex = new Map(labels.map(function(d, i) {{ return [d, i]; }}));
+    return series.map(function(s) {{
+        const data = new Array(labels.length).fill(null);
+        (s.points || []).forEach(function(p) {{
+            const idx = labelIndex.get(p.date);
+            if (idx !== undefined) data[idx] = p.value;
+        }});
+        const color = AXIS_COLORS[s.axis] || '#888';
+        return {{
+            label: AXIS_LABELS[s.axis] || s.axis,
+            data: data,
+            borderColor: color,
+            backgroundColor: color + '33',
+            tension: 0.25,
+            pointRadius: 3,
+            spanGaps: true,
+        }};
+    }});
+}}
+
+function renderTrendChart(payload) {{
+    const canvas = document.getElementById('quality-trend-chart');
+    if (!canvas || typeof Chart === 'undefined') return;
+    const series = (payload && payload.series) || [];
+    const labelSet = new Set();
+    series.forEach(function(s) {{
+        (s.points || []).forEach(function(p) {{ labelSet.add(p.date); }});
+    }});
+    const labels = Array.from(labelSet).sort();
+    const datasets = buildTrendDatasets(series, labels);
+
+    if (qualityTrendChart) {{
+        qualityTrendChart.data.labels = labels;
+        qualityTrendChart.data.datasets = datasets;
+        qualityTrendChart.update();
+    }} else {{
+        qualityTrendChart = new Chart(canvas.getContext('2d'), {{
+            type: 'line',
+            data: {{ labels: labels, datasets: datasets }},
+            options: {{
+                responsive: true, maintainAspectRatio: false,
+                plugins: {{ legend: {{ labels: {{ color: '#e0e0e0' }} }} }},
+                scales: {{
+                    x: {{ ticks: {{ color: '#888' }}, grid: {{ color: '#333' }} }},
+                    y: {{ min: 0, max: 10,
+                          ticks: {{ color: '#888', stepSize: 2 }},
+                          grid: {{ color: '#333' }} }},
+                }},
+            }},
+        }});
+    }}
+
+    const status = document.getElementById('trend-status');
+    if (status) {{
+        if (labels.length === 0) {{
+            status.textContent = 'No validated stories in this window yet.';
+        }} else {{
+            status.textContent = labels.length + ' day(s) of data';
+        }}
+    }}
+}}
+
+async function refreshTrend() {{
+    const sel = document.getElementById('trend-window');
+    const window = sel ? sel.value : '7d';
+    try {{
+        const r = await fetch('/api/aiv/trend?window=' + encodeURIComponent(window));
+        if (!r.ok) return;
+        const payload = await r.json();
+        renderTrendChart(payload);
+    }} catch (e) {{
+        // Leave previous chart on transient error.
+    }}
+}}
+
+(function initTrend() {{
+    const sel = document.getElementById('trend-window');
+    if (sel) sel.addEventListener('change', refreshTrend);
+    refreshTrend();
+}})();
 
 {auto_refresh_js}
 </script>
