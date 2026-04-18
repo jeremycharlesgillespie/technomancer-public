@@ -9,6 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from aim.splitter import (
+    GENERATION_MARKER,
+    MAX_SPLITTER_GENERATION,
     MIN_SPLITS,
     ProposedStory,
     SplitResult,
@@ -17,6 +19,7 @@ from aim.splitter import (
     _build_context,
     _build_prompt,
     _count_prior_failures,
+    _get_generation,
     _parse_split_response,
     _pick_relevant_files,
     _propose_splits,
@@ -208,11 +211,13 @@ class TestShouldSplit:
         assert not ok
         assert reason == "exempt_epic"
 
-    def test_splitter_child_skipped(self):
+    def test_splitter_child_no_longer_skipped(self):
+        # TK-578: splitter-children are allowed to re-split; the generation
+        # cap is enforced by evaluate_failure, not _should_split.
         item = make_item(source=SPLITTER_SOURCE)
         ok, reason = _should_split(item, prior_failures=2)
-        assert not ok
-        assert reason == "source_splitter_skip"
+        assert ok
+        assert reason == "split_due"
 
     def test_normal_story_fires(self):
         item = make_item()
@@ -489,34 +494,253 @@ class TestEvaluateFailure:
 
 
 # ---------------------------------------------------------------------------
-# Anti-loop (splitter-child protection)
+# Recursive splitting + generation tracking (TK-578)
 # ---------------------------------------------------------------------------
 
 
-class TestAntiLoop:
-    def test_splitter_child_auto_vetoes_on_any_failure(self, provider):
-        provider.seed(
-            make_item(source=SPLITTER_SOURCE),
-            comments=failure_comments(1),
-        )
-        result = evaluate_failure("TK-100", provider=provider)
-        assert not result.fired
-        assert result.reason == "auto_veto"
-        assert ("TK-100", "owner", "veto") in provider.votes
-        veto_comments = [
-            c for c in provider.get_comments("TK-100")
-            if "Auto-vetoed" in c.text
-        ]
-        assert len(veto_comments) == 1
+def _gen_comment(n: int) -> Comment:
+    return Comment(
+        author="splitter",
+        text=f"{GENERATION_MARKER} {n}",
+        created="2026-04-17T00:00:00",
+        marker=GENERATION_MARKER,
+    )
 
-    def test_splitter_child_multi_failure_also_vetoes(self, provider):
+
+class TestGetGeneration:
+    def test_no_marker_defaults_to_one(self):
+        # Legacy splitter-children predating TK-578 have no marker — treat
+        # them as gen 1 so the next split produces gen-2 children.
+        assert _get_generation([]) == 1
+
+    def test_reads_marker_value(self):
+        assert _get_generation([_gen_comment(3)]) == 3
+
+    def test_latest_marker_wins(self):
+        # If two stamps exist, newest one is authoritative.
+        assert _get_generation([_gen_comment(1), _gen_comment(4)]) == 4
+
+    def test_ignores_non_generation_comments(self):
+        comments = [
+            Comment(author="x", text="[AIM Progress]\nhi", created="", marker="[AIM Progress]"),
+            _gen_comment(2),
+        ]
+        assert _get_generation(comments) == 2
+
+    def test_malformed_value_falls_back(self):
+        bad = Comment(
+            author="splitter",
+            text=f"{GENERATION_MARKER} banana",
+            created="",
+            marker=GENERATION_MARKER,
+        )
+        # Malformed → skipped, fallback default 1.
+        assert _get_generation([bad]) == 1
+
+
+class TestRecursiveSplitting:
+    def test_splitter_child_re_splits_instead_of_veto(self, provider, monkeypatch):
+        """TK-578: splitter-origin failures get re-split, not auto-vetoed."""
         provider.seed(
             make_item(source=SPLITTER_SOURCE),
-            comments=failure_comments(3),
+            comments=[*failure_comments(1), _gen_comment(1)],
         )
-        result = evaluate_failure("TK-100", provider=provider)
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "tinier1", "description": "one atom"},
+                {"title": "tinier2", "description": "another atom"},
+            ],
+            "rationale": "smaller still",
+        })
+        monkeypatch.setattr(
+            "aim.splitter._pick_relevant_files", lambda *_a, **_kw: [],
+        )
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        assert result.reason == "split_done"
+        assert len(result.new_keys) == 2
+        # Auto-veto no longer happens for splitter-children.
+        assert ("TK-100", "owner", "veto") not in provider.votes
+        # Each new child should carry a gen-2 marker (parent was gen 1).
+        for key in result.new_keys:
+            gens = [
+                c for c in provider.get_comments(key)
+                if c.marker == GENERATION_MARKER
+            ]
+            assert len(gens) == 1
+            assert "2" in gens[0].text
+
+    def test_non_splitter_origin_children_are_generation_one(self, provider, monkeypatch):
+        """First split of a normal story stamps gen 1 on each child."""
+        provider.seed(make_item(), comments=failure_comments(1))
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "a", "description": "first"},
+                {"title": "b", "description": "second"},
+                {"title": "c", "description": "third"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr(
+            "aim.splitter._pick_relevant_files", lambda *_a, **_kw: [],
+        )
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        for key in result.new_keys:
+            gens = [
+                c for c in provider.get_comments(key)
+                if c.marker == GENERATION_MARKER
+            ]
+            assert len(gens) == 1
+            assert "1" in gens[0].text
+
+    def test_generation_increments_with_each_round(self, provider, monkeypatch):
+        """A gen-N splitter-child produces gen-N+1 children."""
+        provider.seed(
+            make_item(source=SPLITTER_SOURCE),
+            comments=[*failure_comments(1), _gen_comment(3)],
+        )
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "a", "description": "x"},
+                {"title": "b", "description": "y"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr(
+            "aim.splitter._pick_relevant_files", lambda *_a, **_kw: [],
+        )
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        for key in result.new_keys:
+            gens = [
+                c for c in provider.get_comments(key)
+                if c.marker == GENERATION_MARKER
+            ]
+            assert "4" in gens[0].text
+
+
+class TestDepthCap:
+    def test_cap_reached_fires_alert_and_skips_split(
+        self, provider, monkeypatch,
+    ):
+        """At MAX_SPLITTER_GENERATION, don't split — alert instead."""
+        provider.seed(
+            make_item(source=SPLITTER_SOURCE),
+            comments=[
+                *failure_comments(1),
+                _gen_comment(MAX_SPLITTER_GENERATION),
+            ],
+        )
+        alert_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "aim.splitter._alert_depth_cap",
+            lambda parent, gen: alert_calls.append((parent.id, gen)),
+        )
+        # Runner should NEVER be called once the cap is hit.
+        def explode_runner(_p, _t):
+            raise AssertionError("claude_runner should not be invoked at depth cap")
+
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=explode_runner,
+            notifier=lambda *a, **kw: None,
+        )
+
         assert not result.fired
-        assert result.reason == "auto_veto"
+        assert result.reason == "depth_cap_reached"
+        assert alert_calls == [("TK-100", MAX_SPLITTER_GENERATION)]
+        # Story stays put — no veto, no split.
+        assert ("TK-100", "owner", "veto") not in provider.votes
+        assert provider.get("TK-100") is not None
+        # Audit comment records why splitting stopped.
+        cap_comments = [
+            c for c in provider.get_comments("TK-100")
+            if "Depth cap reached" in c.text
+        ]
+        assert len(cap_comments) == 1
+
+    def test_cap_exceeded_still_fires_alert(self, provider, monkeypatch):
+        """A story already past the cap (e.g. cap lowered after-the-fact)
+        still alerts on the next evaluation."""
+        provider.seed(
+            make_item(source=SPLITTER_SOURCE),
+            comments=[
+                *failure_comments(1),
+                _gen_comment(MAX_SPLITTER_GENERATION + 2),
+            ],
+        )
+        alert_calls: list[int] = []
+        monkeypatch.setattr(
+            "aim.splitter._alert_depth_cap",
+            lambda parent, gen: alert_calls.append(gen),
+        )
+        result = evaluate_failure(
+            "TK-100", provider=provider,
+            claude_runner=lambda _p, _t: None,
+            notifier=lambda *a, **kw: None,
+        )
+        assert result.reason == "depth_cap_reached"
+        assert alert_calls == [MAX_SPLITTER_GENERATION + 2]
+
+
+class TestApplySplitStampsGeneration:
+    def test_stamps_requested_generation_on_each_child(self, provider):
+        parent = make_item("TK-100")
+        provider.seed(parent)
+        splits = [
+            ProposedStory(title="A", description="da"),
+            ProposedStory(title="B", description="db"),
+        ]
+        new_keys, err = _apply_split(
+            parent, splits, provider, child_generation=3,
+        )
+        assert err is None
+        assert len(new_keys) == 2
+        for key in new_keys:
+            gen_markers = [
+                c for c in provider.get_comments(key)
+                if c.marker == GENERATION_MARKER
+            ]
+            assert len(gen_markers) == 1
+            assert "3" in gen_markers[0].text
+
+    def test_rollback_does_not_stamp(self, provider):
+        """When too few splits succeed, nothing should be stamped."""
+        parent = make_item("TK-100")
+        provider.seed(parent)
+
+        def fail_second(title):
+            if title == "B":
+                return RuntimeError("boom")
+            return None
+
+        provider.add_side_effect = fail_second
+        splits = [
+            ProposedStory(title="A", description="da"),
+            ProposedStory(title="B", description="db"),
+        ]
+        new_keys, err = _apply_split(
+            parent, splits, provider, child_generation=2,
+        )
+        assert new_keys == []
+        assert "add_failed" in err
+        # The lone surviving add was rolled back → no generation markers
+        # linger on any remaining item.
+        for item in provider.load_all():
+            for c in provider.get_comments(item.id):
+                assert c.marker != GENERATION_MARKER
 
 
 # ---------------------------------------------------------------------------
