@@ -408,6 +408,15 @@ class Settings(BaseSettings):
             "None disables the gate so AIV stays observation-only."
         ),
     )
+    aiv_reopen_on_any_red_flag: bool = Field(
+        default=False,
+        description=(
+            "If True, any AIV-scored story with at least one red flag gets "
+            "the pending-approval label re-applied and a comment posted "
+            "listing the red flags — regardless of overall_score. Red flags "
+            "are binary high-signal, so any single one warrants human review."
+        ),
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
