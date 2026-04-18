@@ -6309,6 +6309,16 @@ def _render_hub() -> str:
             <h2>View Live Executions</h2>
             <p>Browse in-flight work across projects and tail the latest runs.</p>
         </a>
+        <a href="/aim" class="card" style="border-left: 4px solid #00bcd4;">
+            <h2>AIM Status</h2>
+            <p>Compact view of the AIM manager and worker state.</p>
+            <span class="badge" id="aim-status-badge">Loading&hellip;</span>
+        </a>
+        <a href="/aim/dashboard" class="card" style="border-left: 4px solid #00bcd4;">
+            <h2>AIM Dashboard</h2>
+            <p>Richer view with backlog, cycles, and recent decisions.</p>
+            <span class="badge" id="aim-dashboard-badge">Loading&hellip;</span>
+        </a>
         <a href="/performance/breakdown" class="card" style="border-left: 4px solid #9c27b0;">
             <h2>Performance Breakdown</h2>
             <p>Stacked phase timing, percentiles, and idle gaps across recent story runs.</p>
@@ -6389,6 +6399,33 @@ def _render_hub() -> str:
     }}
     updateHealth();
     setInterval(updateHealth, 10000);
+
+    async function updateAimStatus() {{
+        try {{
+            const resp = await fetch('/api/aim/status');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            const worker = data.worker || {{}};
+            const status = worker.status || 'unknown';
+            const idea = worker.current_idea_id;
+            const statusBadge = document.getElementById('aim-status-badge');
+            const dashBadge = document.getElementById('aim-dashboard-badge');
+            const text = idea ? status + ' \u00b7 ' + idea : status;
+            if (statusBadge) statusBadge.textContent = 'worker: ' + text;
+            if (dashBadge) {{
+                const cycles = (data.cycle_count != null) ? data.cycle_count : 0;
+                const done = (data.completions_today != null) ? data.completions_today : 0;
+                dashBadge.textContent = 'cycles: ' + cycles + ' \u00b7 done today: ' + done;
+            }}
+        }} catch (e) {{
+            const statusBadge = document.getElementById('aim-status-badge');
+            const dashBadge = document.getElementById('aim-dashboard-badge');
+            if (statusBadge) statusBadge.textContent = 'worker: unavailable';
+            if (dashBadge) dashBadge.textContent = 'status: unavailable';
+        }}
+    }}
+    updateAimStatus();
+    setInterval(updateAimStatus, 15000);
     </script>
 
     <script>
