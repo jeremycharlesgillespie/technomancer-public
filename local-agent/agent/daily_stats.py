@@ -62,7 +62,15 @@ def init_db() -> None:
             first_attempt_success  INTEGER NOT NULL DEFAULT 0,
             splitter_child_success INTEGER NOT NULL DEFAULT 0,
             splitter_child_fail    INTEGER NOT NULL DEFAULT 0,
+            phase_timings_json     TEXT,
             PRIMARY KEY (date, project)
         )
     """)
+    # Migrate pre-existing databases that don't have phase_timings_json yet.
+    # ALTER TABLE raises OperationalError when the column already exists —
+    # that's the expected idempotency signal, so swallow it.
+    try:
+        conn.execute("ALTER TABLE daily_stats ADD COLUMN phase_timings_json TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()

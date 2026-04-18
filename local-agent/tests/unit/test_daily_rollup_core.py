@@ -8,27 +8,31 @@ from typing import Any
 
 import pytest
 
-from agent import daily_rollup, daily_stats, executor_runs_db
+from agent import daily_rollup, daily_stats, executor_runs_db, story_timings
 
 
 @pytest.fixture(autouse=True)
 def _isolate_dbs(tmp_path, monkeypatch):
-    """Point both SQLite databases at temp paths and reset connection caches.
+    """Point all SQLite databases at temp paths and reset connection caches.
 
-    compute_and_write touches two DBs: executor_runs (read) and
-    daily_stats (write). Each module has its own per-thread connection
-    cache that has to be cleared so the new DB_PATH takes effect.
+    compute_and_write touches three DBs: executor_runs (read),
+    story_phase_timings (read), and daily_stats (write). Each module has
+    its own per-thread connection cache that has to be cleared so the new
+    DB_PATH takes effect.
     """
     executor_db = tmp_path / "executor_runs.db"
     stats_db = tmp_path / "daily_stats.db"
+    timings_db = tmp_path / "story_timings.db"
     monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
     monkeypatch.setattr(executor_runs_db, "DB_PATH", executor_db)
     monkeypatch.setattr(daily_stats, "DB_DIR", tmp_path)
     monkeypatch.setattr(daily_stats, "DB_PATH", stats_db)
-    executor_runs_db._local.__dict__.pop("conn", None)
-    daily_stats._local.__dict__.pop("conn", None)
+    monkeypatch.setattr(story_timings, "DB_DIR", tmp_path)
+    monkeypatch.setattr(story_timings, "DB_PATH", timings_db)
+    for mod in (executor_runs_db, daily_stats, story_timings):
+        mod._local.__dict__.pop("conn", None)
     yield
-    for mod in (executor_runs_db, daily_stats):
+    for mod in (executor_runs_db, daily_stats, story_timings):
         conn = getattr(mod._local, "conn", None)
         if conn is not None:
             conn.close()

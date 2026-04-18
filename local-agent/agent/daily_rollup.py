@@ -3,10 +3,12 @@ Daily Rollup — compute per-day, per-project aggregate stats from
 ``executor_runs`` and upsert them into ``daily_stats``.
 
 This is the primary throughput/cost rollup: one row per ``(date, project)``
-covering ``shipped``, ``failed``, ``cost_usd``, ``p50_wall_s`` and
-``p95_wall_s``. The other columns on ``daily_stats`` (LOC, first-attempt
-success, splitter outcomes) belong to follow-up stories so that a broken
-SQL query in the LOC rollup doesn't block the throughput numbers.
+covering ``shipped``, ``failed``, ``cost_usd``, ``p50_wall_s``,
+``p95_wall_s``, and ``phase_timings_json`` (per-phase p50/p95 from
+``story_phase_timings``). The other columns on ``daily_stats`` (LOC,
+first-attempt success, splitter outcomes) belong to follow-up stories so
+that a broken SQL query in the LOC rollup doesn't block the throughput
+numbers.
 
 Entry points:
 
@@ -18,11 +20,13 @@ Entry points:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
+from collections import defaultdict
 from typing import Any
 
-from . import daily_stats, executor_runs_db
+from . import daily_stats, executor_runs_db, story_timings
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +60,48 @@ def _percentile(values: list[float], pct: float) -> float:
         sorted_vals[lower_idx]
         + frac * (sorted_vals[upper_idx] - sorted_vals[lower_idx])
     )
+
+
+def _compute_phase_timings_json(date: str, project: str) -> str | None:
+    """Compute per-phase p50/p95 for ``(date, project)`` from story_phase_timings.
+
+    Groups every finished phase row matching ``project`` and
+    ``date(started_at) == date`` by ``phase`` and returns a JSON blob
+    mapping each phase name to ``{"count", "p50_ms", "p95_ms"}``.
+
+    Returns ``None`` when no phase rows exist for the day so the column
+    stores SQL NULL rather than an empty-object string — the AC requires
+    "missing phase data ... writes null".
+    """
+    story_timings.init_db()
+    conn = story_timings._get_conn()
+    rows = conn.execute(
+        """SELECT phase, duration_ms
+           FROM story_phase_timings
+           WHERE project = ?
+             AND started_at IS NOT NULL
+             AND date(started_at) = ?
+             AND duration_ms IS NOT NULL
+             AND phase IS NOT NULL""",
+        (project, date),
+    ).fetchall()
+
+    if not rows:
+        return None
+
+    by_phase: dict[str, list[int]] = defaultdict(list)
+    for r in rows:
+        by_phase[r["phase"]].append(int(r["duration_ms"]))
+
+    result: dict[str, dict[str, int]] = {}
+    for phase, values in by_phase.items():
+        values.sort()
+        result[phase] = {
+            "count": len(values),
+            "p50_ms": story_timings._percentile(values, 50),
+            "p95_ms": story_timings._percentile(values, 95),
+        }
+    return json.dumps(result, sort_keys=True)
 
 
 def compute_and_write(date: str, project: str) -> dict[str, Any]:
@@ -104,19 +150,25 @@ def compute_and_write(date: str, project: str) -> dict[str, Any]:
     p50_wall_s = _percentile(durations_s, 50)
     p95_wall_s = _percentile(durations_s, 95)
 
+    phase_timings_json = _compute_phase_timings_json(date, project)
+
     stats_conn = daily_stats._get_conn()
     stats_conn.execute(
         """INSERT INTO daily_stats
              (date, project, shipped, failed, cost_usd,
-              p50_wall_s, p95_wall_s)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+              p50_wall_s, p95_wall_s, phase_timings_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(date, project) DO UPDATE SET
              shipped = excluded.shipped,
              failed = excluded.failed,
              cost_usd = excluded.cost_usd,
              p50_wall_s = excluded.p50_wall_s,
-             p95_wall_s = excluded.p95_wall_s""",
-        (date, project, shipped, failed, cost_usd, p50_wall_s, p95_wall_s),
+             p95_wall_s = excluded.p95_wall_s,
+             phase_timings_json = excluded.phase_timings_json""",
+        (
+            date, project, shipped, failed, cost_usd,
+            p50_wall_s, p95_wall_s, phase_timings_json,
+        ),
     )
     stats_conn.commit()
 
