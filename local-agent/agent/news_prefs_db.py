@@ -18,7 +18,7 @@ import logging
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,12 @@ LEGACY_BACKUP_SUFFIX: str = ".migrated.bak"
 
 _local = threading.local()
 _migration_lock = threading.Lock()
+
+# Process-wide write lock. SQLite's BEGIN IMMEDIATE already serialises
+# writers across processes, but Python-level threads sharing a single
+# per-thread connection pool benefit from an explicit mutex so a busy
+# transaction can't surprise an in-process caller with SQLITE_BUSY.
+_write_lock = threading.Lock()
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -85,19 +91,92 @@ def load_prefs() -> dict[str, Any] | None:
 def save_prefs(data: dict[str, Any]) -> None:
     """Upsert the preferences dict into the singleton row."""
     init_db()
-    conn = _get_conn()
-    payload = json.dumps(data, ensure_ascii=False)
-    conn.execute(
-        """
-        INSERT INTO news_prefs (id, data, updated_at)
-        VALUES (1, ?, datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET
-            data = excluded.data,
-            updated_at = datetime('now')
-        """,
-        (payload,),
-    )
-    conn.commit()
+    with _write_lock:
+        conn = _get_conn()
+        payload = json.dumps(data, ensure_ascii=False)
+        conn.execute(
+            """
+            INSERT INTO news_prefs (id, data, updated_at)
+            VALUES (1, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                data = excluded.data,
+                updated_at = datetime('now')
+            """,
+            (payload,),
+        )
+        conn.commit()
+
+
+def mutate_prefs(
+    mutator: Callable[[dict[str, Any]], dict[str, Any]],
+    default_factory: Callable[[], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Atomic read-modify-write on the singleton prefs row.
+
+    ``mutator`` receives the current prefs dict (or the result of
+    ``default_factory()`` when no row exists) and must return the new
+    dict to persist. The read, mutation, and write run inside a single
+    ``BEGIN IMMEDIATE`` transaction so concurrent writers either block
+    on the reserved lock or retry via SQLite's busy-timeout — no
+    interleaved read-then-write race, no lost updates, no duplicate
+    likes/dislikes slipping through because two requests both saw the
+    topic as "not yet in the list".
+
+    Returns the newly-persisted dict so callers can echo it back in
+    API responses without a second read.
+    """
+    init_db()
+    _migrate_legacy_json_if_needed()
+    with _write_lock:
+        conn = _get_conn()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT data FROM news_prefs WHERE id = 1"
+            ).fetchone()
+            if row is None:
+                current: dict[str, Any] = (
+                    default_factory() if default_factory else {}
+                )
+            else:
+                try:
+                    parsed = json.loads(row["data"])
+                except json.JSONDecodeError as e:
+                    log.error(
+                        "Corrupt news_prefs payload during mutate: %s", e
+                    )
+                    parsed = default_factory() if default_factory else {}
+                if not isinstance(parsed, dict):
+                    log.error(
+                        "news_prefs payload is not a dict during mutate "
+                        "(%s); resetting to defaults",
+                        type(parsed).__name__,
+                    )
+                    parsed = default_factory() if default_factory else {}
+                current = parsed
+
+            updated = mutator(current)
+            if not isinstance(updated, dict):
+                raise TypeError(
+                    f"mutator must return dict, got {type(updated).__name__}"
+                )
+
+            payload = json.dumps(updated, ensure_ascii=False)
+            conn.execute(
+                """
+                INSERT INTO news_prefs (id, data, updated_at)
+                VALUES (1, ?, datetime('now'))
+                ON CONFLICT(id) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = datetime('now')
+                """,
+                (payload,),
+            )
+            conn.commit()
+            return updated
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def get_updated_at() -> str | None:

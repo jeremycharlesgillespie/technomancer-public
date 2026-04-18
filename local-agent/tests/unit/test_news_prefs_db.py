@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -187,6 +189,142 @@ class TestMigration:
         assert second == payload
 
 
+class TestMutatePrefs:
+    """Tests for the atomic read-modify-write helper (TK-593)."""
+
+    def test_creates_row_from_default_factory_when_missing(self):
+        result = news_prefs_db.mutate_prefs(
+            lambda d: {**d, "likes": [*d.get("likes", []), "rust"]},
+            default_factory=lambda: {"likes": [], "dislikes": []},
+        )
+        assert result == {"likes": ["rust"], "dislikes": []}
+        assert news_prefs_db.load_prefs() == {"likes": ["rust"], "dislikes": []}
+
+    def test_uses_empty_dict_when_no_default_factory(self):
+        result = news_prefs_db.mutate_prefs(lambda d: {**d, "k": "v"})
+        assert result == {"k": "v"}
+        assert news_prefs_db.load_prefs() == {"k": "v"}
+
+    def test_reads_existing_row_before_mutating(self):
+        news_prefs_db.save_prefs({"likes": ["python"], "dislikes": []})
+        result = news_prefs_db.mutate_prefs(
+            lambda d: {**d, "likes": [*d["likes"], "rust"]}
+        )
+        assert result == {"likes": ["python", "rust"], "dislikes": []}
+
+    def test_mutator_exception_rolls_back(self):
+        news_prefs_db.save_prefs({"likes": ["python"]})
+
+        def _bad_mutator(_data):
+            raise RuntimeError("kaboom")
+
+        with pytest.raises(RuntimeError, match="kaboom"):
+            news_prefs_db.mutate_prefs(_bad_mutator)
+
+        # Original row must be untouched
+        assert news_prefs_db.load_prefs() == {"likes": ["python"]}
+
+    def test_mutator_must_return_dict(self):
+        news_prefs_db.save_prefs({"likes": []})
+        with pytest.raises(TypeError, match="must return dict"):
+            news_prefs_db.mutate_prefs(lambda _d: ["not", "a", "dict"])  # type: ignore[arg-type,return-value]
+        # Row unchanged
+        assert news_prefs_db.load_prefs() == {"likes": []}
+
+    def test_updated_at_refreshes(self):
+        news_prefs_db.save_prefs({"likes": []})
+        first = news_prefs_db.get_updated_at()
+        # Mutate — updated_at should become non-None and be set by the upsert
+        news_prefs_db.mutate_prefs(lambda d: {**d, "likes": ["rust"]})
+        second = news_prefs_db.get_updated_at()
+        assert first is not None
+        assert second is not None
+
+    def test_handles_corrupt_payload_with_default_factory(self):
+        news_prefs_db.init_db()
+        conn = news_prefs_db._get_conn()
+        conn.execute("INSERT INTO news_prefs (id, data) VALUES (1, 'not valid json')")
+        conn.commit()
+
+        result = news_prefs_db.mutate_prefs(
+            lambda d: {**d, "recovered": True},
+            default_factory=lambda: {"likes": ["fallback"]},
+        )
+        assert result == {"likes": ["fallback"], "recovered": True}
+
+    def test_dedup_same_topic_twice_under_contention(self):
+        """Two concurrent "add like" mutations with the same topic must
+        only append once — the transaction forces the second caller to
+        observe the first caller's write."""
+        news_prefs_db.save_prefs({"likes": [], "dislikes": []})
+
+        def _add_rust(current: dict) -> dict:
+            likes = list(current.get("likes", []))
+            if "rust" not in likes:
+                likes.append("rust")
+            return {**current, "likes": likes}
+
+        errors: list[BaseException] = []
+
+        def _worker():
+            try:
+                news_prefs_db.mutate_prefs(_add_rust)
+            except BaseException as e:  # pragma: no cover - surfaces in assert
+                errors.append(e)
+
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"mutator raised under contention: {errors}"
+        final = news_prefs_db.load_prefs()
+        assert final is not None
+        # Exactly one copy of "rust" despite 8 concurrent adds
+        assert final["likes"].count("rust") == 1
+
+    def test_concurrent_independent_mutations_both_persist(self):
+        """Adding a like and a dislike concurrently must not lose either.
+
+        This is the TOCTOU scenario the old code had: thread A reads
+        prefs, thread B reads prefs, A appends its like and saves, B
+        appends its dislike and saves (overwriting A's change).
+        """
+        news_prefs_db.save_prefs({"likes": [], "dislikes": []})
+
+        def _add_like(current: dict) -> dict:
+            likes = list(current.get("likes", []))
+            likes.append("python")
+            time.sleep(0.01)  # widen the race window
+            return {**current, "likes": likes}
+
+        def _add_dislike(current: dict) -> dict:
+            dislikes = list(current.get("dislikes", []))
+            dislikes.append("crypto")
+            time.sleep(0.01)
+            return {**current, "dislikes": dislikes}
+
+        errors: list[BaseException] = []
+
+        def _run(fn):
+            def _inner():
+                try:
+                    news_prefs_db.mutate_prefs(fn)
+                except BaseException as e:  # pragma: no cover
+                    errors.append(e)
+            return _inner
+
+        t1 = threading.Thread(target=_run(_add_like))
+        t2 = threading.Thread(target=_run(_add_dislike))
+        t1.start(); t2.start()
+        t1.join(); t2.join()
+
+        assert not errors, f"concurrent mutators failed: {errors}"
+        final = news_prefs_db.load_prefs()
+        assert final == {"likes": ["python"], "dislikes": ["crypto"]}
+
+
 class TestNewsConfigIntegration:
     """End-to-end smoke: NewsConfig dataclass roundtrips through the DB."""
 
@@ -310,6 +448,71 @@ class TestNewsConfigIntegration:
         assert get_last_saved() is None
         save_news_config(NewsConfig())
         assert get_last_saved() is not None
+
+    def test_mutate_news_config_roundtrips_dataclass(self):
+        from idea_board.news_config import mutate_news_config
+
+        def _apply(cfg):
+            cfg.likes.append("python")
+            cfg.start_hour = 6
+            return cfg
+
+        updated = mutate_news_config(_apply)
+        assert "python" in updated.likes
+        assert updated.start_hour == 6
+
+        # Persisted
+        from idea_board.news_config import load_news_config
+        reloaded = load_news_config()
+        assert "python" in reloaded.likes
+        assert reloaded.start_hour == 6
+
+    def test_mutate_news_config_dedup_under_contention(self):
+        """Multiple threads adding the same like only produce one entry."""
+        from idea_board.news_config import mutate_news_config
+
+        def _add_same_like(cfg):
+            if "python" not in cfg.likes:
+                cfg.likes.append("python")
+            return cfg
+
+        errors: list[BaseException] = []
+
+        def _worker():
+            try:
+                mutate_news_config(_add_same_like)
+            except BaseException as e:  # pragma: no cover
+                errors.append(e)
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        from idea_board.news_config import load_news_config
+        final = load_news_config()
+        assert final.likes.count("python") == 1
+
+    def test_mutate_news_config_corrupt_payload_uses_defaults(self):
+        """If the stored payload is malformed, the mutator sees a fresh
+        NewsConfig instead of raising — the API endpoints should keep
+        working after a corrupt write."""
+        from idea_board.news_config import DEFAULT_FEEDS, mutate_news_config
+
+        news_prefs_db.init_db()
+        conn = news_prefs_db._get_conn()
+        conn.execute("INSERT INTO news_prefs (id, data) VALUES (1, 'garbage')")
+        conn.commit()
+
+        def _apply(cfg):
+            cfg.likes.append("recovered")
+            return cfg
+
+        updated = mutate_news_config(_apply)
+        assert "recovered" in updated.likes
+        assert len(updated.feeds) == len(DEFAULT_FEEDS)
 
     def test_legacy_json_migrates_through_news_config_api(self):
         from idea_board.news_config import load_news_config

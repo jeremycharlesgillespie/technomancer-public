@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
@@ -129,6 +129,36 @@ def save_news_config(config: NewsConfig) -> None:
         news_prefs_db.save_prefs(config.to_dict())
 
 
+def mutate_news_config(
+    mutator: Callable[[NewsConfig], NewsConfig],
+) -> NewsConfig:
+    """Atomically read-modify-write the news config.
+
+    ``mutator`` gets the current ``NewsConfig`` and must return the new
+    one to persist. The entire read/modify/write runs inside a single
+    SQLite transaction (``news_prefs_db.mutate_prefs``), so concurrent
+    route handlers can't interleave a like/dislike add with a feed
+    toggle and silently drop one of the changes.
+
+    Returns the freshly-persisted ``NewsConfig`` — the route handlers
+    echo this back without a second read.
+    """
+    def _dict_mutator(data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            cfg = NewsConfig.from_dict(data)
+        except (TypeError, KeyError) as e:
+            logger.error("Invalid prefs dict during mutate (%s); using defaults", e)
+            cfg = NewsConfig()
+        new_cfg = mutator(cfg)
+        return new_cfg.to_dict()
+
+    updated = news_prefs_db.mutate_prefs(
+        _dict_mutator,
+        default_factory=lambda: NewsConfig().to_dict(),
+    )
+    return NewsConfig.from_dict(updated)
+
+
 def get_last_saved() -> str | None:
     """Return the ISO timestamp of the most recent save, or ``None``."""
     return news_prefs_db.get_updated_at()
@@ -174,14 +204,17 @@ def api_get_config() -> tuple:
 def api_update_config() -> tuple:
     """PUT /api/news/config — update schedule settings."""
     data = request.get_json(silent=True) or {}
-    config = load_news_config()
-    if "start_hour" in data:
-        config.start_hour = max(0, min(23, int(data["start_hour"])))
-    if "end_hour" in data:
-        config.end_hour = max(1, min(24, int(data["end_hour"])))
-    if "max_articles_per_hour" in data:
-        config.max_articles_per_hour = max(1, min(10, int(data["max_articles_per_hour"])))
-    save_news_config(config)
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if "start_hour" in data:
+            cfg.start_hour = max(0, min(23, int(data["start_hour"])))
+        if "end_hour" in data:
+            cfg.end_hour = max(1, min(24, int(data["end_hour"])))
+        if "max_articles_per_hour" in data:
+            cfg.max_articles_per_hour = max(1, min(10, int(data["max_articles_per_hour"])))
+        return cfg
+
+    config = mutate_news_config(_apply)
     return jsonify(config.to_dict())
 
 
@@ -194,34 +227,62 @@ def api_add_feed() -> tuple:
     category = data.get("category", "other").strip()
     if not name or not url:
         return jsonify({"error": "Need name and url"}), 400
-    config = load_news_config()
-    # Check for duplicate URL
-    if any(f["url"] == url for f in config.feeds):
+
+    # Sentinel raised inside the mutator to abort the transaction with a
+    # 409 response when a concurrent writer has already added this URL.
+    class _DuplicateFeed(Exception):
+        pass
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if any(f["url"] == url for f in cfg.feeds):
+            raise _DuplicateFeed()
+        cfg.feeds.append({"name": name, "url": url, "category": category, "enabled": True})
+        return cfg
+
+    try:
+        config = mutate_news_config(_apply)
+    except _DuplicateFeed:
         return jsonify({"error": "Feed URL already exists"}), 409
-    config.feeds.append({"name": name, "url": url, "category": category, "enabled": True})
-    save_news_config(config)
     return jsonify({"status": "added", "feed": config.feeds[-1]}), 201
 
 
 @news_bp.route("/api/news/feeds/<int:index>", methods=["DELETE"])
 def api_delete_feed(index: int) -> tuple:
     """DELETE /api/news/feeds/<index> — remove a feed by index."""
-    config = load_news_config()
-    if index < 0 or index >= len(config.feeds):
+    class _BadIndex(Exception):
+        pass
+
+    removed_holder: dict[str, Any] = {}
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if index < 0 or index >= len(cfg.feeds):
+            raise _BadIndex()
+        removed_holder["feed"] = cfg.feeds.pop(index)
+        return cfg
+
+    try:
+        mutate_news_config(_apply)
+    except _BadIndex:
         return jsonify({"error": "Invalid feed index"}), 404
-    removed = config.feeds.pop(index)
-    save_news_config(config)
-    return jsonify({"status": "deleted", "feed": removed})
+    return jsonify({"status": "deleted", "feed": removed_holder["feed"]})
 
 
 @news_bp.route("/api/news/feeds/<int:index>/toggle", methods=["POST"])
 def api_toggle_feed(index: int) -> tuple:
     """POST /api/news/feeds/<index>/toggle — enable/disable a feed."""
-    config = load_news_config()
-    if index < 0 or index >= len(config.feeds):
+    class _BadIndex(Exception):
+        pass
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if index < 0 or index >= len(cfg.feeds):
+            raise _BadIndex()
+        cfg.feeds[index]["enabled"] = not cfg.feeds[index].get("enabled", True)
+        return cfg
+
+    try:
+        config = mutate_news_config(_apply)
+    except _BadIndex:
         return jsonify({"error": "Invalid feed index"}), 404
-    config.feeds[index]["enabled"] = not config.feeds[index].get("enabled", True)
-    save_news_config(config)
     return jsonify({"status": "toggled", "feed": config.feeds[index]})
 
 
@@ -232,12 +293,14 @@ def api_add_like() -> tuple:
     topic = data.get("topic", "").strip()
     if not topic:
         return jsonify({"error": "Need topic"}), 400
-    config = load_news_config()
-    if topic not in config.likes:
-        config.likes.append(topic)
-        # Remove from dislikes if present
-        config.dislikes = [d for d in config.dislikes if d != topic]
-        save_news_config(config)
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if topic not in cfg.likes:
+            cfg.likes.append(topic)
+            cfg.dislikes = [d for d in cfg.dislikes if d != topic]
+        return cfg
+
+    config = mutate_news_config(_apply)
     return jsonify({"status": "added", "likes": config.likes})
 
 
@@ -246,9 +309,12 @@ def api_remove_like() -> tuple:
     """DELETE /api/news/likes — remove a liked topic."""
     data = request.get_json(silent=True) or {}
     topic = data.get("topic", "").strip()
-    config = load_news_config()
-    config.likes = [l for l in config.likes if l != topic]
-    save_news_config(config)
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        cfg.likes = [l for l in cfg.likes if l != topic]
+        return cfg
+
+    config = mutate_news_config(_apply)
     return jsonify({"status": "removed", "likes": config.likes})
 
 
@@ -259,12 +325,14 @@ def api_add_dislike() -> tuple:
     topic = data.get("topic", "").strip()
     if not topic:
         return jsonify({"error": "Need topic"}), 400
-    config = load_news_config()
-    if topic not in config.dislikes:
-        config.dislikes.append(topic)
-        # Remove from likes if present
-        config.likes = [l for l in config.likes if l != topic]
-        save_news_config(config)
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        if topic not in cfg.dislikes:
+            cfg.dislikes.append(topic)
+            cfg.likes = [l for l in cfg.likes if l != topic]
+        return cfg
+
+    config = mutate_news_config(_apply)
     return jsonify({"status": "added", "dislikes": config.dislikes})
 
 
@@ -273,17 +341,19 @@ def api_remove_dislike() -> tuple:
     """DELETE /api/news/dislikes — remove a disliked topic."""
     data = request.get_json(silent=True) or {}
     topic = data.get("topic", "").strip()
-    config = load_news_config()
-    config.dislikes = [d for d in config.dislikes if d != topic]
-    save_news_config(config)
+
+    def _apply(cfg: NewsConfig) -> NewsConfig:
+        cfg.dislikes = [d for d in cfg.dislikes if d != topic]
+        return cfg
+
+    config = mutate_news_config(_apply)
     return jsonify({"status": "removed", "dislikes": config.dislikes})
 
 
 @news_bp.route("/api/news/reset", methods=["POST"])
 def api_reset_config() -> tuple:
     """POST /api/news/reset — reset configuration to defaults."""
-    config = NewsConfig()
-    save_news_config(config)
+    config = mutate_news_config(lambda _cfg: NewsConfig())
     return jsonify(config.to_dict())
 
 
