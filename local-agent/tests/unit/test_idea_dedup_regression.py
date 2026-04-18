@@ -164,3 +164,57 @@ def test_ollama_cluster_dedup_returns_409_on_duplicates(
     # Acceptance criterion: the full trio must complete in under 5s.
     elapsed = time.monotonic() - start
     assert elapsed < 5.0, f"Regression test took {elapsed:.2f}s (budget: 5s)"
+
+
+# ---------------------------------------------------------------------------
+# TK-742 regression — dup check must pass legitimate follow-up stories
+# ---------------------------------------------------------------------------
+#
+# The TK-742 incident was the mirror-image of TK-441: where TK-441 caught
+# too few restated dups, TK-742 killed too many legitimate follow-ups.
+# TK-571 ("Unit tests for capability_request.py (50% -> 75%)" — a concrete
+# coverage-lift story) was auto-vetoed in queue review because its title
+# overlapped with TK-321 ("[idea-197] Add Unit Tests for capability_request
+# Core Logic" — an older abstract Done story). Both stories share
+# {unit, tests, capability_request} in their stem sets, but their actual
+# scope diverged: TK-571 specified a coverage target and specific test
+# targets; TK-321 was generic.
+#
+# The queue-review auto-veto was replaced with an advisory comment, but we
+# also want ``_is_duplicate`` itself to return False for this pair — if a
+# future change to the dedup thresholds makes them too aggressive, this
+# test fails before it reaches production.
+
+
+def test_tk571_is_not_dup_of_tk321():
+    """_is_duplicate(TK-571, TK-321) must be False.
+
+    Title overlap sits at the ~0.5 boundary (shared stems {unit, tests,
+    capab}) — exactly the point where the old auto-veto fired — and the
+    bodies diverge on scope. The function must not flag this pair.
+    """
+    from idea_board.models import Idea, _is_duplicate
+
+    tk321 = Idea(
+        id="TK-321",
+        title="[idea-197] Add Unit Tests for capability_request.py Core Logic",
+        description=(
+            "WHAT: Add unit tests covering the core capability evaluation "
+            "logic in capability_request.py. "
+            "WHY: No unit coverage today. "
+            "HOW: Write tests against the Claude API evaluation path."
+        ),
+        state="done",
+    )
+
+    assert not _is_duplicate(
+        new_title="Unit tests for capability_request.py (50% -> 75%)",
+        new_desc=(
+            "WHAT: Raise line coverage in capability_request.py from 50 "
+            "percent to 75 percent. "
+            "WHY: Gaps remain in the retry, rate-limit, and circuit-breaker "
+            "branches. "
+            "HOW: Parametrize failure modes and assert recovery paths."
+        ),
+        existing=tk321,
+    )

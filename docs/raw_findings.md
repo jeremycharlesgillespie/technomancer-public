@@ -10,6 +10,131 @@ why it matters, supporting evidence (commit/log pointer).
 
 ---
 
+## 2026-04-18 — Competitive landscape: what exists vs what Technomancer is
+
+**What:** Survey of adjacent commercial + open-source systems in the
+autonomous coding space, with each compared point-by-point against
+Technomancer's architecture. The concept of "an AI that writes code"
+isn't novel in 2026; every item below proves pieces of it. What's
+unusual is the shape of Technomancer's whole.
+
+**Why it matters:** When pitching the project to a hiring manager, the
+claim can't be "I built a coding agent" — plenty exist. The claim has to
+be "I built a self-governing multi-role dev team on Claude Code." That
+requires being able to articulate exactly where each comparable stops
+and Technomancer continues. Product differentiation + real-world
+comparison is what makes the idea resonate.
+
+### Commercial systems (all solve parts; none the whole)
+
+**Devin (Cognition AI)** — launched March 2024 as "the first autonomous
+AI software engineer." Cloud-hosted SaaS, ~$500/month subscription
+tier. Architecture: a single agent backed by a sandboxed VM (browser +
+IDE + terminal). User assigns a task via natural language; Devin
+plans, writes code, runs tests, reports back when done. Session-scoped:
+the task is the unit of work. Differences from Technomancer: no ranked
+backlog (user is the scheduler), no continuous pipeline (you don't
+"set it and forget it" against a Jira board for 24/7 burn), no
+multi-role separation (Devin's planning and execution are one agent
+talking to itself), no post-merge self-audit (success = session's own
+tests pass, not a separate validator). Also cloud-first vs
+Technomancer's local-first deployment.
+
+**Sweep AI** — GitHub app launched 2023. Workflow: label a GitHub
+issue with `sweep:`, Sweep generates a PR targeting that issue,
+human reviews and merges. Focus is bug fixes and small features
+from natural-language descriptions. Differences from Technomancer:
+single-shot per issue (if the PR is wrong, human handles it; no
+recursive decomposition on failure), human-gated merge (no autonomous
+ship), no continuous operation (each issue triggers one bot run),
+GitHub-native (no Jira integration without scripting).
+
+**GitHub Copilot Workspace + Agents** — Copilot Workspace introduced
+late 2023; agents productized through 2024-2025. Inside GitHub: take
+an issue, delegate to the agent, get a PR back. Good CI integration
+(uses GitHub Actions for validation). Session-scoped — you hand off
+one task and receive a PR. Differences from Technomancer: no always-on
+daemon scanning a board, no multi-role, human approves and merges, no
+self-audit layer.
+
+**Cursor background agents** — IDE feature from 2024. User-triggered:
+"run this agent on this task in the background while I keep coding."
+Good for parallelizing work between yourself and a model. Differences
+from Technomancer: user augmentation, not replacement — tasks come
+from the user typing them, not from a ranked board. No continuous
+loop. No multi-role. Single-task scoped per invocation.
+
+**Claude Code** (what Technomancer runs on) — Anthropic's official CLI
+coding agent. Interactive by default: user prompts → Claude edits →
+user reviews. CLI flag `-p` provides non-interactive one-shot prompts,
+which Technomancer uses as the hands of the AIW role. Claude Code
+itself has no continuous loop, no state between invocations beyond
+project CLAUDE.md. Technomancer's novelty is that it wraps Claude Code
+in the orchestration layer Anthropic deliberately didn't ship.
+
+### Open source / research
+
+**OpenDevin / OpenHands** — active open-source Devin clone. Agent
+architectures like CodeAct and an agent hub with role types. Single-
+task model — runs a task in a VM, reports results. SWE-bench scores
+published. Research-oriented. Differences from Technomancer:
+task-oriented vs production-oriented — OpenDevin proves capability on
+a benchmark; Technomancer proves sustained throughput in production
+(425 commits/day). OpenDevin runs locally but isn't a 24/7 daemon
+against a live board.
+
+**SWE-Agent (Princeton)** — the research project that first won
+SWE-bench leaderboards. Contribution: the Agent-Computer Interface
+(ACI), a purpose-built tool API for code edits that beat general
+shell-access agents. Single-task academic project. Differences from
+Technomancer: SWE-Agent proves "can an LLM pass a benchmark," not
+"can an LLM run a pipeline." Complementary research, not the same
+product claim.
+
+**Aider** — open-source pair-programming REPL. Chat-with-your-repo
+interactive tool; great for "sit with me while I code." Differences
+from Technomancer: Aider is a better human-in-the-loop tool;
+Technomancer removes the human from the loop.
+
+### The asymmetry that makes the paper pitch work
+
+Every commercial system above is **task-oriented** — you hand it a
+task, it returns. Technomancer is **pipeline-oriented** — it watches
+a board, picks the next story by rank, ships it, logs the result, and
+keeps going. Five concrete differences that don't exist anywhere else:
+
+1. **Continuous pipeline** — always-on AIM/AIW daemons, not
+   session-scoped. 425 commits/day isn't a benchmark run; it's a
+   Tuesday output, measured against a production board.
+2. **Multi-role team** — AIM (manager) + AIW (worker) + AIMM
+   (researcher) + AIV (validator) with distinct jobs. Every commercial
+   system above is a single agent, possibly with an internal critic.
+3. **Rank-driven scheduling** — Jira priority rank IS the scheduler.
+   No prompt engineering to pick what's next, no user session deciding
+   the task. The board is the input; the merge is the output.
+4. **Recursive self-repair** — the splitter decomposes a failed story
+   into smaller children and re-queues them. Failure doesn't escalate
+   to a human; it decomposes until it ships or hits a depth cap. No
+   comparable system treats its own failures as input rather than
+   exits.
+5. **Post-merge self-audit (AIV)** — after every merge, AIV opens the
+   page / hits the API / queries the DB and scores the shipped story
+   on seven axes plus red flags. Nothing I found in the landscape
+   does post-merge verification against the original story contract.
+   Closest analogue is human code review, which none of the
+   commercial systems run on their own output.
+
+**The pitch line:** "I built a self-governing AI dev team on Claude
+Code — four roles, continuous pipeline, Jira-ranked backlog,
+self-repair on failure, self-audit on merge. 425 commits in one day."
+No single adjacent product ships all of that; most ship one layer.
+
+**Evidence:** Competitive scan conducted by Claude (Opus 4.7, 2026-04
+knowledge cutoff). Product pages + changelogs + SWE-bench leaderboards
+for each vendor.
+
+---
+
 ## 2026-04-18 — 425 commits in 24 hours, full branch-test-merge-deploy workflow
 
 **What:** The two AIM daemons (TK + FA) shipped 425 commits to `main`

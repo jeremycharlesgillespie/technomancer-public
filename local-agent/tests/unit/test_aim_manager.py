@@ -580,8 +580,14 @@ class TestReviewQueueExemptions:
                 "story under a non-vetoed parent epic must not be vetoed"
             )
 
-    def test_orphan_story_still_eligible_for_veto(self, state):
-        """Sanity: non-exempt ideas still get vetoed when they match patterns."""
+    def test_orphan_story_not_vetoed_for_dup_but_flagged(self, state):
+        """TK-742: Step 2 no longer vetoes dups-of-done — only flags a comment.
+
+        Previously an orphan story matching a done/failed idea was auto-vetoed;
+        that killed legitimate follow-up stories sharing a topic with shipped
+        work. The new behavior leaves the state untouched and drops an owner-
+        review comment instead.
+        """
         ideas = [
             self.FakeIdea(id="TK-400", title="Add caching layer",
                           description="caching layer stuff",
@@ -591,7 +597,18 @@ class TestReviewQueueExemptions:
                           state="done"),
         ]
         provider = self._run_review(ideas, state)
-        provider.vote.assert_called_once_with("TK-400", "owner", "veto")
+
+        # No veto for the topic-overlap case — that's the TK-742 behavior change.
+        for c in provider.vote.call_args_list:
+            assert c[0][0] != "TK-400", "dup-of-done must not auto-veto"
+
+        # But it should leave an advisory comment flagging the possible dup
+        # so the owner can review and veto manually if it really is one.
+        flagged = any(
+            c[0][0] == "TK-400" and "Possible dup of TK-401" in c[0][2]
+            for c in provider.add_comment.call_args_list
+        )
+        assert flagged, "dup-of-done should leave an advisory comment"
 
 
 # ---------------------------------------------------------------------------
