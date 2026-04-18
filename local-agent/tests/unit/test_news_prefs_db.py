@@ -254,6 +254,56 @@ class TestNewsConfigIntegration:
         reloaded = load_news_config()
         assert "politics" in reloaded.dislikes
 
+    def test_dislikes_persist_when_db_wiped_between_saves(self):
+        """Regression for the silent-drop bug: the prefs row disappears
+        between two save_news_config calls (simulates an OneDrive-sync
+        conflict or a stray manual delete). The post-fix behaviour is that
+        the second save still lands on disk and a subsequent reload sees
+        it — before the fix, load_news_config returned a transient empty
+        NewsConfig and nothing ever persisted after the wipe.
+        """
+        import idea_board.news_config as news_config
+        from idea_board.news_config import load_news_config, save_news_config
+
+        news_config._path_logged = False
+
+        cfg = load_news_config()
+        cfg.dislikes.append("politics")
+        save_news_config(cfg)
+        assert "politics" in (news_prefs_db.load_prefs() or {}).get("dislikes", [])
+
+        # Wipe the singleton row mid-flight to mimic the file-missing scenario.
+        conn = news_prefs_db._get_conn()
+        conn.execute("DELETE FROM news_prefs WHERE id = 1")
+        conn.commit()
+        assert news_prefs_db.load_prefs() is None
+
+        cfg2 = load_news_config()
+        cfg2.dislikes.append("sports")
+        save_news_config(cfg2)
+
+        reloaded = load_news_config()
+        assert "sports" in reloaded.dislikes
+        assert news_prefs_db.get_updated_at() is not None
+
+    def test_logs_db_path_on_first_load_even_with_existing_row(self, caplog):
+        """The DB path must appear in startup logs on every boot, not only
+        when the fresh-install path creates the row. Operators use this to
+        rule out "am I looking at the right file?" on restart."""
+        import logging
+
+        import idea_board.news_config as news_config
+        from idea_board.news_config import load_news_config, save_news_config
+
+        # Seed an existing row so the defaults-persist branch does NOT run.
+        save_news_config(news_config.NewsConfig(dislikes=["politics"]))
+        news_config._path_logged = False
+
+        with caplog.at_level(logging.INFO, logger="idea_board.news_config"):
+            load_news_config()
+
+        assert any("News prefs DB at" in r.message for r in caplog.records)
+
     def test_get_last_saved_after_write(self):
         from idea_board.news_config import NewsConfig, get_last_saved, save_news_config
 

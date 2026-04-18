@@ -24,10 +24,11 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
-# Log the resolved DB path at most once per process the first time
-# ``load_news_config`` writes defaults to it. Keeps the signal loud
-# enough to diagnose "my likes keep disappearing" without spamming
-# every subsequent call.
+# Log the resolved DB path at most once per process on the first
+# ``load_news_config`` call. Fires on every bot startup (not just
+# fresh-install) so "my topics keep disappearing" reports always have
+# the absolute path in the startup log to rule out OneDrive-sync or
+# stray-file scenarios.
 _path_logged = False
 
 # Default feeds — migrated from news_digest.py hardcoded list
@@ -101,14 +102,17 @@ def load_news_config() -> NewsConfig:
     scratch, which is how the "my topics keep disappearing" bug got in.
     Persisting on first access means the timestamp visible on /news is
     always the real last-write time, not blank.
+
+    Also logs the resolved DB path once per process on the first call so
+    operators can verify which file the bot is actually reading from.
     """
     global _path_logged
     with _lock:
+        if not _path_logged:
+            logger.info("News prefs DB at %s", news_prefs_db.DB_PATH.resolve())
+            _path_logged = True
         data = news_prefs_db.load_prefs()
         if data is None:
-            if not _path_logged:
-                logger.info("News prefs DB initialised at %s", news_prefs_db.DB_PATH)
-                _path_logged = True
             config = NewsConfig()
             news_prefs_db.save_prefs(config.to_dict())
             return config
