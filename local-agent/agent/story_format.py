@@ -6,6 +6,11 @@ never drifts between sources. The format combines a Scrum user story, 5W
 context, and acceptance criteria.
 """
 
+# Label attached to stories that satisfy the atomic criteria defined in
+# docs/atomic_stories.md. Every generator and scheduler imports this
+# constant rather than hard-coding the string so the value never drifts.
+ATOMIC_LABEL = "atomic"
+
 STORY_DESCRIPTION_FORMAT = """\
 Write the description using EXACTLY this layout, with a blank line between each
 section (Scrum user story + 5W + acceptance criteria + files). All sections are
