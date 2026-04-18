@@ -826,3 +826,76 @@ class TestErrorsEmptyStateHealthSignal:
         assert 'class="empty-state"' in page_html
         # The defensive guarantee: no 'healthy-signal' element anywhere.
         assert "healthy-signal" not in page_html
+
+
+class TestTK590CrashCounterHeader:
+    """TK-590 acceptance criteria: /errors page always shows a crash-count header.
+
+    The header renders before the crash-card list regardless of whether the
+    crash log is empty or has entries, and the 24h/7d/30d counts reflect the
+    actual time windows. These tests pin the four acceptance criteria to the
+    story so a future refactor can't silently drop the header.
+    """
+
+    def test_header_renders_when_crash_list_is_empty(self, client, tmp_path):
+        """Criterion 1: header displays with counts even when the list is empty."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert 'class="summary-bar' in page_html
+        assert '<span class="num">0</span> crashes in 24h' in page_html
+        assert '<span class="num">0</span> in 7d' in page_html
+        assert '<span class="num">0</span> in 30d' in page_html
+
+    def test_header_shows_correct_counts_across_windows(self, client, tmp_path):
+        """Criterion 2: counts accurately reflect 24h, 7d, and 30d windows."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [
+            now - timedelta(hours=2),       # in 24h, 7d, 30d
+            now - timedelta(days=2),        # in 7d, 30d
+            now - timedelta(days=10),       # in 30d only
+            now - timedelta(days=40),       # out of all windows
+        ])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert '<span class="num">1</span> crashes in 24h' in page_html
+        assert '<span class="num">2</span> in 7d' in page_html
+        assert '<span class="num">3</span> in 30d' in page_html
+
+    def test_header_appears_before_the_list(self, client, tmp_path):
+        """Criterion 3: tally renders before the error-card list."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [now - timedelta(hours=1)])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        bar_pos = page_html.find('<div class="summary-bar')
+        card_pos = page_html.find('<div class="error-card"')
+        assert bar_pos != -1
+        assert card_pos != -1
+        assert bar_pos < card_pos
+
+    def test_entries_counted_by_time_window(self, tmp_path):
+        """Criterion 4: crash entries are bucketed into the right time windows."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [
+            now - timedelta(minutes=30),    # 24h
+            now - timedelta(hours=23),      # 24h (still inside)
+            now - timedelta(days=4),        # 7d only
+            now - timedelta(days=20),       # 30d only
+            now - timedelta(days=45),       # outside all
+        ])
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            stats = _crash_log_stats()
+        assert stats["counts_24h"] == 2
+        assert stats["counts_7d"] == 3
+        assert stats["counts_30d"] == 4
+        assert stats["total"] == 5
