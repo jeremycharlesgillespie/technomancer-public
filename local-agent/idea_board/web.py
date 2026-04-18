@@ -68,6 +68,7 @@ from idea_board.jira_sync import is_jira_configured, _api as _jira_api
 from idea_board.jira_sync_dlq import get_jira_dlq_entries
 
 from aim import event_log as aim_event_log, jira_reader as aim_jira_reader, state as aim_state
+from aim.state import AIMState
 
 
 def load_ideas():
@@ -2138,6 +2139,204 @@ def _detect_project_for_idea(idea_id: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Multi-project AIM helpers — per-project state/event files + config overrides.
+# ---------------------------------------------------------------------------
+# Root project label used when no ?project= param is supplied. Accepts any of
+# "", "primary", "technomancer" so old callers keep working.
+_DEFAULT_PROJECT_ALIASES: frozenset[str] = frozenset({"", "primary", "technomancer"})
+
+
+def _is_default_project(project: str | None) -> bool:
+    """Return True when ``project`` refers to the primary (Technomancer) AIM."""
+    return (project or "").strip().lower() in _DEFAULT_PROJECT_ALIASES
+
+
+def _project_param() -> str:
+    """Return the normalized ``?project=`` query-string value.
+
+    Empty string (``""``) means the primary Technomancer AIM.  Any non-default
+    value is returned lowercase-trimmed so callers can compare cheaply.
+    """
+    raw = (request.args.get("project") or "").strip()
+    if _is_default_project(raw):
+        return ""
+    return raw
+
+
+def list_aim_projects() -> list[str]:
+    """Enumerate available project selectors for the dashboard dropdown.
+
+    Always starts with ``"technomancer"`` so the primary AIM is the default
+    option, followed by the alphabetized names of subdirectories under
+    ``aim/projects/`` that actually hold an ``.aim_state.json`` file. A
+    directory without a state file is skipped — we don't want to advertise
+    projects that have never been started.
+    """
+    projects: list[str] = ["technomancer"]
+    projects_dir = _AGENT_ROOT / "aim" / "projects"
+    if projects_dir.is_dir():
+        for sub in sorted(projects_dir.iterdir()):
+            if sub.is_dir() and (sub / ".aim_state.json").exists():
+                projects.append(sub.name)
+    return projects
+
+
+def _state_file_for_project(project: str | None) -> Path:
+    """Return the ``.aim_state.json`` path for ``project``.
+
+    Default (``None``/primary/technomancer) returns the top-level
+    ``aim/.aim_state.json``.  Any other name maps to
+    ``aim/projects/<name>/.aim_state.json`` — the path is returned even when
+    the file doesn't exist, so callers can handle the absence uniformly.
+    """
+    if _is_default_project(project):
+        return _AGENT_ROOT / "aim" / ".aim_state.json"
+    return _AGENT_ROOT / "aim" / "projects" / str(project) / ".aim_state.json"
+
+
+def _load_aim_state_for_project(project: str | None) -> AIMState:
+    """Load :class:`AIMState` for the given project.
+
+    For the default project, delegates to ``aim_state.load_state`` so existing
+    mocks keep working.  For a per-project selector, reads the state file
+    directly (without touching the ``aim.state`` module globals — the
+    dashboard must never reconfigure the running AIM instance's paths) and
+    returns a default :class:`AIMState` on any read failure.
+    """
+    if _is_default_project(project):
+        return aim_state.load_state()
+
+    state_file = _state_file_for_project(project)
+    if not state_file.exists():
+        return AIMState()
+
+    try:
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        return AIMState.from_dict(data)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "[AIM-Project] Failed to read %s: %s", state_file, exc
+        )
+        return AIMState()
+
+
+def _events_path_for_project(project: str | None) -> Path:
+    """Return the ``events.jsonl`` path to stream from for ``project``.
+
+    Per-project AIM instances may write to
+    ``aim/projects/<name>/events.jsonl`` — if that file exists, it's
+    preferred.  Otherwise we fall back to ``aim_event_log.LOG_FILE`` so
+    projects that share the primary event stream still surface something in
+    the UI instead of showing an empty timeline.
+    """
+    if _is_default_project(project):
+        return aim_event_log.LOG_FILE
+
+    per_project = _AGENT_ROOT / "aim" / "projects" / str(project) / "events.jsonl"
+    if per_project.exists():
+        return per_project
+    return aim_event_log.LOG_FILE
+
+
+def _read_events_from_path(path: Path, limit: int) -> list[dict]:
+    """Tail up to ``limit`` JSON events from ``path`` (silently skip bad lines)."""
+    if limit <= 0 or not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    events: list[dict] = []
+    for line in lines[-limit:]:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
+
+
+def _read_aim_events_for_project(project: str | None, limit: int = 100) -> list[dict]:
+    """Read recent events for ``project``.
+
+    Default project goes through ``aim_event_log.read_events`` so existing
+    tests that mock that function keep working.  Per-project reads go
+    straight to the per-project path (falling back to the primary file when
+    the project hasn't written its own log yet).
+    """
+    if _is_default_project(project):
+        return aim_event_log.read_events(limit=limit)
+    return _read_events_from_path(_events_path_for_project(project), limit)
+
+
+def _project_env_path(project: str) -> Path:
+    """Return the path to ``projects/<name>.env`` for config overrides."""
+    return _AGENT_ROOT / "projects" / f"{project}.env"
+
+
+def _read_project_config(project: str | None) -> dict[str, str]:
+    """Best-effort parse of ``projects/<name>.env`` for AIM dashboard use.
+
+    Returns a dict of ``KEY -> VALUE`` pairs.  Missing files, per-project
+    defaults, and the primary project all return an empty dict — callers
+    fall back to ``settings.*`` in that case.
+    """
+    if _is_default_project(project):
+        return {}
+
+    env_file = _project_env_path(str(project))
+    if not env_file.exists():
+        return {}
+
+    out: dict[str, str] = {}
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            out[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return out
+
+
+def _jira_project_key_for_project(project: str | None) -> str:
+    """Return the Jira project key to query for ``project``.
+
+    Per-project env files set ``JIRA_PROJECT_KEY`` (e.g. ``FA`` for 40Acres);
+    fall back to ``settings.jira_project_key`` for the default.
+    """
+    if _is_default_project(project):
+        return settings.jira_project_key or ""
+    cfg = _read_project_config(project)
+    return cfg.get("JIRA_PROJECT_KEY") or settings.jira_project_key or ""
+
+
+def _repo_paths_for_project(project: str | None) -> dict[str, Path | None]:
+    """Return ``{"private": Path, "public": Path | None}`` for ``project``.
+
+    Default uses the Technomancer private/public repo pair.  A per-project
+    env file's ``PROJECT_ROOT`` (e.g. ``C:\\Users\\razor\\...\\40acres``)
+    becomes the ``private`` path; ``public`` is ``None`` unless the env file
+    sets ``PUBLIC_REPO_PATH``.
+    """
+    if _is_default_project(project):
+        return {"private": _PRIVATE_REPO_PATH, "public": _PUBLIC_REPO_PATH}
+
+    cfg = _read_project_config(project)
+    private_raw = cfg.get("PROJECT_ROOT") or ""
+    public_raw = cfg.get("PUBLIC_REPO_PATH") or ""
+    return {
+        "private": Path(private_raw) if private_raw else None,
+        "public": Path(public_raw) if public_raw else None,
+    }
+
+
 # Match line start: "YYYY-MM-DD HH:MM:SS". Used to extract sort keys and to
 # drop stack-trace continuation lines that don't carry their own timestamp.
 _AIM_LOG_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
@@ -2729,16 +2928,22 @@ def errors_page() -> str:
 
 @app.route("/api/aim/status")
 def api_aim_status() -> tuple:
-    """GET /api/aim/status — point-in-time snapshot of AIM and Worker state.
+    """GET /api/aim/status?project=<name> — AIM/Worker state snapshot.
 
     Reads the shared state file for manager/worker fields and scans the
     recent event log for the last few ``decision_made`` events. Intended
     for the /aim dashboard status widget and external health monitoring.
+
+    The optional ``project`` query param selects which AIM instance to
+    introspect: empty/``technomancer`` is the primary root at
+    ``aim/.aim_state.json``; any other name is read from
+    ``aim/projects/<name>/.aim_state.json``.
     """
-    state = aim_state.load_state()
+    project = _project_param()
+    state = _load_aim_state_for_project(project)
     worker = state.worker
 
-    events = aim_event_log.read_events(limit=500)
+    events = _read_aim_events_for_project(project, limit=500)
     decisions = [e for e in events if e.get("type") == "decision_made"]
     last_decisions = list(reversed(decisions[-3:]))
 
@@ -2767,7 +2972,7 @@ def api_aim_status() -> tuple:
 
 @app.route("/api/aim/metrics")
 def api_aim_metrics() -> tuple:
-    """GET /api/aim/metrics?hours=N — time-bucketed completion and failure counts.
+    """GET /api/aim/metrics?hours=N&project=<name> — completion/failure buckets.
 
     Reads ``execution_completed`` and ``execution_failed`` events from the
     AIM event log, buckets them into per-hour slots over the trailing
@@ -2775,7 +2980,14 @@ def api_aim_metrics() -> tuple:
     plus a totals summary. ``hours`` defaults to 24 and is clamped to
     [1, 168]. Feeds the AI Dev Team Dashboard throughput and reliability
     charts.
+
+    ``project`` picks the per-project events file — default reads the
+    primary ``aim/events.jsonl``; any other name reads
+    ``aim/projects/<name>/events.jsonl`` (falling back to the primary when
+    that file doesn't exist yet).
     """
+    project = _project_param()
+
     try:
         hours = int(request.args.get("hours", "24"))
     except (TypeError, ValueError):
@@ -2793,7 +3005,7 @@ def api_aim_metrics() -> tuple:
 
     # Pull a generous slice — events.jsonl rotates at ~5MB so this bounds
     # the scan without dropping any events in the window.
-    events = aim_event_log.read_events(limit=50000)
+    events = _read_aim_events_for_project(project, limit=50000)
 
     for event in events:
         etype = event.get("type")
@@ -2833,29 +3045,64 @@ def api_aim_metrics() -> tuple:
     })
 
 
+def _backlog_counts_from_snapshot(state: AIMState) -> dict[str, int]:
+    """Translate a per-project ``board_snapshot`` into Jira-status keyed counts.
+
+    The state file already carries todo/in_progress/done_total as a cached
+    summary, so for per-project dashboards we can render the bands without
+    another Jira round trip. Returns ``{}`` when no snapshot is present.
+    """
+    snap = state.board_snapshot or {}
+    if not snap:
+        return {}
+    counts: dict[str, int] = {}
+    if "todo" in snap:
+        counts["To Do"] = int(snap.get("todo") or 0)
+    if "in_progress" in snap:
+        counts["In Progress"] = int(snap.get("in_progress") or 0)
+    if "done_total" in snap:
+        counts["Done"] = int(snap.get("done_total") or 0)
+    return counts
+
+
 @app.route("/api/aim/backlog")
 def api_aim_backlog() -> tuple:
-    """GET /api/aim/backlog — live Jira snapshot for the dashboard top bands.
+    """GET /api/aim/backlog?project=<name> — snapshot for the dashboard bands.
 
     Returns counts per status column, the key/title of the single currently
     In Progress item (or null if none), and today-only done/failed counts
     based on ``resolutiondate >= startOfDay()``. Feeds the AI Dev Team
     Dashboard's current-work and backlog-counts bands in one round-trip.
+
+    ``project`` selects which AIM instance to introspect. For the default
+    (Technomancer) project, counts come from a live Jira poll via
+    ``aim_jira_reader``. For any per-project selector, the cached
+    ``board_snapshot`` inside that project's ``.aim_state.json`` is used so
+    the page renders even if Jira credentials don't map to that project —
+    and today's done count falls back to ``done_last_24h``.
     """
-    counts = aim_jira_reader.count_issues_by_status()
+    project = _project_param()
+    jira_project_key = _jira_project_key_for_project(project)
 
     in_progress: dict[str, str] | None = None
     today_done = 0
     today_failed = 0
 
-    if is_jira_configured():
+    if _is_default_project(project):
+        counts = aim_jira_reader.count_issues_by_status()
+    else:
+        state = _load_aim_state_for_project(project)
+        counts = _backlog_counts_from_snapshot(state)
+        today_done = int((state.board_snapshot or {}).get("done_last_24h") or 0)
+
+    if is_jira_configured() and jira_project_key:
         try:
             resp = _jira_api(
                 "post",
                 "/search/jql",
                 json={
                     "jql": (
-                        f'project = {settings.jira_project_key} '
+                        f'project = {jira_project_key} '
                         f'AND status = "In Progress"'
                     ),
                     "maxResults": 1,
@@ -2880,7 +3127,7 @@ def api_aim_backlog() -> tuple:
                 "/search/jql",
                 json={
                     "jql": (
-                        f'project = {settings.jira_project_key} '
+                        f'project = {jira_project_key} '
                         f'AND resolutiondate >= startOfDay() '
                         f'AND status in ("Done", "Failed")'
                     ),
@@ -2889,6 +3136,8 @@ def api_aim_backlog() -> tuple:
                 },
             )
             if resp.status_code == 200:
+                today_done = 0
+                today_failed = 0
                 for issue in resp.json().get("issues", []):
                     status_name = issue["fields"]["status"]["name"]
                     if status_name == "Done":
