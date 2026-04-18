@@ -683,3 +683,113 @@ class TestPillStyleCounters:
             resp = client.get("/errors")
         page_html = resp.data.decode()
         assert '<span class="sep">' not in page_html
+
+
+class TestRenderHealthyNotificationsBlock:
+    """The /errors empty state links to recent healthy-bot notifications (TK-652)."""
+
+    def test_empty_state_shows_no_notifications_message(self, client, tmp_path):
+        """When query returns an empty list, render the 'No notifications found' copy."""
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch(
+                 "idea_board.web.query_healthy_notifications", return_value=[]
+             ) as q:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        q.assert_called()
+        assert 'class="healthy-notifications"' in page_html
+        assert "No notifications found" in page_html
+        # Sanity: no stray list item rendered when the list is empty.
+        assert 'class="notifications-list"' not in page_html
+
+    def test_empty_state_renders_clickable_notification_links(self, client, tmp_path):
+        """Populated notifications render as clickable <a> tags with timestamps."""
+        notifications = [
+            {
+                "timestamp": "2026-04-18T10:00:00",
+                "message_url": "https://discord.com/channels/111/222/333",
+            },
+            {
+                "timestamp": "2026-04-18T09:00:00",
+                "message_url": "https://discord.com/channels/111/222/444",
+            },
+        ]
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch(
+                 "idea_board.web.query_healthy_notifications",
+                 return_value=notifications,
+             ):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert "Recent healthy-bot notifications:" in page_html
+        assert 'class="notifications-list"' in page_html
+        # Each entry renders as an <a> link containing its timestamp.
+        assert 'href="https://discord.com/channels/111/222/333"' in page_html
+        assert 'href="https://discord.com/channels/111/222/444"' in page_html
+        assert "2026-04-18T10:00:00" in page_html
+        assert "2026-04-18T09:00:00" in page_html
+        # Links must open in a new tab safely.
+        assert 'target="_blank"' in page_html
+        assert 'rel="noopener"' in page_html
+        # "No notifications" copy must NOT appear when notifications exist.
+        assert "No notifications found" not in page_html
+
+    def test_notification_without_url_renders_as_plain_timestamp(self, client, tmp_path):
+        """Notifications that lack a message URL render as plain <li> text, not links."""
+        notifications = [{"timestamp": "2026-04-18T08:30:00", "message_url": None}]
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch(
+                 "idea_board.web.query_healthy_notifications",
+                 return_value=notifications,
+             ):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert "2026-04-18T08:30:00" in page_html
+        assert 'class="notifications-list"' in page_html
+        # No anchor tag inside the notifications list when url is None.
+        assert "<li>2026-04-18T08:30:00</li>" in page_html
+
+    def test_block_absent_when_crash_entries_exist(self, client, tmp_path):
+        """When there ARE crashes, the healthy notifications block should not render.
+
+        The block is an *empty-state* affordance — it would clutter the page
+        when actual error cards are on screen.
+        """
+        crash_dir = tmp_path / "LLM Memory" / "Permanent"
+        crash_dir.mkdir(parents=True)
+        (crash_dir / "crash_log.md").write_text(SAMPLE_CRASH_LOG, encoding="utf-8")
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch(
+                 "idea_board.web.query_healthy_notifications",
+                 return_value=[{"timestamp": "2026-04-18T07:00:00", "message_url": "u"}],
+             ) as q:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert 'class="error-card"' in page_html
+        assert 'class="healthy-notifications"' not in page_html
+        assert "Recent healthy-bot notifications:" not in page_html
+        # Query should not have been called when there are crash cards.
+        q.assert_not_called()
+
+    def test_malicious_url_is_html_escaped(self, client, tmp_path):
+        """Even if a garbage message_url slips in, the href is HTML-escaped."""
+        notifications = [
+            {
+                "timestamp": "2026-04-18T06:00:00",
+                "message_url": 'https://x/"><script>alert(1)</script>',
+            }
+        ]
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch(
+                 "idea_board.web.query_healthy_notifications",
+                 return_value=notifications,
+             ):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # Raw <script> tag must never make it to the rendered output.
+        assert "<script>alert(1)</script>" not in page_html

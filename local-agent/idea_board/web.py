@@ -60,6 +60,7 @@ from flask import Flask, Response, jsonify, request
 
 from agent import fn_profiler, metrics
 from agent.config import settings
+from agent.healthy_notifications import query_healthy_notifications
 from agent.run_context import with_run_context
 
 from .executor import EXECUTION_LOGS_DIR, get_execution
@@ -5477,6 +5478,18 @@ a { color: var(--accent); }
 }
 .empty-state .empty-counts .count-chip .num { font-weight: 700; color: var(--text); }
 .empty-state .last-checked { color: var(--muted); font-size: 0.8rem; margin-top: 0.2rem; }
+.empty-state .healthy-notifications { margin-top: 1rem; text-align: left;
+    border-top: 1px solid var(--border); padding-top: 0.8rem; }
+.empty-state .notifications-label { color: var(--muted); font-size: 0.8rem;
+    margin-bottom: 0.35rem; text-align: center; }
+.empty-state .no-notifications { color: var(--muted); font-size: 0.85rem;
+    font-style: italic; text-align: center; }
+.empty-state .notifications-list { list-style: none; padding: 0; margin: 0;
+    display: flex; flex-direction: column; gap: 0.25rem; align-items: center; }
+.empty-state .notifications-list li { font-size: 0.8rem; color: var(--muted);
+    font-family: 'Cascadia Code', 'Fira Code', monospace; }
+.empty-state .notifications-list a { color: var(--accent); text-decoration: none; }
+.empty-state .notifications-list a:hover { text-decoration: underline; }
 .summary-bar { background: var(--surface); border-radius: 10px; padding: 0.9rem 1.1rem;
                margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem 0.65rem;
                align-items: center; border-left: 4px solid var(--green); }
@@ -5504,6 +5517,49 @@ a { color: var(--accent); }
     .summary-bar .last-check { margin-left: 0; width: 100%; }
 }
 """
+
+
+def _render_healthy_notifications_block() -> str:
+    """HTML block for the /errors empty state showing recent healthy pings.
+
+    Pulls rows from :func:`query_healthy_notifications`. When the list is
+    populated, each row renders as ``<li>`` with the timestamp; rows that
+    carry a ``message_url`` wrap the timestamp in an anchor tag so operators
+    can click through to the actual Discord message. When the list is empty,
+    a single ``<p class="no-notifications">No notifications found</p>`` line
+    is rendered so operators aren't left wondering whether the lookup ran.
+    """
+    try:
+        notifications = query_healthy_notifications(limit=5, max_age_hours=24)
+    except Exception:  # pragma: no cover — guard against unexpected DB errors
+        notifications = []
+
+    if not notifications:
+        return (
+            '<div class="healthy-notifications">'
+            '<p class="no-notifications">No notifications found</p>'
+            '</div>'
+        )
+
+    items = []
+    for note in notifications:
+        ts = html.escape(str(note.get("timestamp") or "Unknown"))
+        url = note.get("message_url")
+        if url:
+            safe_url = html.escape(str(url), quote=True)
+            items.append(
+                f'<li><a href="{safe_url}" target="_blank" rel="noopener">'
+                f'{ts}</a></li>'
+            )
+        else:
+            items.append(f"<li>{ts}</li>")
+
+    return (
+        '<div class="healthy-notifications">'
+        '<p class="notifications-label">Recent healthy-bot notifications:</p>'
+        f'<ul class="notifications-list">{"".join(items)}</ul>'
+        '</div>'
+    )
 
 
 def _render_errors() -> str:
@@ -5567,6 +5623,7 @@ def _render_errors() -> str:
             f'<span class="count-chip"><span class="num">{c30}</span> in 30d</span>'
             '</div>'
         )
+        notifications_block = _render_healthy_notifications_block()
         cards_html = f"""<div class="empty-state">
             <div class="icon">&#10003;</div>
             <p class="headline">{headline}</p>
@@ -5574,6 +5631,7 @@ def _render_errors() -> str:
             {counts_block}
             {last_checked_line}
             {channel_line}
+            {notifications_block}
         </div>"""
     else:
         card_parts = []

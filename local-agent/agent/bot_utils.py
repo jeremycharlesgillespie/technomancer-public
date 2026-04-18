@@ -190,9 +190,52 @@ def send_lifecycle_notification(event: str, details: str = "") -> None:
     try:
         from .discord_rate_limit import retry_request
 
-        retry_request(requests.post, webhook_url, json={"content": message}, timeout=5)
+        # ``?wait=true`` makes Discord return the created message envelope so
+        # we can record a clickable link for the /errors empty state. Only
+        # worth the extra round-trip for ``online`` — crashes have their own
+        # viewer on /errors and offline/restart are transient.
+        post_url = webhook_url
+        if event == "online" and "wait=" not in webhook_url:
+            sep = "&" if "?" in webhook_url else "?"
+            post_url = f"{webhook_url}{sep}wait=true"
+
+        response = retry_request(requests.post, post_url, json={"content": message}, timeout=5)
+
+        if event == "online":
+            _record_online_notification(response)
     except Exception as e:
         log(f"Failed to send lifecycle notification: {e}")
+
+
+def _record_online_notification(response: Any) -> None:
+    """Parse the Discord webhook response and record the resulting message.
+
+    When the webhook is posted with ``?wait=true`` Discord returns a JSON
+    envelope containing ``id``, ``channel_id``, and (usually) a
+    ``guild_id`` field from which a user-facing message URL can be built.
+    Missing fields fall back to ``@me`` which is the legal Discord URL form
+    for DMs / unattached webhooks and still renders a link in the UI.
+
+    Any failure is swallowed — a missing URL is still a useful timestamp
+    row, and the notification itself has already been sent successfully.
+    """
+    from .healthy_notifications import record_healthy_notification
+
+    message_url: str | None = None
+    try:
+        if response is not None and getattr(response, "status_code", 500) < 300:
+            body = response.json()
+            message_id = body.get("id")
+            channel_id = body.get("channel_id")
+            guild_id = body.get("guild_id") or "@me"
+            if message_id and channel_id:
+                message_url = (
+                    f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+                )
+    except Exception as e:
+        log(f"Could not parse webhook response for message URL: {e}")
+
+    record_healthy_notification(message_url=message_url)
 
 
 def detect_document_type(text: str) -> str | None:
