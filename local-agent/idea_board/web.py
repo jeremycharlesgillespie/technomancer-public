@@ -25,6 +25,7 @@ Routes:
     GET  /api/embeddings/stats    — Embedding store totals, stale/orphan counts, last sweep
     GET  /api/executor/run/<id>/tools — Per-tool telemetry rows for an executor run
     GET  /api/executor/run/<run_id>/status — State snapshot for a single run
+    GET  /api/executor/run/<id>/logs — Tail execution_logs/<idea>.log as JSON
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
@@ -3527,6 +3528,123 @@ def api_executor_run_status(run_id: str) -> Response:
         "ended_at": row.get("ended_at"),
         "exit_code": row.get("exit_code"),
         "pid": row.get("pid"),
+    })
+
+
+@app.route("/api/executor/run/<run_id>/logs")
+def api_executor_run_logs(run_id: str) -> Response:
+    """GET /api/executor/run/<id>/logs — tail of ``execution_logs/<idea>.log``.
+
+    ``run_id`` accepts three forms; each is tried in order until one resolves
+    to a log file on disk:
+
+    1. Integer ``executor_runs.id`` — looked up via
+       :func:`executor_runs_db.get_run`; the row's ``jira_key`` names the log.
+    2. Sortable ``run_id`` string (``YYYYMMDD-HHMMSS-<key>``) —
+       :func:`executor_runs_db.get_run_by_run_id`; same ``jira_key`` path.
+    3. The raw idea/jira key (e.g. ``TK-557``) — maps directly to
+       ``execution_logs/<id>.log``. This is the common caller shape since
+       logs are named by idea, not by DB id.
+
+    Query params:
+        * ``tail`` — max lines to return (default 200, clamped to [1, 2000]).
+          When the file has more than ``tail`` lines, the response is the
+          last ``tail`` lines and ``truncated`` is ``true``.
+        * ``offset`` — byte offset for incremental polling. When > 0, the
+          response is the decoded text starting at that byte, split on
+          newlines (``tail`` is ignored in this mode). A subsequent poll
+          should pass ``offset=total_bytes`` from the previous response.
+
+    Response body (200):
+        ``{"lines": [...], "truncated": bool, "total_bytes": int,
+        "offset": int, "idea_id": str}``
+
+    Status codes:
+        * 200 — log read successfully
+        * 404 — ``{"error": "not_found"}`` when neither the run row nor the
+          conventional log file exists
+    """
+    from agent import executor_runs_db
+
+    # Resolve run_id to the idea_id that names the log file.
+    idea_id: str | None = None
+    try:
+        row = executor_runs_db.get_run(int(run_id))
+        if row is not None and row.get("jira_key"):
+            idea_id = str(row["jira_key"])
+    except (ValueError, TypeError):
+        pass
+
+    if idea_id is None:
+        try:
+            row = executor_runs_db.get_run_by_run_id(run_id)
+            if row is not None and row.get("jira_key"):
+                idea_id = str(row["jira_key"])
+        except Exception:
+            logger.exception("api_executor_run_logs: run_id lookup failed for %s", run_id)
+
+    if idea_id is None:
+        idea_id = run_id
+
+    log_path = EXECUTION_LOGS_DIR / f"{idea_id}.log"
+    if not log_path.exists():
+        return jsonify({"error": "not_found", "idea_id": idea_id}), 404
+
+    # Parse + clamp query params
+    try:
+        tail = int(request.args.get("tail", 200))
+    except (TypeError, ValueError):
+        tail = 200
+    tail = max(1, min(tail, 2000))
+
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    offset = max(0, offset)
+
+    total_bytes = log_path.stat().st_size
+
+    if offset > 0:
+        # Incremental poll: return only bytes after ``offset``. Clamp an
+        # over-large offset to ``total_bytes`` so callers don't seek past EOF.
+        seek_to = min(offset, total_bytes)
+        with open(log_path, "rb") as fh:
+            fh.seek(seek_to)
+            raw = fh.read()
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines() if text else []
+        truncated = False
+    else:
+        # Tail mode: read the last ``tail`` lines. Small files are read in
+        # full; larger files seek back a byte budget (tail * 256) to avoid
+        # slurping multi-MB logs into memory.
+        avg_line_bytes = 256
+        budget = tail * avg_line_bytes
+        with open(log_path, "rb") as fh:
+            if total_bytes > budget:
+                fh.seek(total_bytes - budget)
+                fh.readline()  # discard partial first line after the seek
+                raw = fh.read()
+            else:
+                raw = fh.read()
+        text = raw.decode("utf-8", errors="replace")
+        all_lines = text.splitlines()
+        if len(all_lines) > tail:
+            lines = all_lines[-tail:]
+            truncated = True
+        else:
+            lines = all_lines
+            # When we didn't seek, we have the whole file; otherwise we may
+            # have dropped earlier lines via the budget seek.
+            truncated = total_bytes > budget
+
+    return jsonify({
+        "lines": lines,
+        "truncated": truncated,
+        "total_bytes": total_bytes,
+        "offset": offset,
+        "idea_id": idea_id,
     })
 
 
