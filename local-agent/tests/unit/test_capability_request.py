@@ -390,3 +390,135 @@ class TestImplementCapabilityMarkerFallbacks:
         assert "SUCCESS" in result
         new_content = path.read_text(encoding="utf-8")
         assert "def solo_tool()" in new_content
+
+
+# =============================================================================
+# TK-579 (rescued from TK-568) — Coverage closure: tool schema, rejection
+# parsing, no-reason branches, exception handling, TOOLS_FILE indirection.
+# =============================================================================
+
+
+class TestCapabilityToolSchema:
+    """Verify the registered tool advertises the expected schema."""
+
+    def test_schema_has_required_params(self):
+        tools = get_capability_tools()
+        assert len(tools) == 1
+        tool = tools[0]
+        assert tool.name == "request_capability"
+        schema = tool.parameters
+        props = schema["properties"]
+        assert "capability_description" in props
+        assert "original_user_request" in props
+        assert "context" in props
+        assert set(schema["required"]) == {
+            "capability_description",
+            "original_user_request",
+        }
+
+
+class TestRequestCapabilityRejectParsing:
+    """Exercise the regex fallbacks on the IMPLEMENT: NO branch."""
+
+    def test_rejection_without_reason_uses_fallback(
+        self, mock_ollama_client, tmp_path, monkeypatch
+    ):
+        """When REASON is missing entirely, the fallback 'Unknown reason' is used."""
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+        mock_ollama_client.set_responses([
+            {"message": {"content": "IMPLEMENT: NO", "tool_calls": []}}
+        ])
+
+        with patch("agent.capability_request._record_perf"):
+            with patch("agent.capability_request.log_request"):
+                result = request_capability("x", "y")
+        assert "CANNOT IMPLEMENT" in result
+        assert "Unknown reason" in result
+
+    def test_rejection_without_alternative_omits_it(
+        self, mock_ollama_client, tmp_path, monkeypatch
+    ):
+        """REASON present but no ALTERNATIVE → result omits the ALTERNATIVE block."""
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+        mock_ollama_client.set_responses([
+            {"message": {"content": "IMPLEMENT: NO\nREASON: can't be done", "tool_calls": []}}
+        ])
+
+        with patch("agent.capability_request._record_perf"):
+            with patch("agent.capability_request.log_request"):
+                result = request_capability("x", "y")
+        assert "can't be done" in result
+        assert "ALTERNATIVE" not in result
+
+    def test_rejection_includes_alternative_when_given(
+        self, mock_ollama_client, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+        mock_ollama_client.set_responses([
+            {
+                "message": {
+                    "content": (
+                        "IMPLEMENT: NO\n"
+                        "REASON: not feasible\n"
+                        "ALTERNATIVE: use tool X\n"
+                    ),
+                    "tool_calls": [],
+                }
+            }
+        ])
+
+        with patch("agent.capability_request._record_perf"):
+            with patch("agent.capability_request.log_request"):
+                result = request_capability("cap", "orig")
+        assert "not feasible" in result
+        assert "use tool X" in result
+
+
+class TestRequestCapabilityLogsError:
+    """When an internal step raises, we still log + return a CANNOT IMPLEMENT."""
+
+    def test_exception_in_agent_run_is_logged_and_reported(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "agent.capability_request.LOG_FILE", tmp_path / "log.log"
+        )
+
+        class BoomAgent:
+            def run(self, prompt):
+                raise RuntimeError("ollama offline")
+
+        monkeypatch.setattr(
+            "agent.capability_request.Agent", lambda cfg: BoomAgent()
+        )
+
+        log_calls: list[tuple] = []
+
+        def fake_log(req_type, desc, result):
+            log_calls.append((req_type, desc, result))
+
+        monkeypatch.setattr("agent.capability_request.log_request", fake_log)
+        with patch("agent.capability_request._record_perf"):
+            result = request_capability("cap", "orig")
+
+        assert "CANNOT IMPLEMENT" in result
+        assert "ollama offline" in result
+        # ERROR log entry should have been written
+        assert any(c[0] == "ERROR" for c in log_calls)
+
+
+class TestReadCurrentToolsUsesFilePath:
+    """read_current_tools returns whatever TOOLS_FILE points to at call time."""
+
+    def test_reads_patched_path(self, tmp_path, monkeypatch):
+        content = "custom tools body"
+        path = tmp_path / "tools.py"
+        path.write_text(content, encoding="utf-8")
+        monkeypatch.setattr("agent.capability_request.TOOLS_FILE", path)
+        assert read_current_tools() == content
