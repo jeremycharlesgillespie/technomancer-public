@@ -197,7 +197,12 @@ class TestRoundTrip:
         assert isinstance(row["project"], str)
 
     def test_defaults_populate_unspecified_columns(self):
-        """A minimal insert leaves numeric columns at their zero defaults."""
+        """A minimal insert leaves numeric columns at their zero defaults.
+
+        Splitter columns are nullable (TK-618) so an unspecified insert
+        leaves them NULL rather than 0 — the NULL is what records 'Jira
+        was unreachable when this row was rolled up'.
+        """
         daily_stats.init_db()
         conn = daily_stats._get_conn()
         conn.execute(
@@ -215,8 +220,8 @@ class TestRoundTrip:
         assert row["loc_added"] == 0
         assert row["loc_removed"] == 0
         assert row["first_attempt_success"] == 0
-        assert row["splitter_child_success"] == 0
-        assert row["splitter_child_fail"] == 0
+        assert row["splitter_child_success"] is None
+        assert row["splitter_child_fail"] is None
 
 
 class TestImporters:

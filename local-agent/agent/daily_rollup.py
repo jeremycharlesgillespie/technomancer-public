@@ -31,6 +31,12 @@ from typing import Any
 
 from . import daily_stats, executor_runs_db, story_timings
 
+# Imported at module level so tests can patch them via @patch on this
+# module's namespace (the Jira-side helpers live in board.jira_provider,
+# but tests and production both reach them through these references).
+from board.jira_provider import _DEFAULT_FIELDS, _paginated_search
+from idea_board.jira_sync import is_jira_configured
+
 # Repo root containing the .git directory. Tests monkeypatch this to a
 # temp path that hosts a synthetic git repo so LOC computation can be
 # exercised without touching the production history.
@@ -39,6 +45,16 @@ REPO_ROOT: Path = Path(__file__).parent.parent.parent
 # Timeout for git log invocations. A healthy log call on this repo returns
 # in well under a second; the timeout exists to bound the tail.
 GIT_LOG_TIMEOUT_SECONDS: float = 30.0
+
+# Jira label every splitter-authored child story carries. Created by
+# ``aim/splitter.py`` via source="splitter" → ``src:splitter`` (see
+# board/labels.py).
+SPLITTER_CHILD_LABEL: str = "src:splitter"
+
+# Max splitter children we'll pull per day/project. Well above any
+# realistic number — a runaway split-chain would alert long before it
+# got close to this.
+SPLITTER_CHILD_QUERY_LIMIT: int = 500
 
 log = logging.getLogger(__name__)
 
@@ -241,6 +257,67 @@ def _first_attempt_success_count(date: str, project: str) -> int:
     )
 
 
+def _splitter_child_counts(
+    date: str, project: str
+) -> tuple[int, int] | None:
+    """Count splitter-authored children for ``(date, project)`` by outcome.
+
+    Queries Jira via ``board.jira_provider._paginated_search`` for issues
+    with label :data:`SPLITTER_CHILD_LABEL` created on ``date`` in
+    ``project``. Returns ``(done, failed)`` where ``done`` counts issues
+    whose current status is ``Done`` and ``failed`` counts issues whose
+    current status is ``Failed``. Issues still in progress or in any
+    other status don't contribute to either total — we only count
+    terminal outcomes for the reliability slide.
+
+    Returns ``None`` (not a zero tuple) when Jira is unreachable or the
+    query fails, so callers can write SQL NULL to distinguish "Jira said
+    zero" from "we don't know". Same NULL path when ``date`` is malformed.
+    """
+    if not is_jira_configured():
+        return None
+
+    try:
+        start_dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        log.warning("daily_rollup: invalid splitter-query date %r", date)
+        return None
+    end_dt = start_dt + timedelta(days=1)
+
+    jql = (
+        f'project = "{project}" '
+        f'AND labels = "{SPLITTER_CHILD_LABEL}" '
+        f'AND created >= "{start_dt.strftime("%Y-%m-%d")}" '
+        f'AND created < "{end_dt.strftime("%Y-%m-%d")}"'
+    )
+
+    try:
+        issues, status = _paginated_search(
+            jql, SPLITTER_CHILD_QUERY_LIMIT, _DEFAULT_FIELDS
+        )
+    except Exception as exc:
+        log.warning("daily_rollup: splitter-child query raised: %s", exc)
+        return None
+
+    if issues is None:
+        log.warning(
+            "daily_rollup: splitter-child query failed (%d) for %s on %s",
+            status, project, date,
+        )
+        return None
+
+    done = 0
+    failed = 0
+    for issue in issues:
+        fields = issue.get("fields") or {}
+        status_name = ((fields.get("status") or {}).get("name") or "")
+        if status_name == "Done":
+            done += 1
+        elif status_name == "Failed":
+            failed += 1
+    return (done, failed)
+
+
 def compute_and_write(date: str, project: str) -> dict[str, Any]:
     """Compute the primary daily rollup for ``(date, project)`` and upsert.
 
@@ -249,9 +326,11 @@ def compute_and_write(date: str, project: str) -> dict[str, Any]:
     ``daily_stats`` with ``shipped``, ``failed``, ``cost_usd``,
     ``p50_wall_s``, ``p95_wall_s``, ``phase_timings_json``, plus
     ``loc_added`` / ``loc_removed`` (summed from ``git log --numstat``
-    over AIM commits on this day) and ``first_attempt_success`` (count of
-    jira_keys whose first run of the day succeeded). The remaining splitter
-    columns retain their zero defaults — those belong to later stories.
+    over AIM commits on this day), ``first_attempt_success`` (count of
+    jira_keys whose first run of the day succeeded), and
+    ``splitter_child_success`` / ``splitter_child_fail`` (count of Jira
+    issues with label ``src:splitter`` created that day, grouped by
+    Done vs Failed status — NULL when Jira is unreachable).
 
     Re-running for the same ``(date, project)`` updates the existing row
     in place (ON CONFLICT UPSERT), so callers can safely re-run the rollup
@@ -293,14 +372,21 @@ def compute_and_write(date: str, project: str) -> dict[str, Any]:
     phase_timings_json = _compute_phase_timings_json(date, project)
     loc_added, loc_removed = _git_loc_counts(date, project)
     first_attempt_success = _first_attempt_success_count(date, project)
+    splitter_counts = _splitter_child_counts(date, project)
+    if splitter_counts is None:
+        splitter_child_success: int | None = None
+        splitter_child_fail: int | None = None
+    else:
+        splitter_child_success, splitter_child_fail = splitter_counts
 
     stats_conn = daily_stats._get_conn()
     stats_conn.execute(
         """INSERT INTO daily_stats
              (date, project, shipped, failed, cost_usd,
               p50_wall_s, p95_wall_s, phase_timings_json,
-              loc_added, loc_removed, first_attempt_success)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              loc_added, loc_removed, first_attempt_success,
+              splitter_child_success, splitter_child_fail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(date, project) DO UPDATE SET
              shipped = excluded.shipped,
              failed = excluded.failed,
@@ -310,11 +396,14 @@ def compute_and_write(date: str, project: str) -> dict[str, Any]:
              phase_timings_json = excluded.phase_timings_json,
              loc_added = excluded.loc_added,
              loc_removed = excluded.loc_removed,
-             first_attempt_success = excluded.first_attempt_success""",
+             first_attempt_success = excluded.first_attempt_success,
+             splitter_child_success = excluded.splitter_child_success,
+             splitter_child_fail = excluded.splitter_child_fail""",
         (
             date, project, shipped, failed, cost_usd,
             p50_wall_s, p95_wall_s, phase_timings_json,
             loc_added, loc_removed, first_attempt_success,
+            splitter_child_success, splitter_child_fail,
         ),
     )
     stats_conn.commit()
@@ -330,12 +419,16 @@ def compute_and_write(date: str, project: str) -> dict[str, Any]:
         "loc_added": loc_added,
         "loc_removed": loc_removed,
         "first_attempt_success": first_attempt_success,
+        "splitter_child_success": splitter_child_success,
+        "splitter_child_fail": splitter_child_fail,
     }
     log.info(
         "daily_rollup: date=%s project=%s shipped=%d failed=%d cost=%.4f "
-        "p50_s=%.2f p95_s=%.2f loc=+%d/-%d first_attempt=%d",
+        "p50_s=%.2f p95_s=%.2f loc=+%d/-%d first_attempt=%d "
+        "splitter=%s/%s",
         date, project, shipped, failed, cost_usd, p50_wall_s, p95_wall_s,
         loc_added, loc_removed, first_attempt_success,
+        splitter_child_success, splitter_child_fail,
     )
     return result
 
@@ -368,7 +461,9 @@ def _main(argv: list[str]) -> int:
         f"cost=${result['cost_usd']:.4f} "
         f"p50={result['p50_wall_s']:.2f}s p95={result['p95_wall_s']:.2f}s "
         f"loc=+{result['loc_added']}/-{result['loc_removed']} "
-        f"first_attempt={result['first_attempt_success']}"
+        f"first_attempt={result['first_attempt_success']} "
+        f"splitter={result['splitter_child_success']}/"
+        f"{result['splitter_child_fail']}"
     )
     return 0
 

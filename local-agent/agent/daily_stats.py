@@ -60,8 +60,8 @@ def init_db() -> None:
             loc_added              INTEGER NOT NULL DEFAULT 0,
             loc_removed            INTEGER NOT NULL DEFAULT 0,
             first_attempt_success  INTEGER NOT NULL DEFAULT 0,
-            splitter_child_success INTEGER NOT NULL DEFAULT 0,
-            splitter_child_fail    INTEGER NOT NULL DEFAULT 0,
+            splitter_child_success INTEGER,
+            splitter_child_fail    INTEGER,
             phase_timings_json     TEXT,
             PRIMARY KEY (date, project)
         )
@@ -73,4 +73,62 @@ def init_db() -> None:
         conn.execute("ALTER TABLE daily_stats ADD COLUMN phase_timings_json TEXT")
     except sqlite3.OperationalError:
         pass
+    # Splitter columns were originally NOT NULL DEFAULT 0. TK-618 made them
+    # nullable so "Jira unreachable" can be recorded as NULL (distinct from
+    # "Jira said zero"). Rebuild the table if a legacy row still has the
+    # NOT NULL constraint.
+    _relax_splitter_nullability(conn)
     conn.commit()
+
+
+def _relax_splitter_nullability(conn: sqlite3.Connection) -> None:
+    """Rebuild daily_stats if splitter columns were created as NOT NULL.
+
+    SQLite can't drop a NOT NULL constraint in place, so we create a
+    sibling table with the new schema, copy rows over, and rename.
+    No-op when the columns are already nullable.
+    """
+    info = conn.execute("PRAGMA table_info(daily_stats)").fetchall()
+    needs_rebuild = any(
+        row[1] in {"splitter_child_success", "splitter_child_fail"} and row[3]
+        for row in info
+    )
+    if not needs_rebuild:
+        return
+    conn.execute("""
+        CREATE TABLE daily_stats_v2 (
+            date                   TEXT    NOT NULL,
+            project                TEXT    NOT NULL,
+            shipped                INTEGER NOT NULL DEFAULT 0,
+            failed                 INTEGER NOT NULL DEFAULT 0,
+            split_children         INTEGER NOT NULL DEFAULT 0,
+            cost_usd               REAL    NOT NULL DEFAULT 0.0,
+            p50_wall_s             REAL    NOT NULL DEFAULT 0.0,
+            p95_wall_s             REAL    NOT NULL DEFAULT 0.0,
+            loc_added              INTEGER NOT NULL DEFAULT 0,
+            loc_removed            INTEGER NOT NULL DEFAULT 0,
+            first_attempt_success  INTEGER NOT NULL DEFAULT 0,
+            splitter_child_success INTEGER,
+            splitter_child_fail    INTEGER,
+            phase_timings_json     TEXT,
+            PRIMARY KEY (date, project)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO daily_stats_v2 (
+            date, project, shipped, failed, split_children,
+            cost_usd, p50_wall_s, p95_wall_s,
+            loc_added, loc_removed, first_attempt_success,
+            splitter_child_success, splitter_child_fail,
+            phase_timings_json
+        )
+        SELECT
+            date, project, shipped, failed, split_children,
+            cost_usd, p50_wall_s, p95_wall_s,
+            loc_added, loc_removed, first_attempt_success,
+            splitter_child_success, splitter_child_fail,
+            phase_timings_json
+        FROM daily_stats
+    """)
+    conn.execute("DROP TABLE daily_stats")
+    conn.execute("ALTER TABLE daily_stats_v2 RENAME TO daily_stats")

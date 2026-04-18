@@ -105,6 +105,8 @@ class TestComputeAndWriteReturnValue:
     def test_empty_day_produces_zeros(self):
         executor_runs_db.init_db()
         result = daily_rollup.compute_and_write("2026-04-17", "TK")
+        # Splitter columns are None because the autouse fixture forces
+        # is_jira_configured() → False — Jira-unreachable writes NULL.
         assert result == {
             "date": "2026-04-17",
             "project": "TK",
@@ -116,6 +118,8 @@ class TestComputeAndWriteReturnValue:
             "loc_added": 0,
             "loc_removed": 0,
             "first_attempt_success": 0,
+            "splitter_child_success": None,
+            "splitter_child_fail": None,
         }
 
     def test_null_cost_and_duration_handled(self):
@@ -206,10 +210,12 @@ class TestDailyStatsWrite:
         assert row["p50_wall_s"] == pytest.approx(5.0)
         assert row["p95_wall_s"] == pytest.approx(5.0)
 
-    def test_splitter_columns_retain_zero_defaults(self):
-        """Splitter columns belong to a future story; LOC / first-attempt
-        are covered by :mod:`agent.daily_rollup` now, so they're asserted
-        in test_daily_rollup_loc rather than here."""
+    def test_splitter_columns_persist_null_without_jira(self):
+        """TK-618: when Jira is unreachable (as in this test, because the
+        conftest autouse fixture blocks real API calls), the splitter
+        columns persist as NULL rather than zero so the reliability slide
+        can distinguish 'no data' from 'zero children'. ``split_children``
+        is a separate legacy column that stays at its zero default."""
         _insert_run(jira_key="TK-1", status="success", cost_usd=0.10,
                     duration_ms=5_000, started_at="2026-04-17T10:00:00")
         daily_rollup.compute_and_write("2026-04-17", "TK")
@@ -220,8 +226,8 @@ class TestDailyStatsWrite:
             ("2026-04-17", "TK"),
         ).fetchone()
         assert row["split_children"] == 0
-        assert row["splitter_child_success"] == 0
-        assert row["splitter_child_fail"] == 0
+        assert row["splitter_child_success"] is None
+        assert row["splitter_child_fail"] is None
 
 
 class TestIdempotency:
