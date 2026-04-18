@@ -6633,6 +6633,9 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
         defEl.textContent = '';
         try {{
             const resp = await fetch('/api/analytics/unused?days={days}');
+            if (!resp.ok) {{
+                throw new Error('HTTP ' + resp.status);
+            }}
             const data = await resp.json();
             defEl.textContent = data.definition || '';
             const cmds = data.commands || [];

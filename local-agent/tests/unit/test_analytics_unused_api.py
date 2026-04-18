@@ -96,6 +96,51 @@ class TestAnalyticsPageRendersClickableCard:
         body = resp.get_data(as_text=True)
         assert "/api/analytics/unused" in body
 
+    def test_modal_has_accessibility_attributes(self, client):
+        """Modal is announced to assistive tech with role+label."""
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert 'role="dialog"' in body
+        assert 'aria-labelledby="unused-modal-title"' in body
+        assert 'id="unused-modal-title"' in body
+
+    def test_modal_closes_on_escape_key(self, client):
+        """Escape key closes the modal — keyboard accessibility."""
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert "if (e.key === 'Escape') closeUnusedModal();" in body
+
+    def test_modal_js_guards_against_http_errors(self, client):
+        """A 5xx from the API should surface as a real error, not a silent
+        JSON-parse failure. The fetch handler must check resp.ok before
+        parsing the body."""
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert "if (!resp.ok)" in body
+        assert "throw new Error('HTTP ' + resp.status)" in body
+
+    def test_modal_handles_empty_unused_list(self, client):
+        """Modal JS shows a friendly message when every command was used."""
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert "Every command has been used recently." in body
+
+
+class TestApiAnalyticsUnusedEdgeCases:
+    def test_returns_empty_list_when_all_commands_used(self, client):
+        from agent.command_suggestions import COMMANDS
+        for cmd in COMMANDS:
+            ea.track_command(cmd.name, user="alice")
+        resp = client.get("/api/analytics/unused")
+        data = resp.get_json()
+        assert data["commands"] == []
+
+    def test_commands_sorted_by_name(self, client):
+        resp = client.get("/api/analytics/unused")
+        data = resp.get_json()
+        names = [c["name"].lower() for c in data["commands"]]
+        assert names == sorted(names)
+
 
 class TestAnalyticsStatCardTooltips:
     """TK-550: every stat card on /analytics has a title tooltip with a
