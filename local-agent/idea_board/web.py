@@ -5310,6 +5310,77 @@ def _aiv_flag_counts(hours: int) -> dict[str, Any]:
     }
 
 
+def _aiv_24h_avg_overall() -> float | None:
+    """Mean ``overall_score`` across rows validated in the last 24 hours.
+
+    Negative sentinels and NULL scores are excluded. Returns ``None`` when
+    no qualifying rows exist (or the AIV DB is missing) so the caller can
+    render an empty-state label rather than ``0.0``.
+    """
+    if not aiv_schema.DB_PATH.exists():
+        return None
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            "SELECT overall_score FROM story_quality "
+            "WHERE validated_at >= ? AND overall_score IS NOT NULL "
+            "AND overall_score >= 0",
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return None
+    scores = [float(r["overall_score"]) for r in rows]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
+def _render_recent_validation_card_html() -> str:
+    """Render the 'Recent Validation' card for the hub home grid.
+
+    Shows the last 5 validated stories (story_key + overall score) and a
+    ``24h avg: X.X`` label. When no validations exist the card collapses to
+    a 'no validations yet' message. Always links to ``/quality``.
+    """
+    rows = _aiv_fetch_recent(5)
+    avg = _aiv_24h_avg_overall()
+    border = "border-left: 4px solid #fbbf24;"
+    if not rows:
+        body = '<p style="color:var(--muted)">no validations yet</p>'
+    else:
+        items: list[str] = []
+        for row in rows:
+            key = html.escape(str(row.get("story_key") or ""))
+            score = _aiv_fmt_overall(row.get("overall_score"))
+            items.append(
+                f'<li><span class="story-key">{key}</span> '
+                f'<span class="story-score">{score}</span></li>'
+            )
+        list_html = (
+            '<ul class="recent-validation-list" '
+            'style="list-style:none;padding:0;margin:0.5rem 0 0;'
+            'font-size:0.85rem;font-family:monospace;">'
+            + "".join(items)
+            + "</ul>"
+        )
+        avg_label = (
+            f"24h avg: {avg:.1f}" if avg is not None else "24h avg: &mdash;"
+        )
+        body = (
+            f'<p>Last 5 validated stories &middot; '
+            f'<strong>{avg_label}</strong></p>'
+            f"{list_html}"
+        )
+    return (
+        f'<a href="/quality" class="card" style="{border}">\n'
+        f'            <h2>Recent Validation</h2>\n'
+        f'            {body}\n'
+        f'        </a>'
+    )
+
+
 @app.route("/api/aiv/recent")
 def api_aiv_recent() -> Response:
     """GET /api/aiv/recent?limit=N — recent validated stories (newest first).
@@ -7500,6 +7571,8 @@ def _render_hub() -> str:
     else:
         errors_card_html = ""
 
+    recent_validation_card_html = _render_recent_validation_card_html()
+
     # Idea Board card links out to Jira when configured — Jira is the source of truth.
     if settings.jira_url and settings.jira_project_key:
         idea_board_href = (
@@ -7592,6 +7665,7 @@ def _render_hub() -> str:
             <p>Discord command usage, engagement trends, and feature adoption.</p>
         </a>
         {errors_card_html}
+        {recent_validation_card_html}
         <a href="/live" class="card" style="border-left: 4px solid var(--orange);">
             <h2>View Live Executions</h2>
             <p>Browse in-flight work across projects and tail the latest runs.</p>
