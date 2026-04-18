@@ -63,6 +63,10 @@ class TestCycleSummary:
         assert s.cycle_id == ""
         assert s.notes == ""
         assert s.extras == {}
+        assert s.findings == []
+        assert s.suggestions == []
+        assert s.hypotheses == []
+        assert s.theme_coverage_delta == ""
 
     def test_populated(self) -> None:
         s = CycleSummary(
@@ -127,6 +131,130 @@ class TestFormatCycleEntry:
         )
         assert "- notes: line one line two" in entry
         assert "line one\nline two" not in entry
+
+    def test_no_leading_or_trailing_newlines(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(observed=1, theme="t"), "10:00 UTC"
+        )
+        assert not entry.startswith("\n")
+        assert not entry.endswith("\n")
+        assert entry.startswith("### 10:00 UTC — t")
+        assert entry.endswith("---")
+
+    def test_renders_findings_as_bullet_list(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                findings=["Finding A", "Finding B"],
+            ),
+            "10:00 UTC",
+        )
+        assert "**Findings:**" in entry
+        assert "- Finding A" in entry
+        assert "- Finding B" in entry
+        # Findings block appears after the counts section.
+        assert entry.index("- observed: 0") < entry.index("**Findings:**")
+
+    def test_renders_suggestions_as_bullet_list(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                suggestions=["Try X", "Consider Y"],
+            ),
+            "10:00 UTC",
+        )
+        assert "**Suggestions:**" in entry
+        assert "- Try X" in entry
+        assert "- Consider Y" in entry
+
+    def test_renders_hypotheses_as_bullet_list(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                hypotheses=["H1: gravity wins", "H2: caching helps"],
+            ),
+            "10:00 UTC",
+        )
+        assert "**Hypotheses:**" in entry
+        assert "- H1: gravity wins" in entry
+        assert "- H2: caching helps" in entry
+
+    def test_renders_theme_coverage_delta_inline(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                theme_coverage_delta="+2 themes added (failure-modes, latency)",
+            ),
+            "10:00 UTC",
+        )
+        assert (
+            "- theme_coverage_delta: +2 themes added (failure-modes, latency)"
+            in entry
+        )
+
+    def test_omits_empty_bullet_sections(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(observed=1),
+            "10:00 UTC",
+        )
+        assert "**Findings:**" not in entry
+        assert "**Suggestions:**" not in entry
+        assert "**Hypotheses:**" not in entry
+        assert "theme_coverage_delta" not in entry
+
+    def test_flattens_bullet_list_items(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                findings=["line one\nline two", "  spaced  "],
+            ),
+            "10:00 UTC",
+        )
+        assert "- line one line two" in entry
+        assert "- spaced" in entry
+        # Flattened items must not introduce embedded newlines that
+        # would break sibling bullet rendering.
+        findings_block = entry.split("**Findings:**")[1]
+        for line in findings_block.splitlines():
+            if line.startswith("- "):
+                assert "\n" not in line
+
+    def test_skips_blank_bullet_items(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(findings=["", "  ", "kept"]),
+            "10:00 UTC",
+        )
+        assert "- kept" in entry
+        # No empty bullets emitted.
+        assert "\n- \n" not in entry
+        assert "\n-  \n" not in entry
+
+    def test_renders_all_rich_fields_together(self) -> None:
+        entry = format_cycle_entry(
+            CycleSummary(
+                observed=4,
+                findings_logged=2,
+                suggestions_logged=1,
+                theme="failure-modes",
+                cycle_id="c-42",
+                findings=["Race in queue drain"],
+                suggestions=["Add backpressure"],
+                hypotheses=["Contention grows with worker count"],
+                theme_coverage_delta="+1 theme",
+            ),
+            "14:35 UTC",
+        )
+        # Headline + counts
+        assert "### 14:35 UTC — failure-modes" in entry
+        assert "- observed: 4" in entry
+        # Coverage delta inline, before the rich sections
+        delta_idx = entry.index("- theme_coverage_delta: +1 theme")
+        findings_idx = entry.index("**Findings:**")
+        assert delta_idx < findings_idx
+        # All three rich sections render in the documented order.
+        assert findings_idx < entry.index("**Suggestions:**")
+        assert entry.index("**Suggestions:**") < entry.index("**Hypotheses:**")
+        # Each section's bullet is present.
+        assert "- Race in queue drain" in entry
+        assert "- Add backpressure" in entry
+        assert "- Contention grows with worker count" in entry
+        # Still ends with the separator.
+        assert entry.endswith("---")
 
 
 # ---------------------------------------------------------------------------
