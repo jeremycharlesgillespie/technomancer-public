@@ -535,6 +535,136 @@ class TestScorePendingSuggestions:
         suggest_mock.assert_not_called()
         assert scored == []
 
+    def test_jira_fetch_failure_returns_empty_and_logs(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Provider fetch raises → empty list returned + warning logged.
+
+        ``_list_pending_approval_stories`` wraps the provider call in a
+        try/except so a Jira outage can't abort the whole cycle. The
+        suggester is never invoked and the return list is empty.
+        """
+        provider = MagicMock()
+        provider.list_by_state.side_effect = RuntimeError("Jira API down")
+
+        with caplog.at_level("WARNING", logger="aimm.observe_cycle"):
+            with patch(
+                "aimm.observe_cycle.suggester.suggest_approval"
+            ) as suggest_mock:
+                scored = observe_cycle._score_pending_suggestions(
+                    provider,
+                    "TK",
+                    SAMPLE_RUBRIC,
+                    findings_path=findings_file,
+                )
+
+        suggest_mock.assert_not_called()
+        assert scored == []
+        assert any(
+            "list_by_state('proposed') failed" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_suggester_failure_on_one_story_skips_it_scores_others(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """One story returns a non-``ok`` verdict → it's filtered; the other remains.
+
+        The suggester never raises (it turns every failure path into a
+        ``Suggestion`` with a non-``ok`` ``reason``). The score helper
+        iterates the full pending list and drops failed verdicts on the
+        ``reason='ok' and recommend`` guard.
+        """
+        good_story = dict(pending_story)
+        good_story["key"] = "TK-800"
+        bad_story = dict(pending_story)
+        bad_story["key"] = "TK-801"
+        provider = _make_provider(proposed=[good_story, bad_story])
+
+        verdicts = {
+            good_story["key"]: Suggestion(
+                story_key=good_story["key"],
+                recommend=True,
+                reasoning="Great story.",
+                reason="ok",
+            ),
+            bad_story["key"]: Suggestion(
+                story_key=bad_story["key"],
+                recommend=False,
+                reasoning="",
+                reason="llm_error",
+            ),
+        }
+
+        def fake_suggest(story, rubric, *, findings_path, cycle_id):
+            return verdicts[story["key"]]
+
+        with patch(
+            "aimm.observe_cycle.suggester.suggest_approval",
+            side_effect=fake_suggest,
+        ) as suggest_mock:
+            scored = observe_cycle._score_pending_suggestions(
+                provider,
+                "TK",
+                SAMPLE_RUBRIC,
+                findings_path=findings_file,
+            )
+
+        # Both stories were attempted.
+        assert suggest_mock.call_count == 2
+        # Only the ok + recommend story survived.
+        assert len(scored) == 1
+        assert scored[0][0].story_key == good_story["key"]
+
+    def test_scored_result_has_proper_dict_format(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """Return list is ``[(Suggestion, story-dict), ...]`` with source fields intact.
+
+        The story dict preserves the original key/title/description
+        fields so downstream callers can pass it straight to the
+        findings appender without another provider round-trip.
+        """
+        provider = _make_provider(proposed=[pending_story])
+        recommended = Suggestion(
+            story_key=pending_story["key"],
+            recommend=True,
+            reasoning="Measurable benchmark.",
+            reason="ok",
+        )
+
+        with patch(
+            "aimm.observe_cycle.suggester.suggest_approval",
+            return_value=recommended,
+        ):
+            scored = observe_cycle._score_pending_suggestions(
+                provider,
+                "TK",
+                SAMPLE_RUBRIC,
+                findings_path=findings_file,
+                cycle_id="test-cycle",
+            )
+
+        assert len(scored) == 1
+        sug, story = scored[0]
+        assert isinstance(sug, Suggestion)
+        assert sug.story_key == pending_story["key"]
+        assert sug.recommend is True
+        assert sug.reason == "ok"
+        assert isinstance(story, dict)
+        assert story["key"] == pending_story["key"]
+        assert story["title"] == pending_story["title"]
+        assert story["description"] == pending_story["description"]
+
 
 # ---------------------------------------------------------------------------
 # Test 5 — run() returns the full summary dict with multi-observation input
