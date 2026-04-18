@@ -63,7 +63,11 @@ def get_merged_diff_paths(
     return [ln.strip() for ln in result.stdout.split("\n") if ln.strip()]
 
 
-def enqueue_for_validation(story_key: str, diff_paths: list[str]) -> None:
+def enqueue_for_validation(
+    story_key: str,
+    diff_paths: list[str],
+    merged_at: str | None = None,
+) -> None:
     """Insert an ``aiv_pending`` row for ``story_key``.
 
     Args:
@@ -71,6 +75,8 @@ def enqueue_for_validation(story_key: str, diff_paths: list[str]) -> None:
         diff_paths: Files changed by the branch, as returned by
             ``git diff --name-only {merge_base}..HEAD``. May be empty if
             the caller couldn't compute a diff.
+        merged_at: ISO-8601 timestamp of when the merge landed on
+            ``main``. Defaults to the current UTC time if not provided.
 
     Uses ``INSERT OR REPLACE`` so re-validation of the same story simply
     refreshes the pending row instead of raising on the primary-key
@@ -84,7 +90,12 @@ def enqueue_for_validation(story_key: str, diff_paths: list[str]) -> None:
             "INSERT OR REPLACE INTO aiv_pending "
             "(story_key, merged_at, diff_paths_json, enqueued_at) "
             "VALUES (?, ?, ?, ?)",
-            (story_key, now, json.dumps(list(diff_paths or [])), now),
+            (
+                story_key,
+                merged_at if merged_at is not None else now,
+                json.dumps(list(diff_paths or [])),
+                now,
+            ),
         )
         conn.commit()
     except Exception as exc:  # noqa: BLE001

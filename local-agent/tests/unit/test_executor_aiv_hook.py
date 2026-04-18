@@ -15,6 +15,8 @@ Story TK-720:
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -327,3 +329,101 @@ class TestAgentAivHookGetMergedDiffPaths:
         assert cmd[3] == "origin/main..feature-branch", (
             f"Expected range 'origin/main..feature-branch', got {cmd[3]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# agent.aiv_hook.enqueue_for_validation — the insert helper (TK-717)
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueForValidation:
+    """Tests for :func:`agent.aiv_hook.enqueue_for_validation`.
+
+    The helper writes a single row to ``aiv_pending`` and never raises
+    out — any SQLite error is logged and swallowed so a validation-queue
+    hiccup can never fail a deploy.
+    """
+
+    def test_inserts_row_with_expected_columns_and_json_diff(self):
+        """Happy path: one INSERT into ``aiv_pending`` with a JSON-encoded
+        ``diff_paths`` list."""
+        conn = MagicMock()
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation(
+                "TK-717",
+                ["agent/aiv_hook.py", "tests/unit/test_executor_aiv_hook.py"],
+            )
+
+        assert conn.execute.called, "expected an INSERT on the connection"
+        sql, params = conn.execute.call_args[0]
+        assert "INSERT OR REPLACE INTO aiv_pending" in sql
+        assert "story_key" in sql
+        assert "merged_at" in sql
+        assert "diff_paths_json" in sql
+        assert "enqueued_at" in sql
+
+        story_key, merged_at, diff_paths_json, enqueued_at = params
+        assert story_key == "TK-717"
+        assert json.loads(diff_paths_json) == [
+            "agent/aiv_hook.py",
+            "tests/unit/test_executor_aiv_hook.py",
+        ]
+        # Timestamps must parse as ISO-8601.
+        datetime.fromisoformat(merged_at)
+        datetime.fromisoformat(enqueued_at)
+        conn.commit.assert_called_once()
+
+    def test_merged_at_defaults_to_now_when_not_provided(self):
+        """If ``merged_at`` is omitted, the helper stamps the current UTC
+        ISO time into the row."""
+        conn = MagicMock()
+        before = datetime.now(timezone.utc)
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation("TK-717", [])
+        after = datetime.now(timezone.utc)
+
+        _story, merged_at, _json, _enqueued = conn.execute.call_args[0][1]
+        parsed = datetime.fromisoformat(merged_at)
+        assert before <= parsed <= after, (
+            f"merged_at {merged_at} not within [{before}, {after}]"
+        )
+
+    def test_merged_at_uses_caller_provided_value(self):
+        """When the caller passes ``merged_at``, it is stored verbatim
+        (no stamp-over with now)."""
+        conn = MagicMock()
+        caller_ts = "2026-04-18T12:34:56+00:00"
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation(
+                "TK-717", ["f.py"], merged_at=caller_ts
+            )
+
+        _story, merged_at, _json, _enqueued = conn.execute.call_args[0][1]
+        assert merged_at == caller_ts
+
+    def test_empty_diff_paths_serializes_to_empty_json_array(self):
+        """An empty ``diff_paths`` list still produces valid JSON (``[]``)."""
+        conn = MagicMock()
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation("TK-717", [])
+
+        _story, _merged, diff_paths_json, _enqueued = conn.execute.call_args[0][1]
+        assert json.loads(diff_paths_json) == []
+
+    def test_sqlite_error_is_swallowed_and_logged(self, caplog):
+        """A DB error must not raise out — the deploy has already landed."""
+        with patch.object(
+            aiv_hook.aiv_schema, "init_db", side_effect=RuntimeError("db locked")
+        ):
+            with caplog.at_level("WARNING", logger="agent.aiv_hook"):
+                # Must not raise
+                aiv_hook.enqueue_for_validation("TK-717", ["f.py"])
+
+        assert any(
+            "enqueue_for_validation" in rec.message and rec.levelname == "WARNING"
+            for rec in caplog.records
+        ), f"Expected a WARNING log from agent.aiv_hook, got: {caplog.records}"
