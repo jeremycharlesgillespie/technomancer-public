@@ -34,6 +34,9 @@ Routes:
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
     GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
+    GET  /quality                 — HTML table of validated stories with 7-axis scores and flags
+    GET  /api/aiv/recent          — Recent validated stories (newest first) as JSON
+    GET  /api/aiv/flags           — Red-flag counts by type over trailing window
 """
 
 from __future__ import annotations
@@ -47,7 +50,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
-from datetime import datetime, timedelta
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import pstdev
 from typing import Any
@@ -58,7 +62,7 @@ import requests as _requests_lib
 
 from flask import Flask, Response, jsonify, request
 
-from agent import fn_profiler, metrics
+from agent import aiv_schema, fn_profiler, metrics
 from agent.config import settings
 from agent.healthy_notifications import query_healthy_notifications
 from agent.run_context import with_run_context
@@ -5105,6 +5109,465 @@ def api_jira_dlq() -> tuple:
         logger.error("[JiraDLQ] get_jira_dlq_entries failed: %s", exc)
         return jsonify({"error": f"Failed to read DLQ: {exc}"}), 500
     return jsonify({"entries": entries}), 200
+
+
+# ============================================================================
+# AIV QUALITY DASHBOARD — /quality + /api/aiv/recent + /api/aiv/flags
+# ============================================================================
+
+_AIV_SCORE_AXES: tuple[str, ...] = (
+    "meets_requirements",
+    "code_quality",
+    "test_quality",
+    "security_safety",
+    "scope_discipline",
+    "edge_cases",
+    "product_impact",
+)
+
+_AIV_SCORE_HEADERS: tuple[str, ...] = (
+    "Req",
+    "Code",
+    "Test",
+    "Sec",
+    "Scope",
+    "Edge",
+    "Impact",
+)
+
+
+def _aiv_parse_red_flags(raw: Any) -> list[str]:
+    """Parse a story_quality.red_flags_json cell into a list of strings.
+
+    Missing / malformed / non-list values collapse to ``[]`` — the caller
+    only cares whether flags exist, not what went wrong with the JSON.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(f) for f in parsed if f is not None]
+
+
+def _aiv_fetch_recent(limit: int) -> list[dict[str, Any]]:
+    """Return ``story_quality`` rows ordered by validated_at DESC.
+
+    Returns ``[]`` if the AIV DB file doesn't exist yet (the pipeline has
+    never run) or the table is absent — the dashboard renders an empty
+    state rather than a 500.
+    """
+    if not aiv_schema.DB_PATH.exists():
+        return []
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            "SELECT story_key, story_title, merged_at, validated_at, "
+            "meets_requirements, code_quality, test_quality, security_safety, "
+            "scope_discipline, edge_cases, product_impact, overall_score, "
+            "red_flags_json, verification_method, error "
+            "FROM story_quality "
+            "ORDER BY validated_at DESC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        entry: dict[str, Any] = {
+            "story_key": r["story_key"],
+            "story_title": r["story_title"],
+            "merged_at": r["merged_at"],
+            "validated_at": r["validated_at"],
+            "overall_score": r["overall_score"],
+            "red_flags": _aiv_parse_red_flags(r["red_flags_json"]),
+            "verification_method": r["verification_method"],
+            "error": r["error"],
+        }
+        for axis in _AIV_SCORE_AXES:
+            entry[axis] = r[axis]
+        out.append(entry)
+    return out
+
+
+def _aiv_flag_counts(hours: int) -> dict[str, Any]:
+    """Return red-flag counts grouped by type over the last ``hours`` window.
+
+    ``counts`` maps flag-string -> occurrences. ``total_flags`` is the sum
+    of counts (one story with two flags contributes 2). ``stories_with_flags``
+    is the number of distinct stories that had at least one flag.
+    """
+    empty = {
+        "window_hours": hours,
+        "counts": {},
+        "total_flags": 0,
+        "stories_with_flags": 0,
+    }
+    if not aiv_schema.DB_PATH.exists():
+        return empty
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            "SELECT red_flags_json FROM story_quality WHERE validated_at >= ?",
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return empty
+
+    counts: Counter[str] = Counter()
+    stories_with_flags = 0
+    for r in rows:
+        flags = _aiv_parse_red_flags(r["red_flags_json"])
+        if flags:
+            stories_with_flags += 1
+            counts.update(flags)
+    return {
+        "window_hours": hours,
+        "counts": dict(counts),
+        "total_flags": sum(counts.values()),
+        "stories_with_flags": stories_with_flags,
+    }
+
+
+@app.route("/api/aiv/recent")
+def api_aiv_recent() -> Response:
+    """GET /api/aiv/recent?limit=N — recent validated stories (newest first).
+
+    Returns ``{"recent": [...], "limit": N}``. Each entry has story_key,
+    story_title, merged_at, validated_at, the seven axis scores,
+    overall_score, red_flags (parsed list), verification_method, and error.
+    """
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 500))
+    return jsonify({"recent": _aiv_fetch_recent(limit), "limit": limit})
+
+
+@app.route("/api/aiv/flags")
+def api_aiv_flags() -> Response:
+    """GET /api/aiv/flags?hours=N — red-flag counts by type over a window.
+
+    Default window is 24h; callers may request up to 30 days. Returns
+    ``{"window_hours": N, "counts": {"flag": count, ...}, "total_flags": X,
+    "stories_with_flags": Y}``.
+    """
+    try:
+        hours = int(request.args.get("hours", "24"))
+    except (TypeError, ValueError):
+        hours = 24
+    hours = max(1, min(hours, 24 * 30))
+    return jsonify(_aiv_flag_counts(hours))
+
+
+def _aiv_fmt_score(value: Any) -> str:
+    """Render an axis score for the HTML table.
+
+    Sentinel ``-1`` and ``None`` collapse to ``—`` (em-dash). Integer
+    scores render as plain integers. Non-numeric values render as ``?``.
+    """
+    if value is None:
+        return "&mdash;"
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 0:
+        return "&mdash;"
+    return str(n)
+
+
+def _aiv_fmt_overall(value: Any) -> str:
+    """Render the weighted overall score with one decimal place."""
+    if value is None:
+        return "&mdash;"
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    if f < 0:
+        return "&mdash;"
+    return f"{f:.1f}"
+
+
+def _aiv_fmt_validated_at(raw: Any) -> str:
+    """Format an ISO-8601 ``validated_at`` string for table display.
+
+    Strips microseconds and the trailing timezone so the column stays
+    narrow. Falls back to the raw string if parsing fails.
+    """
+    if not raw:
+        return ""
+    text = str(raw)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return text[:16]
+
+
+def _render_quality() -> str:
+    """Render the /quality dashboard — validated stories, newest first."""
+    rows = _aiv_fetch_recent(200)
+    flag_summary = _aiv_flag_counts(24)
+
+    score_headers = "".join(
+        f"<th class='score'>{h}</th>" for h in _AIV_SCORE_HEADERS
+    )
+
+    if not rows:
+        body_rows = (
+            "<tr><td colspan='12' class='empty'>"
+            "No validated stories yet. The AIV pipeline will populate this "
+            "table after the next story is merged and scored."
+            "</td></tr>"
+        )
+    else:
+        body_rows_list: list[str] = []
+        for row in rows:
+            flagged = bool(row["red_flags"])
+            row_class = "flagged" if flagged else ""
+            score_cells = "".join(
+                f"<td class='score'>{_aiv_fmt_score(row[axis])}</td>"
+                for axis in _AIV_SCORE_AXES
+            )
+            flags_cell = (
+                ", ".join(html.escape(f) for f in row["red_flags"])
+                if row["red_flags"]
+                else "&mdash;"
+            )
+            title_text = row["story_title"] or ""
+            body_rows_list.append(
+                f"<tr class='{row_class}'>"
+                f"<td class='key'>{html.escape(str(row['story_key'] or ''))}</td>"
+                f"<td class='title'>{html.escape(str(title_text))}</td>"
+                f"{score_cells}"
+                f"<td class='overall'>{_aiv_fmt_overall(row['overall_score'])}</td>"
+                f"<td class='flags'>{flags_cell}</td>"
+                f"<td class='when'>{html.escape(_aiv_fmt_validated_at(row['validated_at']))}</td>"
+                f"</tr>"
+            )
+        body_rows = "\n".join(body_rows_list)
+
+    if flag_summary["counts"]:
+        flag_badges = " ".join(
+            f"<span class='flag-badge'>{html.escape(str(k))}: {v}</span>"
+            for k, v in sorted(
+                flag_summary["counts"].items(), key=lambda kv: -kv[1]
+            )
+        )
+    else:
+        flag_badges = "<span class='muted'>No red flags in the last 24h.</span>"
+
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    total_rows = len(rows)
+    flagged_rows = sum(1 for r in rows if r["red_flags"])
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Recent Validations &mdash; Technomancer Quality</title>
+<style>
+:root {{
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --orange: #ff9800;
+    --border: #333; --flag-bg: rgba(244, 67, 54, 0.18);
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }}
+h1 {{ color: var(--accent); margin-bottom: 0.25rem; }}
+.subtitle {{ color: var(--muted); margin-bottom: 1.5rem; font-size: 0.9rem; }}
+.subtitle a {{ color: var(--muted); }}
+.summary {{ background: var(--surface); border-radius: 8px; padding: 1rem 1.25rem;
+            margin-bottom: 1.5rem; border-left: 4px solid var(--orange); }}
+.summary h2 {{ font-size: 1rem; margin-bottom: 0.5rem; color: var(--accent); }}
+.summary .stats {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 0.5rem; }}
+.flag-badge {{ background: var(--flag-bg); color: var(--text); padding: 3px 10px;
+               border-radius: 12px; font-size: 0.8rem; margin-right: 6px;
+               display: inline-block; margin-bottom: 4px; }}
+.muted {{ color: var(--muted); font-size: 0.85rem; }}
+table {{ width: 100%; border-collapse: collapse; background: var(--surface);
+         border-radius: 8px; overflow: hidden; font-size: 0.85rem; }}
+th, td {{ padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }}
+th {{ background: #2d2d2d; color: var(--accent); font-weight: 600;
+      text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }}
+tr.flagged {{ background: var(--flag-bg); }}
+tr.flagged td.key, tr.flagged td.title {{ color: #ffcdd2; }}
+td.score, th.score {{ text-align: center; font-variant-numeric: tabular-nums;
+                      width: 48px; }}
+td.overall {{ text-align: center; font-weight: 600; color: var(--green);
+              font-variant-numeric: tabular-nums; }}
+tr.flagged td.overall {{ color: var(--red); }}
+td.key {{ font-family: monospace; font-weight: 600; white-space: nowrap; }}
+td.title {{ max-width: 340px; overflow: hidden; text-overflow: ellipsis;
+            white-space: nowrap; }}
+td.flags {{ color: var(--red); font-size: 0.8rem; }}
+td.when {{ color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }}
+td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
+            font-style: italic; }}
+.footer {{ color: var(--muted); font-size: 0.75rem; margin-top: 1.5rem; }}
+@media (max-width: 720px) {{
+    body {{ padding: 10px; }}
+    td.title {{ max-width: 140px; }}
+    th, td {{ padding: 6px; font-size: 0.8rem; }}
+}}
+</style>
+</head>
+<body>
+<h1>Recent Validations</h1>
+<p class="subtitle">Every merged story scored on the seven AIV axes.
+   <a href="/">&larr; Hub</a> &middot;
+   <a href="/api/aiv/recent">JSON</a> &middot;
+   <a href="/api/aiv/flags">Flags API</a></p>
+
+<div class="summary">
+    <h2>Red flags (last 24h)</h2>
+    <div class="stats">
+        {flag_summary['total_flags']} flag(s) across
+        {flag_summary['stories_with_flags']} story / stories.
+    </div>
+    <div id="flag-badges">{flag_badges}</div>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>Story</th>
+            <th>Title</th>
+            {score_headers}
+            <th class="score">Overall</th>
+            <th>Red flags</th>
+            <th>Validated</th>
+        </tr>
+    </thead>
+    <tbody id="quality-body">
+{body_rows}
+    </tbody>
+</table>
+
+<p class="footer">
+    {total_rows} validated story / stories shown
+    ({flagged_rows} flagged). Auto-refreshes every 30 seconds &middot;
+    Generated at {generated_at}
+</p>
+
+<script>
+async function refreshQuality() {{
+    try {{
+        const [recentResp, flagsResp] = await Promise.all([
+            fetch('/api/aiv/recent?limit=200'),
+            fetch('/api/aiv/flags?hours=24'),
+        ]);
+        if (!recentResp.ok || !flagsResp.ok) return;
+        const recent = await recentResp.json();
+        const flags = await flagsResp.json();
+        renderBody(recent.recent || []);
+        renderFlags(flags);
+    }} catch (e) {{
+        // Silent — next tick will retry.
+    }}
+}}
+
+const AXES = {json.dumps(list(_AIV_SCORE_AXES))};
+
+function escapeHtml(s) {{
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}}
+
+function fmtScore(v) {{
+    if (v === null || v === undefined) return '\u2014';
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return '\u2014';
+    return String(Math.trunc(n));
+}}
+
+function fmtOverall(v) {{
+    if (v === null || v === undefined) return '\u2014';
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) return '\u2014';
+    return n.toFixed(1);
+}}
+
+function fmtWhen(s) {{
+    if (!s) return '';
+    const trimmed = String(s).slice(0, 16).replace('T', ' ');
+    return escapeHtml(trimmed);
+}}
+
+function renderBody(rows) {{
+    const body = document.getElementById('quality-body');
+    if (!body) return;
+    if (rows.length === 0) {{
+        body.innerHTML = '<tr><td colspan="12" class="empty">No validated stories yet.</td></tr>';
+        return;
+    }}
+    body.innerHTML = rows.map(function(r) {{
+        const flagged = (r.red_flags && r.red_flags.length > 0);
+        const cls = flagged ? 'flagged' : '';
+        const scoreCells = AXES.map(function(a) {{
+            return '<td class="score">' + fmtScore(r[a]) + '</td>';
+        }}).join('');
+        const flagsCell = flagged
+            ? r.red_flags.map(escapeHtml).join(', ')
+            : '\u2014';
+        return '<tr class="' + cls + '">'
+            + '<td class="key">' + escapeHtml(r.story_key) + '</td>'
+            + '<td class="title">' + escapeHtml(r.story_title) + '</td>'
+            + scoreCells
+            + '<td class="overall">' + fmtOverall(r.overall_score) + '</td>'
+            + '<td class="flags">' + flagsCell + '</td>'
+            + '<td class="when">' + fmtWhen(r.validated_at) + '</td>'
+            + '</tr>';
+    }}).join('');
+}}
+
+function renderFlags(data) {{
+    const target = document.getElementById('flag-badges');
+    if (!target) return;
+    const counts = data.counts || {{}};
+    const entries = Object.entries(counts).sort(function(a, b) {{ return b[1] - a[1]; }});
+    if (entries.length === 0) {{
+        target.innerHTML = '<span class="muted">No red flags in the last 24h.</span>';
+        return;
+    }}
+    target.innerHTML = entries.map(function(kv) {{
+        return '<span class="flag-badge">' + escapeHtml(kv[0]) + ': ' + kv[1] + '</span>';
+    }}).join(' ');
+}}
+
+setInterval(refreshQuality, 30000);
+</script>
+</body>
+</html>"""
+
+
+@app.route("/quality")
+def quality_page() -> str:
+    """GET /quality — HTML table of validated stories with 7-axis scores.
+
+    Newest-first. Any story with at least one red flag gets
+    ``class='flagged'`` on its ``<tr>``. Polls /api/aiv/recent and
+    /api/aiv/flags every 30 seconds in the browser.
+    """
+    return _render_quality()
 
 
 # ============================================================================
