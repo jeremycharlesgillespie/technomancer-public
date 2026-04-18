@@ -71,7 +71,6 @@ def test_tier1_multiple_failures_joined_with_pipe():
     assert " | " in summary
 
 
-@pytest.mark.xfail(reason="Tier 3 is stubbed in TK-713 and will be re-implemented in a follow-up story.", strict=True)
 def test_tier3_exception_class_prefix_matches():
     """Lines like ``ValueError: bad input`` should be picked up by tier 3."""
     log = "some setup\nValueError: bad input\nmore stuff\n"
@@ -79,7 +78,47 @@ def test_tier3_exception_class_prefix_matches():
     assert "ValueError: bad input" in summary
 
 
+def test_tier3_exception_line():
+    """Tier 3 strips indentation and ignores raise/import source lines.
+
+    Typical pytest traceback: the indented ``raise ValueError(...)`` source
+    line must NOT be surfaced — the un-indented ``ValueError: unexpected
+    shape`` line is the real signal.
+    """
+    log = (
+        "Traceback (most recent call last):\n"
+        "  File \"foo.py\", line 10, in bar\n"
+        "    import numpy\n"
+        "    raise ValueError(\"unexpected shape\")\n"
+        "ValueError: unexpected shape\n"
+    )
+    summary = _extract_failure_summary(log)
+    assert summary == "ValueError: unexpected shape"
+
+
+def test_tier3_picks_last_exception():
+    """When several exceptions appear, the final one wins.
+
+    Chained tracebacks list earlier causes first; the last exception is
+    the one that actually propagated out and is almost always the real
+    failure.
+    """
+    log = (
+        "ImportError: cannot import name 'foo'\n"
+        "\n"
+        "During handling of the above exception, another exception occurred:\n"
+        "\n"
+        "KeyError: 'missing'\n"
+        "\n"
+        "The above exception was the direct cause of the following exception:\n"
+        "\n"
+        "RuntimeError: last one wins\n"
+    )
+    summary = _extract_failure_summary(log)
+    assert summary == "RuntimeError: last one wins"
+
+
 def test_no_match_returns_empty_string():
-    """With tier 3+ stubbed, logs that don't hit tier 1/2 return ''."""
-    log = "some setup\nValueError: bad input\nmore stuff\n"
+    """Logs that don't hit any tier return '' (not '(no log)')."""
+    log = "some setup\nnothing interesting here\nmore stuff\n"
     assert _extract_failure_summary(log) == ""
