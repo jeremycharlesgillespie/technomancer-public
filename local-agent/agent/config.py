@@ -417,6 +417,14 @@ class Settings(BaseSettings):
             "are binary high-signal, so any single one warrants human review."
         ),
     )
+    aiv_alert_threshold: float = Field(
+        default=5.0,
+        description=(
+            "Overall-score threshold under which AIV sends a Discord webhook "
+            "alert immediately after persist. Stories with any red flag also "
+            "fire the alert regardless of overall score. Reuses DISCORD_WEBHOOK_URL."
+        ),
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
