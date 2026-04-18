@@ -392,6 +392,13 @@ class Settings(BaseSettings):
             "product_impact. Empty or malformed falls back to equal weights."
         ),
     )
+    aiv_cycle_interval: int = Field(
+        default=60, description="Seconds between AIV daemon cycles"
+    )
+    aiv_state_dir: str = Field(
+        default="",
+        description="Directory for AIV state/lock/pid files (empty = aiv/ default)",
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
