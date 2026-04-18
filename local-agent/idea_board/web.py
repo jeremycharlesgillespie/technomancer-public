@@ -5466,6 +5466,17 @@ a { color: var(--accent); }
 .empty-state .headline { color: var(--text); font-size: 1rem; margin-bottom: 0.35rem; }
 .empty-state .notes { font-size: 0.85rem; line-height: 1.5; }
 .empty-state .notes a { color: var(--accent); }
+.empty-state .empty-counts { display: flex; justify-content: center; flex-wrap: wrap;
+                              gap: 0.4rem 0.5rem; margin: 0.9rem 0 0.4rem; }
+.empty-state .empty-counts .count-chip {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    padding: 3px 10px; border-radius: 999px;
+    font-size: 0.8rem; color: var(--muted);
+    background: transparent; border: 1px solid var(--border);
+    line-height: 1.4;
+}
+.empty-state .empty-counts .count-chip .num { font-weight: 700; color: var(--text); }
+.empty-state .last-checked { color: var(--muted); font-size: 0.8rem; margin-top: 0.2rem; }
 .summary-bar { background: var(--surface); border-radius: 10px; padding: 0.9rem 1.1rem;
                margin-bottom: 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem 0.65rem;
                align-items: center; border-left: 4px solid var(--green); }
@@ -5542,13 +5553,26 @@ def _render_errors() -> str:
                 f"Crash log was last written {html.escape(last_check)} "
                 f"({stats['total']} total entries since the log began)."
             )
+            last_checked_line = (
+                f'<p class="last-checked">Last checked: {html.escape(last_check)}</p>'
+            )
         else:
             headline = "The bot has never written a crash report."
             detail = "<code>crash_log.md</code> does not exist yet — nothing has gone wrong."
+            last_checked_line = '<p class="last-checked">Last checked: never</p>'
+        counts_block = (
+            '<div class="empty-counts">'
+            f'<span class="count-chip"><span class="num">{c24}</span> in 24h</span>'
+            f'<span class="count-chip"><span class="num">{c7}</span> in 7d</span>'
+            f'<span class="count-chip"><span class="num">{c30}</span> in 30d</span>'
+            '</div>'
+        )
         cards_html = f"""<div class="empty-state">
             <div class="icon">&#10003;</div>
             <p class="headline">{headline}</p>
             <p class="notes">{detail}</p>
+            {counts_block}
+            {last_checked_line}
             {channel_line}
         </div>"""
     else:

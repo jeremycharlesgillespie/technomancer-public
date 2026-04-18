@@ -524,6 +524,91 @@ class TestErrorsEmptyStateRedesign:
         assert data["stats"]["total"] == 1
 
 
+class TestEmptyStateTimestampAndCounts:
+    """TK-648: empty state itself shows last-checked timestamp + per-window counts."""
+
+    def test_empty_state_renders_counts_block(self, client, tmp_path):
+        """With no crash_log.md, the empty state contains the counts block."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # The counts block lives inside the empty-state div.
+        empty_start = page_html.find('<div class="empty-state">')
+        empty_end = page_html.find("</div>", page_html.find('class="last-checked"'))
+        assert empty_start != -1
+        assert empty_end != -1
+        empty_html = page_html[empty_start:empty_end]
+        assert 'class="empty-counts"' in empty_html
+        # All three windows rendered, all showing zero.
+        assert empty_html.count('class="count-chip"') == 3
+        assert '<span class="num">0</span> in 24h' in empty_html
+        assert '<span class="num">0</span> in 7d' in empty_html
+        assert '<span class="num">0</span> in 30d' in empty_html
+
+    def test_empty_state_renders_last_checked_when_no_file(self, client, tmp_path):
+        """When crash_log.md does not exist, show 'Last checked: never'."""
+        with patch("idea_board.web.settings") as mock_settings:
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        assert 'class="last-checked">Last checked: never' in page_html
+
+    def test_empty_state_renders_last_checked_with_mtime(self, client, tmp_path):
+        """When crash_log.md exists, the empty state shows a relative timestamp."""
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [datetime.now() - timedelta(days=40)])
+        target = (datetime.now() - timedelta(minutes=2)).timestamp()
+        os.utime(crash_file, (target, target))
+        # Force empty cards list even though the file has a (too-old) entry.
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch("idea_board.web._parse_crash_log", return_value=[]):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # The last-checked line appears inside the empty-state div.
+        empty_start = page_html.find('<div class="empty-state">')
+        assert empty_start != -1
+        empty_html = page_html[empty_start:]
+        assert 'class="last-checked">Last checked: 2m ago' in empty_html
+
+    def test_empty_state_counts_reflect_time_windows(self, client, tmp_path):
+        """Count chips reflect real window data even when the entry list is empty."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        # 40d-old entry — drops out of all windows, so 24h=0, 7d=0, 30d=0.
+        _write_crash_entries(crash_file, [now - timedelta(days=40)])
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch("idea_board.web._parse_crash_log", return_value=[]):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        empty_start = page_html.find('<div class="empty-state">')
+        assert empty_start != -1
+        empty_html = page_html[empty_start:]
+        assert '<span class="num">0</span> in 24h' in empty_html
+        assert '<span class="num">0</span> in 7d' in empty_html
+        assert '<span class="num">0</span> in 30d' in empty_html
+
+    def test_empty_state_counts_reflect_older_entries(self, client, tmp_path):
+        """An entry inside the 30d window shows 30d=1 inside the empty-state block."""
+        now = datetime.now()
+        crash_file = tmp_path / "LLM Memory" / "Permanent" / "crash_log.md"
+        _write_crash_entries(crash_file, [now - timedelta(days=15)])
+        # Force empty cards even though a crash exists in the log.
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch("idea_board.web._parse_crash_log", return_value=[]):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        empty_start = page_html.find('<div class="empty-state">')
+        assert empty_start != -1
+        empty_html = page_html[empty_start:]
+        assert '<span class="num">0</span> in 24h' in empty_html
+        assert '<span class="num">0</span> in 7d' in empty_html
+        assert '<span class="num">1</span> in 30d' in empty_html
+
+
 class TestPillStyleCounters:
     """TK-544: top-of-page counters render as pill-style elements regardless of list content."""
 
