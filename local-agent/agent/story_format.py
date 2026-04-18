@@ -11,6 +11,17 @@ context, and acceptance criteria.
 # constant rather than hard-coding the string so the value never drifts.
 ATOMIC_LABEL = "atomic"
 
+# AIMM (AI Manager Module) labels — the audit surface for every AIMM touch.
+# AIMM_APPROVED_LABEL: story has passed AIMM approval gates.
+# AIMM_DRAFTED_LABEL:  story was drafted by AIMM (vs. human or other generator).
+# AIMM_ARCHIVED_LABEL: story has been archived by AIMM.
+# Every AIMM module (aimm/approver.py, aimm/drafter.py, dashboard rendering)
+# imports these constants rather than hard-coding the strings so no module
+# silently drifts to a different value.
+AIMM_APPROVED_LABEL = "aimm-approved"
+AIMM_DRAFTED_LABEL = "aimm-drafted"
+AIMM_ARCHIVED_LABEL = "aimm-archived"
+
 STORY_DESCRIPTION_FORMAT = """\
 Write the description using EXACTLY this layout, with a blank line between each
 section (Scrum user story + 5W + acceptance criteria + files). All sections are
