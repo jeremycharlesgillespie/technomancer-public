@@ -15,9 +15,11 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+__all__ = ["THEMES_PATH", "load_paper_themes"]
 
 PROJECT_ROOT: Path = Path(__file__).parent.parent.parent
 THEMES_PATH: Path = PROJECT_ROOT / "docs" / "paper_themes.md"
@@ -29,7 +31,7 @@ _TARGET_RE = re.compile(
 )
 
 
-def load_paper_themes(path: Optional[Path] = None) -> list[dict]:
+def load_paper_themes(path: Optional[Path] = None) -> list[dict[str, Any]]:
     """Load paper themes from ``docs/paper_themes.md``.
 
     Args:
@@ -50,7 +52,7 @@ def load_paper_themes(path: Optional[Path] = None) -> list[dict]:
         raise ValueError(f"paper_themes.md not found at {themes_path}")
 
     text = themes_path.read_text(encoding="utf-8")
-    themes: list[dict] = []
+    themes: list[dict[str, Any]] = []
 
     heading_matches = list(_HEADING_RE.finditer(text))
     for i, match in enumerate(heading_matches):
