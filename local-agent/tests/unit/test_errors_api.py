@@ -793,3 +793,36 @@ class TestRenderHealthyNotificationsBlock:
         page_html = resp.data.decode()
         # Raw <script> tag must never make it to the rendered output.
         assert "<script>alert(1)</script>" not in page_html
+
+
+class TestErrorsEmptyStateHealthSignal:
+    """TK-647: /errors empty state must never leak a 'healthy-signal' div.
+
+    The empty-state block already expresses health through its headline,
+    zero-count chips, and healthy-notifications list. A separate
+    'healthy-signal' element would be a conflicting signal that confuses
+    operators — especially when ``service_state.json`` is missing and the
+    bot's started-at timestamp cannot be read. This suite pins that the
+    rendered HTML never contains a ``healthy-signal`` class.
+    """
+
+    def test_empty_state_hides_bot_started_signal_when_state_missing(
+        self, client, tmp_path
+    ):
+        """No ``healthy-signal`` div when service_state.json is absent.
+
+        Points ``_SERVICE_STATE_FILE`` at a path that does not exist so
+        ``_bot_uptime_seconds`` returns ``None``, then asserts the rendered
+        /errors empty state contains no ``healthy-signal`` class.
+        """
+        missing_state = tmp_path / "service_state.json"
+        assert not missing_state.exists()
+        with patch("idea_board.web.settings") as mock_settings, \
+             patch("idea_board.web._SERVICE_STATE_FILE", missing_state):
+            mock_settings.vault_path = tmp_path
+            resp = client.get("/errors")
+        page_html = resp.data.decode()
+        # Empty state should be rendered (no crashes present).
+        assert 'class="empty-state"' in page_html
+        # The defensive guarantee: no 'healthy-signal' element anywhere.
+        assert "healthy-signal" not in page_html
