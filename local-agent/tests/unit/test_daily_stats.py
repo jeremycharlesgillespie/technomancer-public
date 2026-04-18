@@ -219,10 +219,16 @@ class TestRoundTrip:
         assert row["splitter_child_fail"] == 0
 
 
-class TestNoImporters:
-    """Schema-only story — no other agent module imports daily_stats yet."""
+class TestImporters:
+    """Only the rollup module is allowed to import ``daily_stats`` directly.
 
-    def test_no_other_agent_module_imports_daily_stats(self):
+    Keeping the importer set small means all writes go through the rollup
+    pipeline — no ad-hoc inserts scattered across the codebase.
+    """
+
+    ALLOWED_IMPORTERS = frozenset({"daily_stats.py", "daily_rollup.py"})
+
+    def test_only_allowed_agent_modules_import_daily_stats(self):
         from pathlib import Path
 
         import agent
@@ -230,11 +236,12 @@ class TestNoImporters:
         agent_dir = Path(agent.__path__[0])
         offenders = []
         for py_file in agent_dir.glob("*.py"):
-            if py_file.name == "daily_stats.py":
+            if py_file.name in self.ALLOWED_IMPORTERS:
                 continue
             text = py_file.read_text(encoding="utf-8", errors="ignore")
             if "daily_stats" in text:
                 offenders.append(py_file.name)
         assert offenders == [], (
-            f"Modules importing daily_stats (should be none): {offenders}"
+            f"Unexpected modules importing daily_stats: {offenders}. "
+            f"Allowed: {sorted(self.ALLOWED_IMPORTERS)}"
         )
