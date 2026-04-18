@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent import aiv_hook
 from idea_board import aiv_post_merge
 from idea_board.aiv_post_merge import enqueue_merged_story
 
@@ -270,3 +271,59 @@ class TestGetMergedDiffPaths:
             result = aiv_post_merge.get_merged_diff_paths(tmp_path)
 
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# agent.aiv_hook.get_merged_diff_paths — standalone diff helper (TK-718)
+# ---------------------------------------------------------------------------
+
+
+class TestAgentAivHookGetMergedDiffPaths:
+    """Tests for :func:`agent.aiv_hook.get_merged_diff_paths`.
+
+    The helper wraps ``git diff --name-only {merge_base_ref}..{head_ref}``
+    so the validation hook can compute its input list without reaching
+    into the executor.
+    """
+
+    def test_parses_stdout_into_list_of_paths(self):
+        """Typical output: two newline-separated paths → two-element list."""
+        with patch.object(aiv_hook.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0, stdout="src/a.py\nsrc/b.py\n", stderr=""
+            )
+
+            result = aiv_hook.get_merged_diff_paths("main")
+
+        assert result == ["src/a.py", "src/b.py"]
+
+    def test_returns_empty_and_logs_on_subprocess_exception(self, caplog):
+        """If ``subprocess.run`` raises, return ``[]`` and log the error."""
+        with patch.object(
+            aiv_hook.subprocess, "run", side_effect=OSError("git missing")
+        ):
+            with caplog.at_level("ERROR", logger="agent.aiv_hook"):
+                result = aiv_hook.get_merged_diff_paths("main", "HEAD")
+
+        assert result == []
+        assert any(
+            "get_merged_diff_paths" in rec.message and rec.levelname == "ERROR"
+            for rec in caplog.records
+        ), f"Expected an ERROR log from agent.aiv_hook, got: {caplog.records}"
+
+    def test_git_command_uses_both_refs(self):
+        """The range arg to ``git diff`` must embed both merge_base_ref and
+        head_ref in ``{base}..{head}`` form."""
+        with patch.object(aiv_hook.subprocess, "run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+            aiv_hook.get_merged_diff_paths("origin/main", "feature-branch")
+
+        assert mock_run.called
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["git", "diff", "--name-only"], (
+            f"Expected git diff --name-only ..., got {cmd[:3]}"
+        )
+        assert cmd[3] == "origin/main..feature-branch", (
+            f"Expected range 'origin/main..feature-branch', got {cmd[3]!r}"
+        )

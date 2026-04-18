@@ -15,11 +15,52 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from datetime import datetime, timezone
 
 from . import aiv_schema
 
 log = logging.getLogger(__name__)
+
+
+def get_merged_diff_paths(
+    merge_base_ref: str, head_ref: str = "HEAD"
+) -> list[str]:
+    """Return the files changed between ``merge_base_ref`` and ``head_ref``.
+
+    Runs ``git diff --name-only {merge_base_ref}..{head_ref}`` in the current
+    working directory and parses the output into a list of file paths.
+
+    Args:
+        merge_base_ref: Git ref for the merge base (e.g. the pre-merge tip
+            of ``main``, or ``HEAD~1`` right after a ``--no-ff`` merge).
+        head_ref: Git ref for the merged tip. Defaults to ``"HEAD"``.
+
+    Returns:
+        The list of changed file paths, one per line of ``git diff`` output
+        with blank lines stripped. Returns an empty list on any subprocess
+        error (missing git, non-zero exit, timeout) — the caller never has
+        to wrap this itself because the validation hook must never fail a
+        deploy.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{merge_base_ref}..{head_ref}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "get_merged_diff_paths(%r, %r) failed: %s",
+            merge_base_ref,
+            head_ref,
+            exc,
+        )
+        return []
+    if result.returncode != 0:
+        return []
+    return [ln.strip() for ln in result.stdout.split("\n") if ln.strip()]
 
 
 def enqueue_for_validation(story_key: str, diff_paths: list[str]) -> None:
