@@ -331,3 +331,115 @@ class TestEmptyPendingList:
         }
         # raw_findings.md is never created for a fully-empty cycle.
         assert not findings_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Test 3 — _append_suggestions_to_findings writes one entry per suggestion
+# ---------------------------------------------------------------------------
+
+
+class TestAppendSuggestionsToFindings:
+    """Direct tests for the ``_append_suggestions_to_findings`` helper.
+
+    The helper is the single write-path for suggestion markers, so tests
+    here don't touch the provider or observer at all — they verify the
+    appender alone produces the expected ``Finding type: suggestion``
+    markers with ``story_key`` and ``reasoning`` in the content.
+    """
+
+    def test_single_suggestion_writes_one_finding_type_line(
+        self,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """One suggestion in → exactly one ``Finding type: suggestion`` line out."""
+        suggestion = Suggestion(
+            story_key=pending_story["key"],
+            recommend=True,
+            reasoning="Concrete, observable metric.",
+            reason="ok",
+        )
+
+        count = observe_cycle._append_suggestions_to_findings(
+            [(suggestion, pending_story)], findings_file
+        )
+
+        assert count == 1
+        body = findings_file.read_text(encoding="utf-8")
+        assert body.count("Finding type: suggestion") == 1
+        assert body.count("Finding type: observation") == 0
+
+    def test_entry_includes_story_key_and_reasoning(
+        self,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """Each appended entry carries the story key and the suggester reasoning."""
+        reasoning = "Story adds a reproducible latency benchmark."
+        suggestion = Suggestion(
+            story_key=pending_story["key"],
+            recommend=True,
+            reasoning=reasoning,
+            reason="ok",
+        )
+
+        observe_cycle._append_suggestions_to_findings(
+            [(suggestion, pending_story)], findings_file
+        )
+
+        body = findings_file.read_text(encoding="utf-8")
+        assert pending_story["key"] in body
+        assert reasoning in body
+
+    def test_multiple_suggestions_append_one_line_each(
+        self,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """Iterating N suggestions produces N ``Finding type: suggestion`` lines."""
+        second_story = dict(pending_story)
+        second_story["key"] = "TK-999"
+        second_story["title"] = "Second pending story"
+
+        suggestions = [
+            (
+                Suggestion(
+                    story_key=pending_story["key"],
+                    recommend=True,
+                    reasoning="First reasoning.",
+                    reason="ok",
+                ),
+                pending_story,
+            ),
+            (
+                Suggestion(
+                    story_key=second_story["key"],
+                    recommend=True,
+                    reasoning="Second reasoning.",
+                    reason="ok",
+                ),
+                second_story,
+            ),
+        ]
+
+        count = observe_cycle._append_suggestions_to_findings(
+            suggestions, findings_file
+        )
+
+        assert count == 2
+        body = findings_file.read_text(encoding="utf-8")
+        assert body.count("Finding type: suggestion") == 2
+        assert pending_story["key"] in body
+        assert second_story["key"] in body
+        assert "First reasoning." in body
+        assert "Second reasoning." in body
+
+    def test_empty_list_is_a_noop(
+        self,
+        findings_file: Path,
+    ) -> None:
+        """Empty input list → no file created, count is zero."""
+        count = observe_cycle._append_suggestions_to_findings([], findings_file)
+
+        assert count == 0
+        assert not findings_file.exists()

@@ -160,29 +160,42 @@ def generate_readme(test_stats: dict, code_stats: dict) -> str:
 
 {badges}
 
-Technomancer is an **autonomous AI dev team** wrapped around an Ollama-powered
-Discord bot. A human drags a story to the top of a Jira board; a daemon picks
-it up, spins up Claude Code against it, streams the log, tests it, and merges
-it. The Discord bot, Obsidian vault, and Claude API escalation are all still
-here — but the headline feature is the engineering loop that turns a ranked
-Jira story into a deployed commit without a human in the middle.
+Technomancer is a **fully autonomous AI dev team** that ships production code
+the way humans do — from ranked Jira tickets, through feature branches, with
+tests, passing CI, into `main`, and onto the live site. No human picks up the
+story. No human writes the code. No human runs the merge.
+
+**At full capacity: 425 commits to `main` in 24 hours** across two projects —
+every commit branched, tested, merged, pushed, and README-regen'd through the
+same safe-update workflow a human engineer would use.
+
+Four specialized AI roles coordinate the pipeline like a real scrum team:
+
+- **AIM** (AI Manager) — watches the Jira board, picks the next ranked story,
+  dispatches a worker against it, and enforces the one-in-progress mutex so
+  two workers never fight for `main`.
+- **AIW** (AI Worker) — takes one ranked story, opens a feature branch,
+  invokes Claude Code, runs the full pytest suite, auto-commits, merges when
+  green, pushes, regenerates README, publishes to the public mirror.
+- **AIMM** (AI Manager Manager) — the researcher above the managers. Observes
+  what ships, scores stories for finding-worthiness, logs narrative-ready
+  observations to `raw_findings.md`, and proposes research hypotheses to
+  investigate. Suggests approvals but doesn't mutate Jira — the human still
+  holds the approve button.
+- **AIV** (AI Validator) — the DEMO step. After every merge, AIV opens the
+  page, hits the API, or queries the DB and scores the shipped story on
+  **seven axes** (meets_requirements, code_quality, test_quality,
+  security_safety, scope_discipline, edge_cases, product_impact) plus red
+  flags, against the original acceptance criteria. Senior-engineer-proxy
+  code review at ship time. Self-audit beats self-repair.
+
+The human's job shrinks to *priority*. Drag a story to the top of the board
+and the team picks it up. Everything else is automatic.
 
 > **Auto-generated** — This README is updated automatically on every deployment
 > via `safe_update.py`.
 
-## AI Dev Team
-
-Three moving parts turn a Jira ticket into a merged pull request:
-
-- **AIM** (AI Manager) — a long-running daemon that watches the board, plans
-  work, and decides when to dispatch the next story.
-- **Worker** — a short-lived process AIM spawns per story. It prepares the
-  git state, invokes Claude Code, and reports back.
-- **Claude Code** — the hands. Given a ranked story's prompt, it edits files,
-  runs tests, and commits.
-
-The human's job shrinks to *ranking* the board. Drag a story to the top and
-AIM treats that as "do this next."
+## AI Dev Team — the details
 
 ### AIM — the Manager daemon
 
@@ -199,7 +212,7 @@ AIM treats that as "do this next."
 - **Recovers orphaned In Progress items on startup** — if the daemon died
   mid-story, boot-time reconciliation either resumes or releases them.
 
-### Worker — the executor
+### AIW — the AI Worker
 
 - Ensures a **clean main branch** before it starts (no dangling edits, no
   stale feature branch).
