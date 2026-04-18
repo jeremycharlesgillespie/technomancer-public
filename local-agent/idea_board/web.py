@@ -6847,7 +6847,7 @@ def _render_hub() -> str:
         idea_board_target_attr = ' target="_blank" rel="noopener"'
         idea_board_subtext = (
             f'<p style="color:var(--muted);font-size:0.8rem;margin-top:0.25rem">'
-            f'Using Jira — idea board backed by the {settings.jira_project_key} project.</p>'
+            f'Using Jira - backed by {settings.jira_project_key}</p>'
         )
     else:
         idea_board_href = "/ideas"

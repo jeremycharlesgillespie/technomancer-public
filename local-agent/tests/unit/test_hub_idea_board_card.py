@@ -86,13 +86,13 @@ class TestIdeaBoardCardWithJira:
              patch("idea_board.web.settings.jira_project_key", "FA"):
             body = client.get("/").get_data(as_text=True)
         assert 'href="https://other.atlassian.net/jira/software/projects/FA/boards"' in body
-        assert "Using Jira — idea board backed by the FA project." in body
+        assert "Using Jira - backed by FA" in body
 
     def test_using_jira_subtext_rendered(self, client):
         with patch("idea_board.web.settings.jira_url", "https://acme.atlassian.net"), \
              patch("idea_board.web.settings.jira_project_key", "TK"):
             body = client.get("/").get_data(as_text=True)
-        assert "Using Jira — idea board backed by the TK project." in body
+        assert "Using Jira - backed by TK" in body
 
     def test_completion_badge_preserved(self, client):
         """Adding the Jira link must not remove the done/total counter badge."""
