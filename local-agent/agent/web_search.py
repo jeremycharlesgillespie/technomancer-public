@@ -17,10 +17,43 @@ import requests
 from bs4 import BeautifulSoup
 from ddgs import DDGS
 
+from .alerts import send_alert
 from .config import settings
 from .core import _ollama_client
 
 log = logging.getLogger(__name__)
+
+
+# =============================================================================
+# ERROR ROUTING
+# =============================================================================
+# Exceptions in search functions used to be swallowed with bare stringified
+# messages.  Now they're logged with stack traces and routed to the alerts
+# channel via error_routing so operators can see *what* failed, *where*, and
+# with *which inputs*.
+
+def _route_exception(
+    func_name: str,
+    exc: BaseException,
+    context: dict,
+    level: str = "error",
+) -> None:
+    """Log an exception with context and route an alert via error_routing.
+
+    Any failure inside ``send_alert`` itself is swallowed — alerting
+    infrastructure problems must never break the caller's code path.
+    """
+    ctx_str = ", ".join(f"{k}={v!r}" for k, v in context.items())
+    log.exception("[%s] failed (%s)", func_name, ctx_str)
+    try:
+        send_alert(
+            message=f"{func_name} failed: {type(exc).__name__}: {exc}\n{ctx_str}",
+            title=f"{func_name} exception",
+            level=level,
+            category="search_error",
+        )
+    except Exception:
+        log.debug("[%s] alert dispatch failed", func_name, exc_info=True)
 
 # =============================================================================
 # TTL SEARCH CACHE
@@ -213,7 +246,13 @@ def get_domain_credibility(url: str) -> tuple[int, str]:
     try:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").lower()
-    except Exception:
+    except Exception as exc:
+        _route_exception(
+            "get_domain_credibility",
+            exc,
+            {"url": url},
+            level="warning",
+        )
         return DEFAULT_CREDIBILITY, _tier_label(DEFAULT_CREDIBILITY)
 
     # Strip www.
@@ -326,6 +365,11 @@ def web_search_smart(query: str, max_results: int = 8) -> str:
 
         raw_results = _retry_search(_do_smart)
     except Exception as e:
+        _route_exception(
+            "web_search_smart",
+            e,
+            {"query": query, "optimized_query": optimized_query, "max_results": max_results},
+        )
         return f"Search error: {e}"
 
     if not raw_results:
@@ -419,6 +463,11 @@ def web_search(query: str, max_results: int = 5) -> str:
         return result
 
     except Exception as e:
+        _route_exception(
+            "web_search",
+            e,
+            {"query": query, "max_results": max_results},
+        )
         return f"Search error: {e}"
 
 
@@ -472,6 +521,11 @@ def web_search_news(query: str, max_results: int = 5) -> str:
         return result
 
     except Exception as e:
+        _route_exception(
+            "web_search_news",
+            e,
+            {"query": query, "max_results": max_results},
+        )
         return f"News search error: {e}"
 
 

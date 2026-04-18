@@ -13,6 +13,7 @@ from agent.web_search import (
     _cache_set,
     _retry_search,
     _rewrite_query_with_llm,
+    _route_exception,
     _search_cache,
     _tier_label,
     clear_search_cache,
@@ -627,3 +628,137 @@ class TestRetrySearch:
         result = web_search("retry test")
         assert "Result" in result
         assert call_count == 3
+
+
+# =============================================================================
+# ERROR ROUTING TESTS
+# =============================================================================
+
+
+class TestErrorRouting:
+    """Verify that search-function exceptions route through error_routing
+    with enough context (function name, inputs, exception type) for an
+    operator to debug the failure."""
+
+    def setup_method(self):
+        clear_search_cache()
+
+    def teardown_method(self):
+        clear_search_cache()
+
+    @patch("agent.web_search.time.sleep")
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.DDGS")
+    def test_web_search_routes_error(self, mock_ddgs_cls, mock_send_alert, mock_sleep):
+        """ValueError from DDGS → error routed with query context, still returns error string."""
+        mock_ddgs_cls.side_effect = ValueError("bad query")
+
+        result = web_search("my query", max_results=7)
+
+        # Backward-compatible return value
+        assert "Search error" in result
+        assert "bad query" in result
+
+        # Exactly one alert dispatched with the expected context
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert kwargs["level"] == "error"
+        assert "web_search" in kwargs["title"]
+        assert "ValueError" in kwargs["message"]
+        assert "my query" in kwargs["message"]
+        assert "max_results" in kwargs["message"]
+
+    @patch("agent.web_search.time.sleep")
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search._rewrite_query_with_llm")
+    @patch("agent.web_search.DDGS")
+    def test_web_search_smart_routes_error(
+        self, mock_ddgs_cls, mock_rewrite, mock_send_alert, mock_sleep
+    ):
+        """Smart search failure routes error with both original and optimized query."""
+        mock_rewrite.return_value = "optimized text"
+        mock_ddgs_cls.side_effect = RuntimeError("DDG outage")
+
+        result = web_search_smart("how do I do X?")
+
+        assert "Search error" in result
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert "web_search_smart" in kwargs["title"]
+        assert "RuntimeError" in kwargs["message"]
+        assert "how do I do X?" in kwargs["message"]
+        assert "optimized text" in kwargs["message"]
+
+    @patch("agent.web_search.time.sleep")
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.DDGS")
+    def test_web_search_news_routes_error(
+        self, mock_ddgs_cls, mock_send_alert, mock_sleep
+    ):
+        """News search failure routes error with news-specific title."""
+        mock_ddgs_cls.side_effect = ValueError("news rate limit")
+
+        result = web_search_news("breaking story", max_results=3)
+
+        assert "News search error" in result
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert "web_search_news" in kwargs["title"]
+        assert "ValueError" in kwargs["message"]
+        assert "breaking story" in kwargs["message"]
+
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.urlparse")
+    def test_get_domain_credibility_routes_error(self, mock_urlparse, mock_send_alert):
+        """URL parse failure routes a warning-level alert and returns default score."""
+        mock_urlparse.side_effect = TypeError("malformed url object")
+
+        score, tier = get_domain_credibility("weird://thing")
+
+        # Backward-compatible fallback
+        assert score == DEFAULT_CREDIBILITY
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert kwargs["level"] == "warning"  # low-severity parse failure
+        assert "get_domain_credibility" in kwargs["title"]
+        assert "TypeError" in kwargs["message"]
+        assert "weird://thing" in kwargs["message"]
+
+    @patch("agent.web_search.send_alert")
+    def test_route_exception_swallows_send_alert_errors(self, mock_send_alert):
+        """If send_alert itself fails, _route_exception must not propagate."""
+        mock_send_alert.side_effect = RuntimeError("alerts channel down")
+
+        # Should not raise
+        _route_exception(
+            "my_func",
+            ValueError("inner"),
+            {"query": "hi"},
+        )
+        mock_send_alert.assert_called_once()
+
+    @patch("agent.web_search.time.sleep")
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.DDGS")
+    def test_successful_search_does_not_route(
+        self, mock_ddgs_cls, mock_send_alert, mock_sleep
+    ):
+        """Happy path must not dispatch alerts."""
+        mock_ddgs = MagicMock()
+        mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+        mock_ddgs.__exit__ = MagicMock(return_value=False)
+        mock_ddgs.text.return_value = [
+            {"title": "T", "body": "B", "href": "https://example.com"},
+        ]
+        mock_ddgs_cls.return_value = mock_ddgs
+
+        web_search("ok query")
+
+        mock_send_alert.assert_not_called()
