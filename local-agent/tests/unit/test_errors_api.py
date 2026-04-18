@@ -305,14 +305,30 @@ class TestHubErrorsLink:
     """Tests that the hub page links to the errors page."""
 
     def test_hub_has_errors_card(self, client):
-        """Hub page contains an Errors & Crashes card."""
+        """Hub page contains an Errors & Crashes card when 7d crashes > 0.
+
+        The card is hidden when the 7-day crash count is zero (TK-650); this
+        test forces a non-zero count so the card renders and the link is
+        asserted.
+        """
+        stats = {
+            "total": 2,
+            "counts_24h": 0,
+            "counts_7d": 2,
+            "counts_30d": 2,
+            "last_mtime": None,
+            "last_check": "5m ago",
+            "file_exists": True,
+            "days_since_last_crash": 0,
+        }
         with patch("idea_board.web.subprocess.run") as mock_run, \
-             patch("urllib.request.urlopen", side_effect=Exception("conn refused")):
+             patch("urllib.request.urlopen", side_effect=Exception("conn refused")), \
+             patch("idea_board.web._crash_log_stats", return_value=stats):
             mock_run.return_value = MagicMock(stdout="abc1234")
             resp = client.get("/")
             page_html = resp.data.decode()
-            assert 'href="/errors"' in page_html
-            assert "Errors" in page_html
+            assert 'href="/errors" class="card"' in page_html
+            assert "Errors &amp; Crashes" in page_html
 
     def test_health_panel_links_to_errors(self, client):
         """Health panel header has a link to the errors page."""

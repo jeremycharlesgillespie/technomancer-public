@@ -6737,6 +6737,25 @@ def _render_hub() -> str:
     except Exception:
         pass
 
+    # Hide the /errors card when the 7-day crash count is zero so a healthy
+    # system doesn't clutter the hub with an "all clear" card. The /errors
+    # page itself stays reachable — header link in the Service Health panel
+    # above, and the direct /errors URL.
+    try:
+        errors_7d = int(_crash_log_stats().get("counts_7d", 0))
+    except Exception:
+        errors_7d = 0
+    if errors_7d > 0:
+        errors_card_html = (
+            '<a href="/errors" class="card" style="border-left: 4px solid var(--red);">\n'
+            '            <h2>Errors &amp; Crashes</h2>\n'
+            f'            <p>Recent crash reports with stack traces.</p>\n'
+            f'            <span class="badge">{errors_7d} in 7d</span>\n'
+            '        </a>'
+        )
+    else:
+        errors_card_html = ""
+
     # Idea Board card links out to Jira when configured — Jira is the source of truth.
     if settings.jira_url and settings.jira_project_key:
         idea_board_href = (
@@ -6828,10 +6847,7 @@ def _render_hub() -> str:
             <h2>Discord Analytics</h2>
             <p>Discord command usage, engagement trends, and feature adoption.</p>
         </a>
-        <a href="/errors" class="card" style="border-left: 4px solid var(--red);">
-            <h2>Errors &amp; Crashes</h2>
-            <p>Recent crash reports with stack traces.</p>
-        </a>
+        {errors_card_html}
         <a href="/live" class="card" style="border-left: 4px solid var(--orange);">
             <h2>View Live Executions</h2>
             <p>Browse in-flight work across projects and tail the latest runs.</p>
