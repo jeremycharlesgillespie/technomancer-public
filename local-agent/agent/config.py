@@ -357,6 +357,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    # AIMM daemon settings (env vars prefixed with AIMM_)
+    aimm_cycle_interval: int = Field(
+        default=600,
+        description="Seconds between AIMM daemon decision cycles (env: AIMM_CYCLE_INTERVAL)",
+    )
+    aimm_max_approvals_per_cycle: int = Field(
+        default=5,
+        description="Maximum approvals AIMM issues in a single cycle (env: AIMM_MAX_APPROVALS_PER_CYCLE)",
+    )
+    aimm_max_approvals_per_day: int = Field(
+        default=50,
+        description="Rolling 24h cap on AIMM approvals (env: AIMM_MAX_APPROVALS_PER_DAY)",
+    )
+    aimm_approve_feature_security: bool = Field(
+        default=True,
+        description=(
+            "Whether AIMM may auto-approve feature and security categories "
+            "(env: AIMM_APPROVE_FEATURE_SECURITY)"
+        ),
+    )
+    aimm_state_dir: str = Field(
+        default="aimm",
+        description="Directory for AIMM state/lock files (env: AIMM_STATE_DIR)",
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"
