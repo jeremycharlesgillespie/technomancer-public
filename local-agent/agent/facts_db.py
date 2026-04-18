@@ -14,7 +14,10 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .core import Tool
 
 log = logging.getLogger(__name__)
 
@@ -347,7 +350,7 @@ def _tool_facts_stats() -> str:
     return json.dumps(stats, indent=2)
 
 
-def get_facts_tools() -> list:
+def get_facts_tools() -> list["Tool"]:
     """Get tools for the facts database."""
     from .core import create_tool
 
