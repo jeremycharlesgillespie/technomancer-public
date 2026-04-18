@@ -263,45 +263,188 @@ class TestFormatCycleEntry:
 
 
 class TestFindOrCreateDateSection:
-    def test_creates_section_and_title_in_empty_content(self) -> None:
-        content, idx = find_or_create_date_section("", "2026-04-18")
-        assert TITLE_HEADING in content
-        assert "## 2026-04-18" in content
-        assert content[:idx].endswith("## 2026-04-18")
+    """Pure function: parses content, returns ``(start, end, exists)``.
 
-    def test_reuses_existing_date_section(self) -> None:
-        original = (
+    Covers the five mock file states called out in the acceptance
+    criteria — empty, one header, multiple headers, target in middle,
+    target at end — plus a handful of related edge cases.
+    """
+
+    DATE_TARGET = datetime(2026, 4, 18, tzinfo=timezone.utc)
+
+    # --- empty content -----------------------------------------------------
+
+    def test_empty_content_returns_zero_length_insert(self) -> None:
+        """State: empty file. Target: any date. Exists=False; insert at 0."""
+        start, end, exists = find_or_create_date_section("", self.DATE_TARGET)
+        assert exists is False
+        assert start == 0
+        assert end == 0
+
+    def test_content_without_any_headings_returns_eof_insert(self) -> None:
+        content = f"{TITLE_HEADING}\n\nSome preamble only.\n"
+        start, end, exists = find_or_create_date_section(
+            content, self.DATE_TARGET
+        )
+        assert exists is False
+        assert start == len(content)
+        assert end == len(content)
+
+    # --- one header --------------------------------------------------------
+
+    def test_one_header_exact_match(self) -> None:
+        """State: file with exactly one date heading that matches."""
+        content = (
             f"{TITLE_HEADING}\n\nSome preamble.\n\n## 2026-04-18\n\n"
             "### 10:00 UTC — a\n- observed: 1\n\n---\n"
         )
-        content, idx = find_or_create_date_section(original, "2026-04-18")
-        # No new date heading should have been introduced.
-        assert _count_date_headings(content, "2026-04-18") == 1
-        # Insertion point lives inside the existing section.
-        date_pos = content.index("## 2026-04-18")
-        assert idx > date_pos
-
-    def test_inserts_before_next_section(self) -> None:
-        original = (
-            f"{TITLE_HEADING}\n\n## 2026-04-18\n\n"
-            "### 10:00 UTC — a\n- observed: 1\n\n---\n\n"
-            "## 2026-04-19\n\n### 09:00 UTC — b\n- observed: 2\n\n---\n"
+        start, end, exists = find_or_create_date_section(
+            content, self.DATE_TARGET
         )
-        content, idx = find_or_create_date_section(original, "2026-04-18")
-        # Insertion offset should sit before the next date heading.
-        next_heading_pos = content.index("## 2026-04-19")
-        assert idx <= next_heading_pos
+        assert exists is True
+        assert content[start : start + len("## 2026-04-18")] == "## 2026-04-18"
+        # No later section → section extends to EOF.
+        assert end == len(content)
+        # Section body is fully captured inside [start, end).
+        assert "### 10:00 UTC — a" in content[start:end]
 
-    def test_appends_new_date_section_for_new_day(self) -> None:
-        original = (
+    def test_one_header_no_match_newer_target_inserts_at_top(self) -> None:
+        """State: file has one older heading; target is newer → insert above it."""
+        content = (
             f"{TITLE_HEADING}\n\n## 2026-04-18\n\n"
             "### 10:00 UTC — a\n- observed: 1\n\n---\n"
         )
-        content, idx = find_or_create_date_section(original, "2026-04-19")
-        assert _count_date_headings(content, "2026-04-18") == 1
-        assert _count_date_headings(content, "2026-04-19") == 1
-        # Index is positioned just after the new heading we created.
-        assert content[:idx].endswith("## 2026-04-19")
+        target = datetime(2026, 4, 19, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is False
+        assert start == end
+        # Insert position is at the existing (older) heading so the new
+        # section ends up above it (reverse-chronological).
+        assert start == content.index("## 2026-04-18")
+
+    def test_one_header_no_match_older_target_inserts_at_eof(self) -> None:
+        """State: one newer heading; target is older → append at end."""
+        content = (
+            f"{TITLE_HEADING}\n\n## 2026-04-19\n\n"
+            "### 09:00 UTC — a\n- observed: 1\n\n---\n"
+        )
+        target = datetime(2026, 4, 17, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is False
+        assert start == len(content)
+        assert end == len(content)
+
+    # --- multiple headers --------------------------------------------------
+
+    def test_multiple_headers_match_bounds_middle_section(self) -> None:
+        """Target matches a heading sandwiched between two others."""
+        content = (
+            f"{TITLE_HEADING}\n\n"
+            "## 2026-04-20\n\n### 09:00 UTC — c\n- observed: 3\n\n---\n\n"
+            "## 2026-04-19\n\n### 09:00 UTC — b\n- observed: 2\n\n---\n\n"
+            "## 2026-04-18\n\n### 09:00 UTC — a\n- observed: 1\n\n---\n"
+        )
+        target = datetime(2026, 4, 19, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is True
+        assert start == content.index("## 2026-04-19")
+        # The section ends just before the next ## heading.
+        assert end == content.index("## 2026-04-18")
+        section_body = content[start:end]
+        assert "### 09:00 UTC — b" in section_body
+        # Must NOT swallow neighbouring sections.
+        assert "### 09:00 UTC — a" not in section_body
+        assert "### 09:00 UTC — c" not in section_body
+
+    def test_target_date_in_middle_of_existing_range_inserts_between(self) -> None:
+        """Target between two existing dates → insert before the older one."""
+        content = (
+            f"{TITLE_HEADING}\n\n"
+            "## 2026-04-20\n\n### 09:00 UTC — c\n---\n\n"
+            "## 2026-04-18\n\n### 09:00 UTC — a\n---\n"
+        )
+        # 2026-04-19 sits between 20 (newer) and 18 (older).
+        target = datetime(2026, 4, 19, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is False
+        assert start == end
+        # Inserts just before the first OLDER heading (2026-04-18).
+        assert start == content.index("## 2026-04-18")
+        # Insertion offset sits after the newer (2026-04-20) section.
+        assert start > content.index("## 2026-04-20")
+
+    def test_target_older_than_all_appends_at_eof(self) -> None:
+        """Target older than every existing heading → insert at EOF."""
+        content = (
+            f"{TITLE_HEADING}\n\n"
+            "## 2026-04-20\n\n### 09:00 UTC — c\n---\n\n"
+            "## 2026-04-19\n\n### 09:00 UTC — b\n---\n"
+        )
+        target = datetime(2026, 4, 10, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is False
+        assert start == len(content)
+        assert end == len(content)
+
+    def test_target_newer_than_all_inserts_before_first_heading(self) -> None:
+        """Target newer than every existing heading → insert before first."""
+        content = (
+            f"{TITLE_HEADING}\n\n"
+            "## 2026-04-18\n\n### 10:00 UTC — a\n---\n\n"
+            "## 2026-04-17\n\n### 10:00 UTC — z\n---\n"
+        )
+        target = datetime(2026, 4, 19, tzinfo=timezone.utc)
+        start, end, exists = find_or_create_date_section(content, target)
+        assert exists is False
+        assert start == end
+        # Insertion is at the first (newest existing) heading position.
+        assert start == content.index("## 2026-04-18")
+
+    # --- matching + section_end edge cases ---------------------------------
+
+    def test_match_section_ends_at_next_h2_even_if_non_date(self) -> None:
+        """Any ``## `` heading — even non-date — terminates a section."""
+        content = (
+            f"{TITLE_HEADING}\n\n## 2026-04-18\n\n### 10:00 UTC — a\n---\n\n"
+            "## Appendix\n\nNotes.\n"
+        )
+        start, end, exists = find_or_create_date_section(
+            content, self.DATE_TARGET
+        )
+        assert exists is True
+        assert start == content.index("## 2026-04-18")
+        assert end == content.index("## Appendix")
+
+    def test_accepts_naive_datetime_as_utc(self) -> None:
+        content = f"{TITLE_HEADING}\n\n## 2026-04-18\n\n### 10:00 UTC — a\n---\n"
+        naive = datetime(2026, 4, 18, 12, 0)  # no tzinfo
+        start, _end, exists = find_or_create_date_section(content, naive)
+        assert exists is True
+        assert start == content.index("## 2026-04-18")
+
+    def test_accepts_tz_aware_datetime_converted_to_utc(self) -> None:
+        # 23:00 EST on 2026-04-17 == 04:00 UTC on 2026-04-18.
+        est = timezone(timedelta(hours=-5))
+        content = f"{TITLE_HEADING}\n\n## 2026-04-18\n\n### a\n---\n"
+        aware = datetime(2026, 4, 17, 23, 0, tzinfo=est)
+        _start, _end, exists = find_or_create_date_section(content, aware)
+        assert exists is True
+
+    def test_accepts_plain_date_object(self) -> None:
+        from datetime import date as date_cls
+
+        content = f"{TITLE_HEADING}\n\n## 2026-04-18\n\n### a\n---\n"
+        start, _end, exists = find_or_create_date_section(
+            content, date_cls(2026, 4, 18)
+        )
+        assert exists is True
+        assert start == content.index("## 2026-04-18")
+
+    def test_accepts_date_string(self) -> None:
+        content = f"{TITLE_HEADING}\n\n## 2026-04-18\n\n### a\n---\n"
+        start, _end, exists = find_or_create_date_section(content, "2026-04-18")
+        assert exists is True
+        assert start == content.index("## 2026-04-18")
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +555,10 @@ class TestThreeCyclesSameDaySingleDateHeader:
 
 
 class TestMultiDayOrdering:
-    def test_new_day_creates_new_section_preserving_old(
+    def test_newer_day_stacks_on_top_of_older(
         self, notes_path: Path
     ) -> None:
+        """Reverse-chronological: newer date ends up above the older one."""
         append_cycle_summary(
             CycleSummary(observed=1, theme="first-day"),
             date=datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc),
@@ -429,10 +573,53 @@ class TestMultiDayOrdering:
         content = notes_path.read_text(encoding="utf-8")
         assert _count_date_headings(content, "2026-04-18") == 1
         assert _count_date_headings(content, "2026-04-19") == 1
-        # Append order: older day section first.
-        assert content.index("## 2026-04-18") < content.index(
-            "## 2026-04-19"
+        # Reverse-chronological: newer day first.
+        assert content.index("## 2026-04-19") < content.index(
+            "## 2026-04-18"
         )
+
+    def test_older_day_inserted_last_goes_below_existing(
+        self, notes_path: Path
+    ) -> None:
+        """Insert newer then older — older still ends up at the bottom."""
+        append_cycle_summary(
+            CycleSummary(observed=1, theme="newer"),
+            date=datetime(2026, 4, 19, 10, 0, tzinfo=timezone.utc),
+            notes_path=notes_path,
+        )
+        append_cycle_summary(
+            CycleSummary(observed=2, theme="older"),
+            date=datetime(2026, 4, 18, 9, 0, tzinfo=timezone.utc),
+            notes_path=notes_path,
+        )
+
+        content = notes_path.read_text(encoding="utf-8")
+        assert content.index("## 2026-04-19") < content.index(
+            "## 2026-04-18"
+        )
+        # Both entries present and unharmed.
+        assert "### 10:00 UTC — newer" in content
+        assert "### 09:00 UTC — older" in content
+
+    def test_three_days_stack_newest_first(self, notes_path: Path) -> None:
+        """Regardless of append order, dates render newest → oldest."""
+        # Append out-of-order on purpose.
+        for d, theme in [
+            (datetime(2026, 4, 17, 10, 0, tzinfo=timezone.utc), "middle"),
+            (datetime(2026, 4, 16, 10, 0, tzinfo=timezone.utc), "oldest"),
+            (datetime(2026, 4, 18, 10, 0, tzinfo=timezone.utc), "newest"),
+        ]:
+            append_cycle_summary(
+                CycleSummary(observed=1, theme=theme),
+                date=d,
+                notes_path=notes_path,
+            )
+
+        content = notes_path.read_text(encoding="utf-8")
+        idx_18 = content.index("## 2026-04-18")
+        idx_17 = content.index("## 2026-04-17")
+        idx_16 = content.index("## 2026-04-16")
+        assert idx_18 < idx_17 < idx_16
 
 
 class TestNaiveAndTimezonedDates:
