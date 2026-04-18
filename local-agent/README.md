@@ -1,6 +1,6 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-3947-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.7%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-90-blue) ![lines](https://img.shields.io/badge/lines-39k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-3947-brightgreen) ![coverage](https://img.shields.io/badge/coverage-78.7%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-91-blue) ![lines](https://img.shields.io/badge/lines-39k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 Technomancer is an **autonomous AI dev team** wrapped around an Ollama-powered
 Discord bot. A human drags a story to the top of a Jira board; a daemon picks
@@ -105,7 +105,7 @@ While a Worker is running, anyone with the link can watch in real time:
 ## Highlights
 
 - **3947 automated tests** with 78.7% code coverage
-- **90 Python modules** across 39,192 lines of code
+- **91 Python modules** across 39,253 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -285,8 +285,8 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 |--------|-------|
 | Test count | 3947 |
 | Code coverage | 78.7% |
-| Python modules | 90 |
-| Lines of code | 39,192 |
+| Python modules | 91 |
+| Lines of code | 39,253 |
 | Test files | 144 |
 
 ## License

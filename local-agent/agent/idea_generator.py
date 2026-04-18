@@ -36,6 +36,7 @@ from .config import settings
 from .fn_profiler import profile_fn
 from .memory_system import get_memory_system
 from .perf_monitor import get_monitor as get_perf_monitor
+from .story_format import STORY_DESCRIPTION_FORMAT
 
 try:
     from board import get_provider as _get_board_provider
@@ -99,10 +100,15 @@ deliverable).  Epics should list the 2-4 stories needed to deliver end-to-end va
 For each idea, output a JSON object with these fields:
 - "title": Short descriptive title (under 80 chars)
 - "idea_type": "epic" if it requires multiple stories to deliver value, "story" if standalone
-- "description": A structured description with each section on its OWN LINE separated by blank lines.
-    Use EXACTLY this format with newlines between sections:
-    "WHAT: <what to build or change>\n\nWHY: <what problem it solves>\n\nHOW: <implementation approach — files, patterns, libraries>\n\nFULL LIFECYCLE: <describe the complete value chain: data collection → analysis → action → user-visible outcome. What consumes this data? What behaviour changes? How does the user see the improvement?>\n\nBENEFITS: <how it helps the project owner — saves time, improves quality, etc.>\n\nCOST: <resource impact — CPU/GPU/disk/API costs, or 'Minimal'>\n\nUNLOCKS: <what new capabilities become possible>"
-    CRITICAL: Each section MUST start on a new line. Do NOT put all sections on one line.
+- "description": Structured description. Use the STORY format for standalone
+    stories (Scrum user story + 5W + acceptance criteria + FILES), or the EPIC
+    format for epics (adds ARCHITECTURE / TRADE-OFFS / CONSTRAINTS / FAILURE
+    MODES and epic-level acceptance). The exact layouts are defined in
+    :data:`agent.story_format.STORY_DESCRIPTION_FORMAT` and
+    :data:`agent.story_format.EPIC_DESCRIPTION_FORMAT`. Each section MUST be on
+    its own line, separated by blank lines. Stories that describe a FULL
+    LIFECYCLE (data collection → analysis → action → outcome) belong to epics
+    unless the single story already covers every stage.
 - "stories": (only for epics) A JSON array of 2-4 story titles that together deliver the full lifecycle. Each story should be independently implementable and testable. Example: ["Collect engagement data", "Build ranking algorithm from engagement", "Auto-filter low-engagement sources"]
 - "category": One of: performance, feature, quality, security, ux
 - "source": Which input prompted this (news_analysis, conversation_analysis, error_analysis, performance_analysis)
@@ -176,9 +182,12 @@ Output a JSON object (NOT an array) with these fields:
   performance_analysis, conversation_analysis, coverage_analysis, recent_changes
 - "stories": Array of 1-3 story objects, each with:
     - "title": Story title (under 80 chars)
-    - "description": Structured with WHAT/WHY/HOW sections.
-      Use this format:
-      "WHAT: <what to build>\\n\\nWHY: <problem it solves>\\n\\nHOW: <implementation approach>\\n\\nFiles to modify: <comma-separated file paths>"
+    - "description": Use EXACTLY the following layout (Scrum user story + 5W
+      + acceptance criteria + FILES). All sections are REQUIRED and each MUST
+      be on its own line, separated by blank lines. When writing the JSON
+      value, escape newlines as \\n.
+
+{story_format}
 
 RULES:
 - Each story must be independently implementable and testable
@@ -749,6 +758,7 @@ async def synthesize_epic(signals: str, agent: Any) -> dict[str, Any] | None:
         signals=signals,
         codebase=codebase,
         existing=existing,
+        story_format=STORY_DESCRIPTION_FORMAT,
     )
 
     # Call Ollama via the isolated agent
