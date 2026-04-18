@@ -443,3 +443,180 @@ class TestAppendSuggestionsToFindings:
 
         assert count == 0
         assert not findings_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — _score_pending_suggestions filters to recommend+ok verdicts
+# ---------------------------------------------------------------------------
+
+
+class TestScorePendingSuggestions:
+    """Direct tests for the ``_score_pending_suggestions`` helper.
+
+    The helper owns the suggester loop: it iterates the pending-approval
+    queue, delegates to :func:`aimm.suggester.suggest_approval`, and
+    returns only the ``reason='ok'`` + ``recommend=True`` verdicts. Skips
+    and error verdicts are dropped (the suggester has already persisted
+    its own record).
+    """
+
+    def test_only_recommend_ok_verdicts_returned(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """Mixed verdicts in → only ``recommend=True`` + ``reason='ok'`` out."""
+        second = dict(pending_story)
+        second["key"] = "TK-900"
+        third = dict(pending_story)
+        third["key"] = "TK-901"
+        provider = _make_provider(proposed=[pending_story, second, third])
+
+        verdicts = {
+            pending_story["key"]: Suggestion(
+                story_key=pending_story["key"],
+                recommend=True,
+                reasoning="Good metric.",
+                reason="ok",
+            ),
+            second["key"]: Suggestion(
+                story_key=second["key"],
+                recommend=False,
+                reasoning="",
+                reason="ok",
+            ),
+            third["key"]: Suggestion(
+                story_key=third["key"],
+                recommend=True,
+                reasoning="",
+                reason="llm_error",
+            ),
+        }
+
+        def fake_suggest(story, rubric, *, findings_path, cycle_id):
+            return verdicts[story["key"]]
+
+        with patch(
+            "aimm.observe_cycle.suggester.suggest_approval",
+            side_effect=fake_suggest,
+        ) as suggest_mock:
+            scored = observe_cycle._score_pending_suggestions(
+                provider,
+                "TK",
+                SAMPLE_RUBRIC,
+                findings_path=findings_file,
+                cycle_id="test-cycle",
+            )
+
+        assert suggest_mock.call_count == 3
+        assert len(scored) == 1
+        assert scored[0][0].story_key == pending_story["key"]
+        assert scored[0][1]["key"] == pending_story["key"]
+
+    def test_no_pending_stories_returns_empty(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+    ) -> None:
+        """Empty pending queue → suggester never invoked, empty list returned."""
+        provider = _make_provider(proposed=[])
+
+        with patch(
+            "aimm.observe_cycle.suggester.suggest_approval"
+        ) as suggest_mock:
+            scored = observe_cycle._score_pending_suggestions(
+                provider,
+                "TK",
+                SAMPLE_RUBRIC,
+                findings_path=findings_file,
+            )
+
+        suggest_mock.assert_not_called()
+        assert scored == []
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — run() returns the full summary dict with multi-observation input
+# ---------------------------------------------------------------------------
+
+
+class TestRunSummaryShape:
+    """Verify the ``run()`` summary dict on a mixed-input cycle."""
+
+    def test_two_observations_one_suggestion_summary(
+        self,
+        rubric_file: Path,
+        findings_file: Path,
+        pending_story: dict[str, Any],
+    ) -> None:
+        """Two shipped + one pending-approval → summary counts each stream.
+
+        Both shipped stories score as finding-worthy observations; one
+        pending story recommends approval. The summary dict keeps
+        observations and suggestions as separate counters so a caller
+        can drive ``research_log.md`` without reparsing markdown.
+        """
+        shipped_a = {
+            "key": "TK-700",
+            "id": "TK-700",
+            "title": "First shipped",
+            "description": "desc a",
+            "state": "done",
+            "labels": ["cat:feature"],
+        }
+        shipped_b = {
+            "key": "TK-701",
+            "id": "TK-701",
+            "title": "Second shipped",
+            "description": "desc b",
+            "state": "done",
+            "labels": ["cat:quality"],
+        }
+        provider = _make_provider(
+            done=[shipped_a, shipped_b],
+            proposed=[pending_story],
+        )
+
+        worthy = Observation(
+            finding_worthy=True,
+            headline="Headline",
+            why_it_matters="Why.",
+            evidence_pointer="abc",
+            theme="theme",
+            reason="ok",
+        )
+        recommended = Suggestion(
+            story_key=pending_story["key"],
+            recommend=True,
+            reasoning="Good.",
+            reason="ok",
+        )
+
+        with patch(
+            "aimm.observe_cycle.observer.score_shipped_story",
+            return_value=worthy,
+        ), patch(
+            "aimm.observe_cycle.suggester.suggest_approval",
+            return_value=recommended,
+        ):
+            summary = observe_cycle.run(
+                provider,
+                "TK",
+                state={},
+                rubric_path=rubric_file,
+                findings_path=findings_file,
+            )
+
+        assert set(summary.keys()) == {
+            "observed",
+            "findings_logged",
+            "suggestions_logged",
+        }
+        assert summary["observed"] == 2
+        assert summary["findings_logged"] == 2
+        assert summary["suggestions_logged"] == 1
+
+        body = findings_file.read_text(encoding="utf-8")
+        assert body.count("Finding type: observation") == 2
+        assert body.count("Finding type: suggestion") == 1
