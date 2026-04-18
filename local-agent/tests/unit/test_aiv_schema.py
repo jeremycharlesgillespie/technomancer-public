@@ -296,11 +296,14 @@ class TestRoundTrip:
 
 
 class TestNoOtherImports:
-    """The story explicitly says 'no other module imports aiv_schema yet.'
-    Guard that invariant so future refactors don't silently wire it in
-    before the downstream stories land."""
+    """The MVP schema story said no other module imports aiv_schema yet.
+    Once the post-merge hook (``agent/aiv_hook.py``) lands, that single
+    file is the legitimate downstream importer — guard that nothing else
+    sneaks in."""
 
-    def test_agent_package_has_no_aiv_schema_importers(self):
+    ALLOWED_IMPORTERS: frozenset[str] = frozenset({"aiv_hook.py"})
+
+    def test_agent_package_has_no_unexpected_aiv_schema_importers(self):
         import pathlib
 
         agent_dir = pathlib.Path(aiv_schema.__file__).parent
@@ -308,10 +311,12 @@ class TestNoOtherImports:
         for py in agent_dir.rglob("*.py"):
             if py.name == "aiv_schema.py":
                 continue
+            if py.name in self.ALLOWED_IMPORTERS:
+                continue
             text = py.read_text(encoding="utf-8", errors="replace")
             if "aiv_schema" in text:
                 offenders.append(str(py.relative_to(agent_dir)))
         assert not offenders, (
             f"Unexpected aiv_schema importers: {offenders}. "
-            "Story TK-677 says no other module imports aiv_schema yet."
+            "Only agent/aiv_hook.py is allowed to import aiv_schema."
         )

@@ -37,6 +37,8 @@ from agent.story_timings import phase_timer, record_phase
 
 from board import get_provider as _get_board_provider
 
+from idea_board.aiv_post_merge import enqueue_merged_story
+
 
 def _project_key_for(idea_id: str | None) -> str | None:
     """Return the project key for story-timing rows (e.g. ``TK``, ``FA``).
@@ -2429,6 +2431,9 @@ def execute_idea(
                      "-m", f"[{idea_id}] Merge branch '{branch}' - executor auto-deploy"],
                     capture_output=True, text=True, cwd=project_root,
                 )
+                # Non-blocking hand-off to the AIV validation queue.
+                # No-op on a failed merge; any error is swallowed inside.
+                enqueue_merged_story(idea_id, merge_result, project_root)
                 if merge_result.returncode != 0:
                     state.log(f"Merge failed: {merge_result.stderr[:200]}")
                     mark_failed(idea_id, state.log_text[-5000:])
