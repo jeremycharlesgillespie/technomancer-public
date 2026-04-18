@@ -6,6 +6,7 @@ so the bot remains functional during Ollama/Claude API outages.
 """
 
 import re
+from collections.abc import Callable
 from datetime import datetime
 
 
@@ -39,7 +40,8 @@ def _date_response() -> str:
 
 
 def _greeting_response() -> str:
-    hour = datetime.now().hour
+    hour: int = datetime.now().hour
+    greeting: str
     if hour < 12:
         greeting = "Good morning"
     elif hour < 17:
@@ -71,7 +73,7 @@ def _status_response() -> str:
 # Pattern → handler mapping
 # ---------------------------------------------------------------------------
 
-_FALLBACK_HANDLERS: list[tuple[re.Pattern, callable]] = [
+_FALLBACK_HANDLERS: list[tuple[re.Pattern[str], Callable[[], str]]] = [
     # Time queries
     (re.compile(r"\bwhat\s+time\b"), _time_response),
     (re.compile(r"\bwhat\'?s?\s+the\s+time\b"), _time_response),
