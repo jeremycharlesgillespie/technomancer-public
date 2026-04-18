@@ -34,7 +34,7 @@ Routes:
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
     GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
-    GET  /quality                 — HTML table of validated stories with 7-axis scores and flags
+    GET  /quality                 — HTML table of validated stories (filter by project, sort by score, 50/page)
     GET  /api/aiv/recent          — Recent validated stories (newest first) as JSON
     GET  /api/aiv/flags           — Red-flag counts by type over trailing window
 """
@@ -5153,6 +5153,25 @@ def _aiv_parse_red_flags(raw: Any) -> list[str]:
     return [str(f) for f in parsed if f is not None]
 
 
+_PROJECT_KEY_RE = re.compile(r"^([A-Z][A-Z0-9]*)-\d+$")
+
+_AIV_SORT_RECENT = "recent"
+_AIV_SORT_SCORE = "score"
+_AIV_ALLOWED_SORTS = (_AIV_SORT_RECENT, _AIV_SORT_SCORE)
+_AIV_QUALITY_PAGE_SIZE = 50
+
+
+def _aiv_extract_project(story_key: Any) -> str | None:
+    """Extract the project prefix (e.g. ``TK`` from ``TK-690``).
+
+    Returns ``None`` if the key is falsy or does not match ``<PROJECT>-<digits>``.
+    """
+    if not story_key:
+        return None
+    m = _PROJECT_KEY_RE.match(str(story_key).strip())
+    return m.group(1) if m else None
+
+
 def _aiv_fetch_recent(limit: int) -> list[dict[str, Any]]:
     """Return ``story_quality`` rows ordered by validated_at DESC.
 
@@ -5160,23 +5179,57 @@ def _aiv_fetch_recent(limit: int) -> list[dict[str, Any]]:
     never run) or the table is absent — the dashboard renders an empty
     state rather than a 500.
     """
+    rows, _total = _aiv_fetch_quality_rows(
+        project=None, sort=_AIV_SORT_RECENT, limit=limit, offset=0
+    )
+    return rows
+
+
+def _aiv_fetch_quality_rows(
+    *,
+    project: str | None,
+    sort: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return ``(rows, total)`` for the quality dashboard.
+
+    ``project`` filters by story_key prefix (e.g. ``TK`` matches ``TK-%``).
+    ``sort`` is either ``recent`` (validated_at DESC, default) or ``score``
+    (overall_score ASC — lowest scores surface first so operators see
+    problems). ``limit`` / ``offset`` paginate the result; ``total`` is the
+    full matching row count before pagination.
+    """
     if not aiv_schema.DB_PATH.exists():
-        return []
+        return [], 0
+    where_clause = ""
+    params: list[Any] = []
+    if project:
+        where_clause = "WHERE story_key LIKE ?"
+        params.append(f"{project}-%")
+    if sort == _AIV_SORT_SCORE:
+        order_clause = "ORDER BY overall_score ASC, validated_at DESC"
+    else:
+        order_clause = "ORDER BY validated_at DESC"
     try:
         aiv_schema.init_db()
         conn = aiv_schema._get_conn()
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM story_quality {where_clause}",
+            params,
+        ).fetchone()
+        total = int(total_row["c"]) if total_row else 0
         rows = conn.execute(
             "SELECT story_key, story_title, merged_at, validated_at, "
             "meets_requirements, code_quality, test_quality, security_safety, "
             "scope_discipline, edge_cases, product_impact, overall_score, "
             "red_flags_json, verification_method, error "
-            "FROM story_quality "
-            "ORDER BY validated_at DESC "
-            "LIMIT ?",
-            (limit,),
+            f"FROM story_quality {where_clause} {order_clause} "
+            "LIMIT ? OFFSET ?",
+            [*params, int(limit), int(offset)],
         ).fetchall()
     except sqlite3.OperationalError:
-        return []
+        return [], 0
 
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -5193,7 +5246,27 @@ def _aiv_fetch_recent(limit: int) -> list[dict[str, Any]]:
         for axis in _AIV_SCORE_AXES:
             entry[axis] = r[axis]
         out.append(entry)
-    return out
+    return out, total
+
+
+def _aiv_distinct_projects() -> list[str]:
+    """Return the sorted list of project prefixes present in story_quality."""
+    if not aiv_schema.DB_PATH.exists():
+        return []
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            "SELECT DISTINCT story_key FROM story_quality"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    projects: set[str] = set()
+    for r in rows:
+        prefix = _aiv_extract_project(r["story_key"])
+        if prefix:
+            projects.add(prefix)
+    return sorted(projects)
 
 
 def _aiv_flag_counts(hours: int) -> dict[str, Any]:
@@ -5315,10 +5388,32 @@ def _aiv_fmt_validated_at(raw: Any) -> str:
         return text[:16]
 
 
-def _render_quality() -> str:
-    """Render the /quality dashboard — validated stories, newest first."""
-    rows = _aiv_fetch_recent(200)
+def _render_quality(
+    *,
+    project: str | None = None,
+    sort: str = _AIV_SORT_RECENT,
+    page: int = 1,
+    page_size: int = _AIV_QUALITY_PAGE_SIZE,
+) -> str:
+    """Render the /quality dashboard — validated stories with optional filters.
+
+    ``project`` (e.g. ``"TK"``) scopes rows to that project. ``sort`` picks
+    ``recent`` (default, newest validated_at first) or ``score`` (lowest
+    overall_score first). ``page`` is 1-indexed; ``page_size`` defaults
+    to 50 rows per page.
+    """
+    if sort not in _AIV_ALLOWED_SORTS:
+        sort = _AIV_SORT_RECENT
+    page = max(1, page)
+    page_size = max(1, page_size)
+    offset = (page - 1) * page_size
+
+    rows, total = _aiv_fetch_quality_rows(
+        project=project, sort=sort, limit=page_size, offset=offset,
+    )
+    available_projects = _aiv_distinct_projects()
     flag_summary = _aiv_flag_counts(24)
+    total_pages = max(1, (total + page_size - 1) // page_size)
 
     score_headers = "".join(
         f"<th class='score'>{h}</th>" for h in _AIV_SCORE_HEADERS
@@ -5372,6 +5467,60 @@ def _render_quality() -> str:
     total_rows = len(rows)
     flagged_rows = sum(1 for r in rows if r["red_flags"])
 
+    project_options_list: list[str] = [
+        "<option value=\"\"{sel}>All projects</option>".format(
+            sel=" selected" if not project else ""
+        )
+    ]
+    for p in available_projects:
+        sel = " selected" if project and p == project else ""
+        project_options_list.append(
+            f"<option value=\"{html.escape(p)}\"{sel}>{html.escape(p)}</option>"
+        )
+    project_options = "\n        ".join(project_options_list)
+
+    sort_options = (
+        f"<option value=\"{_AIV_SORT_RECENT}\""
+        f"{' selected' if sort == _AIV_SORT_RECENT else ''}>Newest first</option>"
+        f"<option value=\"{_AIV_SORT_SCORE}\""
+        f"{' selected' if sort == _AIV_SORT_SCORE else ''}>Lowest score first</option>"
+    )
+
+    def _page_href(target_page: int) -> str:
+        parts = []
+        if project:
+            parts.append(f"project={html.escape(project)}")
+        if sort and sort != _AIV_SORT_RECENT:
+            parts.append(f"sort={html.escape(sort)}")
+        parts.append(f"page={int(target_page)}")
+        return "/quality?" + "&amp;".join(parts)
+
+    first_row = 0 if total == 0 else offset + 1
+    last_row = offset + len(rows)
+    prev_disabled = page <= 1
+    next_disabled = page >= total_pages
+    prev_link = (
+        f"<span class='pg-disabled'>&lsaquo; Prev</span>"
+        if prev_disabled
+        else f"<a href='{_page_href(page - 1)}'>&lsaquo; Prev</a>"
+    )
+    next_link = (
+        f"<span class='pg-disabled'>Next &rsaquo;</span>"
+        if next_disabled
+        else f"<a href='{_page_href(page + 1)}'>Next &rsaquo;</a>"
+    )
+    pagination_html = (
+        "<nav class='pagination'>"
+        f"{prev_link}"
+        f"<span class='pg-info'>Page {page} of {total_pages} "
+        f"&middot; {first_row}&ndash;{last_row} of {total}</span>"
+        f"{next_link}"
+        "</nav>"
+    )
+
+    filters_active = bool(project) or sort != _AIV_SORT_RECENT or page != 1
+    auto_refresh_js = "" if filters_active else "setInterval(refreshQuality, 30000);"
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5418,10 +5567,32 @@ td.when {{ color: var(--muted); white-space: nowrap; font-variant-numeric: tabul
 td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
             font-style: italic; }}
 .footer {{ color: var(--muted); font-size: 0.75rem; margin-top: 1.5rem; }}
+.toolbar {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+            background: var(--surface); border-radius: 8px; padding: 0.75rem 1rem;
+            margin-bottom: 1rem; font-size: 0.85rem; }}
+.toolbar label {{ display: inline-flex; align-items: center; gap: 6px;
+                  color: var(--muted); }}
+.toolbar select {{ background: #1a1a1a; color: var(--text); border: 1px solid var(--border);
+                   padding: 4px 8px; border-radius: 4px; font-size: 0.85rem; }}
+.toolbar button {{ background: var(--accent); color: #0b1d33; border: 0;
+                   padding: 5px 14px; border-radius: 4px; font-size: 0.85rem;
+                   font-weight: 600; cursor: pointer; }}
+.toolbar button:hover {{ filter: brightness(1.1); }}
+.toolbar .reset {{ color: var(--muted); font-size: 0.8rem; margin-left: auto; }}
+.pagination {{ display: flex; gap: 12px; align-items: center; justify-content: center;
+               margin-top: 1rem; font-size: 0.85rem; }}
+.pagination a {{ color: var(--accent); text-decoration: none;
+                 padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px; }}
+.pagination a:hover {{ background: var(--surface); }}
+.pagination .pg-disabled {{ color: var(--muted); padding: 4px 10px;
+                            border: 1px solid var(--border); border-radius: 4px;
+                            opacity: 0.5; }}
+.pagination .pg-info {{ color: var(--muted); }}
 @media (max-width: 720px) {{
     body {{ padding: 10px; }}
     td.title {{ max-width: 140px; }}
     th, td {{ padding: 6px; font-size: 0.8rem; }}
+    .toolbar {{ gap: 8px; }}
 }}
 </style>
 </head>
@@ -5441,6 +5612,21 @@ td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
     <div id="flag-badges">{flag_badges}</div>
 </div>
 
+<form class="toolbar" method="get" action="/quality">
+    <label>Project
+        <select name="project">
+        {project_options}
+        </select>
+    </label>
+    <label>Sort
+        <select name="sort">
+        {sort_options}
+        </select>
+    </label>
+    <button type="submit">Apply</button>
+    <a class="reset" href="/quality">Reset</a>
+</form>
+
 <table>
     <thead>
         <tr>
@@ -5457,10 +5643,12 @@ td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
     </tbody>
 </table>
 
+{pagination_html}
+
 <p class="footer">
-    {total_rows} validated story / stories shown
-    ({flagged_rows} flagged). Auto-refreshes every 30 seconds &middot;
-    Generated at {generated_at}
+    {total_rows} row(s) on this page ({flagged_rows} flagged)
+    &middot; {total} match the current filters
+    &middot; Generated at {generated_at}
 </p>
 
 <script>
@@ -5553,7 +5741,7 @@ function renderFlags(data) {{
     }}).join(' ');
 }}
 
-setInterval(refreshQuality, 30000);
+{auto_refresh_js}
 </script>
 </body>
 </html>"""
@@ -5563,11 +5751,22 @@ setInterval(refreshQuality, 30000);
 def quality_page() -> str:
     """GET /quality — HTML table of validated stories with 7-axis scores.
 
-    Newest-first. Any story with at least one red flag gets
-    ``class='flagged'`` on its ``<tr>``. Polls /api/aiv/recent and
-    /api/aiv/flags every 30 seconds in the browser.
+    Query params:
+        ``project`` — filter to rows whose story_key starts with ``<project>-``
+        ``sort`` — ``recent`` (default) or ``score`` (overall_score ASC)
+        ``page`` — 1-indexed page number; 50 rows per page
     """
-    return _render_quality()
+    project_raw = (request.args.get("project") or "").strip()
+    project = project_raw.upper() if project_raw else None
+    sort = (request.args.get("sort") or _AIV_SORT_RECENT).strip().lower()
+    if sort not in _AIV_ALLOWED_SORTS:
+        sort = _AIV_SORT_RECENT
+    try:
+        page = int(request.args.get("page", "1"))
+    except (TypeError, ValueError):
+        page = 1
+    page = max(1, page)
+    return _render_quality(project=project, sort=sort, page=page)
 
 
 # ============================================================================
