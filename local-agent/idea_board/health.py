@@ -41,7 +41,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,7 @@ CACHE_TTL_SECONDS = 30
 OLLAMA_TIMEOUT_SECONDS = 2
 EXECUTOR_STALE_HOURS = 2
 DISK_FREE_WARN_BYTES = 5 * 1024 * 1024 * 1024
+JIRA_DLQ_WINDOW_HOURS = 24
 
 REQUIRED_CHECKS = frozenset({"bot"})
 _OPTIONAL_CHECKS = ("ollama", "jira", "executor", "disk")
@@ -191,24 +192,24 @@ def check_jira() -> dict[str, Any]:
         result["configured"] = True
         jira_sync_dlq.init_db()
         conn = jira_sync_dlq._get_conn()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(hours=JIRA_DLQ_WINDOW_HOURS)
+        ).isoformat(timespec="seconds")
         row = conn.execute(
             "SELECT COUNT(*) AS n, MAX(last_failed_at) AS last_failed "
-            "FROM jira_sync_dlq"
+            "FROM jira_sync_dlq WHERE last_failed_at >= ?",
+            (cutoff,),
         ).fetchone()
         dlq_depth = int(row["n"]) if row else 0
         last_failed_at = row["last_failed"] if row else None
 
         result["dlq_depth"] = dlq_depth
+        result["window_hours"] = JIRA_DLQ_WINDOW_HOURS
         if last_failed_at:
             result["last_failed_at"] = last_failed_at
 
-        if dlq_depth == 0:
-            result.update(ok=True, detail="0 DLQ entries")
-        else:
-            result.update(
-                ok=False,
-                detail=f"{dlq_depth} unresolved DLQ entries",
-            )
+        detail = f"{dlq_depth} DLQ entries in last {JIRA_DLQ_WINDOW_HOURS}h"
+        result.update(ok=(dlq_depth == 0), detail=detail)
     except Exception as e:
         result.update(ok=False, detail=f"{type(e).__name__}: {e}")
     return _finalize(result, start)
