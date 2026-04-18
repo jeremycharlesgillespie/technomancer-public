@@ -105,7 +105,7 @@ def _cross_reference_gaps(gaps: list[dict[str, str]]) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for gap in gaps:
         query = gap.get("query", "")
-        matches: list[dict[str, str]] = []
+        matches: list[dict[str, Any]] = []
         if query:
             # Extract key terms (words > 3 chars, skip common words)
             stop_words = {
