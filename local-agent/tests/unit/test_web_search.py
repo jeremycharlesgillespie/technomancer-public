@@ -802,3 +802,96 @@ class TestErrorRouting:
         web_search("ok query")
 
         mock_send_alert.assert_not_called()
+
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.requests")
+    def test_web_fetch_routes_timeout(self, mock_requests, mock_send_alert):
+        """Timeout → error routed with url + error=timeout, returns error string."""
+        import requests as _req
+        mock_requests.get.side_effect = _req.exceptions.Timeout("timed out")
+        mock_requests.exceptions = _req.exceptions
+
+        result = web_fetch("https://slow-site.com")
+
+        # Backward-compatible return value
+        assert "timed out" in result.lower() or "error" in result.lower()
+        assert "https://slow-site.com" in result
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert kwargs["level"] == "error"
+        assert "web_fetch" in kwargs["title"]
+        assert "Timeout" in kwargs["message"]
+        assert "https://slow-site.com" in kwargs["message"]
+        assert "timeout" in kwargs["message"]
+
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.requests")
+    def test_web_fetch_routes_request_exception(self, mock_requests, mock_send_alert):
+        """RequestException → error routed with url + status_code + error context."""
+        import requests as _req
+        mock_resp = MagicMock()
+        mock_resp.status_code = 503
+        exc = _req.exceptions.HTTPError("503 Server Error")
+        exc.response = mock_resp
+        mock_requests.get.side_effect = exc
+        mock_requests.exceptions = _req.exceptions
+
+        result = web_fetch("https://broken.example.com")
+
+        assert "Error fetching" in result
+        assert "https://broken.example.com" in result
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert "web_fetch" in kwargs["title"]
+        assert "HTTPError" in kwargs["message"]
+        assert "https://broken.example.com" in kwargs["message"]
+        assert "503" in kwargs["message"]
+        assert "status_code" in kwargs["message"]
+
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.BeautifulSoup")
+    @patch("agent.web_search.requests")
+    def test_web_fetch_routes_parsing_exception(
+        self, mock_requests, mock_bs, mock_send_alert
+    ):
+        """Generic exception during parsing → routed with stage=parsing context."""
+        import requests as _req
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html></html>"
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.get.return_value = mock_resp
+        mock_requests.exceptions = _req.exceptions
+        mock_bs.side_effect = RuntimeError("parser exploded")
+
+        result = web_fetch("https://parse-fail.example.com")
+
+        assert "Error parsing" in result
+        assert "https://parse-fail.example.com" in result
+
+        mock_send_alert.assert_called_once()
+        kwargs = mock_send_alert.call_args.kwargs
+        assert kwargs["category"] == "search_error"
+        assert "web_fetch" in kwargs["title"]
+        assert "RuntimeError" in kwargs["message"]
+        assert "https://parse-fail.example.com" in kwargs["message"]
+        assert "parsing" in kwargs["message"]
+        assert "stage" in kwargs["message"]
+
+    @patch("agent.web_search.send_alert")
+    @patch("agent.web_search.requests")
+    def test_web_fetch_success_does_not_route(self, mock_requests, mock_send_alert):
+        """Happy path must not dispatch alerts."""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = "<html><body><article><p>Hello</p></article></body></html>"
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.get.return_value = mock_resp
+
+        web_fetch("https://example.com")
+
+        mock_send_alert.assert_not_called()

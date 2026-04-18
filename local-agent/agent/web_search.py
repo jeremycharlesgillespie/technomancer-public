@@ -579,11 +579,27 @@ def web_fetch(url: str) -> str:
 
         return f"Content from {url}:\n\n{text}"
 
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as e:
+        _route_exception(
+            "web_fetch",
+            e,
+            {"url": url, "error": "timeout"},
+        )
         return f"Error: Request timed out for {url}"
     except requests.exceptions.RequestException as e:
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
+        _route_exception(
+            "web_fetch",
+            e,
+            {"url": url, "status_code": status_code, "error": str(e)},
+        )
         return f"Error fetching {url}: {e}"
     except Exception as e:
+        _route_exception(
+            "web_fetch",
+            e,
+            {"url": url, "stage": "parsing", "error": str(e)},
+        )
         return f"Error parsing {url}: {e}"
 
 
