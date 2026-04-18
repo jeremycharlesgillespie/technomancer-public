@@ -399,6 +399,15 @@ class Settings(BaseSettings):
         default="",
         description="Directory for AIV state/lock/pid files (empty = aiv/ default)",
     )
+    aiv_reopen_threshold: Optional[float] = Field(
+        default=None,
+        description=(
+            "If set, any story whose AIV overall_score falls below this "
+            "value gets the pending-approval label re-applied in Jira and "
+            "a comment posted listing the axes that scored below it. "
+            "None disables the gate so AIV stays observation-only."
+        ),
+    )
 
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
