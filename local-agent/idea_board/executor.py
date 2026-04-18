@@ -2431,9 +2431,6 @@ def execute_idea(
                      "-m", f"[{idea_id}] Merge branch '{branch}' - executor auto-deploy"],
                     capture_output=True, text=True, cwd=project_root,
                 )
-                # Non-blocking hand-off to the AIV validation queue.
-                # No-op on a failed merge; any error is swallowed inside.
-                enqueue_merged_story(idea_id, merge_result, project_root)
                 if merge_result.returncode != 0:
                     state.log(f"Merge failed: {merge_result.stderr[:200]}")
                     mark_failed(idea_id, state.log_text[-5000:])
@@ -2462,6 +2459,16 @@ def execute_idea(
                     capture_output=True, text=True, timeout=30,
                     cwd=project_root,
                 )
+
+                # Non-blocking hand-off to the AIV validation queue.
+                # Fires only after the push so we never enqueue a story
+                # that didn't actually ship. Helper swallows its own
+                # errors; the outer try/except is belt-and-suspenders
+                # so a queue hiccup can never fail the deploy.
+                try:
+                    enqueue_merged_story(idea_id, merge_result, project_root)
+                except Exception as hook_err:
+                    state.log(f"AIV enqueue error (non-blocking): {hook_err}")
 
                 # Step 3e: Clean up safe_update state
                 state_file = Path(local_agent_dir) / ".safe_update_state"
