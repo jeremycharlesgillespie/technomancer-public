@@ -7,6 +7,7 @@ concurrent callers can't interleave reads and writes.
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 
 import pytest
@@ -18,13 +19,32 @@ from idea_board.news_config import news_bp
 
 @pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
-    """Point news_prefs_db at a temporary DB per test."""
+    """Point news_prefs_db at a temporary DB per test.
+
+    Pre-initializes the DB file in WAL mode using a bootstrap connection
+    so that the parallel workers in ``TestConcurrentDedup`` don't race on
+    the initial ``PRAGMA journal_mode=WAL`` handshake — setting WAL on a
+    fresh DB needs EXCLUSIVE access, and under xdist load several worker
+    threads opening connections at the same time can collide and raise
+    ``sqlite3.OperationalError: database is locked`` (TK-709).
+    """
     db_path = tmp_path / "news_prefs.db"
     legacy_path = tmp_path / "news_config.json"
     monkeypatch.setattr(news_prefs_db, "DB_DIR", tmp_path)
     monkeypatch.setattr(news_prefs_db, "DB_PATH", db_path)
     monkeypatch.setattr(news_prefs_db, "LEGACY_JSON_PATH", legacy_path)
     news_prefs_db._local.__dict__.pop("conn", None)
+
+    # Bootstrap the DB file into WAL mode before any production code path
+    # opens a connection. WAL is persisted on the DB file, so every
+    # connection opened afterwards inherits it for free.
+    _bootstrap = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        _bootstrap.execute("PRAGMA busy_timeout=5000")
+        _bootstrap.execute("PRAGMA journal_mode=WAL")
+        _bootstrap.commit()
+    finally:
+        _bootstrap.close()
 
     # Ensure path-logged flag resets so tests are order-independent.
     import idea_board.news_config as news_config
@@ -161,6 +181,13 @@ class TestReset:
 
 class TestConcurrentDedup:
     """Integration: under concurrent API hits, dedup holds."""
+
+    def test_fixture_enables_wal_mode(self):
+        """TK-709: the _isolate_db fixture must pre-set WAL mode so
+        concurrent worker threads don't race on the initial PRAGMA."""
+        conn = news_prefs_db._get_conn()
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
 
     def test_parallel_add_like_yields_single_entry(self, client):
         """8 concurrent POSTs of the same like must leave one copy.

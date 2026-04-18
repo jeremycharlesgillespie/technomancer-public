@@ -43,6 +43,12 @@ def _get_conn() -> sqlite3.Connection:
     if conn is None:
         DB_DIR.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        # busy_timeout duplicates the ``timeout=5`` connect argument but
+        # makes the retry window explicit so future readers don't have to
+        # dig through the sqlite3 module docs to verify it. 5s is enough
+        # for every concurrent writer in TestConcurrentDedup to serialize
+        # through the BEGIN IMMEDIATE gate without raising locked.
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.row_factory = sqlite3.Row
