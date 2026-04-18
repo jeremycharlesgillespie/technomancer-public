@@ -10,7 +10,10 @@ Exposes a single ``knowledge_lookup`` tool for the agent.
 
 import logging
 import re
+import time
 from typing import Any
+
+from .prometheus_metrics import record_knowledge_lookup
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +139,8 @@ def knowledge_lookup(query: str) -> str:
     if not query:
         return "Please provide a query to look up."
 
+    start = time.monotonic()
+
     # --- Tier 1: facts_db ---
     try:
         from .facts_db import lookup_fact, add_fact
@@ -143,6 +148,7 @@ def knowledge_lookup(query: str) -> str:
         results = lookup_fact(query)
         if results:
             best = results[0]
+            record_knowledge_lookup("facts_db", time.monotonic() - start)
             return (
                 f"**{best['key']}** ({best['category']}): {best['value']}\n"
                 f"*(source: {best['source']})*"
@@ -159,6 +165,7 @@ def knowledge_lookup(query: str) -> str:
         # Cache in facts_db for next time
         _cache_result(query, wiki_result, "wikipedia")
         _log_gap_resolved(query, "wikipedia")
+        record_knowledge_lookup("wikipedia", time.monotonic() - start)
         return f"**{query}**: {wiki_result}\n*(source: Wikipedia — cached for future)*"
 
     # --- Tier 3: Web search ---
@@ -166,10 +173,12 @@ def knowledge_lookup(query: str) -> str:
     if web_result:
         _cache_result(query, web_result, "web_search")
         _log_gap_resolved(query, "web_search")
+        record_knowledge_lookup("web_search", time.monotonic() - start)
         return f"**{query}**: {web_result}\n*(source: web search — cached for future)*"
 
     # --- All tiers failed ---
     _log_gap_unresolved(query)
+    record_knowledge_lookup("failure", time.monotonic() - start)
     return f"Could not find information about '{query}' in local facts, Wikipedia, or web search."
 
 

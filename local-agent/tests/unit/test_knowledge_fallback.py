@@ -211,6 +211,83 @@ class TestCacheResult:
         _cache_result("test", "value", "test")
 
 
+class TestKnowledgeLookupMetrics:
+    """Verify Prometheus counter/histogram are recorded with the right source
+    label for every tier in the fallback chain."""
+
+    @patch("agent.knowledge_fallback.record_knowledge_lookup")
+    @patch("agent.facts_db.lookup_fact")
+    def test_knowledge_lookup_with_metrics_facts_db(self, mock_lookup, mock_record):
+        mock_lookup.return_value = [
+            {"key": "spaghetti", "category": "definition", "value": "A thin pasta.", "source": "seed"}
+        ]
+        knowledge_lookup("spaghetti")
+        mock_record.assert_called_once()
+        source, duration = mock_record.call_args.args
+        assert source == "facts_db"
+        assert duration >= 0.0
+
+    @patch("agent.knowledge_fallback.record_knowledge_lookup")
+    @patch("agent.knowledge_fallback._log_gap_resolved")
+    @patch("agent.knowledge_fallback._cache_result")
+    @patch("agent.knowledge_fallback._query_wikipedia", return_value="A type of pasta.")
+    @patch("agent.facts_db.lookup_fact", return_value=[])
+    def test_knowledge_lookup_with_metrics_wikipedia(
+        self, mock_lookup, mock_wiki, mock_cache, mock_log, mock_record
+    ):
+        knowledge_lookup("spaghetti")
+        mock_record.assert_called_once()
+        source, duration = mock_record.call_args.args
+        assert source == "wikipedia"
+        assert duration >= 0.0
+
+    @patch("agent.knowledge_fallback.record_knowledge_lookup")
+    @patch("agent.knowledge_fallback._log_gap_resolved")
+    @patch("agent.knowledge_fallback._cache_result")
+    @patch("agent.knowledge_fallback._web_search_summary", return_value="Italian dish")
+    @patch("agent.knowledge_fallback._search_wikipedia", return_value=None)
+    @patch("agent.knowledge_fallback._query_wikipedia", return_value=None)
+    @patch("agent.facts_db.lookup_fact", return_value=[])
+    def test_knowledge_lookup_with_metrics_web_search(
+        self, mock_lookup, mock_wiki, mock_wiki_search, mock_web, mock_cache, mock_log, mock_record
+    ):
+        knowledge_lookup("spaghetti")
+        mock_record.assert_called_once()
+        source, duration = mock_record.call_args.args
+        assert source == "web_search"
+        assert duration >= 0.0
+
+    @patch("agent.knowledge_fallback.record_knowledge_lookup")
+    @patch("agent.knowledge_fallback._log_gap_unresolved")
+    @patch("agent.knowledge_fallback._web_search_summary", return_value=None)
+    @patch("agent.knowledge_fallback._search_wikipedia", return_value=None)
+    @patch("agent.knowledge_fallback._query_wikipedia", return_value=None)
+    @patch("agent.facts_db.lookup_fact", return_value=[])
+    def test_knowledge_lookup_with_metrics_failure(
+        self, mock_lookup, mock_wiki, mock_wiki_search, mock_web, mock_log, mock_record
+    ):
+        knowledge_lookup("xyznonexistent12345")
+        mock_record.assert_called_once()
+        source, duration = mock_record.call_args.args
+        assert source == "failure"
+        assert duration >= 0.0
+
+    def test_knowledge_lookup_duration_recorded(self):
+        """Histogram duration is passed as a non-negative float for the
+        winning tier."""
+        with patch("agent.knowledge_fallback.record_knowledge_lookup") as mock_record, \
+             patch("agent.facts_db.lookup_fact") as mock_lookup:
+            mock_lookup.return_value = [
+                {"key": "k", "category": "definition", "value": "v", "source": "seed"}
+            ]
+            knowledge_lookup("k")
+
+        assert mock_record.call_count == 1
+        _source, duration = mock_record.call_args.args
+        assert isinstance(duration, float)
+        assert duration >= 0.0
+
+
 class TestGetTools:
     def test_returns_one_tool(self):
         tools = get_knowledge_fallback_tools()

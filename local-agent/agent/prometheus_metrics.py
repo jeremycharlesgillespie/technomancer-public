@@ -31,6 +31,10 @@ DEFAULT_PORT = 9090
 # Latency buckets tuned for LLM calls: 0.5s to 120s
 _LATENCY_BUCKETS = (0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0)
 
+# Tighter buckets for knowledge_lookup: local cache hits are sub-millisecond,
+# web tiers typically seconds.
+_KNOWLEDGE_LATENCY_BUCKETS = (0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
+
 # ---------------------------------------------------------------------------
 # Prometheus metric objects (created lazily to avoid import-time side effects
 # when prometheus_client is not installed)
@@ -41,6 +45,8 @@ _llm_calls_total: Optional["Counter"] = None
 _llm_call_errors_total: Optional["Counter"] = None
 _llm_input_tokens_total: Optional["Counter"] = None
 _llm_output_tokens_total: Optional["Counter"] = None
+_knowledge_lookup_total: Optional["Counter"] = None
+_knowledge_lookup_duration: Optional["Histogram"] = None
 
 _initialized = False
 _lock = threading.Lock()
@@ -54,6 +60,7 @@ def _ensure_metrics() -> bool:
     """
     global _llm_call_duration, _llm_calls_total, _llm_call_errors_total
     global _llm_input_tokens_total, _llm_output_tokens_total, _initialized
+    global _knowledge_lookup_total, _knowledge_lookup_duration
 
     if _initialized:
         return HAS_PROMETHEUS
@@ -92,6 +99,17 @@ def _ensure_metrics() -> bool:
             "Total output tokens received from LLM endpoints",
             labelnames=["endpoint", "model"],
         )
+        _knowledge_lookup_total = Counter(
+            "knowledge_lookup_total",
+            "Total number of knowledge_lookup calls by result source",
+            labelnames=["source"],
+        )
+        _knowledge_lookup_duration = Histogram(
+            "knowledge_lookup_duration_seconds",
+            "Latency of knowledge_lookup calls by winning tier",
+            labelnames=["tier"],
+            buckets=_KNOWLEDGE_LATENCY_BUCKETS,
+        )
 
         _initialized = True
         return True
@@ -124,6 +142,19 @@ def record_prometheus(
         _llm_input_tokens_total.labels(endpoint=endpoint, model=model).inc(input_tokens)
     if output_tokens > 0:
         _llm_output_tokens_total.labels(endpoint=endpoint, model=model).inc(output_tokens)
+
+
+def record_knowledge_lookup(source: str, duration: float) -> None:
+    """Record a single knowledge_lookup call by winning tier.
+
+    ``source`` is one of: ``facts_db``, ``wikipedia``, ``web_search``,
+    ``failure``. Safe to call when prometheus_client is not installed.
+    """
+    if not _ensure_metrics():
+        return
+
+    _knowledge_lookup_total.labels(source=source).inc()
+    _knowledge_lookup_duration.labels(tier=source).observe(duration)
 
 
 def start_metrics_server(port: int = DEFAULT_PORT) -> bool:
