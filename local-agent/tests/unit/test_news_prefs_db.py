@@ -14,7 +14,17 @@ from agent import news_prefs_db
 
 @pytest.fixture(autouse=True)
 def _isolate_db(tmp_path, monkeypatch):
-    """Point news_prefs_db at a temporary DB and legacy JSON path per test."""
+    """Point news_prefs_db at a temporary DB and legacy JSON path per test.
+
+    Pre-initializes the DB file in WAL mode using a bootstrap connection
+    so that concurrent worker threads (e.g. ``TestMutatePrefs`` and
+    ``TestNewsConfigIntegration.test_mutate_news_config_dedup_under_contention``)
+    don't race on the initial ``PRAGMA journal_mode=WAL`` handshake —
+    setting WAL on a fresh DB needs EXCLUSIVE access, and under xdist
+    load several worker threads opening connections at the same time can
+    collide and raise ``sqlite3.OperationalError: database is locked``
+    (TK-716, same bug family as TK-709).
+    """
     db_path = tmp_path / "news_prefs.db"
     legacy_path = tmp_path / "news_config.json"
     monkeypatch.setattr(news_prefs_db, "DB_DIR", tmp_path)
@@ -22,6 +32,18 @@ def _isolate_db(tmp_path, monkeypatch):
     monkeypatch.setattr(news_prefs_db, "LEGACY_JSON_PATH", legacy_path)
     # Drop any cached per-thread connection so each test gets a fresh one
     news_prefs_db._local.__dict__.pop("conn", None)
+
+    # Bootstrap the DB file into WAL mode before any production code path
+    # opens a connection. WAL is persisted on the DB file, so every
+    # connection opened afterwards inherits it for free.
+    _bootstrap = sqlite3.connect(str(db_path), timeout=5)
+    try:
+        _bootstrap.execute("PRAGMA busy_timeout=5000")
+        _bootstrap.execute("PRAGMA journal_mode=WAL")
+        _bootstrap.commit()
+    finally:
+        _bootstrap.close()
+
     yield
     conn = getattr(news_prefs_db._local, "conn", None)
     if conn is not None:
@@ -327,6 +349,13 @@ class TestMutatePrefs:
 
 class TestNewsConfigIntegration:
     """End-to-end smoke: NewsConfig dataclass roundtrips through the DB."""
+
+    def test_fixture_enables_wal_mode(self):
+        """TK-716: the _isolate_db fixture must pre-set WAL mode so
+        concurrent worker threads don't race on the initial PRAGMA."""
+        conn = news_prefs_db._get_conn()
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
 
     def test_roundtrip_via_news_config_api(self):
         from idea_board.news_config import NewsConfig, load_news_config, save_news_config
