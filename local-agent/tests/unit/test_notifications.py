@@ -414,3 +414,111 @@ class TestGetNotificationTools:
         tools = get_notification_tools()
         for tool in tools:
             assert callable(tool.function)
+
+    def test_get_notification_tools_returns_exact_four_tools(self):
+        """Tight contract on the registered tool set — any add/remove fails."""
+        tools = get_notification_tools()
+        assert len(tools) == 4
+        names = {t.name for t in tools}
+        assert names == {
+            "discord_send",
+            "discord_alert",
+            "discord_send_code",
+            "discord_send_file",
+        }
+
+
+class TestStrictPayloadAssertions:
+    """Stricter payload-structure assertions that catch schema regressions."""
+
+    @patch("agent.notifications.retry_request")
+    def test_discord_send_plain_validates_payload_structure(
+        self, mock_retry, monkeypatch
+    ):
+        """Plain sends must use {'content': ...} — never embeds."""
+        monkeypatch.setattr(
+            "agent.notifications.DISCORD_WEBHOOK_URL", "https://webhook.test"
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+
+        discord_send("Hello world")
+
+        payload = mock_retry.call_args.kwargs["json"]
+        assert payload == {"content": "Hello world"}
+        assert "embeds" not in payload
+
+    @patch("agent.notifications.discord_send")
+    def test_discord_alert_success_passes_correct_color(self, mock_send):
+        """The level-to-color mapping must land on discord_send as a kwarg."""
+        mock_send.return_value = "ok"
+        discord_alert("All good", level="success")
+
+        mock_send.assert_called_once()
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["color"] == COLORS["success"]
+        # message routed positionally; title/color/webhook_url are kwargs.
+        assert mock_send.call_args.args[0] == "All good"
+
+    @patch("agent.notifications.discord_send")
+    def test_discord_alert_title_defaults_to_level_upper(self, mock_send):
+        """When title is omitted, it must be exactly level.upper()."""
+        mock_send.return_value = "ok"
+        discord_alert("body", level="warning")
+
+        kwargs = mock_send.call_args.kwargs
+        assert kwargs["title"] == "WARNING"
+
+    @patch("agent.notifications.retry_request")
+    def test_discord_send_file_calls_with_correct_files_param(
+        self, mock_retry, tmp_path, monkeypatch
+    ):
+        """The file must be uploaded via files={'file': (name, handle)}."""
+        from agent.notifications import discord_send_file
+
+        monkeypatch.setattr(
+            "agent.notifications.DISCORD_WEBHOOK_URL", "https://webhook.test"
+        )
+        mock_retry.return_value = MagicMock(status_code=200)
+        test_file = tmp_path / "upload.txt"
+        test_file.write_bytes(b"payload")
+
+        discord_send_file(str(test_file))
+
+        kwargs = mock_retry.call_args.kwargs
+        assert "files" in kwargs
+        assert "file" in kwargs["files"]
+        filename, handle = kwargs["files"]["file"]
+        assert filename == "upload.txt"
+        # The handle must be a readable binary file object still open at send time.
+        assert hasattr(handle, "read")
+
+    @patch("agent.notifications.retry_request")
+    def test_sends_executor_summary_includes_all_required_fields(
+        self, mock_retry, monkeypatch
+    ):
+        """Executor summary embed must carry timestamp, footer, and fields."""
+        monkeypatch.setattr(
+            "agent.notifications.settings",
+            _fake_settings(executor_summary_webhook="https://t"),
+        )
+        mock_retry.return_value = MagicMock(status_code=204)
+
+        send_executor_summary({
+            "run_id": "rid",
+            "jira_key": "TK-1",
+            "title": "thing",
+            "status": "success",
+            "duration_ms": 1000,
+            "cost_usd": 0.1,
+        })
+
+        payload = mock_retry.call_args.kwargs["json"]
+        embed = payload["embeds"][0]
+        assert "timestamp" in embed and embed["timestamp"]
+        assert embed["footer"] == {"text": "Executor"}
+        assert isinstance(embed["fields"], list)
+        field_names = [f["name"] for f in embed["fields"]]
+        assert "Status" in field_names
+        assert "Duration" in field_names
+        assert "Cost" in field_names
+        assert "Jira" in field_names
