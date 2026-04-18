@@ -29,6 +29,9 @@ def _isolate_dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(daily_stats, "DB_PATH", stats_db)
     monkeypatch.setattr(story_timings, "DB_DIR", tmp_path)
     monkeypatch.setattr(story_timings, "DB_PATH", timings_db)
+    # Point REPO_ROOT at a non-git tmp path so _git_loc_counts short-circuits
+    # to (0, 0) and these tests don't inherit LOC from the real repo history.
+    monkeypatch.setattr(daily_rollup, "REPO_ROOT", tmp_path)
     for mod in (executor_runs_db, daily_stats, story_timings):
         mod._local.__dict__.pop("conn", None)
     yield
@@ -110,6 +113,9 @@ class TestComputeAndWriteReturnValue:
             "cost_usd": 0.0,
             "p50_wall_s": 0.0,
             "p95_wall_s": 0.0,
+            "loc_added": 0,
+            "loc_removed": 0,
+            "first_attempt_success": 0,
         }
 
     def test_null_cost_and_duration_handled(self):
@@ -200,22 +206,20 @@ class TestDailyStatsWrite:
         assert row["p50_wall_s"] == pytest.approx(5.0)
         assert row["p95_wall_s"] == pytest.approx(5.0)
 
-    def test_other_columns_retain_zero_defaults(self):
-        """LOC / first-attempt / splitter columns belong to future stories."""
+    def test_splitter_columns_retain_zero_defaults(self):
+        """Splitter columns belong to a future story; LOC / first-attempt
+        are covered by :mod:`agent.daily_rollup` now, so they're asserted
+        in test_daily_rollup_loc rather than here."""
         _insert_run(jira_key="TK-1", status="success", cost_usd=0.10,
                     duration_ms=5_000, started_at="2026-04-17T10:00:00")
         daily_rollup.compute_and_write("2026-04-17", "TK")
         conn = daily_stats._get_conn()
         row = conn.execute(
-            "SELECT split_children, loc_added, loc_removed, "
-            "first_attempt_success, splitter_child_success, splitter_child_fail "
+            "SELECT split_children, splitter_child_success, splitter_child_fail "
             "FROM daily_stats WHERE date = ? AND project = ?",
             ("2026-04-17", "TK"),
         ).fetchone()
         assert row["split_children"] == 0
-        assert row["loc_added"] == 0
-        assert row["loc_removed"] == 0
-        assert row["first_attempt_success"] == 0
         assert row["splitter_child_success"] == 0
         assert row["splitter_child_fail"] == 0
 
