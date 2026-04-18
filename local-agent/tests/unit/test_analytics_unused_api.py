@@ -135,3 +135,45 @@ class TestAnalyticsStatCardTooltips:
         # the click action (which still opens the modal).
         assert "received zero invocations" in body
         assert "Click to see the list" in body
+
+
+class TestDiscordAnalyticsLabel:
+    """TK-594: the analytics surface is explicitly labeled 'Discord Analytics'
+    everywhere it appears (hub card, page heading, nav links) so operators
+    know all metrics describe Discord bot usage."""
+
+    def test_analytics_page_h1_says_discord_analytics(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert "<h1>Discord Analytics</h1>" in body
+
+    def test_analytics_page_title_says_discord_analytics(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert "<title>Discord Analytics" in body
+
+    def test_analytics_page_active_nav_link_says_discord_analytics(self, client):
+        resp = client.get("/analytics")
+        body = resp.get_data(as_text=True)
+        assert '<a href="/analytics" class="active">Discord Analytics</a>' in body
+
+    def test_ideas_page_nav_link_says_discord_analytics(self, client):
+        resp = client.get("/ideas")
+        body = resp.get_data(as_text=True)
+        assert '<a href="/analytics">Discord Analytics</a>' in body
+
+    def test_hub_card_heading_says_discord_analytics(self, client):
+        resp = client.get("/")
+        body = resp.get_data(as_text=True)
+        # The hub card linking to /analytics carries the Discord-Analytics title.
+        assert "Discord Analytics" in body
+        assert 'href="/analytics"' in body
+
+    def test_no_bare_analytics_nav_link_remains(self, client):
+        """Guard against regressions: no nav/card should render the ambiguous
+        plain-'Analytics' label pointing at /analytics."""
+        for path in ("/", "/analytics", "/ideas"):
+            resp = client.get(path)
+            body = resp.get_data(as_text=True)
+            assert '<a href="/analytics">Analytics</a>' not in body
+            assert '<a href="/analytics" class="active">Analytics</a>' not in body

@@ -631,7 +631,7 @@ def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
         <a href="/ideas" class="active">Ideas</a>
         <a href="/news">News Config</a>
         <a href="/karen">KAREN</a>
-        <a href="/analytics">Analytics</a>
+        <a href="/analytics">Discord Analytics</a>
     </div>
     <p class="stats" id="stats">{total} ideas total &bull; {proposed} pending review &bull; Last refresh: {now}</p>
 
@@ -5326,7 +5326,7 @@ th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: 
         <a href="/ideas">Ideas</a>
         <a href="/news">News Config</a>
         <a href="/karen">KAREN</a>
-        <a href="/analytics" class="active">Analytics</a>
+        <a href="/analytics" class="active">Discord Analytics</a>
     </div>
 
     <div class="stats-grid">
