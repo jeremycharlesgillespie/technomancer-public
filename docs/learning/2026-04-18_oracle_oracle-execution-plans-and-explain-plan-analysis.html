@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oracle execution plans and EXPLAIN PLAN analysis - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Oracle execution plans and EXPLAIN PLAN analysis</h1>
+            <p class="meta">oracle &bull; April 18, 2026</p>
+        </header>
+        <main>
+<h1>Oracle Execution Plans and EXPLAIN PLAN Analysis</h1>
+
+<h2>Quick Overview</h2>
+
+<p>An Oracle <strong>execution plan</strong> is the optimizer&#x27;s step-by-step recipe for executing a SQL statement â€” which tables to access, in what order, which indexes to use, what join algorithms to apply (nested loops, hash, merge), and how to filter and aggregate rows. <code>EXPLAIN PLAN</code> is the statement that asks Oracle to generate that recipe <em>without running it</em>, storing the result in <code>PLAN_TABLE</code> for you to inspect.</p>
+
+<p>It matters because two SQL statements that return identical results can differ in runtime by five orders of magnitude. A query that does a <code>FULL TABLE SCAN</code> on a 200M-row table when an index is available will take minutes; the indexed access path takes milliseconds. The execution plan is how you see what Oracle <em>actually</em> decided to do â€” not what you assumed it would do based on the SQL you wrote.</p>
+
+<pre><code class="language-sql">EXPLAIN PLAN FOR
+SELECT o.order_id, c.name
+FROM orders o JOIN customers c ON o.customer_id = c.id
+WHERE o.created_at &gt; SYSDATE - 7;
+
+<p>SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);<br>
+</code></pre></p>
+
+<p>You&#x27;re reading things like: <em>Is Oracle using an index or scanning the whole table? Is the join order sane? What&#x27;s the estimated row count at each step, and does it match reality?</em></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>You live in Django/PostgreSQL-land day-to-day, but the moment you touch enterprise systems â€” financial services, telecom, healthcare, legacy SaaS â€” Oracle shows up. And the people who can read an execution plan and say &quot;your subquery is forcing a cartesian product because the optimizer lost the predicate through the view&quot; are the ones who get pulled into performance war rooms. That&#x27;s a senior-engineer move that&#x27;s indistinguishable from magic to people who only know how to <code>SELECT *</code>.</p>
+
+<p>More importantly, execution-plan literacy transfers. PostgreSQL&#x27;s <code>EXPLAIN (ANALYZE, BUFFERS)</code> uses the same mental model â€” scan types, join algorithms, row estimates vs. actuals, cost. SQLite&#x27;s query planner is simpler but analogous. Once you can read one, you can read them all, and you stop writing ORM queries that look clean in Django but generate catastrophic SQL. For your Technomancer-style autonomous systems where an LLM might generate SQL, knowing how to programmatically capture and evaluate a plan before execution is a real safety mechanism.</p>
+
+<h2>How to Implement It</h2>
+
+<p><strong>Step 1: Generate a plan.</strong> The classic two-step is <code>EXPLAIN PLAN FOR &lt;stmt&gt;</code> followed by <code>DBMS_XPLAN.DISPLAY</code>. For already-executed queries, <code>DBMS_XPLAN.DISPLAY_CURSOR</code> gives you the <em>real</em> plan from the cursor cache, including actual rows if you used the <code>GATHER_PLAN_STATISTICS</code> hint:</p>
+
+<pre><code class="language-sql">SELECT /<em>+ GATHER_PLAN_STATISTICS </em>/ o.order_id, c.name
+FROM orders o JOIN customers c ON o.customer_id = c.id
+WHERE o.created_at &gt; SYSDATE - 7;
+
+<p>SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(FORMAT =&gt; &#x27;ALLSTATS LAST&#x27;));<br>
+</code></pre></p>
+
+<p>The <code>ALLSTATS LAST</code> format is the one to memorize â€” it shows <strong>E-Rows</strong> (estimated) vs <strong>A-Rows</strong> (actual). When those diverge by 10x or more, the optimizer made decisions on bad statistics, and that&#x27;s almost always your real problem.</p>
+
+<p><strong>Step 2: Automate it from Python.</strong> Here&#x27;s a helper you can drop into a Flask/Django admin view or a Discord bot command:</p>
+
+<pre><code class="language-python">import oracledb
+
+<p>def explain(conn, sql: str, binds: dict | None = None) -&gt; str:<br>
+    &quot;&quot;&quot;Capture an Oracle execution plan as text.&quot;&quot;&quot;<br>
+    cur = conn.cursor()<br>
+    cur.execute(f&quot;EXPLAIN PLAN FOR {sql}&quot;, binds or {})<br>
+    cur.execute(&quot;&quot;&quot;<br>
+        SELECT plan_table_output<br>
+        FROM TABLE(DBMS_XPLAN.DISPLAY(NULL, NULL, &#x27;ALL +PREDICATE&#x27;))<br>
+    &quot;&quot;&quot;)<br>
+    return &quot;\n&quot;.join(row[0] for row in cur)</p>
+
+<p>def plan_health_check(conn, sql: str) -&gt; dict:<br>
+    &quot;&quot;&quot;Flag common pathologies without requiring a human to read the plan.&quot;&quot;&quot;<br>
+    plan = explain(conn, sql).upper()<br>
+    return {<br>
+        &quot;full_scans&quot;: plan.count(&quot;TABLE ACCESS FULL&quot;),<br>
+        &quot;cartesian&quot;: &quot;MERGE JOIN CARTESIAN&quot; in plan,<br>
+        &quot;nested_loops&quot;: plan.count(&quot;NESTED LOOPS&quot;),<br>
+        &quot;hash_joins&quot;: plan.count(&quot;HASH JOIN&quot;),<br>
+        &quot;plan&quot;: plan,<br>
+    }<br>
+</code></pre></p>
+
+<p><strong>Step 3: Read the plan.</strong> Oracle&#x27;s output is a tree, indented by depth. Read the <strong>most-indented rows first</strong> â€” those execute first, and their output feeds parents. The key columns are <code>Operation</code>, <code>Rows</code> (estimate), <code>Cost</code>, and for <code>DISPLAY_CURSOR</code> runs, <code>A-Rows</code> and <code>Buffers</code>.</p>
+
+<p>Warning signs to train your eye on:<br>
+<ul><br>
+<li><code>TABLE ACCESS FULL</code> on a large table inside a <code>NESTED LOOPS</code> â€” you&#x27;ll scan the table once per outer row.</li><br>
+<li><code>MERGE JOIN CARTESIAN</code> â€” almost always a missing join predicate.</li><br>
+<li><code>INDEX FULL SCAN</code> when you expected <code>INDEX RANGE SCAN</code> â€” your predicate isn&#x27;t sargable (e.g., <code>WHERE TRUNC(created_at) = ...</code> disables the index on <code>created_at</code>).</li><br>
+<li><code>E-Rows</code> wildly off from <code>A-Rows</code> â€” stats are stale. Run <code>DBMS_STATS.GATHER_TABLE_STATS</code>.</li><br>
+</ul><br>
+<strong>Step 4: Capture plans over time.</strong> For production systems, use SQL Plan Management or at minimum snapshot plans into a tracking table. This is gold for your autonomous-systems instincts â€” a nightly job that diffs execution plans against yesterday&#x27;s baseline will catch regressions long before user reports do:</p>
+
+<pre><code class="language-python">def snapshot_plans(conn, sql_ids: list[str]):
+    cur = conn.cursor()
+    for sql_id in sql_ids:
+        cur.execute(&quot;&quot;&quot;
+            INSERT INTO plan_history (sql_id, captured_at, plan_hash, plan_text)
+            SELECT :1, SYSTIMESTAMP, plan_hash_value,
+                   DBMS_XPLAN.DISPLAY_CURSOR(:1, NULL, &#x27;BASIC&#x27;)
+            FROM v$sql WHERE sql_id = :1 AND ROWNUM = 1
+        &quot;&quot;&quot;, [sql_id])
+    conn.commit()
+</code></pre>
+
+<p>Feed that into Grafana and you&#x27;ve got query-plan observability.</p>
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li>Investigating slow queries in an Oracle-backed application before reaching for indexes or rewrites.</li><br>
+<li>Validating that migrations, view changes, or optimizer hint additions actually changed the plan the way you expected.</li><br>
+<li>Building automated regression detection â€” snapshot plans for critical queries, alert when the hash changes.</li><br>
+<li>Code reviews on SQL-heavy PRs: &quot;show me the plan before and after&quot; is a legitimate review comment.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li>You haven&#x27;t gathered current statistics. <code>EXPLAIN PLAN</code> lies confidently on stale stats â€” you&#x27;ll spend hours tuning a phantom problem.</li><br>
+<li>You&#x27;re tuning from <code>EXPLAIN PLAN</code> alone on a complex query with binds. The optimizer may choose a different plan at runtime via bind peeking or adaptive plans. Use <code>DISPLAY_CURSOR</code> with <code>ALLSTATS LAST</code> for truth.</li><br>
+<li>The query runs in milliseconds already. Plan-tuning has opportunity cost; fix the 10-second query first.</li><br>
+</ul><br>
+<strong>Common pitfalls:</strong><br>
+<ul><br>
+<li>Assuming <code>EXPLAIN PLAN</code> output equals runtime behavior. It&#x27;s the optimizer&#x27;s <em>prediction</em>. Adaptive plans, cardinality feedback, and bind-variable peeking can all shift reality.</li><br>
+<li>Fixating on <code>Cost</code>. Cost is a relative number internal to the optimizer. A plan with cost 10,000 can run faster than one with cost 100 if the estimates are wrong. Trust elapsed time and buffer gets, not cost.</li><br>
+<li>Forcing hints (<code>/<em>+ INDEX(...) </em>/</code>) without understanding why the optimizer chose otherwise. You&#x27;re committing to maintain that hint forever, across stats changes, data growth, and Oracle upgrades.</li><br>
+<li>Reading the plan top-down instead of inside-out. The root operation is the <em>last</em> thing that runs.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><code>EXPLAIN PLAN</code> shows the optimizer&#x27;s <em>prediction</em>; <code>DBMS_XPLAN.DISPLAY_CURSOR</code> with <code>ALLSTATS LAST</code> shows what actually happened â€” always prefer the latter when the query has already run.</li>
+<li>The single most diagnostic signal is <strong>E-Rows vs A-Rows divergence</strong>. When estimates are wrong, every downstream decision is wrong; fix stats before tuning anything else.</li>
+<li>Read execution plans <strong>inside-out</strong>: the most-indented row runs first and feeds its parent.</li>
+<li><code>FULL TABLE SCAN</code> inside <code>NESTED LOOPS</code> and <code>MERGE JOIN CARTESIAN</code> are five-alarm fires; train your eye to spot them instantly.</li>
+<li>Execution-plan literacy transfers directly to PostgreSQL&#x27;s <code>EXPLAIN (ANALYZE, BUFFERS)</code> â€” same mental model, different syntax, and it&#x27;s the skill that separates senior engineers from query-writers.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
