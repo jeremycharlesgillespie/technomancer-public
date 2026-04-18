@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent import executor_runs_db
+from agent.claude_code_runner import _cost_from_usage_dict
 from agent.config import settings
 from agent.fn_profiler import profile_fn
 from agent.story_timings import phase_timer, record_phase
@@ -1566,6 +1568,58 @@ def _parse_stream_event(line: str) -> tuple[str, str]:
     return (event_type, "")
 
 
+def _accumulate_model_usage(
+    line: str,
+    model_usage: dict[str, dict[str, Any]],
+) -> None:
+    """Extract (model, usage) from one stream-json line and update totals.
+
+    Each assistant event carries ``message.model`` and ``message.usage``.
+    We bucket by model and accumulate call_count + cost_usd so the caller
+    can flush one ``story_model_usage`` row per model at run end. Invalid
+    JSON, missing fields, or non-assistant events are silently ignored so
+    this is safe to call on every line in the stream.
+    """
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return
+    if not isinstance(event, dict):
+        return
+    message = event.get("message")
+    if not isinstance(message, dict):
+        return
+    model = message.get("model")
+    usage = message.get("usage")
+    if not isinstance(model, str) or not model or not isinstance(usage, dict):
+        return
+    bucket = model_usage.setdefault(model, {"call_count": 0, "cost_usd": 0.0})
+    bucket["call_count"] = int(bucket["call_count"]) + 1
+    bucket["cost_usd"] = float(bucket["cost_usd"]) + _cost_from_usage_dict(
+        usage, model=model
+    )
+
+
+def _flush_story_model_usage(
+    story_key: str,
+    model_usage: dict[str, dict[str, Any]],
+) -> None:
+    """Persist one ``story_model_usage`` row per model. Never raises."""
+    for model, stats in model_usage.items():
+        try:
+            executor_runs_db.record_story_model_usage(
+                story_key=story_key,
+                model=model,
+                call_count=int(stats.get("call_count", 0)),
+                cost_usd=float(stats.get("cost_usd", 0.0)),
+            )
+        except Exception:
+            logger.debug(
+                "record_story_model_usage failed for %s/%s",
+                story_key, model, exc_info=True,
+            )
+
+
 @profile_fn
 def execute_idea(
     idea_id: str,
@@ -1851,6 +1905,11 @@ def execute_idea(
             _claude_meta: dict[str, Any] = {}
             _claude_work_phase = _PhaseMarker(state, "executor.claude_work", _claude_meta)
 
+            # Per-model accumulator: {model: {"call_count": N, "cost_usd": X}}
+            # Flushed to story_model_usage after the subprocess exits so the
+            # PPTX cost-slide can split brain (haiku) vs worker (opus) spend.
+            _model_usage: dict[str, dict[str, Any]] = {}
+
             while True:
                 # Check cancellation and timeout before blocking on readline
                 if state.cancelled:
@@ -1885,6 +1944,8 @@ def execute_idea(
                 line_text = raw_line.decode("utf-8", errors="replace").rstrip()
                 if not line_text:
                     continue
+
+                _accumulate_model_usage(line_text, _model_usage)
 
                 # Parse the stream-json event
                 event_type, display_text = _parse_stream_event(line_text)
@@ -1931,6 +1992,11 @@ def execute_idea(
             _claude_meta["outcome"] = "completed"
             _claude_meta["final_result"] = bool(final_result)
             _claude_work_phase.finish(success=True)
+
+            # Flush per-model usage rows once the claude -p subprocess is
+            # fully done. Done here (not in the timeout/cancel branches) so
+            # we only persist usage from a run that produced a result event.
+            _flush_story_model_usage(idea_id, _model_usage)
 
             # Claude sometimes edits files without running ``git commit``
             # — narrates its changes, says "Final result", exits. The

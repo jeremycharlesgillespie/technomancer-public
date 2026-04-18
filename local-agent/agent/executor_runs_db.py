@@ -212,6 +212,20 @@ def init_db() -> None:
             count       INTEGER NOT NULL DEFAULT 1
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS story_model_usage (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            story_key    TEXT,
+            model        TEXT,
+            call_count   INTEGER,
+            cost_usd     REAL,
+            recorded_at  TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_story_model_usage_story
+        ON story_model_usage (story_key, recorded_at)
+    """)
     conn.commit()
 
 
@@ -290,6 +304,60 @@ def upsert_crash_signature(
         (signature,),
     ).fetchone()
     return dict(row) if row is not None else {}
+
+
+# ---------------------------------------------------------------------------
+# Per-story, per-model usage — feeds the PPTX cost-slide so we can split
+# brain (haiku) from worker (opus) spend instead of showing only the total.
+# One row per (story_key, model, call) completion; the reporter aggregates.
+# ---------------------------------------------------------------------------
+
+
+def record_story_model_usage(
+    story_key: str,
+    model: str,
+    call_count: int,
+    cost_usd: float,
+    recorded_at: str | None = None,
+) -> int:
+    """Insert one ``story_model_usage`` row for a finished claude -p call.
+
+    Args:
+        story_key: Jira key (e.g. ``"TK-613"``) the usage is attributed to.
+        model: Model id reported by Claude Code (e.g. ``"claude-opus-4-6"``).
+        call_count: Number of assistant turns attributed to this model in
+            the run being recorded.
+        cost_usd: Dollar cost for those turns. Callers compute this from the
+            per-turn ``usage`` blocks.
+        recorded_at: ISO8601 timestamp. Defaults to ``datetime.now()``.
+
+    Returns:
+        The inserted row id.
+    """
+    init_db()
+    conn = _get_conn()
+    ts = recorded_at or datetime.now().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO story_model_usage "
+        "(story_key, model, call_count, cost_usd, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (story_key, model, int(call_count), float(cost_usd), ts),
+    )
+    conn.commit()
+    return int(cursor.lastrowid or 0)
+
+
+def get_story_model_usage(story_key: str) -> list[dict[str, Any]]:
+    """Return every ``story_model_usage`` row for ``story_key``, oldest first."""
+    init_db()
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT id, story_key, model, call_count, cost_usd, recorded_at "
+        "FROM story_model_usage WHERE story_key = ? "
+        "ORDER BY recorded_at ASC, id ASC",
+        (story_key,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _coerce(key: str, value: Any) -> Any:
