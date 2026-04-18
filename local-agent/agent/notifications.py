@@ -20,9 +20,9 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 def discord_send(
     message: str,
-    title: str = None,
+    title: str | None = None,
     color: int = 0x5865F2,  # Discord blurple
-    webhook_url: str = None,
+    webhook_url: str | None = None,
 ) -> str:
     """
     Send a message to Discord via webhook.
@@ -79,7 +79,7 @@ def discord_send(
 def discord_send_file(
     file_path: str,
     message: str = "",
-    webhook_url: str = None,
+    webhook_url: str | None = None,
 ) -> str:
     """Send a file to Discord."""
     if requests is None:
@@ -118,7 +118,7 @@ def discord_send_code(
     code: str,
     language: str = "",
     message: str = "",
-    webhook_url: str = None,
+    webhook_url: str | None = None,
 ) -> str:
     """Send a code block to Discord."""
     formatted = (
@@ -140,8 +140,8 @@ COLORS = {
 def discord_alert(
     message: str,
     level: str = "info",  # success, error, warning, info
-    title: str = None,
-    webhook_url: str = None,
+    title: str | None = None,
+    webhook_url: str | None = None,
 ) -> str:
     """Send a colored alert to Discord."""
     color = COLORS.get(level, COLORS["info"])
@@ -178,7 +178,7 @@ def _executor_summary_webhook() -> str:
     return fallback.strip()
 
 
-def _format_duration_ms(duration_ms: Any) -> str:
+def _format_duration_ms(duration_ms: int | float | str | None) -> str:
     """Render ``duration_ms`` for humans (e.g. ``12345`` -> ``12.3s``).
 
     Missing or non-numeric values render as ``"?"`` rather than raising so
@@ -197,7 +197,7 @@ def _format_duration_ms(duration_ms: Any) -> str:
     return f"{int(mins)}m{secs_rem:04.1f}s"
 
 
-def _format_cost_usd(cost_usd: Any) -> str:
+def _format_cost_usd(cost_usd: int | float | str | None) -> str:
     """Render ``cost_usd`` for humans. Missing values render as ``$?``."""
     try:
         return f"${float(cost_usd):.4f}"
@@ -205,12 +205,11 @@ def _format_cost_usd(cost_usd: Any) -> str:
         return "$?"
 
 
-def _stderr_tail(stderr: Any, lines: int = _STDERR_TAIL_LINES) -> str:
+def _stderr_tail(stderr: str | None, lines: int = _STDERR_TAIL_LINES) -> str:
     """Return the last ``lines`` lines of ``stderr``. Empty string when blank."""
     if not stderr:
         return ""
-    text = str(stderr)
-    tail = text.splitlines()[-lines:]
+    tail = stderr.splitlines()[-lines:]
     return "\n".join(tail).strip()
 
 
@@ -338,7 +337,7 @@ def send_executor_summary(
     return f"Discord error {response.status_code}: {response.text}"
 
 
-def get_notification_tools() -> list:
+def get_notification_tools() -> list[Any]:
     """Get notification tools for the agent."""
     from .core import create_tool
 
