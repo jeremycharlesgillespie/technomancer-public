@@ -19,10 +19,13 @@ import pytest
 from aimm.research_log import (
     DEFAULT_RESEARCH_NOTES_PATH,
     TITLE_HEADING,
+    TITLE_PREAMBLE,
     CycleSummary,
     append_cycle_summary,
+    ensure_research_notes_exists,
     find_or_create_date_section,
     format_cycle_entry,
+    get_date_header,
 )
 
 
@@ -678,3 +681,155 @@ class TestDefaultPathConstant:
     def test_default_path_under_docs(self) -> None:
         assert DEFAULT_RESEARCH_NOTES_PATH.name == "research_notes.md"
         assert DEFAULT_RESEARCH_NOTES_PATH.parent.name == "docs"
+
+
+# ---------------------------------------------------------------------------
+# get_date_header — datetime → "## YYYY-MM-DD"
+# ---------------------------------------------------------------------------
+
+
+class TestGetDateHeader:
+    def test_formats_utc_datetime(self) -> None:
+        dt = datetime(2026, 4, 18, 14, 30, tzinfo=timezone.utc)
+        assert get_date_header(dt) == "## 2026-04-18"
+
+    def test_naive_datetime_treated_as_utc(self) -> None:
+        dt = datetime(2026, 4, 18, 14, 30)  # no tzinfo
+        assert get_date_header(dt) == "## 2026-04-18"
+
+    def test_non_utc_datetime_converted(self) -> None:
+        # 23:00 EST on 2026-04-17 == 04:00 UTC on 2026-04-18.
+        est = timezone(timedelta(hours=-5))
+        dt = datetime(2026, 4, 17, 23, 0, tzinfo=est)
+        assert get_date_header(dt) == "## 2026-04-18"
+
+    def test_single_digit_month_day_zero_padded(self) -> None:
+        dt = datetime(2026, 1, 5, 12, 0, tzinfo=timezone.utc)
+        assert get_date_header(dt) == "## 2026-01-05"
+
+    def test_returned_header_regex_compatible(self) -> None:
+        """Returned value must match the internal date-heading regex."""
+        from aimm.research_log import _DATE_HEADING_RE
+
+        dt = datetime(2026, 4, 18, tzinfo=timezone.utc)
+        header = get_date_header(dt)
+        # _DATE_HEADING_RE expects the heading on its own line.
+        m = _DATE_HEADING_RE.search(header + "\n")
+        assert m is not None
+        assert m.group(1) == "2026-04-18"
+
+
+# ---------------------------------------------------------------------------
+# ensure_research_notes_exists — idempotent file initialization
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureResearchNotesExists:
+    def test_creates_file_when_missing(self, notes_path: Path) -> None:
+        assert not notes_path.exists()
+        result = ensure_research_notes_exists(notes_path)
+        assert result == notes_path
+        assert notes_path.exists()
+
+    def test_created_file_contains_title_banner(self, notes_path: Path) -> None:
+        ensure_research_notes_exists(notes_path)
+        content = notes_path.read_text(encoding="utf-8")
+        assert TITLE_HEADING in content
+        assert TITLE_PREAMBLE in content
+
+    def test_noop_when_file_exists(self, notes_path: Path) -> None:
+        existing_content = "# Custom pre-existing content\n\nDo not clobber.\n"
+        notes_path.write_text(existing_content, encoding="utf-8")
+        ensure_research_notes_exists(notes_path)
+        # Contents preserved unchanged.
+        assert notes_path.read_text(encoding="utf-8") == existing_content
+
+    def test_idempotent_across_multiple_calls(self, notes_path: Path) -> None:
+        ensure_research_notes_exists(notes_path)
+        first = notes_path.read_text(encoding="utf-8")
+        first_mtime = notes_path.stat().st_mtime_ns
+        # Second call must be a no-op: contents identical.
+        ensure_research_notes_exists(notes_path)
+        second = notes_path.read_text(encoding="utf-8")
+        assert first == second
+        # mtime either unchanged or — if the FS only has second
+        # resolution — still the same.
+        assert notes_path.stat().st_mtime_ns == first_mtime
+
+    def test_creates_parent_directory(self, tmp_path: Path) -> None:
+        nested = tmp_path / "nested" / "deeper" / "research_notes.md"
+        assert not nested.parent.exists()
+        result = ensure_research_notes_exists(nested)
+        assert nested.exists()
+        assert result == nested
+
+    def test_returns_resolved_path_on_no_override(self) -> None:
+        """With ``notes_path=None`` the resolved path is the default."""
+        with patch(
+            "aimm.research_log.DEFAULT_RESEARCH_NOTES_PATH",
+            Path("/tmp/does_not_exist_xyz/research_notes.md"),
+        ):
+            # Even if the write fails (non-existent parent / permission),
+            # the function must return the resolved path and never raise.
+            with patch(
+                "aimm.research_log._atomic_write", return_value=False
+            ):
+                result = ensure_research_notes_exists()
+            assert result.name == "research_notes.md"
+
+    def test_append_cycle_summary_invokes_init(
+        self, notes_path: Path
+    ) -> None:
+        """append_cycle_summary must initialize the file before writing."""
+        assert not notes_path.exists()
+        ok = append_cycle_summary(
+            CycleSummary(observed=1, theme="t"),
+            date=datetime(2026, 4, 18, 9, 0, tzinfo=timezone.utc),
+            notes_path=notes_path,
+        )
+        assert ok is True
+        # Title banner is present (proof init ran).
+        content = notes_path.read_text(encoding="utf-8")
+        assert TITLE_HEADING in content
+
+
+# ---------------------------------------------------------------------------
+# CycleSummary structure — acceptance-criteria contract fields
+# ---------------------------------------------------------------------------
+
+
+class TestCycleSummaryStructure:
+    """The required fields on CycleSummary must hold their documented shape.
+
+    Enforces the stable contract downstream callers rely on:
+    ``findings``, ``suggestions``, ``hypotheses`` are ``list[str]`` and
+    ``theme_coverage_delta`` is present with a sensible default.
+    """
+
+    def test_findings_is_list_of_str(self) -> None:
+        s = CycleSummary(findings=["one", "two"])
+        assert isinstance(s.findings, list)
+        assert all(isinstance(x, str) for x in s.findings)
+
+    def test_suggestions_is_list_of_str(self) -> None:
+        s = CycleSummary(suggestions=["a", "b"])
+        assert isinstance(s.suggestions, list)
+        assert all(isinstance(x, str) for x in s.suggestions)
+
+    def test_hypotheses_is_list_of_str(self) -> None:
+        s = CycleSummary(hypotheses=["h1", "h2"])
+        assert isinstance(s.hypotheses, list)
+        assert all(isinstance(x, str) for x in s.hypotheses)
+
+    def test_theme_coverage_delta_field_present(self) -> None:
+        s = CycleSummary()
+        # Field must exist on every instance (stable contract).
+        assert hasattr(s, "theme_coverage_delta")
+
+    def test_default_lists_are_independent_per_instance(self) -> None:
+        """Mutable defaults must not be shared across instances."""
+        a = CycleSummary()
+        b = CycleSummary()
+        a.findings.append("only on a")
+        assert b.findings == []
+        assert a.findings == ["only on a"]
