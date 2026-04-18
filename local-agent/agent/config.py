@@ -382,6 +382,17 @@ class Settings(BaseSettings):
         description="Directory for AIMM state/lock files (env: AIMM_STATE_DIR)",
     )
 
+    # AIV (AI Validator) settings
+    aiv_weights: str = Field(
+        default="",
+        description=(
+            "Weighted-mean weights for AIV's overall_score. Comma-separated "
+            "floats in seven-axis order: meets_requirements, code_quality, "
+            "test_quality, security_safety, scope_discipline, edge_cases, "
+            "product_impact. Empty or malformed falls back to equal weights."
+        ),
+    )
+
     # Fallback orchestrator settings
     fallback_max_errors: int = Field(
         default=5, description="Consecutive Claude API errors before fallback to Ollama"
