@@ -602,6 +602,46 @@ class TestRetrySearch:
         assert result == "ok"
         assert call_count == 1
 
+    def test_retry_search_typing(self):
+        """_retry_search preserves signatures and return types of varied callables.
+
+        This verifies the ParamSpec/TypeVar generic machinery works at runtime
+        by calling with callables that have different arity and return types.
+        Static type correctness is checked separately by mypy.
+        """
+        # No-arg callable returning int
+        def no_args() -> int:
+            return 42
+        result_int: int = _retry_search(no_args)
+        assert result_int == 42
+        assert isinstance(result_int, int)
+
+        # Positional args, returning str
+        def joiner(a: str, b: str) -> str:
+            return a + b
+        result_str: str = _retry_search(joiner, "foo", "bar")
+        assert result_str == "foobar"
+        assert isinstance(result_str, str)
+
+        # Keyword args, returning list
+        def maker(items: list[int], *, multiplier: int = 1) -> list[int]:
+            return [x * multiplier for x in items]
+        result_list: list[int] = _retry_search(maker, [1, 2, 3], multiplier=10)
+        assert result_list == [10, 20, 30]
+
+        # Lambda returning dict
+        result_dict = _retry_search(lambda k, v: {k: v}, "key", 99)
+        assert result_dict == {"key": 99}
+
+    def test_get_web_tools_returns_tool_instances(self):
+        """get_web_tools returns a list of Tool instances (for type correctness)."""
+        from agent.core import Tool
+
+        tools = get_web_tools()
+        assert isinstance(tools, list)
+        assert len(tools) > 0
+        assert all(isinstance(t, Tool) for t in tools)
+
     @patch("agent.web_search.time.sleep")
     @patch("agent.web_search.DDGS")
     def test_web_search_retries_ddg_error(self, mock_ddgs_cls, mock_sleep):

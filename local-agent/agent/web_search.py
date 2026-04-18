@@ -11,6 +11,7 @@ import logging
 import random
 import re
 import time
+from typing import Callable, ParamSpec, TypeVar
 from urllib.parse import urlparse
 
 import requests
@@ -19,7 +20,10 @@ from ddgs import DDGS
 
 from .alerts import send_alert
 from .config import settings
-from .core import _ollama_client
+from .core import Tool, _ollama_client
+
+P = ParamSpec("P")
+T = TypeVar("T")
 
 log = logging.getLogger(__name__)
 
@@ -100,7 +104,7 @@ SEARCH_MAX_RETRIES: int = 3
 SEARCH_BASE_DELAY: float = 1.0
 
 
-def _retry_search(fn, *args, **kwargs):
+def _retry_search(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     """Call *fn* with retries and exponential backoff.
 
     Returns the result of *fn* on success.  Raises the last exception
@@ -122,7 +126,8 @@ def _retry_search(fn, *args, **kwargs):
                     delay,
                 )
                 time.sleep(delay)
-    raise last_exc  # type: ignore[misc]
+    assert last_exc is not None  # SEARCH_MAX_RETRIES >= 1 guarantees this
+    raise last_exc
 
 # =============================================================================
 # DOMAIN CREDIBILITY SCORING
@@ -582,7 +587,7 @@ def web_fetch(url: str) -> str:
         return f"Error parsing {url}: {e}"
 
 
-def get_web_tools() -> list:
+def get_web_tools() -> list[Tool]:
     """Get web search tools for the agent."""
     from .core import create_tool
 
