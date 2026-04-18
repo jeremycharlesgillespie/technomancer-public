@@ -291,6 +291,20 @@ class Settings(BaseSettings):
             "generate_work_ideas still uses claude -p regardless."
         ),
     )
+    stale_worktree_hours: float = Field(
+        default=2.0,
+        description=(
+            "Worktrees not claimed by a live WorkerSlot.pid and older than this "
+            "many hours are removed by the AIM housekeeping loop."
+        ),
+    )
+    aim_worktree_cleanup_dry_run: bool = Field(
+        default=False,
+        description=(
+            "If True, _cleanup_stale_worktrees logs intended removals without "
+            "actually calling worktree_manager.remove_worktree."
+        ),
+    )
 
     # Claude rate-limit retry settings (used by the AI Worker)
     rate_limit_wait_minutes: int = Field(
