@@ -31,7 +31,12 @@ def test_tier2_counter_line_used_when_no_failed_lines():
     assert "2 failed, 98 passed" in summary
 
 
-@pytest.mark.xfail(reason="Tier 3 is stubbed in TK-713 and will be re-implemented in a follow-up story.", strict=True)
+@pytest.mark.xfail(
+    reason="Tier 3 matches ``ClassError: msg`` / ``ClassException: msg`` only; "
+           "pytest ``E   `` assertion-prefix lines are not supported by the "
+           "current regex and are left for a future enhancement.",
+    strict=True,
+)
 def test_tier3_error_line_used_when_no_counter():
     """E-prefixed assertions (or ``FooError:``) are the tier-3 signal."""
     log = "running tests\nE   assert 1 == 2\nfinishing\n"
@@ -41,9 +46,10 @@ def test_tier3_error_line_used_when_no_counter():
 
 def test_tier4_tracemalloc_noise_is_filtered():
     """A log containing only the tracemalloc hint must NOT surface that hint
-    as the failure reason. With tier 3+ stubbed, tier 4's reverse scan no
-    longer runs, so the stub returns an empty string — which also satisfies
-    the invariant that tracemalloc chatter is never the failure summary."""
+    as the failure reason. Tracemalloc lines don't end in ``Error``/
+    ``Exception`` so tier 3 doesn't pick them up, and with no other tier
+    matching the function returns an empty string — preserving the
+    invariant that tracemalloc chatter is never the failure summary."""
     log = "[tests] Enable tracemalloc to get traceback where the object was allocated."
     summary = _extract_failure_summary(log)
     assert "tracemalloc" not in summary.lower()
@@ -122,3 +128,46 @@ def test_no_match_returns_empty_string():
     """Logs that don't hit any tier return '' (not '(no log)')."""
     log = "some setup\nnothing interesting here\nmore stuff\n"
     assert _extract_failure_summary(log) == ""
+
+
+def test_whitespace_only_input_returns_sentinel():
+    """Logs that are whitespace-only count as empty — they yield ``(no log)``."""
+    assert _extract_failure_summary("   \n\t\n") == "(no log)"
+
+
+def test_truncation_appends_ellipsis():
+    """When a match exceeds ``max_len``, the output ends with ``...``."""
+    log = "FAILED tests/a.py::test_one - " + ("x" * 400)
+    summary = _extract_failure_summary(log, max_len=80)
+    assert len(summary) == 80
+    assert summary.endswith("...")
+
+
+def test_tier1_beats_tier2_when_both_present():
+    """When a log has both FAILED lines AND a counter, tier 1 wins."""
+    log = (
+        "FAILED tests/a.py::test_one - AssertionError: boom\n"
+        "=== 1 failed, 10 passed in 1.23s ===\n"
+    )
+    summary = _extract_failure_summary(log)
+    assert summary.startswith("FAILED tests/a.py::test_one")
+    assert "1 failed, 10 passed" not in summary
+
+
+def test_tier2_beats_tier3_when_both_present():
+    """When a log has a counter AND an exception line, tier 2 wins."""
+    log = (
+        "ValueError: something bad\n"
+        "=== 2 failed, 98 passed in 3.21s ===\n"
+    )
+    summary = _extract_failure_summary(log)
+    assert "2 failed, 98 passed" in summary
+    assert "ValueError" not in summary
+
+
+def test_tier3_strips_leading_whitespace():
+    """Indented exception lines are surfaced without their indentation."""
+    log = "    RuntimeError: indented failure\n"
+    summary = _extract_failure_summary(log)
+    assert summary == "RuntimeError: indented failure"
+    assert not summary.startswith(" ")
