@@ -35,6 +35,7 @@ Routes:
     GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
     GET  /quality                 — HTML table of validated stories (filter by project, sort by score, 50/page)
+    GET  /quality/<story_key>     — HTML detail page: full scores, reasoning, verifier output, red flags
     GET  /api/aiv/recent          — Recent validated stories (newest first) as JSON
     GET  /api/aiv/flags           — Red-flag counts by type over trailing window
 """
@@ -5838,6 +5839,297 @@ def quality_page() -> str:
         page = 1
     page = max(1, page)
     return _render_quality(project=project, sort=sort, page=page)
+
+
+def _aiv_fetch_detail(story_key: str) -> dict[str, Any] | None:
+    """Return the full ``story_quality`` row for ``story_key``, or ``None``.
+
+    Unlike :func:`_aiv_fetch_quality_rows` this returns every column —
+    the scores and summary fields plus ``reasoning_json`` and
+    ``verification_output`` — so the detail page can render the operator's
+    full investigation surface. Returns ``None`` if the AIV DB is missing,
+    the table is absent, or no row matches the key.
+    """
+    if not aiv_schema.DB_PATH.exists():
+        return None
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        row = conn.execute(
+            "SELECT story_key, story_title, merged_at, validated_at, "
+            "meets_requirements, code_quality, test_quality, security_safety, "
+            "scope_discipline, edge_cases, product_impact, overall_score, "
+            "red_flags_json, verification_method, verification_output, "
+            "reasoning_json, error "
+            "FROM story_quality WHERE story_key = ?",
+            (story_key,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    try:
+        reasoning = json.loads(row["reasoning_json"]) if row["reasoning_json"] else {}
+        if not isinstance(reasoning, dict):
+            reasoning = {}
+    except (json.JSONDecodeError, TypeError):
+        reasoning = {}
+    entry: dict[str, Any] = {
+        "story_key": row["story_key"],
+        "story_title": row["story_title"],
+        "merged_at": row["merged_at"],
+        "validated_at": row["validated_at"],
+        "overall_score": row["overall_score"],
+        "red_flags": _aiv_parse_red_flags(row["red_flags_json"]),
+        "verification_method": row["verification_method"],
+        "verification_output": row["verification_output"] or "",
+        "reasoning": {str(k): str(v) for k, v in reasoning.items()},
+        "error": row["error"],
+    }
+    for axis in _AIV_SCORE_AXES:
+        entry[axis] = row[axis]
+    return entry
+
+
+def _aiv_jira_link(story_key: str) -> str | None:
+    """Return the Jira browse URL for ``story_key``, or ``None`` if Jira is off."""
+    base = (settings.jira_url or "").rstrip("/")
+    if not base:
+        return None
+    return f"{base}/browse/{story_key}"
+
+
+def _aiv_merge_commit_link(story_key: str) -> str | None:
+    """Return a GitHub link for the merge commit referencing ``story_key``.
+
+    Best-effort: runs ``git log`` against the repo root to find the most
+    recent merge commit whose message contains ``[<story_key>]``. Returns
+    a link to that SHA on the public GitHub mirror. Any failure (not a
+    git repo, no match, subprocess error) collapses to ``None`` so the
+    caller renders a fallback label instead of a broken link.
+    """
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        result = subprocess.run(
+            [
+                "git", "log", "--all", "--merges",
+                f"--grep=\\[{story_key}\\]",
+                "-n", "1", "--format=%H",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    sha = (result.stdout or "").strip()
+    if not sha:
+        return None
+    return f"https://github.com/jeremycharlesgillespie/technomancer-public/commit/{sha}"
+
+
+def _render_quality_detail(entry: dict[str, Any]) -> str:
+    """Render the /quality/<story_key> HTML detail page.
+
+    Expects the dict produced by :func:`_aiv_fetch_detail`. Shows every
+    column of the ``story_quality`` row — axis scores, overall, red flags,
+    per-axis reasoning, the verifier output blob, verification method,
+    validated_at, merged_at, and any error — plus links to the Jira issue
+    and (best-effort) the merge commit.
+    """
+    key = str(entry.get("story_key") or "")
+    key_html = html.escape(key)
+    title_html = html.escape(str(entry.get("story_title") or ""))
+
+    score_rows: list[str] = []
+    reasoning = entry.get("reasoning") or {}
+    for axis, header in zip(_AIV_SCORE_AXES, _AIV_SCORE_HEADERS):
+        reason = reasoning.get(axis) or ""
+        score_rows.append(
+            "<tr>"
+            f"<td class='axis'>{html.escape(header)}</td>"
+            f"<td class='axis-full'>{html.escape(axis)}</td>"
+            f"<td class='score'>{_aiv_fmt_score(entry.get(axis))}</td>"
+            f"<td class='reason'>{html.escape(str(reason)) or '&mdash;'}</td>"
+            "</tr>"
+        )
+    score_table_rows = "\n        ".join(score_rows)
+
+    red_flags = entry.get("red_flags") or []
+    if red_flags:
+        flag_items = "".join(
+            f"<li>{html.escape(str(f))}</li>" for f in red_flags
+        )
+        flags_html = f"<ul class='red-flags'>{flag_items}</ul>"
+    else:
+        flags_html = "<p class='muted'>No red flags for this story.</p>"
+
+    verification_output = str(entry.get("verification_output") or "")
+    if verification_output.strip():
+        verification_html = (
+            f"<pre class='verif-output'>{html.escape(verification_output)}</pre>"
+        )
+    else:
+        verification_html = "<p class='muted'>No verifier output recorded.</p>"
+
+    error = entry.get("error")
+    if error:
+        error_html = (
+            f"<div class='error-panel'>Error: {html.escape(str(error))}</div>"
+        )
+    else:
+        error_html = ""
+
+    verification_method = html.escape(str(entry.get("verification_method") or "—"))
+    validated_at = html.escape(_aiv_fmt_validated_at(entry.get("validated_at")))
+    merged_at_raw = entry.get("merged_at")
+    merged_at = html.escape(_aiv_fmt_validated_at(merged_at_raw)) if merged_at_raw else "&mdash;"
+    overall_str = _aiv_fmt_overall(entry.get("overall_score"))
+
+    jira_href = _aiv_jira_link(key)
+    commit_href = _aiv_merge_commit_link(key)
+    link_parts: list[str] = []
+    if jira_href:
+        link_parts.append(
+            f'<a class="ext" href="{html.escape(jira_href)}" '
+            f'target="_blank" rel="noopener">Jira issue &rarr;</a>'
+        )
+    else:
+        link_parts.append('<span class="muted">Jira not configured</span>')
+    if commit_href:
+        link_parts.append(
+            f'<a class="ext" href="{html.escape(commit_href)}" '
+            f'target="_blank" rel="noopener">Merge commit &rarr;</a>'
+        )
+    else:
+        link_parts.append('<span class="muted">No merge commit found</span>')
+    links_html = " &middot; ".join(link_parts)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{key_html} &mdash; Quality Detail</title>
+<style>
+:root {{
+    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
+    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --orange: #ff9800;
+    --border: #333; --flag-bg: rgba(244, 67, 54, 0.18);
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.5; }}
+h1 {{ color: var(--accent); margin-bottom: 0.25rem; }}
+h2 {{ color: var(--accent); margin: 1.5rem 0 0.5rem; font-size: 1.05rem; }}
+.subtitle {{ color: var(--muted); margin-bottom: 1rem; font-size: 0.9rem; }}
+.subtitle a {{ color: var(--muted); }}
+.summary {{ background: var(--surface); border-radius: 8px; padding: 1rem 1.25rem;
+            margin-bottom: 1.25rem; border-left: 4px solid var(--accent); }}
+.summary .row {{ display: flex; flex-wrap: wrap; gap: 18px; font-size: 0.85rem;
+                 color: var(--muted); margin-top: 0.25rem; }}
+.summary .row span {{ color: var(--text); font-variant-numeric: tabular-nums; }}
+.summary .overall {{ color: var(--green); font-weight: 600; font-size: 1rem; }}
+.summary .overall.flagged {{ color: var(--red); }}
+.links {{ margin-top: 0.5rem; font-size: 0.9rem; }}
+.links a.ext {{ color: var(--accent); text-decoration: none; }}
+.links a.ext:hover {{ text-decoration: underline; }}
+table.scores {{ width: 100%; border-collapse: collapse; background: var(--surface);
+                border-radius: 8px; overflow: hidden; font-size: 0.88rem; }}
+table.scores th, table.scores td {{ padding: 8px 10px; text-align: left;
+                                    border-bottom: 1px solid var(--border); }}
+table.scores th {{ background: #2d2d2d; color: var(--accent); font-weight: 600;
+                   text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.04em; }}
+table.scores td.axis {{ font-weight: 600; width: 70px; }}
+table.scores td.axis-full {{ color: var(--muted); font-family: monospace; width: 160px; }}
+table.scores td.score {{ text-align: center; font-variant-numeric: tabular-nums;
+                         font-weight: 600; width: 70px; }}
+table.scores td.reason {{ color: var(--text); }}
+ul.red-flags {{ background: var(--flag-bg); border-radius: 6px; padding: 0.75rem 1.25rem;
+                list-style: disc inside; color: #ffcdd2; }}
+ul.red-flags li {{ margin: 2px 0; }}
+.muted {{ color: var(--muted); }}
+pre.verif-output {{ background: #111; color: #d7d7d7; padding: 1rem;
+                    border-radius: 6px; overflow-x: auto; font-size: 0.8rem;
+                    max-height: 480px; overflow-y: auto; white-space: pre-wrap;
+                    word-break: break-word; }}
+.error-panel {{ background: var(--flag-bg); color: #ffcdd2; padding: 0.75rem 1rem;
+                border-radius: 6px; margin-bottom: 1rem; }}
+.footer {{ color: var(--muted); font-size: 0.75rem; margin-top: 1.5rem; }}
+@media (max-width: 720px) {{
+    body {{ padding: 10px; }}
+    table.scores td.axis-full {{ display: none; }}
+}}
+</style>
+</head>
+<body>
+<h1>{key_html} <span class="muted" style="font-size: 1rem; font-weight: 400;">&middot; {title_html}</span></h1>
+<p class="subtitle"><a href="/quality">&larr; All validations</a> &middot; <a href="/">Hub</a></p>
+
+{error_html}
+
+<div class="summary">
+    <div class="overall {'flagged' if red_flags else ''}">Overall score: {overall_str}</div>
+    <div class="row">
+        <div>Validated: <span>{validated_at or '&mdash;'}</span></div>
+        <div>Merged: <span>{merged_at}</span></div>
+        <div>Method: <span>{verification_method}</span></div>
+    </div>
+    <div class="links">{links_html}</div>
+</div>
+
+<h2>Seven-axis scores</h2>
+<table class="scores">
+    <thead>
+        <tr>
+            <th>Axis</th>
+            <th>Column</th>
+            <th class="score">Score</th>
+            <th>Reasoning</th>
+        </tr>
+    </thead>
+    <tbody>
+        {score_table_rows}
+    </tbody>
+</table>
+
+<h2>Red flags</h2>
+{flags_html}
+
+<h2>Verifier output</h2>
+{verification_html}
+
+<p class="footer">Generated at {html.escape(datetime.now().strftime('%Y-%m-%d %H:%M:%S'))}</p>
+</body>
+</html>"""
+
+
+@app.route("/quality/<story_key>")
+def quality_detail_page(story_key: str) -> tuple[str, int] | str:
+    """GET /quality/<story_key> — full detail for one validated story.
+
+    Renders every ``story_quality`` column for the row — seven axis scores,
+    overall, red flags, per-axis reasoning, verifier output blob, method,
+    timestamps — plus links to the Jira issue and merge commit. Returns
+    404 if the story_key does not have a ``story_quality`` row yet.
+    """
+    key = (story_key or "").strip()
+    entry = _aiv_fetch_detail(key) if key else None
+    if entry is None:
+        body = (
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+            f"<title>{html.escape(key) or 'Unknown'} &mdash; not found</title>"
+            "<style>body{font-family:sans-serif;background:#1a1a1a;color:#e0e0e0;"
+            "padding:2rem;line-height:1.6}a{color:#66b3ff}</style></head><body>"
+            f"<h1>No validation for {html.escape(key) or 'this story'}</h1>"
+            "<p>No <code>story_quality</code> row exists for this key. The AIV "
+            "pipeline may not have run on it yet.</p>"
+            "<p><a href='/quality'>&larr; Back to recent validations</a></p>"
+            "</body></html>"
+        )
+        return body, 404
+    return _render_quality_detail(entry)
 
 
 # ============================================================================
