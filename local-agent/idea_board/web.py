@@ -27,6 +27,7 @@ Routes:
     GET  /api/executor/run/<run_id>/status — State snapshot for a single run
     GET  /api/executor/run/<id>/logs — Tail execution_logs/<idea>.log as JSON
     GET  /api/executor/runs       — Last 100 executor runs (cost, duration, status, error)
+    GET  /api/executor/runs/recent — Paginated runs envelope: {runs, total, limit, offset}
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /live                    — Landing page listing in-flight + recent executions
@@ -3681,6 +3682,82 @@ def api_executor_runs() -> Response:
     return jsonify(rows)
 
 
+RECENT_RUNS_DEFAULT_LIMIT = 50
+RECENT_RUNS_MAX_LIMIT = 200
+
+
+@app.route("/api/executor/runs/recent")
+def api_executor_runs_recent() -> Response:
+    """GET /api/executor/runs/recent — paginated runs list.
+
+    Query parameters:
+        limit: Page size (default 50, clamped to 1..200).
+        offset: Rows to skip before the page (default 0, must be >= 0).
+
+    Returns a JSON envelope so callers can render "X of N" and know when
+    to stop paging:
+
+        {
+          "runs":   [ { id, jira_key, status, started_at, ended_at,
+                         cost_usd, duration_ms, error_message }, ... ],
+          "total":  <int>,    # total rows in executor_runs
+          "limit":  <int>,    # effective limit after clamping
+          "offset": <int>     # effective offset
+        }
+
+    Status codes:
+        * 200 — success
+        * 400 — negative offset or non-integer limit/offset
+    """
+    from agent import executor_runs_db
+
+    raw_limit = request.args.get("limit", str(RECENT_RUNS_DEFAULT_LIMIT))
+    raw_offset = request.args.get("offset", "0")
+    try:
+        limit = int(raw_limit)
+        offset = int(raw_offset)
+    except (TypeError, ValueError):
+        return jsonify({
+            "error": "limit and offset must be integers",
+        }), 400
+
+    if offset < 0:
+        return jsonify({"error": "offset must be non-negative"}), 400
+    if limit < 1:
+        return jsonify({"error": "limit must be >= 1"}), 400
+
+    # Cap limit — protects the hub from accidentally dumping the entire
+    # history in one round-trip when a client passes an unbounded value.
+    limit = min(limit, RECENT_RUNS_MAX_LIMIT)
+
+    rows = executor_runs_db.get_recent_paginated(limit=limit, offset=offset)
+    total = executor_runs_db.count_runs()
+
+    # Attach error_message from the first failed tool_call for failed runs,
+    # mirroring /api/executor/runs so both endpoints feed the same UI.
+    conn = executor_runs_db._get_conn()
+    for row in rows:
+        row["error_message"] = None
+        if row.get("status") and str(row["status"]).lower() in {
+            "failed", "error", "crashed"
+        }:
+            fail = conn.execute(
+                "SELECT error_message FROM executor_tool_calls "
+                "WHERE run_id = ? AND ok = 0 AND error_message IS NOT NULL "
+                "ORDER BY started_at ASC, id ASC LIMIT 1",
+                (int(row["id"]),),
+            ).fetchone()
+            if fail is not None:
+                row["error_message"] = fail["error_message"]
+
+    return jsonify({
+        "runs": rows,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+
+
 @app.route("/api/executor/run/<int:run_id>/kill", methods=["POST"])
 def api_executor_run_kill(run_id: int) -> Response:
     """POST /api/executor/run/<id>/kill — stop a runaway executor run.
@@ -5962,6 +6039,22 @@ table.runs td.jira a { color: var(--accent); text-decoration: none; }
 }
 #fetch-error.visible { display: block; }
 
+.pager {
+    display: flex; align-items: center; gap: 1rem;
+    margin-top: 1rem; flex-wrap: wrap;
+}
+.pager button {
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.5rem 1.1rem; font-size: 0.9rem; cursor: pointer;
+    font-family: inherit;
+}
+.pager button:hover:not([disabled]) { border-color: var(--accent); }
+.pager button[disabled] {
+    opacity: 0.4; cursor: default;
+}
+.pager .status { color: var(--muted); font-size: 0.85rem; }
+
 @media (max-width: 600px) {
     body { padding: 12px; }
     .total-card { min-width: 120px; padding: 0.6rem 0.8rem; }
@@ -6041,16 +6134,25 @@ def _render_executor_runs() -> str:
         </table>
     </div>
 
+    <div class="pager">
+        <button id="load-more" type="button" disabled>Load more</button>
+        <span class="status" id="pager-status">&mdash;</span>
+    </div>
+
     <p style="color:var(--muted);font-size:0.8rem;margin-top:1.5rem">
         Page loaded at {now} &middot;
         Click any column header to sort &middot;
-        Data from <a href="/api/executor/runs">/api/executor/runs</a>
+        Data from <a href="/api/executor/runs/recent">/api/executor/runs/recent</a>
+        (also: <a href="/api/executor/runs">/api/executor/runs</a>)
     </p>
 
     <script>
     const JIRA_URL = {jira_url_json};
     const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\\d+$/;
+    const PAGE_SIZE = 50;
     let RUNS = [];
+    let TOTAL = 0;
+    let OFFSET = 0;
     let SORT_COL = 'started_at';
     let SORT_DIR = 'desc';
 
@@ -6145,16 +6247,18 @@ def _render_executor_runs() -> str:
         tbody.innerHTML = rows;
     }}
 
-    function sortBy(col, type) {{
-        if (SORT_COL === col) {{
-            SORT_DIR = SORT_DIR === 'asc' ? 'desc' : 'asc';
-        }} else {{
-            SORT_COL = col;
-            SORT_DIR = type === 'num' ? 'desc' : 'asc';
-        }}
+    function colTypeOf(col) {{
+        const th = document.querySelector(
+            '#runs-table th[data-col="' + col + '"]'
+        );
+        return (th && th.dataset.type) || 'str';
+    }}
+
+    function sortedRuns() {{
+        const type = colTypeOf(SORT_COL);
         const mul = SORT_DIR === 'asc' ? 1 : -1;
-        const sorted = [...RUNS].sort((a, b) => {{
-            let av = a[col], bv = b[col];
+        return [...RUNS].sort((a, b) => {{
+            let av = a[SORT_COL], bv = b[SORT_COL];
             if (type === 'num') {{
                 av = (av == null || isNaN(av)) ? -Infinity : Number(av);
                 bv = (bv == null || isNaN(bv)) ? -Infinity : Number(bv);
@@ -6166,8 +6270,17 @@ def _render_executor_runs() -> str:
             if (av > bv) return 1 * mul;
             return 0;
         }});
+    }}
+
+    function sortBy(col, type) {{
+        if (SORT_COL === col) {{
+            SORT_DIR = SORT_DIR === 'asc' ? 'desc' : 'asc';
+        }} else {{
+            SORT_COL = col;
+            SORT_DIR = type === 'num' ? 'desc' : 'asc';
+        }}
         updateSortIndicators();
-        renderRows(sorted);
+        renderRows(sortedRuns());
     }}
 
     function updateSortIndicators() {{
@@ -6187,18 +6300,38 @@ def _render_executor_runs() -> str:
         }});
     }}
 
+    function updatePager() {{
+        const btn = document.getElementById('load-more');
+        const status = document.getElementById('pager-status');
+        status.textContent = 'Showing ' + RUNS.length + ' of ' + TOTAL;
+        btn.disabled = RUNS.length >= TOTAL;
+    }}
+
+    async function fetchPage(offset) {{
+        const url = '/api/executor/runs/recent?limit=' + PAGE_SIZE +
+                    '&offset=' + offset;
+        const resp = await fetch(url, {{ cache: 'no-store' }});
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (!data || !Array.isArray(data.runs)) {{
+            throw new Error('malformed response');
+        }}
+        return data;
+    }}
+
     async function load() {{
         const errEl = document.getElementById('fetch-error');
         try {{
-            const resp = await fetch('/api/executor/runs', {{ cache: 'no-store' }});
-            if (!resp.ok) throw new Error('HTTP ' + resp.status);
-            RUNS = await resp.json();
-            if (!Array.isArray(RUNS)) RUNS = [];
+            const data = await fetchPage(0);
+            RUNS = data.runs;
+            TOTAL = typeof data.total === 'number' ? data.total : RUNS.length;
+            OFFSET = RUNS.length;
             errEl.classList.remove('visible');
             errEl.textContent = '';
             renderTotals(RUNS);
             renderRows(RUNS);
             updateSortIndicators();
+            updatePager();
         }} catch (e) {{
             errEl.textContent = 'Failed to load runs: ' + e.message;
             errEl.classList.add('visible');
@@ -6207,6 +6340,33 @@ def _render_executor_runs() -> str:
         }}
     }}
 
+    async function loadMore() {{
+        const btn = document.getElementById('load-more');
+        const errEl = document.getElementById('fetch-error');
+        btn.disabled = true;
+        try {{
+            const data = await fetchPage(OFFSET);
+            if (data.runs.length === 0) {{
+                TOTAL = RUNS.length;
+                updatePager();
+                return;
+            }}
+            RUNS = RUNS.concat(data.runs);
+            TOTAL = typeof data.total === 'number' ? data.total : RUNS.length;
+            OFFSET = RUNS.length;
+            errEl.classList.remove('visible');
+            errEl.textContent = '';
+            renderTotals(RUNS);
+            renderRows(sortedRuns());
+        }} catch (e) {{
+            errEl.textContent = 'Failed to load more: ' + e.message;
+            errEl.classList.add('visible');
+        }} finally {{
+            updatePager();
+        }}
+    }}
+
+    document.getElementById('load-more').addEventListener('click', loadMore);
     attachSortHandlers();
     load();
     </script>

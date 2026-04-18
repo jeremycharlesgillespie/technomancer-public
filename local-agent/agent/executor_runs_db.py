@@ -537,6 +537,48 @@ def get_recent(limit: int = 20) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_recent_paginated(
+    limit: int = 50, offset: int = 0
+) -> list[dict[str, Any]]:
+    """Return a page of runs ordered newest-first.
+
+    Companion to :func:`count_runs` for building a paginated UI. Callers
+    are expected to have already clamped ``limit`` and ``offset`` to legal
+    values — this function coerces to non-negative ints but does not
+    enforce an upper bound on ``limit``.
+
+    Args:
+        limit: Max rows to return per page.
+        offset: Number of rows to skip (``limit * page_index``).
+    """
+    init_db()
+    conn = _get_conn()
+    safe_limit = max(int(limit), 0)
+    safe_offset = max(int(offset), 0)
+    rows = conn.execute(
+        """SELECT id, run_id, jira_key, branch, started_at, ended_at,
+                  duration_ms, cost_usd, status, exit_code,
+                  tests_passed, deployed, artifacts_path, trace_id
+           FROM executor_runs
+           ORDER BY id DESC
+           LIMIT ? OFFSET ?""",
+        (safe_limit, safe_offset),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_runs() -> int:
+    """Return the total number of rows in ``executor_runs``.
+
+    Used by the paginated API so the UI can render "X of N" and decide
+    when to disable the Load-more control.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute("SELECT COUNT(*) AS n FROM executor_runs").fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
 # ---------------------------------------------------------------------------
 # Kill a running executor — SIGTERM, wait, SIGKILL escalation
 # ---------------------------------------------------------------------------
