@@ -100,6 +100,20 @@ def save_prefs(data: dict[str, Any]) -> None:
     conn.commit()
 
 
+def get_updated_at() -> str | None:
+    """Return the ``updated_at`` timestamp of the prefs row, or ``None``.
+
+    Used by the /news page to surface "Last saved: ..." so the owner can
+    confirm persistence is actually working.
+    """
+    init_db()
+    conn = _get_conn()
+    row = conn.execute("SELECT updated_at FROM news_prefs WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return row["updated_at"]
+
+
 def _migrate_legacy_json_if_needed() -> None:
     """One-time import of ``news_config.json`` into the DB.
 

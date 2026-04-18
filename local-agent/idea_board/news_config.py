@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
+# Log the resolved DB path at most once per process the first time
+# ``load_news_config`` writes defaults to it. Keeps the signal loud
+# enough to diagnose "my likes keep disappearing" without spamming
+# every subsequent call.
+_path_logged = False
+
 # Default feeds — migrated from news_digest.py hardcoded list
 DEFAULT_FEEDS: list[dict[str, Any]] = [
     {"name": "TechCrunch", "url": "https://techcrunch.com/feed/", "category": "general", "enabled": True},
@@ -88,14 +94,24 @@ class NewsConfig:
 def load_news_config() -> NewsConfig:
     """Load news config from the SQLite-backed prefs store. Thread-safe.
 
-    If no row exists (fresh install, no legacy JSON), returns a default
-    ``NewsConfig``. On first access after upgrading from the JSON-backed
-    version, ``news_prefs_db`` migrates ``news_config.json`` automatically.
+    If no row exists (fresh install, corrupt payload, or someone wiped
+    the DB file), this creates the row with defaults and returns it —
+    the previous behaviour silently returned a transient default and the
+    next "add dislike" call wrote it back as if the DB was starting from
+    scratch, which is how the "my topics keep disappearing" bug got in.
+    Persisting on first access means the timestamp visible on /news is
+    always the real last-write time, not blank.
     """
+    global _path_logged
     with _lock:
         data = news_prefs_db.load_prefs()
         if data is None:
-            return NewsConfig()
+            if not _path_logged:
+                logger.info("News prefs DB initialised at %s", news_prefs_db.DB_PATH)
+                _path_logged = True
+            config = NewsConfig()
+            news_prefs_db.save_prefs(config.to_dict())
+            return config
         try:
             return NewsConfig.from_dict(data)
         except (TypeError, KeyError) as e:
@@ -107,6 +123,11 @@ def save_news_config(config: NewsConfig) -> None:
     """Save news config to the SQLite-backed prefs store. Thread-safe."""
     with _lock:
         news_prefs_db.save_prefs(config.to_dict())
+
+
+def get_last_saved() -> str | None:
+    """Return the ISO timestamp of the most recent save, or ``None``."""
+    return news_prefs_db.get_updated_at()
 
 
 # ============================================================================
@@ -370,6 +391,7 @@ def render_news_config_page() -> str:
 
     feed_count = len([f for f in config.feeds if f.get("enabled", True)])
     total_feeds = len(config.feeds)
+    last_saved = get_last_saved() or "never"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -388,7 +410,7 @@ def render_news_config_page() -> str:
         <a href="/karen">KAREN</a>
     </div>
 
-    <p style="color:var(--muted);margin-bottom:1rem">{feed_count}/{total_feeds} feeds active &bull; {len(config.likes)} likes &bull; {len(config.dislikes)} dislikes &bull; Schedule: {config.start_hour}:00-{config.end_hour}:00</p>
+    <p style="color:var(--muted);margin-bottom:1rem">{feed_count}/{total_feeds} feeds active &bull; {len(config.likes)} likes &bull; {len(config.dislikes)} dislikes &bull; Schedule: {config.start_hour}:00-{config.end_hour}:00 &bull; Last saved: <span id="last-saved">{last_saved}</span></p>
 
     <h2>RSS Feeds</h2>
     <div class="section" id="feeds-section">

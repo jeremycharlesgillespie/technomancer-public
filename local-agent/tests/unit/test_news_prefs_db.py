@@ -220,6 +220,47 @@ class TestNewsConfigIntegration:
         assert cfg.end_hour == 21
         assert len(cfg.feeds) == len(DEFAULT_FEEDS)
 
+    def test_missing_prefs_persists_defaults(self):
+        """Deleting the DB row and re-loading must recreate it with defaults
+        (prevents the silent-reset bug that wiped user-added dislikes)."""
+        import idea_board.news_config as news_config
+        from idea_board.news_config import DEFAULT_FEEDS, load_news_config
+
+        # Reset the once-per-process path-logged flag so this test behaves
+        # the same regardless of ordering with other tests that call load.
+        news_config._path_logged = False
+
+        # Simulate a fresh install / wiped DB.
+        assert news_prefs_db.load_prefs() is None
+
+        load_news_config()
+
+        # A row must now exist with the default feeds persisted.
+        persisted = news_prefs_db.load_prefs()
+        assert persisted is not None
+        assert len(persisted["feeds"]) == len(DEFAULT_FEEDS)
+        # updated_at should be populated so /news can show "Last saved: ..."
+        assert news_prefs_db.get_updated_at() is not None
+
+    def test_user_dislikes_survive_reload(self):
+        """After the first-load persist, adding a dislike and reloading must
+        keep it — this is the exact scenario the story was filed for."""
+        from idea_board.news_config import load_news_config, save_news_config
+
+        cfg = load_news_config()
+        cfg.dislikes.append("politics")
+        save_news_config(cfg)
+
+        reloaded = load_news_config()
+        assert "politics" in reloaded.dislikes
+
+    def test_get_last_saved_after_write(self):
+        from idea_board.news_config import NewsConfig, get_last_saved, save_news_config
+
+        assert get_last_saved() is None
+        save_news_config(NewsConfig())
+        assert get_last_saved() is not None
+
     def test_legacy_json_migrates_through_news_config_api(self):
         from idea_board.news_config import load_news_config
 
