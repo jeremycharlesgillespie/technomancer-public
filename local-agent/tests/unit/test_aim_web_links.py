@@ -460,3 +460,38 @@ class TestHrefRenderedWhenRouteExists:
         body = resp.get_data(as_text=True)
         assert "TK-812-ondisk" in body
         assert 'href="/live/TK-812-ondisk"' in body
+
+
+# ---------------------------------------------------------------------------
+# TK-785 — /live/<idea_id> route returns 200 with execution id in response
+# ---------------------------------------------------------------------------
+
+
+class TestLiveDetailRoute:
+    """Unit tests for the /live/<idea_id> detail route (TK-785).
+
+    The route renders a static HTML viewer embedding the idea id.
+    executor_runs_db is mocked to prevent any real I/O.
+    """
+
+    def test_live_detail_returns_200(self, client):
+        """GET /live/<idea_id> must return HTTP 200."""
+        with patch("idea_board.web.executor_runs_db.get_current_execution_per_project", return_value=[]):
+            resp = client.get("/live/TK-785")
+        assert resp.status_code == 200
+
+    def test_live_detail_includes_execution_id(self, client):
+        """Response body must contain the idea_id passed to the route."""
+        with patch("idea_board.web.executor_runs_db.get_current_execution_per_project", return_value=[]):
+            resp = client.get("/live/TK-785")
+        body = resp.get_data(as_text=True)
+        assert "TK-785" in body
+
+    def test_live_detail_completes_under_5_seconds(self, client):
+        """Route must respond in under 5 seconds (no blocking I/O)."""
+        with patch("idea_board.web.executor_runs_db.get_current_execution_per_project", return_value=[]):
+            start = time.monotonic()
+            resp = client.get("/live/TK-785")
+            elapsed = time.monotonic() - start
+        assert resp.status_code == 200
+        assert elapsed < 5.0, f"/live/TK-785 took {elapsed:.2f}s (exceeds 5s budget)"
