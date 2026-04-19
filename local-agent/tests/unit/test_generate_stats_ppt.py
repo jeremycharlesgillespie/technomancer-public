@@ -1,17 +1,17 @@
-"""Tests for scripts/generate_stats_ppt.py (TK-829).
+"""Tests for scripts/generate_stats_ppt.py (TK-829, TK-836).
 
 Covers: CLI parsing, DB initialization, title/summary slide creation,
-slide-registry iteration order, skip-on-failure behaviour, and the final
+loader-based slide iteration, skip-on-failure behaviour, and the final
 .pptx output.
 """
 
 from __future__ import annotations
 
-import importlib
 import logging
 import sys
+import types
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pptx import Presentation
@@ -54,7 +54,9 @@ def _unload_slide_modules():
     """Remove imported slide_* modules so import side-effects are fresh per test."""
     yield
     for key in list(sys.modules):
-        if key.startswith("scripts.slides.slide_"):
+        if key.startswith("scripts.slides.slide_") or (
+            key.startswith("slide_") and not key.startswith("slide_registry")
+        ):
             del sys.modules[key]
 
 
@@ -115,8 +117,8 @@ class TestDbInit:
         from scripts.generate_stats_ppt import build_presentation
 
         with patch("scripts.generate_stats_ppt.daily_stats.init_db") as mock_init:
-            build_presentation()
-        # Slide modules also call init_db via get_rows(); assert at least once.
+            with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=[]):
+                build_presentation()
         mock_init.assert_called()
 
     def test_db_table_exists_after_build(self):
@@ -245,141 +247,134 @@ class TestTitleSummarySlideContent:
 
 
 # ---------------------------------------------------------------------------
-# Slide registry iteration
+# Loader-based slide loop (TK-836)
 # ---------------------------------------------------------------------------
 
+def _make_module(name: str, adds_slide: bool = True) -> types.ModuleType:
+    """Return a fake slide module whose add_slide optionally appends a slide."""
+    m = types.ModuleType(name)
 
-class TestSlideRegistryIteration:
-    def test_registered_builders_are_called(self):
-        from scripts.slides import slide_registry
+    def add_slide(prs: Presentation) -> None:
+        if adds_slide:
+            prs.slides.add_slide(prs.slide_layouts[6])
+
+    m.add_slide = add_slide
+    return m
+
+
+class TestLoaderBasedSlideLoop:
+    """build_presentation() iterates slide files via load_slide_module."""
+
+    def test_successfully_registered_builders_add_slides_to_deck(self):
         from scripts.generate_stats_ppt import build_presentation
 
-        called: list[int] = []
+        paths = [Path("slide_01.py"), Path("slide_02.py")]
+        modules = [_make_module("slide_01"), _make_module("slide_02")]
 
-        def make_builder(slot: int):
-            def builder(prs: Presentation) -> None:
-                called.append(slot)
-            builder.__name__ = f"builder_{slot}"
-            return builder
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                prs = build_presentation()
 
-        slide_registry[10] = make_builder(10)
-        slide_registry[20] = make_builder(20)
+        # title slide + 2 content slides
+        assert len(prs.slides) == 3
 
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            build_presentation()
-
-        assert 10 in called
-        assert 20 in called
-
-    def test_registry_iterated_in_slot_order(self):
-        from scripts.slides import slide_registry
+    def test_broken_builder_reduces_slide_count_but_deck_still_builds(self):
         from scripts.generate_stats_ppt import build_presentation
 
-        order: list[int] = []
+        paths = [Path("slide_01.py"), Path("slide_02.py")]
+        # first module fails to load (returns None), second succeeds
+        modules = [None, _make_module("slide_02")]
 
-        def make_builder(slot: int):
-            def builder(prs: Presentation) -> None:
-                order.append(slot)
-            builder.__name__ = f"builder_{slot}"
-            return builder
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                prs = build_presentation()
 
-        slide_registry[3] = make_builder(3)
-        slide_registry[1] = make_builder(1)
-        slide_registry[2] = make_builder(2)
+        # title slide + 1 good slide (broken one skipped)
+        assert len(prs.slides) == 2
 
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            build_presentation()
-
-        assert order == [1, 2, 3]
-
-    def test_each_builder_receives_presentation_object(self):
-        from scripts.slides import slide_registry
+    def test_add_slide_receives_presentation_object(self):
         from scripts.generate_stats_ppt import build_presentation
 
         received: list[object] = []
+        m = types.ModuleType("slide_01")
+        m.add_slide = lambda prs: received.append(prs)  # type: ignore[attr-defined]
 
-        def builder(prs: Presentation) -> None:
-            received.append(prs)
-
-        builder.__name__ = "test_builder"
-        slide_registry[99] = builder
-
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            prs = build_presentation()
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=[Path("slide_01.py")]):
+            with patch("scripts.generate_stats_ppt.load_slide_module", return_value=m):
+                prs = build_presentation()
 
         assert len(received) == 1
         assert received[0] is prs
 
-
-# ---------------------------------------------------------------------------
-# Skip-on-failure behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestBrokenSlideDoesNotAbortBuild:
-    """A broken slide module must be skipped; the deck still builds."""
-
-    def test_exception_in_builder_is_logged_and_skipped(self, caplog):
-        from scripts.slides import slide_registry
+    def test_slides_loaded_in_path_order(self):
         from scripts.generate_stats_ppt import build_presentation
 
-        def bad_builder(prs: Presentation) -> None:
-            raise RuntimeError("slide exploded")
+        order: list[str] = []
 
-        bad_builder.__name__ = "bad_builder"
+        def make_ordered_module(name: str) -> types.ModuleType:
+            m = types.ModuleType(name)
+            def add_slide(prs: Presentation) -> None:
+                order.append(name)
+            m.add_slide = add_slide
+            return m
 
-        def good_builder(prs: Presentation) -> None:
-            prs.slides.add_slide(prs.slide_layouts[6])
+        paths = [Path("slide_01.py"), Path("slide_02.py"), Path("slide_03.py")]
+        modules = [make_ordered_module(p.stem) for p in paths]
 
-        good_builder.__name__ = "good_builder"
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                build_presentation()
 
-        slide_registry[1] = bad_builder
-        slide_registry[2] = good_builder
+        assert order == ["slide_01", "slide_02", "slide_03"]
 
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            with caplog.at_level(logging.ERROR, logger="scripts.generate_stats_ppt"):
-                prs = build_presentation()
+    def test_exception_in_add_slide_is_logged_and_skipped(self, caplog):
+        from scripts.generate_stats_ppt import build_presentation
 
-        # good_builder added 1 slide; title slide adds 1 → total >= 2
+        bad = types.ModuleType("slide_bad")
+        bad.add_slide = MagicMock(side_effect=RuntimeError("exploded"))  # type: ignore[attr-defined]
+        good = _make_module("slide_good")
+
+        paths = [Path("slide_bad.py"), Path("slide_good.py")]
+        modules = [bad, good]
+
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                with caplog.at_level(logging.ERROR, logger="scripts.generate_stats_ppt"):
+                    prs = build_presentation()
+
+        # title + 1 good slide; bad slide skipped
         assert len(prs.slides) >= 2
-        assert any("bad_builder" in r.message or "slot 1" in r.message for r in caplog.records)
+        assert any("slide_bad.py" in r.message for r in caplog.records)
 
-    def test_error_in_one_slot_does_not_prevent_later_slots(self):
-        from scripts.slides import slide_registry
+    def test_exception_in_later_add_slide_does_not_prevent_earlier(self):
         from scripts.generate_stats_ppt import build_presentation
 
         results: list[str] = []
+        first = types.ModuleType("slide_first")
+        first.add_slide = lambda prs: results.append("first ran")  # type: ignore[attr-defined]
+        broken = types.ModuleType("slide_broken")
+        broken.add_slide = MagicMock(side_effect=ValueError("bad"))  # type: ignore[attr-defined]
 
-        def bad(prs: Presentation) -> None:
-            raise ValueError("broken")
+        paths = [Path("slide_first.py"), Path("slide_broken.py")]
+        modules = [first, broken]
 
-        bad.__name__ = "bad"
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                build_presentation()
 
-        def after(prs: Presentation) -> None:
-            results.append("after ran")
+        assert "first ran" in results
 
-        after.__name__ = "after"
+    def test_none_module_prints_warning(self, capsys):
+        from scripts.generate_stats_ppt import build_presentation
 
-        slide_registry[5] = bad
-        slide_registry[6] = after
+        paths = [Path("slide_broken.py")]
 
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            build_presentation()
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", return_value=None):
+                build_presentation()
 
-        assert "after ran" in results
-
-    def test_broken_import_is_skipped_gracefully(self, caplog):
-        """A slide module that fails to import must not abort deck generation."""
-        from scripts.generate_stats_ppt import _import_slide_modules
-
-        with patch("scripts.generate_stats_ppt.pkgutil.iter_modules") as mock_iter:
-            mock_iter.return_value = [(None, "slide_broken", False)]
-            with patch("scripts.generate_stats_ppt.importlib.import_module") as mock_import:
-                mock_import.side_effect = ImportError("missing dep")
-                with caplog.at_level(logging.ERROR, logger="scripts.generate_stats_ppt"):
-                    _import_slide_modules()  # must not raise
-
-        assert any("slide_broken" in r.message for r in caplog.records)
+        out = capsys.readouterr().out
+        assert "slide_broken.py" in out
 
 
 # ---------------------------------------------------------------------------
@@ -426,22 +421,16 @@ class TestReturnsPresentation:
         main(["--output", str(output)])
         assert output.exists()
 
-    def test_slide_count_matches_registry_plus_title(self):
-        from scripts.slides import slide_registry
+    def test_slide_count_matches_loader_plus_title(self):
         from scripts.generate_stats_ppt import build_presentation
 
-        added: list[None] = []
+        paths = [Path("slide_10.py"), Path("slide_11.py")]
+        # modules that don't actually add slides — just verify deck builds
+        modules = [_make_module("slide_10", adds_slide=False), _make_module("slide_11", adds_slide=False)]
 
-        def counter(prs: Presentation) -> None:
-            added.append(None)
+        with patch("scripts.generate_stats_ppt._iter_slide_paths", return_value=paths):
+            with patch("scripts.generate_stats_ppt.load_slide_module", side_effect=modules):
+                prs = build_presentation()
 
-        counter.__name__ = "counter"
-        slide_registry[10] = counter
-        slide_registry[11] = counter
-
-        with patch("scripts.generate_stats_ppt._import_slide_modules"):
-            prs = build_presentation()
-
-        # title slide (1) + 2 registry slots — no slides actually added by counter
-        # so just check the presentation is returned and didn't crash
+        # title slide only (counter modules don't add slides)
         assert hasattr(prs, "slides")
