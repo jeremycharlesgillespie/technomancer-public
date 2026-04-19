@@ -2,12 +2,16 @@
 
 import logging
 import re
+import subprocess
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from agent.config import settings as app_settings
 
 from idea_board.executor import (
     MAX_FIX_RETRIES,
@@ -1848,3 +1852,129 @@ class TestRunPytestWithProgressWarning:
         msg = threshold_warnings[0].getMessage()
         assert "tests" in msg  # label included
         assert "85" in msg     # percentage included
+
+
+# ---------------------------------------------------------------------------
+# _run_pytest_with_progress — configured timeout propagates to subprocess
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _mock_setting(name: str, value):
+    """Temporarily stash ``value`` on the Pydantic settings singleton.
+
+    ``patch.object(settings, name, value, create=True)`` fails for Pydantic v2
+    because ``BaseSettings.__setattr__`` rejects undeclared fields. Writing
+    through ``__dict__`` bypasses the descriptor while still presenting the
+    attribute to normal attribute access.
+    """
+    had = name in app_settings.__dict__
+    prev = app_settings.__dict__.get(name)
+    app_settings.__dict__[name] = value
+    try:
+        yield
+    finally:
+        if had:
+            app_settings.__dict__[name] = prev
+        else:
+            app_settings.__dict__.pop(name, None)
+
+
+class TestRunPytestWithProgressTimeoutFromSettings:
+    """Verify the pytest subprocess honors ``settings.executor_pytest_timeout``.
+
+    Guards the config.py → executor.py integration: whatever value the
+    settings object carries must be the exact value used to kill a hung
+    pytest run. A drift between the two would silently regress the
+    configurable-timeout contract (TK-791/TK-801/TK-802).
+    """
+
+    @staticmethod
+    def _build_hanging_proc() -> MagicMock:
+        """Fake Popen that never completes — forces the timeout branch."""
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline.return_value = b""
+        proc.stdout.read.return_value = b""
+        proc.poll.return_value = None  # still running
+        proc.returncode = None
+        return proc
+
+    @pytest.mark.parametrize("timeout_value", [1200, 600, 3000])
+    def test_settings_timeout_propagates_to_subprocess_timeout_exception(
+        self, timeout_value, tmp_path,
+    ):
+        """Mock ``settings.executor_pytest_timeout``; TimeoutExpired carries that exact value."""
+        state = ExecutionState(idea_id=f"TK-TIMEOUT-{timeout_value}")
+        proc = self._build_hanging_proc()
+        # time.time() is called twice before the timeout branch fires:
+        # once to record ``start`` and once inside the loop guard.
+        times = iter([0.0, float(timeout_value + 1)])
+
+        with _mock_setting("executor_pytest_timeout", timeout_value), \
+             patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+                _run_pytest_with_progress(
+                    ["pytest"],
+                    cwd=str(tmp_path),
+                    state=state,
+                    label="tests",
+                    timeout=app_settings.executor_pytest_timeout,
+                )
+
+        # subprocess.TimeoutExpired.timeout is the exact value passed in.
+        assert exc_info.value.timeout == timeout_value
+        proc.kill.assert_called_once()
+
+    def test_default_settings_timeout_is_1200(self, tmp_path):
+        """With settings at default 1200, the subprocess kill fires at the 1200s mark."""
+        state = ExecutionState(idea_id="TK-TIMEOUT-DEFAULT")
+        proc = self._build_hanging_proc()
+        times = iter([0.0, 1201.0])
+
+        with _mock_setting("executor_pytest_timeout", 1200), \
+             patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+                _run_pytest_with_progress(
+                    ["pytest"],
+                    cwd=str(tmp_path),
+                    state=state,
+                    label="tests",
+                    timeout=app_settings.executor_pytest_timeout,
+                )
+
+        assert exc_info.value.timeout == 1200
+        proc.kill.assert_called_once()
+
+    def test_below_settings_timeout_does_not_kill_subprocess(self, tmp_path):
+        """Elapsed < configured timeout: process completes normally, no kill."""
+        state = ExecutionState(idea_id="TK-TIMEOUT-UNDER")
+        # Build a proc that finishes immediately (one readline returns b"" and poll=0).
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline.return_value = b""
+        proc.stdout.read.return_value = b""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        proc.returncode = 0
+        # start=0.0, loop check=10.0, elapsed calc=10.0 — all well under 1200.
+        times = iter([0.0, 10.0, 10.0])
+
+        with _mock_setting("executor_pytest_timeout", 1200), \
+             patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            result = _run_pytest_with_progress(
+                ["pytest"],
+                cwd=str(tmp_path),
+                state=state,
+                label="tests",
+                timeout=app_settings.executor_pytest_timeout,
+            )
+
+        assert result.returncode == 0
+        proc.kill.assert_not_called()
