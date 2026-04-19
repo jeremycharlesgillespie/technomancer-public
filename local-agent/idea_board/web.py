@@ -2186,6 +2186,26 @@ def _project_param() -> str:
     return raw
 
 
+def get_project_param(default: str = "technomancer") -> str:
+    """Return the normalized ``?project=`` query-string value.
+
+    Defaults to ``'technomancer'`` when the parameter is absent or empty.
+    Canonical default aliases (``""``, ``"primary"``, ``"technomancer"``) all
+    map to ``default``.  Any other value is lowercased and stripped before
+    being returned.
+
+    Raises:
+        ValueError: if the supplied project name contains characters outside
+            ``[a-z0-9_-]`` after normalization.
+    """
+    raw = (request.args.get("project") or "").strip().lower()
+    if _is_default_project(raw):
+        return default
+    if not re.fullmatch(r"[a-z0-9_-]+", raw):
+        raise ValueError(f"Invalid project name: {raw!r}")
+    return raw
+
+
 def list_aim_projects() -> list[str]:
     """Enumerate available project selectors for the dashboard dropdown.
 
