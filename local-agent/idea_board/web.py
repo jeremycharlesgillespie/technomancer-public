@@ -4259,6 +4259,21 @@ h3 { font-size: 0.9rem; color: var(--accent); margin-bottom: 0.5rem; }
   font-weight: 600;
 }
 
+#project-selector-bar {
+  display: flex; align-items: center; gap: 0.5rem;
+}
+#project-selector-bar label {
+  font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+#project-select {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.8rem; cursor: pointer;
+  font-family: inherit;
+}
+#project-select:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+#project-select option { background: var(--surface); }
+
 section { margin-bottom: 1.25rem; }
 
 /* Band 1: Current work */
@@ -4386,6 +4401,12 @@ section { margin-bottom: 1.25rem; }
       <button type="button" data-hours="24" class="active">24h</button>
       <button type="button" data-hours="168">7d</button>
     </div>
+    <div id="project-selector-bar">
+      <label for="project-select">Project</label>
+      <select id="project-select" aria-label="Select AIM project">
+        <option value="technomancer">technomancer</option>
+      </select>
+    </div>
   </div>
 
   <section id="current-work" aria-label="Current work">
@@ -4484,6 +4505,48 @@ section { margin-bottom: 1.25rem; }
   let elapsedTimer = null;
   let currentWorkStartedAt = null;
 
+  // Project selector — AJAX switching without full reload
+  const _dashUrlParams = new URLSearchParams(window.location.search);
+  let currentProject = _dashUrlParams.get('project') || 'technomancer';
+
+  function withProject(url) {
+    if (!currentProject || currentProject === 'technomancer') return url;
+    const sep = url.includes('?') ? '&' : '?';
+    return url + sep + 'project=' + encodeURIComponent(currentProject);
+  }
+
+  async function fetchDashProjects() {
+    try {
+      const r = await fetch('/api/aim/projects', { cache: 'no-store' });
+      if (!r.ok) return;
+      const projects = await r.json();
+      const sel = document.getElementById('project-select');
+      sel.innerHTML = '';
+      projects.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.name;
+        opt.textContent = p.name;
+        if (p.name === currentProject) opt.selected = true;
+        sel.appendChild(opt);
+      });
+    } catch (e) { /* ignore — default option remains */ }
+  }
+
+  document.getElementById('project-select').addEventListener('change', function() {
+    currentProject = this.value;
+    const url = new URL(window.location.href);
+    if (currentProject === 'technomancer') {
+      url.searchParams.delete('project');
+    } else {
+      url.searchParams.set('project', currentProject);
+    }
+    history.replaceState(null, '', url.toString());
+    fetchBacklog();
+    fetchMetrics(currentHours);
+  });
+
+  fetchDashProjects();
+
   function formatElapsed(secs) {
     if (secs < 60) return secs + 's';
     const mins = Math.floor(secs / 60);
@@ -4574,8 +4637,8 @@ section { margin-bottom: 1.25rem; }
 
   async function fetchBacklog() {
     try {
-      const backlogP = fetch('/api/aim/backlog').then(r => r.json());
-      const statusP = fetch('/api/aim/status').then(r => r.json())
+      const backlogP = fetch(withProject('/api/aim/backlog')).then(r => r.json());
+      const statusP = fetch(withProject('/api/aim/status')).then(r => r.json())
         .catch(() => null);
       const [backlog, status] = await Promise.all([backlogP, statusP]);
       const startedAt = status && status.worker && status.worker.started_at;
@@ -4703,9 +4766,10 @@ section { margin-bottom: 1.25rem; }
     });
   }
 
-  async function fetchMetrics() {
+  async function fetchMetrics(hours) {
+    hours = hours || currentHours;
     try {
-      const r = await fetch('/api/aim/metrics?hours=' + currentHours);
+      const r = await fetch(withProject('/api/aim/metrics?hours=' + hours));
       const data = await r.json();
       const labels = (data.timestamps || []).map(formatTimestampLabel);
       const completions = data.completions || [];
@@ -7104,6 +7168,21 @@ a { color: var(--accent); }
     padding: 0.5rem 0;
 }
 
+#project-selector-bar {
+    display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.25rem;
+}
+#project-selector-bar label {
+    font-size: 0.75rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+#project-select {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.3rem 0.6rem; font-size: 0.85rem; cursor: pointer;
+    font-family: inherit;
+}
+#project-select:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+#project-select option { background: var(--surface); }
+
 @media (max-width: 600px) {
     body { padding: 12px; }
     .widget-row { gap: 0.75rem 1.25rem; }
@@ -7137,6 +7216,13 @@ def _render_aim_dashboard() -> str:
        <a href="/executor-runs">Executor runs</a> &middot;
        <a href="/api/aim/status">API: /api/aim/status</a></p>
 
+    <div id="project-selector-bar">
+      <label for="project-select">Project</label>
+      <select id="project-select" aria-label="Select AIM project">
+        <option value="technomancer">technomancer</option>
+      </select>
+    </div>
+
     <header id="aim-status-widget" aria-live="polite">
         <div class="widget-row">
             <div class="widget-field">
@@ -7168,6 +7254,47 @@ def _render_aim_dashboard() -> str:
     const JIRA_URL = {jira_url_json};
     const JIRA_KEY_RE = /^[A-Z][A-Z0-9]+-\\d+$/;
     const POLL_MS = 5000;
+
+    // Project selector — AJAX switching without full reload
+    const _aimUrlParams = new URLSearchParams(window.location.search);
+    let currentProject = _aimUrlParams.get('project') || 'technomancer';
+
+    function withProject(url) {{
+        if (!currentProject || currentProject === 'technomancer') return url;
+        const sep = url.includes('?') ? '&' : '?';
+        return url + sep + 'project=' + encodeURIComponent(currentProject);
+    }}
+
+    async function fetchAimProjects() {{
+        try {{
+            const r = await fetch('/api/aim/projects', {{ cache: 'no-store' }});
+            if (!r.ok) return;
+            const projects = await r.json();
+            const sel = document.getElementById('project-select');
+            sel.innerHTML = '';
+            projects.forEach(p => {{
+                const opt = document.createElement('option');
+                opt.value = p.name;
+                opt.textContent = p.name;
+                if (p.name === currentProject) opt.selected = true;
+                sel.appendChild(opt);
+            }});
+        }} catch (e) {{ /* ignore — default option remains */ }}
+    }}
+
+    document.getElementById('project-select').addEventListener('change', function() {{
+        currentProject = this.value;
+        const url = new URL(window.location.href);
+        if (currentProject === 'technomancer') {{
+            url.searchParams.delete('project');
+        }} else {{
+            url.searchParams.set('project', currentProject);
+        }}
+        history.replaceState(null, '', url.toString());
+        poll();
+    }});
+
+    fetchAimProjects();
 
     function statusColor(status) {{
         const s = (status || '').toLowerCase();
@@ -7217,7 +7344,7 @@ def _render_aim_dashboard() -> str:
     async function poll() {{
         const errEl = document.getElementById('widget-error');
         try {{
-            const resp = await fetch('/api/aim/status', {{ cache: 'no-store' }});
+            const resp = await fetch(withProject('/api/aim/status'), {{ cache: 'no-store' }});
             if (!resp.ok) throw new Error('HTTP ' + resp.status);
             const data = await resp.json();
 
