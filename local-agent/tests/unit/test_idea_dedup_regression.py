@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -349,4 +349,81 @@ def test_is_duplicate_tk571_vs_tk321_headline(mock_dedup_llm):
         "Dedup judge must be invoked — a 0 call count means the seam "
         "short-circuited on a pre-LLM overlap gate and the headline "
         "regression case silently bypassed the judge"
+    )
+
+
+# ---------------------------------------------------------------------------
+# TK-749 — prefilter short-circuits LLM call when word overlap is zero
+# ---------------------------------------------------------------------------
+#
+# The LLM dedup judge (TK-743) round-trips to Ollama on every call. The
+# vast majority of idea pairs share no vocabulary at all — a
+# yoga-scheduling proposal and a submarine-telemetry proposal should
+# never consume a single LLM cycle to be ruled "not a duplicate". The
+# prefilter's job is to recognise zero-overlap pairs and return False
+# before the judge runs.
+#
+# This test pins that fast path: two stories with completely disjoint
+# meaningful stems must (a) return False and (b) never invoke the LLM
+# judge. If a future refactor drops the prefilter, every dedup call
+# starts paying LLM cost on every idea-generation cycle — the
+# ``call_count == 0`` assertion is the tripwire for that regression.
+
+
+def test_is_duplicate_prefilter_zero_overlap(monkeypatch):
+    """Disjoint-keyword pair → ``_is_duplicate`` returns False, LLM unused.
+
+    The two stories below share no meaningful stems once stopwords are
+    filtered and words are truncated to 5-char stems by
+    ``_meaningful_words``. The prefilter must recognise the zero-overlap
+    case and short-circuit without consulting the LLM judge — cost
+    avoidance is the whole reason the prefilter exists.
+    """
+    from idea_board import models
+
+    # Patch the LLM judge *if and only if* the module exists. Today it
+    # does not (``dedup_llm`` ships with TK-743); the test still pins
+    # the correctness half of the contract and hardens into a full
+    # regression test once the module lands. ``return_value=True`` is
+    # deliberate — if the prefilter ever breaks and the judge is
+    # consulted, the mock would flag the pair as a duplicate and fail
+    # the ``result is False`` assertion, so the test catches regressions
+    # in both directions.
+    llm_mock = MagicMock(return_value=True)
+    try:
+        import idea_board.dedup_llm  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            llm_mock,
+            raising=False,
+        )
+
+    existing = Idea(
+        id="TK-800",
+        title="Yoga class scheduling dashboard",
+        description=(
+            "Members book private studio sessions through a calendar widget."
+        ),
+        state="proposed",
+    )
+
+    result = models._is_duplicate(
+        new_title="Submarine propulsion telemetry analyzer",
+        new_desc=(
+            "Spectrogram viewer renders turbulent wake signatures from "
+            "deep sensor streams."
+        ),
+        existing=existing,
+    )
+
+    assert result is False, (
+        "Two stories with zero meaningful word overlap must return False"
+    )
+    assert llm_mock.call_count == 0, (
+        "Prefilter must skip the LLM judge when word overlap is zero — "
+        "every unnecessary invocation pays real Ollama cost on every "
+        "idea-generation cycle"
     )
