@@ -384,6 +384,29 @@ def _block_jira_sync(monkeypatch):
     monkeypatch.setattr("board.jira_provider._api", _raise_on_real_jira)
 
 
+@pytest.fixture
+def mock_dedup_llm(monkeypatch):
+    """Control the dedup verdict used by ``review_queue`` and ``add_idea``.
+
+    Patches ``idea_board.models._is_duplicate`` with a configurable
+    ``MagicMock`` (default ``return_value=True``) so tests can drive the
+    Step 2 advisory-comment path in ``aim.manager.review_queue`` without
+    depending on the underlying dedup algorithm — today's word-overlap
+    judge or the future LLM near-exact judge both live behind this single
+    seam.
+
+    Usage:
+
+        def test_something(mock_dedup_llm):
+            mock_dedup_llm.return_value = True   # treat pair as duplicate
+            ...
+            mock_dedup_llm.return_value = False  # treat pair as distinct
+    """
+    mock = MagicMock(return_value=True)
+    monkeypatch.setattr("idea_board.models._is_duplicate", mock)
+    return mock
+
+
 @pytest.fixture(autouse=True)
 def _isolate_embedding_store(tmp_path, monkeypatch):
     """Point embedding_store at a temporary SQLite DB for each test."""

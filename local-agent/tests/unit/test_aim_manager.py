@@ -580,14 +580,21 @@ class TestReviewQueueExemptions:
                 "story under a non-vetoed parent epic must not be vetoed"
             )
 
-    def test_orphan_story_not_vetoed_for_dup_but_flagged(self, state):
+    def test_orphan_story_not_vetoed_for_dup_but_flagged(self, state, mock_dedup_llm):
         """TK-742: Step 2 no longer vetoes dups-of-done — only flags a comment.
 
         Previously an orphan story matching a done/failed idea was auto-vetoed;
         that killed legitimate follow-up stories sharing a topic with shipped
         work. The new behavior leaves the state untouched and drops an owner-
         review comment instead.
+
+        Uses ``mock_dedup_llm`` so the test drives the Step 2 path via the
+        dedup seam directly. That keeps the assertion ("advisory-only when
+        dedup says match") independent of whichever judge is wired in —
+        the current word-overlap check or the LLM near-exact judge that
+        replaces it.
         """
+        mock_dedup_llm.return_value = True
         ideas = [
             self.FakeIdea(id="TK-400", title="Add caching layer",
                           description="caching layer stuff",
