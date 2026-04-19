@@ -30,6 +30,14 @@ import pytest
 
 from aim.state import AIMState, WorkerState
 
+# Capture the genuine ``_jira_sync_background`` before the autouse
+# ``_block_jira_sync`` fixture in tests/conftest.py replaces it with a
+# no-op. Tests that need to exercise the real sync fan-out restore this
+# reference via ``monkeypatch.setattr``. Module-scope assignment runs at
+# collection time, ahead of any fixture setup.
+import idea_board.models as _idea_models  # noqa: E402
+_REAL_JIRA_SYNC_BACKGROUND = _idea_models._jira_sync_background
+
 
 # ---------------------------------------------------------------------------
 # Fixtures — minimal, self-contained AIMState so the module runs independently
@@ -355,6 +363,130 @@ class TestReviewQueueStep1StillVetoes:
             assert c[0][0] != "TK-900", (
                 "a single failed match must not be enough to veto"
             )
+
+
+# ---------------------------------------------------------------------------
+# TK-761 — add_done_duplicate_flag_comment helper
+# ---------------------------------------------------------------------------
+
+
+class TestAddDoneDuplicateFlagComment:
+    """TK-761: extracted helper for the Done-dup advisory comment path.
+
+    ``add_done_duplicate_flag_comment(story, text)`` owns two steps:
+
+      1. Append a ``llm``-authored ``Comment`` with the caller's text
+         directly onto ``story.comments``. The Comment dataclass fills
+         in the timestamp in ``__post_init__``.
+      2. Fire the same background Jira sync every other state change
+         on the story goes through, so the comment ends up in the Jira
+         comment thread too — but only when Jira is actually
+         configured.
+
+    The helper exists so the append + sync glue is unit-testable in
+    isolation from ``review_queue``; these tests pin both halves.
+    """
+
+    def test_appends_llm_comment_with_exact_text(self):
+        """Comment lands on ``story.comments`` with author ``"llm"`` and the text the caller passed."""
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        story = Idea(id="idea-100", title="t", description="d")
+        marker = (
+            "[Queue Review] Possible dup of TK-501 (done). "
+            "Review and mark vetoed manually if this is a true dup."
+        )
+
+        appended = add_done_duplicate_flag_comment(story, marker)
+
+        assert len(story.comments) == 1
+        assert story.comments[0] is appended
+        assert appended.author == "llm"
+        assert appended.text == marker
+
+    def test_timestamp_is_set_automatically(self):
+        """The Comment dataclass fills in an ISO timestamp; the helper must not pass empty."""
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        story = Idea(id="idea-101", title="t", description="d")
+
+        appended = add_done_duplicate_flag_comment(story, "marker text")
+
+        assert appended.timestamp, "helper must leave the auto-fill path intact"
+        # Round-trip through fromisoformat — if this raises, the format drifted.
+        datetime.fromisoformat(appended.timestamp)
+
+    def test_helper_invokes_jira_sync_background(self, monkeypatch):
+        """Helper must route through ``_jira_sync_background`` so future wiring changes can't drop it silently."""
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        sync_spy = MagicMock()
+        monkeypatch.setattr("idea_board.models._jira_sync_background", sync_spy)
+
+        story = Idea(id="idea-102", title="t", description="d")
+        add_done_duplicate_flag_comment(story, "marker text")
+
+        sync_spy.assert_called_once_with(story)
+
+    def test_jira_sync_fires_when_configured(self, monkeypatch):
+        """If ``is_jira_configured()`` returns True, ``sync_idea_to_jira`` is called with the story.
+
+        Unblocks the autouse ``_block_jira_sync`` fixture by restoring
+        the real ``_jira_sync_background``, swaps ``threading.Thread``
+        for a synchronous stand-in so the assertion doesn't need to
+        race a real thread start, and mocks the Jira-layer seams.
+        """
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        monkeypatch.setattr(
+            "idea_board.models._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
+        )
+
+        class _SyncThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        monkeypatch.setattr("idea_board.models.threading.Thread", _SyncThread)
+
+        import idea_board.jira_sync as js
+        sync_mock = MagicMock()
+        monkeypatch.setattr(js, "is_jira_configured", lambda: True)
+        monkeypatch.setattr(js, "sync_idea_to_jira", sync_mock)
+
+        story = Idea(id="idea-103", title="t", description="d")
+        add_done_duplicate_flag_comment(story, "marker text")
+
+        sync_mock.assert_called_once_with(story)
+
+    def test_jira_sync_skipped_when_unconfigured(self, monkeypatch):
+        """If Jira is not configured, ``sync_idea_to_jira`` is never called."""
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        monkeypatch.setattr(
+            "idea_board.models._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
+        )
+
+        class _SyncThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        monkeypatch.setattr("idea_board.models.threading.Thread", _SyncThread)
+
+        import idea_board.jira_sync as js
+        sync_mock = MagicMock()
+        monkeypatch.setattr(js, "is_jira_configured", lambda: False)
+        monkeypatch.setattr(js, "sync_idea_to_jira", sync_mock)
+
+        story = Idea(id="idea-104", title="t", description="d")
+        add_done_duplicate_flag_comment(story, "marker text")
+
+        sync_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

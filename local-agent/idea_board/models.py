@@ -441,6 +441,40 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
     return idea
 
 
+def add_done_duplicate_flag_comment(story: Idea, comment_text: str) -> Comment:
+    """Append an ``llm``-authored advisory comment flagging a Done duplicate.
+
+    Pulled out of ``review_queue`` Step 2 so the comment-append + Jira
+    fan-out path is testable in isolation (TK-761). The caller already
+    knows which Done story the new idea resembles and formats the
+    human-readable marker; this helper is just the "attach and persist"
+    glue: mutate ``story.comments`` in place, and, if Jira is
+    configured, fire the same background sync every other state change
+    on the story goes through so the comment lands in the Jira comment
+    thread too.
+
+    Timestamp is delegated to ``Comment.__post_init__`` rather than set
+    here — one source of truth for the ISO format and one place to fix
+    if it ever needs to change.
+
+    Args:
+        story: The idea being flagged. Mutated in place — the new
+            Comment is appended to ``story.comments``.
+        comment_text: Pre-formatted advisory text (the caller owns the
+            marker shape, e.g. ``"[Queue Review] Possible dup of TK-42
+            (done). Review and mark vetoed manually if this is a true
+            dup."``).
+
+    Returns:
+        The ``Comment`` that was appended, for callers that want to
+        log or assert on the timestamp without re-reading the list.
+    """
+    comment = Comment(author="llm", text=comment_text)
+    story.comments.append(comment)
+    _jira_sync_background(story)
+    return comment
+
+
 def add_comment(idea_id: str, author: str, text: str) -> Idea | None:
     """Add a comment to an idea's discussion thread.
 
