@@ -17,6 +17,7 @@ Routes:
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
     GET  /api/jira/dlq             — Recent Jira-sync dead-letter queue entries
+    GET  /api/stats/export.csv     — Download daily_stats as CSV (?since=, ?project=)
     GET  /api/perf/functions      — Top-N per-function perf stats (time/calls/variance)
     GET  /api/performance/breakdown — Last N runs with per-phase durations (stacked-bar feed)
     GET  /api/performance/percentiles — Per-phase p50/p95/p99 aggregated over N days
@@ -65,7 +66,7 @@ import requests as _requests_lib
 
 from flask import Flask, Response, jsonify, request
 
-from agent import aiv_schema, executor_runs_db, fn_profiler, metrics
+from agent import aiv_schema, daily_stats, executor_runs_db, fn_profiler, metrics
 from agent.config import settings
 from agent.healthy_notifications import query_healthy_notifications
 from agent.run_context import with_run_context
@@ -5414,6 +5415,38 @@ def api_jira_dlq() -> tuple:
         logger.error("[JiraDLQ] get_jira_dlq_entries failed: %s", exc)
         return jsonify({"error": f"Failed to read DLQ: {exc}"}), 500
     return jsonify({"entries": entries}), 200
+
+
+@app.route("/api/stats/export.csv")
+def api_stats_export_csv() -> Response:
+    """GET /api/stats/export.csv — Download daily_stats as CSV.
+
+    Optional query params:
+        since=YYYY-MM-DD  — include only rows on or after this date
+        project=TK        — include only rows for this project key
+    """
+    import csv
+    import io
+
+    since = request.args.get("since") or None
+    project_filter = request.args.get("project") or None
+
+    rows = daily_stats.get_rows(since=since, project=project_filter)
+
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=daily_stats.CSV_COLUMNS,
+        extrasaction="ignore",
+    )
+    writer.writeheader()
+    writer.writerows(rows)
+
+    return Response(
+        output.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=daily_stats.csv"},
+    )
 
 
 # ============================================================================

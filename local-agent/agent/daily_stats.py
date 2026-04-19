@@ -81,6 +81,38 @@ def init_db() -> None:
     conn.commit()
 
 
+CSV_COLUMNS: list[str] = [
+    "date", "project", "shipped", "failed", "split_children",
+    "cost_usd", "p50_wall_s", "p95_wall_s",
+    "loc_added", "loc_removed", "first_attempt_success",
+    "splitter_child_success", "splitter_child_fail",
+    "phase_timings_json",
+]
+
+
+def get_rows(
+    since: str | None = None,
+    project: str | None = None,
+) -> list[dict]:
+    """Return daily_stats rows as dicts, ordered by date then project.
+
+    since   — ISO date (YYYY-MM-DD); returns rows where date >= since.
+    project — exact project key filter.
+    """
+    init_db()
+    conn = _get_conn()
+    query = "SELECT * FROM daily_stats WHERE 1=1"
+    params: list[str] = []
+    if since:
+        query += " AND date >= ?"
+        params.append(since)
+    if project:
+        query += " AND project = ?"
+        params.append(project)
+    query += " ORDER BY date ASC, project ASC"
+    return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+
 def _relax_splitter_nullability(conn: sqlite3.Connection) -> None:
     """Rebuild daily_stats if splitter columns were created as NOT NULL.
 
