@@ -8224,6 +8224,11 @@ def _render_hub() -> str:
             <p>Stacked phase timing, percentiles, and idle gaps across recent story runs.</p>
             <span class="badge">claude_work p50: {claude_work_badge}</span>
         </a>
+        <a href="/gpu" class="card" style="border-left: 4px solid #76b900;">
+            <h2>GPU Utilization</h2>
+            <p>RTX 5080 usage over time — zoom and scroll to spot headroom or saturation.</p>
+            <span class="badge">5s samples</span>
+        </a>
         <a href="http://{settings.server_host}:9090" target="_blank" class="card external">
             <h2>Prometheus</h2>
             <p>Metrics and monitoring dashboard.</p>
@@ -8444,6 +8449,225 @@ def _render_hub() -> str:
 </html>"""
 
 
+@app.route("/api/gpu/metrics")
+def api_gpu_metrics() -> Response:
+    """Return GPU samples in [start, end] as JSON (downsampled)."""
+    from . import gpu_monitor
+
+    def _parse_int(name: str) -> int | None:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    start_ts = _parse_int("start")
+    end_ts = _parse_int("end")
+    max_points = _parse_int("max_points") or 5000
+    max_points = max(100, min(20000, max_points))
+
+    samples = gpu_monitor.get_samples(
+        gpu_monitor.DB_PATH,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        max_points=max_points,
+    )
+    return jsonify({"samples": samples, "count": len(samples)})
+
+
+@app.route("/gpu")
+def gpu_page() -> str:
+    """Zoomable Chart.js view of RTX 5080 utilization over time."""
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPU Utilization — Technomancer Hub</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1.5rem;
+               background: #0f1419; color: #e6e6e6; }
+        h1 { margin: 0 0 0.25rem 0; }
+        .subtitle { color: #888; margin: 0 0 1rem 0; font-size: 0.9rem; }
+        .controls { margin-bottom: 1rem; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+        button { background: #1e2a3a; color: #e6e6e6; border: 1px solid #2e3a4a; padding: 0.4rem 0.8rem;
+                 border-radius: 4px; cursor: pointer; font-size: 0.85rem; }
+        button:hover { background: #2e3a4a; }
+        button.active { background: #76b900; color: #000; border-color: #76b900; }
+        .stats { display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+        .stat { background: #1e2a3a; padding: 0.5rem 1rem; border-radius: 4px; border-left: 3px solid #76b900; }
+        .stat .label { font-size: 0.75rem; color: #888; text-transform: uppercase; }
+        .stat .value { font-size: 1.1rem; font-weight: bold; }
+        .chart-wrap { background: #1a2332; padding: 1rem; border-radius: 6px; height: 60vh; min-height: 400px; }
+        a.back { color: #76b900; text-decoration: none; font-size: 0.85rem; }
+        a.back:hover { text-decoration: underline; }
+        .hint { font-size: 0.8rem; color: #888; margin-top: 0.5rem; }
+    </style>
+</head>
+<body>
+    <a href="/" class="back">&larr; Hub</a>
+    <h1>GPU Utilization</h1>
+    <p class="subtitle">RTX 5080 — sampled every 5 seconds via nvidia-smi</p>
+
+    <div class="controls">
+        <button data-range="600" class="active">Last 10 min</button>
+        <button data-range="3600">Last 1 hour</button>
+        <button data-range="21600">Last 6 hours</button>
+        <button data-range="86400">Last 24 hours</button>
+        <button data-range="604800">Last 7 days</button>
+        <button data-range="0">All</button>
+        <button id="refresh-btn">Refresh</button>
+        <label style="font-size:0.85rem;">
+            <input type="checkbox" id="auto-refresh" checked> Auto-refresh (10s)
+        </label>
+    </div>
+
+    <div class="stats" id="stats">
+        <div class="stat"><div class="label">Latest util</div><div class="value" id="stat-util">–</div></div>
+        <div class="stat"><div class="label">VRAM</div><div class="value" id="stat-vram">–</div></div>
+        <div class="stat"><div class="label">Peak util (window)</div><div class="value" id="stat-peak">–</div></div>
+        <div class="stat"><div class="label">Avg util (window)</div><div class="value" id="stat-avg">–</div></div>
+        <div class="stat"><div class="label">Samples</div><div class="value" id="stat-count">–</div></div>
+    </div>
+
+    <div class="chart-wrap">
+        <canvas id="gpu-chart"></canvas>
+    </div>
+    <p class="hint">Drag to pan · mouse wheel or pinch to zoom · double-click to reset</p>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script>
+        Chart.register(window['chartjs-plugin-zoom'] || ChartZoom);
+        const ctx = document.getElementById('gpu-chart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: 'GPU Utilization (%)',
+                    data: [],
+                    borderColor: '#76b900',
+                    backgroundColor: 'rgba(118, 185, 0, 0.15)',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    tension: 0,
+                    fill: true,
+                }, {
+                    label: 'VRAM Used (%)',
+                    data: [],
+                    borderColor: '#00bcd4',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    pointHoverRadius: 3,
+                    tension: 0,
+                    yAxisID: 'y',
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                parsing: false,
+                interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: { tooltipFormat: 'yyyy-MM-dd HH:mm:ss' },
+                        ticks: { color: '#888', maxRotation: 0 },
+                        grid: { color: '#2a3545' },
+                    },
+                    y: {
+                        min: 0, max: 100,
+                        ticks: { color: '#888', callback: v => v + '%' },
+                        grid: { color: '#2a3545' },
+                    },
+                },
+                plugins: {
+                    legend: { labels: { color: '#e6e6e6' } },
+                    zoom: {
+                        pan: { enabled: true, mode: 'x' },
+                        zoom: {
+                            wheel: { enabled: true },
+                            pinch: { enabled: true },
+                            drag: { enabled: false },
+                            mode: 'x',
+                        },
+                    },
+                },
+            },
+        });
+
+        document.getElementById('gpu-chart').ondblclick = () => chart.resetZoom();
+
+        let currentRange = 600;
+        let autoRefreshTimer = null;
+
+        async function loadData(rangeSeconds) {
+            const params = new URLSearchParams();
+            if (rangeSeconds > 0) {
+                params.set('start', Math.floor(Date.now() / 1000) - rangeSeconds);
+            }
+            const resp = await fetch('/api/gpu/metrics?' + params.toString());
+            const j = await resp.json();
+            const samples = j.samples || [];
+
+            const utilData = samples.map(s => ({ x: s.ts * 1000, y: s.utilization }));
+            const memData = samples.map(s => ({
+                x: s.ts * 1000,
+                y: s.mem_total_mb > 0 ? (s.mem_used_mb / s.mem_total_mb) * 100 : 0,
+            }));
+            chart.data.datasets[0].data = utilData;
+            chart.data.datasets[1].data = memData;
+            chart.update('none');
+
+            if (samples.length > 0) {
+                const last = samples[samples.length - 1];
+                const utils = samples.map(s => s.utilization);
+                const peak = Math.max(...utils);
+                const avg = utils.reduce((a, b) => a + b, 0) / utils.length;
+                document.getElementById('stat-util').textContent = last.utilization.toFixed(0) + '%';
+                document.getElementById('stat-vram').textContent =
+                    (last.mem_used_mb / 1024).toFixed(1) + ' / ' + (last.mem_total_mb / 1024).toFixed(1) + ' GB';
+                document.getElementById('stat-peak').textContent = peak.toFixed(0) + '%';
+                document.getElementById('stat-avg').textContent = avg.toFixed(1) + '%';
+                document.getElementById('stat-count').textContent = samples.length.toLocaleString();
+            } else {
+                for (const id of ['stat-util','stat-vram','stat-peak','stat-avg','stat-count']) {
+                    document.getElementById(id).textContent = '—';
+                }
+            }
+        }
+
+        document.querySelectorAll('[data-range]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('[data-range]').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentRange = parseInt(btn.dataset.range, 10);
+                chart.resetZoom();
+                loadData(currentRange);
+            });
+        });
+        document.getElementById('refresh-btn').addEventListener('click', () => loadData(currentRange));
+
+        function setupAutoRefresh() {
+            if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+            if (document.getElementById('auto-refresh').checked) {
+                autoRefreshTimer = setInterval(() => loadData(currentRange), 10000);
+            }
+        }
+        document.getElementById('auto-refresh').addEventListener('change', setupAutoRefresh);
+
+        loadData(currentRange);
+        setupAutoRefresh();
+    </script>
+</body>
+</html>"""
+
+
 def start_idea_board() -> None:
     """Start the Flask hub (idea board + news config) in a daemon thread.
 
@@ -8454,6 +8678,9 @@ def start_idea_board() -> None:
     from .news_config import news_bp
     app.register_blueprint(news_bp)
     app.register_blueprint(karen_bp)
+
+    from . import gpu_monitor
+    gpu_monitor.start_gpu_monitor()
 
     def _run() -> None:
         app.run(host="0.0.0.0", port=BOARD_PORT, debug=False, use_reloader=False)
