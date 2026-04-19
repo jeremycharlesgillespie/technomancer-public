@@ -152,6 +152,13 @@ class TestReads:
         items = provider.load_all()
         assert [i.id for i in items] == ["TK-1", "TK-2"]
 
+    def test_load_active_filters_jql_to_non_terminal_statuses(self, provider, mock_api):
+        mock_api.return_value = _search_response([_issue("TK-1"), _issue("TK-2")])
+        items = provider.load_active()
+        jql = mock_api.call_args.kwargs["json"]["jql"]
+        assert 'status in ("To Do", "In Progress")' in jql
+        assert [i.id for i in items] == ["TK-1", "TK-2"]
+
     def test_list_by_state_approved_filters_out_pending(self, provider, mock_api):
         mock_api.return_value = _search_response([
             _issue("TK-1", labels=["cat:quality"]),

@@ -60,6 +60,10 @@ class FakeJiraProvider:
     def load_all(self) -> list[BoardItem]:
         return [copy.deepcopy(i) for i in self._items.values()]
 
+    def load_active(self) -> list[BoardItem]:
+        active = {"proposed", "refining", "approved", "executing"}
+        return [copy.deepcopy(i) for i in self._items.values() if i.state in active]
+
     def list_by_state(self, state: str) -> list[BoardItem]:
         return [copy.deepcopy(i) for i in self._items.values() if i.state == state]
 

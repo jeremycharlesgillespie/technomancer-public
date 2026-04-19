@@ -48,6 +48,10 @@ class FakeJiraProvider:
     def load_all(self) -> list[Idea]:
         return list(self.items.values())
 
+    def load_active(self) -> list[Idea]:
+        active = {"proposed", "refining", "approved", "executing"}
+        return [i for i in self.items.values() if i.state in active]
+
     def list_by_state(self, state: str) -> list[Idea]:
         return [i for i in self.items.values() if i.state == state]
 
