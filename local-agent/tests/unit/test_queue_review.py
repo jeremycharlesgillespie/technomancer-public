@@ -667,6 +667,95 @@ class TestIsDuplicateOfDoneStory:
             )
 
 
+class TestDoneDuplicatePipelineTK759:
+    """TK-759 pins the ``find_duplicate_target_story`` → ``is_duplicate_of_done_story``
+    composition contract.
+
+    The two helpers were split in TK-762 so each stage of Step 2 could
+    be tested without standing up the full review_queue, but the
+    pipeline only works if the first helper's return shape is the
+    second helper's input shape. These tests exercise that boundary
+    directly — a future refactor that drops the ``Idea`` out of the
+    tuple, or changes the state-check field, will break here instead of
+    silently disabling the advisory flow in production.
+    """
+
+    def test_done_target_from_pipeline_is_flagged(self):
+        """End-to-end: dup against a Done ref returns True.
+
+        Wires the real ``find_duplicate_target_story`` to a fake
+        ``_is_duplicate`` that matches one candidate, then feeds the
+        resulting ``ref`` straight into ``is_duplicate_of_done_story``.
+        Done target → True, which is the signal Step 2 uses to emit
+        the advisory comment.
+        """
+        from idea_board.models import (
+            Idea,
+            find_duplicate_target_story,
+            is_duplicate_of_done_story,
+        )
+
+        done_ref = Idea(id="TK-900", title="shipped", description="d", state="done")
+        candidates = [done_ref]
+
+        def _fake_is_dup(new_title, new_desc, ref):
+            return (True, "match=done")
+
+        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+            ref, _reason = find_duplicate_target_story("t", "d", candidates)
+
+        assert ref is done_ref
+        assert is_duplicate_of_done_story(ref) is True
+
+    def test_non_done_target_from_pipeline_is_not_flagged(self):
+        """End-to-end: dup against a Failed ref returns False.
+
+        The target state filter is the whole reason TK-759 exists — a
+        Failed-state match is out of scope for the Step 2 advisory
+        (Step 1's 2+-failure veto already covers it). Composition test
+        confirms the filter rejects the Failed case even when
+        ``_is_duplicate`` says it's a dup.
+        """
+        from idea_board.models import (
+            Idea,
+            find_duplicate_target_story,
+            is_duplicate_of_done_story,
+        )
+
+        failed_ref = Idea(id="TK-901", title="tried", description="d", state="failed")
+        candidates = [failed_ref]
+
+        def _fake_is_dup(new_title, new_desc, ref):
+            return (True, "match=failed")
+
+        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+            ref, _reason = find_duplicate_target_story("t", "d", candidates)
+
+        assert ref is failed_ref
+        assert is_duplicate_of_done_story(ref) is False
+
+    def test_no_match_short_circuits_state_check(self):
+        """When the pipeline finds no dup, ``ref`` is None.
+
+        Passing ``None`` into ``is_duplicate_of_done_story`` would
+        raise ``AttributeError`` — Step 2 guards this with an ``if
+        ref is None: return`` before the state check. Pin that
+        guard-order contract so a future refactor can't swap the check
+        order and crash the queue review on a non-match.
+        """
+        from idea_board.models import (
+            find_duplicate_target_story,
+            is_duplicate_of_done_story,
+        )
+
+        with patch("idea_board.models._is_duplicate", return_value=(False, "no")):
+            ref, _reason = find_duplicate_target_story("t", "d", [])
+
+        assert ref is None
+        with pytest.raises(AttributeError):
+            is_duplicate_of_done_story(ref)  # type: ignore[arg-type]
+
+
 class TestFormatDoneDuplicateComment:
     """``format_done_duplicate_comment`` owns the advisory-comment shape."""
 

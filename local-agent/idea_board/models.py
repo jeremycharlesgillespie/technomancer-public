@@ -485,6 +485,12 @@ def is_duplicate_of_done_story(ref: Idea) -> bool:
     dups of shipped work. A dup-of-failed story is either already
     handled by Step 1's repeated-failure veto or is a legitimate retry
     attempt; neither case benefits from the "possible dup" nudge.
+
+    Designed to consume the first element of the tuple returned by
+    :func:`find_duplicate_target_story` — the composition contract is
+    pinned by the TK-759 test class so a future refactor that changes
+    either helper's return shape will break a focused test, not Step 2
+    at runtime.
     """
     return ref.state == "done"
 
