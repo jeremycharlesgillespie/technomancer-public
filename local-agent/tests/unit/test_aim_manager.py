@@ -604,11 +604,37 @@ class TestReviewQueueExemptions:
 
         # But it should leave an advisory comment flagging the possible dup
         # so the owner can review and veto manually if it really is one.
-        flagged = any(
-            c[0][0] == "TK-400" and "Possible dup of TK-401" in c[0][2]
-            for c in provider.add_comment.call_args_list
+        # Lock in the full marker text + state qualifier + manual-review hint
+        # so a regression that drops any of these signals (and would leave
+        # the operator without enough context to act) fails this test.
+        flagging_calls = [
+            c for c in provider.add_comment.call_args_list
+            if c[0][0] == "TK-400" and "Possible dup of TK-401" in c[0][2]
+        ]
+        assert flagging_calls, "dup-of-done should leave an advisory comment"
+        comment_text = flagging_calls[0][0][2]
+        assert "[Queue Review]" in comment_text, (
+            "comment must carry the [Queue Review] marker so it groups with "
+            "other queue-hygiene activity"
         )
-        assert flagged, "dup-of-done should leave an advisory comment"
+        assert "(done)" in comment_text, (
+            "comment must surface the matched idea's state so the operator "
+            "knows whether the dup ships or was abandoned"
+        )
+        assert "manually" in comment_text.lower(), (
+            "comment must direct the operator to act manually — Step 2 is "
+            "advisory, not a queued auto-action"
+        )
+
+        # And no state-mutating method should fire against the orphan beyond
+        # the (legitimate) add_comment / get_comments calls. Auto-vetoes used
+        # to ride on vote(), but a future regression could route through
+        # update_state or set_state instead — guard both paths.
+        for forbidden in ("update_state", "set_state", "transition"):
+            calls = getattr(provider, forbidden).call_args_list
+            assert not any(c[0] and c[0][0] == "TK-400" for c in calls), (
+                f"orphan dup-of-done must not be mutated via {forbidden}"
+            )
 
 
 # ---------------------------------------------------------------------------
