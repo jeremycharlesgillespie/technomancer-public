@@ -27,6 +27,7 @@ from aim.splitter import (
     evaluate_failure,
     scan_and_split,
 )
+from agent.story_format import ATOMIC_LABEL
 from board.provider import Comment
 from idea_board.models import Idea
 
@@ -420,6 +421,21 @@ class TestApplySplit:
         assert len(new_keys) == 3
         assert err is None
         assert provider.get("TK-100") is None
+
+    def test_children_carry_atomic_label(self, provider):
+        parent = make_item("TK-100", parent_id="TK-EPIC")
+        provider.seed(parent)
+        splits = [
+            ProposedStory(title="A", description="da"),
+            ProposedStory(title="B", description="db"),
+            ProposedStory(title="C", description="dc"),
+        ]
+        new_keys, err = _apply_split(parent, splits, provider)
+        assert err is None
+        for key in new_keys:
+            child = provider.get(key)
+            assert child is not None
+            assert ATOMIC_LABEL in child.labels
 
 
 # ---------------------------------------------------------------------------
