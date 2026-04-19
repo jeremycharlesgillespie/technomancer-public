@@ -355,3 +355,84 @@ class TestReviewQueueStep1StillVetoes:
             assert c[0][0] != "TK-900", (
                 "a single failed match must not be enough to veto"
             )
+
+
+# ---------------------------------------------------------------------------
+# TK-765 — reason string from _is_duplicate is surfaced for observability
+# ---------------------------------------------------------------------------
+
+
+class TestReviewQueueReasonLogging:
+    """Step 2 must use the tuple's reason for logs so outages are visible."""
+
+    def test_llm_fell_open_is_logged_as_warning(self, state, caplog, monkeypatch):
+        """When the judge returns (False, "llm_timeout"), emit a WARNING.
+
+        Every LLM failure code (``no_binary``, ``llm_timeout``, ``llm_exit_*``,
+        ``no_json``, ``parse_failure``) falls open to ``is_dup=False``.
+        Without a log, a flaking Haiku silently disables Step 2 and true
+        dups leak through. This test pins the visibility.
+        """
+        import logging
+
+        def _fake_dedup(new_title, new_desc, existing):
+            return (False, "llm_timeout")
+
+        monkeypatch.setattr("idea_board.models._is_duplicate", _fake_dedup)
+
+        ideas = [
+            FakeIdea(
+                id="TK-950",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-951",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="done",
+            ),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="aim.manager"):
+            _run_review(state, ideas)
+
+        fell_open = [
+            rec for rec in caplog.records
+            if "fell open" in rec.getMessage() and "llm_timeout" in rec.getMessage()
+        ]
+        assert fell_open, "LLM fall-open should emit a WARNING with the reason code"
+
+    def test_flagged_dup_log_includes_reason(self, state, caplog, monkeypatch):
+        """Info log on a flagged dup carries the LLM verdict reason."""
+        import logging
+
+        def _fake_dedup(new_title, new_desc, existing):
+            return (True, "near-exact: same files, same outcome")
+
+        monkeypatch.setattr("idea_board.models._is_duplicate", _fake_dedup)
+
+        ideas = [
+            FakeIdea(
+                id="TK-960",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-961",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="done",
+            ),
+        ]
+
+        with caplog.at_level(logging.INFO, logger="aim.manager"):
+            _run_review(state, ideas)
+
+        flagged = [
+            rec for rec in caplog.records
+            if "flagged" in rec.getMessage() and "near-exact" in rec.getMessage()
+        ]
+        assert flagged, "flagged-dup INFO log must include the LLM reason"
