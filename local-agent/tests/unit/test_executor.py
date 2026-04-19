@@ -1,5 +1,6 @@
 """Tests for idea_board.executor — pytest baseline, failure diffing, test targeting, and epic execution."""
 
+import logging
 import re
 import threading
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ import pytest
 from idea_board.executor import (
     MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
+    PYTEST_TIMEOUT_WARN_RATIO,
     RATE_LIMIT_KEYWORDS,
     RATE_LIMIT_MAX_LOG_LINES,
     ExecutionState,
@@ -22,10 +24,12 @@ from idea_board.executor import (
     _clear_execution_artifacts,
     _find_related_tests,
     _format_injected_epic_context,
+    _get_pytest_timeout_warning,
     _has_branch_commits,
     _parse_pytest_failures,
     _post_deploy_comment,
     _prune_stale_execution_logs,
+    _run_pytest_with_progress,
     _sync_progress_comment,
     _write_done_sentinel,
     execute_epic,
@@ -1725,3 +1729,122 @@ class TestProfileFnInstrumentation:
         assert stats is not None
         assert stats.call_count == 1
         fp.reset_registry()
+
+
+# ---------------------------------------------------------------------------
+# _get_pytest_timeout_warning — threshold helper
+# ---------------------------------------------------------------------------
+
+
+class TestGetPytestTimeoutWarning:
+    """Verify the 80%-of-timeout warning threshold logic."""
+
+    def test_ratio_constant_is_80_percent(self):
+        assert PYTEST_TIMEOUT_WARN_RATIO == 0.8
+
+    def test_no_warning_at_50_percent(self):
+        result = _get_pytest_timeout_warning(500.0, 1000.0)
+        assert result["should_warn"] is False
+        assert result["message"] == ""
+        assert result["pct"] == 50.0
+
+    def test_no_warning_exactly_at_threshold(self):
+        """The check is strictly greater than 80%, so 80.0% itself does not warn."""
+        result = _get_pytest_timeout_warning(800.0, 1000.0)
+        assert result["should_warn"] is False
+
+    def test_warning_just_over_threshold(self):
+        result = _get_pytest_timeout_warning(800.1, 1000.0)
+        assert result["should_warn"] is True
+        assert "approaching timeout threshold" in result["message"]
+
+    def test_warning_at_85_percent(self):
+        result = _get_pytest_timeout_warning(850.0, 1000.0)
+        assert result["should_warn"] is True
+        assert "85" in result["message"]
+        assert "1000" in result["message"]
+
+    def test_warning_over_100_percent(self):
+        """An overrun (elapsed > timeout) still returns should_warn=True."""
+        result = _get_pytest_timeout_warning(1200.0, 1000.0)
+        assert result["should_warn"] is True
+        assert result["pct"] == 120.0
+
+    def test_zero_timeout_never_warns(self):
+        """Guard against divide-by-zero when timeout is misconfigured."""
+        result = _get_pytest_timeout_warning(5.0, 0)
+        assert result["should_warn"] is False
+        assert result["pct"] == 0.0
+
+    def test_negative_timeout_never_warns(self):
+        result = _get_pytest_timeout_warning(5.0, -10.0)
+        assert result["should_warn"] is False
+
+
+# ---------------------------------------------------------------------------
+# _run_pytest_with_progress — timeout warning integration
+# ---------------------------------------------------------------------------
+
+
+class TestRunPytestWithProgressWarning:
+    """Verify the pytest runner logs a WARNING when the 80% threshold is crossed."""
+
+    @staticmethod
+    def _build_finished_proc() -> MagicMock:
+        """Build a fake Popen proc that completes immediately with no output."""
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline.return_value = b""
+        proc.stdout.read.return_value = b""
+        proc.poll.return_value = 0  # already finished
+        proc.wait.return_value = 0
+        proc.returncode = 0
+        return proc
+
+    def test_no_warning_when_well_under_threshold(self, caplog, tmp_path):
+        """500s elapsed with 1000s timeout (50%) — no warning logged."""
+        state = ExecutionState(idea_id="TK-WARN-1")
+        proc = self._build_finished_proc()
+        # time.time() is called: once at start, once in loop check, once for elapsed
+        times = iter([0.0, 500.0, 500.0])
+
+        with patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path), \
+             caplog.at_level(logging.WARNING, logger="idea_board.executor"):
+            _run_pytest_with_progress(
+                ["pytest"], cwd=str(tmp_path), state=state,
+                label="tests", timeout=1000,
+            )
+
+        threshold_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "approaching timeout threshold" in r.getMessage()
+        ]
+        assert threshold_warnings == []
+
+    def test_warning_logged_when_elapsed_exceeds_threshold(self, caplog, tmp_path):
+        """850s elapsed with 1000s timeout (85%) — warning logged at WARNING."""
+        state = ExecutionState(idea_id="TK-WARN-2")
+        proc = self._build_finished_proc()
+        times = iter([0.0, 850.0, 850.0])
+
+        with patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path), \
+             caplog.at_level(logging.WARNING, logger="idea_board.executor"):
+            _run_pytest_with_progress(
+                ["pytest"], cwd=str(tmp_path), state=state,
+                label="tests", timeout=1000,
+            )
+
+        threshold_warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING
+            and "approaching timeout threshold" in r.getMessage()
+        ]
+        assert len(threshold_warnings) == 1
+        msg = threshold_warnings[0].getMessage()
+        assert "tests" in msg  # label included
+        assert "85" in msg     # percentage included

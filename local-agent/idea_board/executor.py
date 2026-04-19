@@ -571,6 +571,48 @@ def _snapshot_system_load() -> str:
         return f"(load snapshot failed: {e})"
 
 
+#: Fraction of the pytest timeout at which we begin warning the operator.
+#: Crossing this threshold means a timeout-related failure is one small
+#: test-suite growth spurt away.
+PYTEST_TIMEOUT_WARN_RATIO: float = 0.8
+
+
+def _get_pytest_timeout_warning(
+    elapsed_seconds: float,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Return a warning payload when pytest consumed most of its timeout.
+
+    Args:
+        elapsed_seconds: How long the pytest subprocess actually ran.
+        timeout_seconds: The configured timeout it was run against (currently
+            the module-level ``PYTEST_TIMEOUT``; TK-790 swaps this for
+            ``settings.executor_pytest_timeout``).
+
+    Returns:
+        Dict with:
+            ``should_warn`` (bool): True when elapsed exceeds
+            ``PYTEST_TIMEOUT_WARN_RATIO`` of the timeout budget.
+            ``message`` (str): Human-readable warning, empty when
+            ``should_warn`` is False.
+            ``pct`` (float): Percentage of the timeout budget consumed.
+    """
+    if timeout_seconds <= 0:
+        return {"should_warn": False, "message": "", "pct": 0.0}
+
+    pct = (elapsed_seconds / timeout_seconds) * 100.0
+    should_warn = elapsed_seconds > PYTEST_TIMEOUT_WARN_RATIO * timeout_seconds
+    message = ""
+    if should_warn:
+        message = (
+            f"pytest used {elapsed_seconds:.1f}s of {timeout_seconds:.0f}s "
+            f"timeout ({pct:.0f}%) — approaching timeout threshold "
+            f"({int(PYTEST_TIMEOUT_WARN_RATIO * 100)}%). "
+            f"Consider splitting the test suite or raising the timeout."
+        )
+    return {"should_warn": should_warn, "message": message, "pct": pct}
+
+
 def _run_pytest_with_progress(
     cmd: list[str],
     cwd: str,
@@ -616,6 +658,10 @@ def _run_pytest_with_progress(
         stdout_lines.extend(rest.decode("utf-8", errors="replace").split("\n"))
 
     proc.wait()
+    elapsed = time.time() - start
+    warning = _get_pytest_timeout_warning(elapsed, timeout)
+    if warning["should_warn"]:
+        logger.warning("[%s] %s", label, warning["message"])
     stdout = "\n".join(stdout_lines)
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout=stdout, stderr="")
 
