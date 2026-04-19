@@ -32,6 +32,15 @@ class TestSettingsDefaults:
         s = Settings(discord_bot_token="test-token")
         assert s.api_cost_alert_threshold == 1.0
 
+    def test_executor_pytest_timeout_default(self):
+        s = Settings(discord_bot_token="test-token")
+        assert s.executor_pytest_timeout == 1200
+
+    def test_executor_pytest_timeout_env_override(self, monkeypatch):
+        monkeypatch.setenv("EXECUTOR_PYTEST_TIMEOUT", "3600")
+        s = Settings(discord_bot_token="test-token")
+        assert s.executor_pytest_timeout == 3600
+
 
 class TestComputedProperties:
     """Test computed path properties."""
