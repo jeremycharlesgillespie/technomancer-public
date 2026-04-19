@@ -340,6 +340,7 @@ class ExecutionState:
     baseline_failures: set[str] = field(default_factory=set)
     rate_limited: bool = False
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    elapsed_seconds: float | None = None
 
     def log(self, msg: str) -> None:
         """Append a timestamped message to the execution log."""
@@ -658,6 +659,7 @@ def _run_pytest_with_progress(
 
     proc.wait()
     elapsed = time.time() - start
+    state.elapsed_seconds = elapsed
     should_warn, warn_msg = _get_pytest_timeout_warning(elapsed, timeout)
     if should_warn:
         logger.warning("[%s] %s", label, warn_msg)

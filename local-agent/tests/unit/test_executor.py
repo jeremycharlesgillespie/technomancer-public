@@ -2061,3 +2061,27 @@ class TestRunPytestElapsedMeasurement:
             f"elapsed measurement drifted: got {measured_elapsed:.3f}s, "
             f"expected ~{expected_duration:.3f}s"
         )
+
+    def test_elapsed_seconds_populated_on_state(self, tmp_path):
+        """state.elapsed_seconds is set after subprocess completes."""
+        state = ExecutionState(idea_id="TK-805-elapsed")
+
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline.return_value = b""
+        proc.stdout.read.return_value = b""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        proc.returncode = 0
+
+        times = iter([0.0, 0.0, 42.5])
+
+        with patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            _run_pytest_with_progress(
+                ["pytest"], cwd=str(tmp_path), state=state,
+                label="tests", timeout=1000,
+            )
+
+        assert state.elapsed_seconds == pytest.approx(42.5)
