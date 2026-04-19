@@ -29,6 +29,7 @@ Database: ``local-agent/data/executor_runs.db``
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -48,6 +49,24 @@ log = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "executor_runs.db"
+
+# Default root for AIM state files (``local-agent/aim``). Overridable per call
+# via the ``aim_root`` argument to :func:`get_current_execution_per_project`
+# and monkey-patched in tests.
+AIM_ROOT: Path = Path(__file__).parent.parent / "aim"
+
+# Hard ceiling on AIM state-file size. AIM's JSON snapshots are a few KB in
+# practice — anything larger is almost certainly corrupt, and reading it in
+# full from a /live HTTP handler would stall the request. The /live page
+# must never hang on a bad file, so we skip and log instead.
+MAX_AIM_STATE_FILE_BYTES: int = 1_000_000  # 1 MB
+
+# Worker ``status`` values that mean the worker is actively tied to
+# ``current_idea_id``. Anything else (``idle``, ``dead``, ``stuck``,
+# ``rate_limited``, ``error``) is treated as not executing.
+_ACTIVE_WORKER_STATUSES: frozenset[str] = frozenset(
+    {"assigned", "executing", "watching"}
+)
 
 # Per-run artifact archive — stdout.log, stderr.log, diff.patch — under
 # ARTIFACTS_DIR/<run_id>/. Capped at MAX_ARTIFACTS most-recent runs.
@@ -227,6 +246,110 @@ def init_db() -> None:
         ON story_model_usage (story_key, recorded_at)
     """)
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# AIM state file readers — surfaced here (instead of embedded in the /live
+# route) so the I/O is shared, reusable, and independently testable. The
+# /live page must never hang, so every read is size-capped and wrapped in
+# try/except. A missing/corrupt file yields no row — never a crash.
+# ---------------------------------------------------------------------------
+
+
+def _read_aim_state_file(path: Path) -> dict[str, Any] | None:
+    """Read one AIM state file and parse it as JSON.
+
+    Returns ``None`` (after logging a warning) when the file is missing,
+    exceeds :data:`MAX_AIM_STATE_FILE_BYTES`, or fails to decode. Callers
+    treat ``None`` as "no data" and skip the project silently.
+    """
+    try:
+        if not path.is_file():
+            return None
+        size = path.stat().st_size
+        if size > MAX_AIM_STATE_FILE_BYTES:
+            log.warning(
+                "[aim-state] %s is %d bytes (> %d cap); skipping",
+                path, size, MAX_AIM_STATE_FILE_BYTES,
+            )
+            return None
+        with path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as exc:
+        # ValueError covers json.JSONDecodeError on every Python version.
+        log.warning("[aim-state] cannot read %s: %s", path, exc)
+        return None
+
+
+def get_current_execution_per_project(
+    aim_root: Path | None = None,
+    primary_label: str = "primary",
+) -> list[dict[str, Any]]:
+    """Return per-project current-execution state parsed from AIM state files.
+
+    Scans ``<aim_root>/.aim_state.json`` plus every
+    ``<aim_root>/projects/<name>/.aim_state.json`` and returns one row per
+    discovered project — including ones whose worker is idle, so the /live
+    page can show an explicit "idle" indicator instead of silently omitting
+    dormant projects.
+
+    This function is the shared I/O path used by the /live landing page.
+    It is deliberately synchronous and sequential — AIM only produces a
+    handful of state files (one per project) and each is KB-sized, so
+    reading them serially stays well under the 2-second budget the
+    endpoint must meet.
+
+    Args:
+        aim_root: Override the default :data:`AIM_ROOT` directory. Tests
+            pass a ``tmp_path / "aim"`` here so no real AIM is touched.
+        primary_label: Display name for the top-level (non-sub) project.
+            Callers typically pass ``settings.jira_project_key or "primary"``.
+
+    Returns:
+        List of dicts with keys ``project``, ``status``, ``current_idea_id``,
+        ``started_at``, ``last_observation``, ``is_executing``. Empty list
+        when no state files are present or readable.
+    """
+    root = aim_root if aim_root is not None else AIM_ROOT
+
+    targets: list[tuple[str, Path]] = []
+    primary_state = root / ".aim_state.json"
+    if primary_state.is_file():
+        targets.append((primary_label, primary_state))
+
+    projects_dir = root / "projects"
+    if projects_dir.is_dir():
+        try:
+            subs = sorted(projects_dir.iterdir())
+        except OSError as exc:
+            log.warning(
+                "[aim-state] cannot list %s: %s", projects_dir, exc
+            )
+            subs = []
+        for sub in subs:
+            if not sub.is_dir():
+                continue
+            sub_state = sub / ".aim_state.json"
+            if sub_state.is_file():
+                targets.append((sub.name, sub_state))
+
+    rows: list[dict[str, Any]] = []
+    for label, path in targets:
+        data = _read_aim_state_file(path)
+        if data is None:
+            continue
+        worker = data.get("worker") or {}
+        status = (worker.get("status") or "idle").strip() or "idle"
+        current_id = worker.get("current_idea_id")
+        rows.append({
+            "project": label,
+            "status": status,
+            "current_idea_id": current_id,
+            "started_at": worker.get("started_at") or "",
+            "last_observation": worker.get("last_observation") or "",
+            "is_executing": bool(current_id) and status in _ACTIVE_WORKER_STATUSES,
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------

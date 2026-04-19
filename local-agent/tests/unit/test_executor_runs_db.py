@@ -1,9 +1,11 @@
 """Tests for agent.executor_runs_db — SQLite-backed executor run metadata."""
 
+import json
 import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -905,3 +907,206 @@ class TestTraceIdColumn:
         row = executor_runs_db.get_run_by_run_id("20260417-100000-TK-562")
         assert row is not None
         assert row["trace_id"] == tid
+
+
+# ---------------------------------------------------------------------------
+# TK-774: Shared AIM-state reader for the /live landing page.
+# Tests cover both the low-level file reader and the project-level aggregator.
+# ---------------------------------------------------------------------------
+
+
+def _write_state_file(path: Path, payload: dict) -> None:
+    """Helper: ensure parent dir exists and write a JSON state file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+class TestReadAimStateFile:
+    """The size-bounded + error-swallowing JSON reader."""
+
+    def test_reads_valid_json(self, tmp_path):
+        path = tmp_path / "state.json"
+        _write_state_file(path, {"worker": {"status": "idle"}})
+        data = executor_runs_db._read_aim_state_file(path)
+        assert data == {"worker": {"status": "idle"}}
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert executor_runs_db._read_aim_state_file(tmp_path / "nope.json") is None
+
+    def test_malformed_json_returns_none(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text("{not json", encoding="utf-8")
+        assert executor_runs_db._read_aim_state_file(path) is None
+
+    def test_oversized_file_is_skipped(self, tmp_path, monkeypatch):
+        """A state file above the size cap must be skipped (no hang on a
+        multi-megabyte corrupt file being pulled into memory)."""
+        path = tmp_path / "huge.json"
+        _write_state_file(path, {"worker": {"status": "idle"}})
+        monkeypatch.setattr(executor_runs_db, "MAX_AIM_STATE_FILE_BYTES", 4)
+        assert executor_runs_db._read_aim_state_file(path) is None
+
+    def test_directory_path_returns_none(self, tmp_path):
+        """Handed a directory (not a file), the reader must not raise."""
+        assert executor_runs_db._read_aim_state_file(tmp_path) is None
+
+
+class TestGetCurrentExecutionPerProject:
+    """Aggregator used by the /live landing page."""
+
+    @pytest.fixture
+    def aim_root(self, tmp_path):
+        """Fresh AIM root layout — primary + empty projects/ subtree."""
+        root = tmp_path / "aim"
+        (root / "projects").mkdir(parents=True)
+        return root
+
+    def test_empty_root_returns_empty_list(self, aim_root):
+        assert executor_runs_db.get_current_execution_per_project(aim_root=aim_root) == []
+
+    def test_primary_executing_is_flagged(self, aim_root):
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {
+                "worker": {
+                    "status": "executing",
+                    "current_idea_id": "TK-774",
+                    "started_at": "2026-04-19T02:00:00",
+                    "last_observation": "parsing AIM state",
+                },
+            },
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["project"] == "TK"
+        assert row["current_idea_id"] == "TK-774"
+        assert row["status"] == "executing"
+        assert row["is_executing"] is True
+        assert row["started_at"] == "2026-04-19T02:00:00"
+        assert row["last_observation"] == "parsing AIM state"
+
+    def test_idle_project_is_included_but_not_executing(self, aim_root):
+        """Idle projects still appear in the list — the caller decides what
+        to render. The ``is_executing`` flag is False."""
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "idle", "current_idea_id": None}},
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert len(rows) == 1
+        assert rows[0]["is_executing"] is False
+        assert rows[0]["status"] == "idle"
+
+    def test_dead_worker_is_not_executing_even_with_idea_id(self, aim_root):
+        """A dead/stuck worker must not be flagged is_executing even if it
+        still has a current_idea_id — prevents zombie rows on the dashboard."""
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "dead", "current_idea_id": "TK-999"}},
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert rows[0]["is_executing"] is False
+
+    def test_subprojects_are_scanned(self, aim_root):
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "idle", "current_idea_id": None}},
+        )
+        _write_state_file(
+            aim_root / "projects" / "40acres" / ".aim_state.json",
+            {
+                "worker": {
+                    "status": "executing",
+                    "current_idea_id": "FA-42",
+                    "started_at": "2026-04-19T01:00:00",
+                },
+            },
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        projects = {r["project"]: r for r in rows}
+        assert set(projects) == {"TK", "40acres"}
+        assert projects["40acres"]["is_executing"] is True
+        assert projects["40acres"]["current_idea_id"] == "FA-42"
+        assert projects["TK"]["is_executing"] is False
+
+    def test_corrupt_state_file_is_skipped(self, aim_root):
+        """Broken JSON in one project must not stop the rest from loading."""
+        (aim_root / ".aim_state.json").write_text("{nope", encoding="utf-8")
+        _write_state_file(
+            aim_root / "projects" / "fa" / ".aim_state.json",
+            {
+                "worker": {
+                    "status": "executing",
+                    "current_idea_id": "FA-1",
+                },
+            },
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert [r["project"] for r in rows] == ["fa"]
+
+    def test_completes_quickly_with_many_projects(self, aim_root):
+        """Acceptance criterion: queries complete in <2s even with multiple
+        state files. Seed 25 project state files and time the read."""
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "idle", "current_idea_id": None}},
+        )
+        for i in range(25):
+            _write_state_file(
+                aim_root / "projects" / f"p{i:02d}" / ".aim_state.json",
+                {"worker": {"status": "idle", "current_idea_id": None}},
+            )
+        start = time.monotonic()
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        elapsed = time.monotonic() - start
+        assert len(rows) == 26  # primary + 25 sub-projects
+        assert elapsed < 2.0, f"scan took {elapsed:.2f}s — exceeds 2s budget"
+
+    def test_empty_status_defaults_to_idle(self, aim_root):
+        """Worker with a blank status string is still included as idle."""
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "", "current_idea_id": None}},
+        )
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert rows[0]["status"] == "idle"
+        assert rows[0]["is_executing"] is False
+
+    def test_default_aim_root_used_when_unspecified(self, tmp_path, monkeypatch):
+        """Omitting ``aim_root`` falls through to the module-level default."""
+        fake_root = tmp_path / "fake_aim"
+        fake_root.mkdir()
+        _write_state_file(
+            fake_root / ".aim_state.json",
+            {"worker": {"status": "executing", "current_idea_id": "TK-1"}},
+        )
+        monkeypatch.setattr(executor_runs_db, "AIM_ROOT", fake_root)
+        rows = executor_runs_db.get_current_execution_per_project(primary_label="TK")
+        assert rows[0]["current_idea_id"] == "TK-1"
+
+    def test_non_directory_entries_in_projects_are_ignored(self, aim_root):
+        """A stray file inside projects/ (e.g. .DS_Store) must not crash."""
+        _write_state_file(
+            aim_root / ".aim_state.json",
+            {"worker": {"status": "idle", "current_idea_id": None}},
+        )
+        (aim_root / "projects" / "README").write_text("not a project", encoding="utf-8")
+        rows = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root, primary_label="TK"
+        )
+        assert [r["project"] for r in rows] == ["TK"]

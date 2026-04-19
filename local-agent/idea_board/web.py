@@ -63,7 +63,7 @@ import requests as _requests_lib
 
 from flask import Flask, Response, jsonify, request
 
-from agent import aiv_schema, fn_profiler, metrics
+from agent import aiv_schema, executor_runs_db, fn_profiler, metrics
 from agent.config import settings
 from agent.healthy_notifications import query_healthy_notifications
 from agent.run_context import with_run_context
@@ -2494,20 +2494,46 @@ def api_aim_logs_tail() -> Response:
 def _collect_live_executions() -> dict[str, list[dict[str, Any]]]:
     """Scan AIM state files across projects for live execution data.
 
-    Reads the primary ``aim/.aim_state.json`` plus any per-project state
-    files under ``aim/projects/<name>/.aim_state.json``. Returns:
-      - ``executing``: workers with a current_idea_id and a non-idle status
+    Delegates per-project current-execution parsing to
+    :func:`agent.executor_runs_db.get_current_execution_per_project` so the
+    risky I/O lives in one place. Recent completions are pulled from the
+    same state files in a second read pass (a handful of KB-sized files,
+    negligible against the 2-second budget).
+
+    Returns:
+      - ``executing``: workers with a current_idea_id and an active status
       - ``recent``: last 10 completed items merged across projects, sorted
         by ``resolved`` descending (from each project's board_snapshot)
     """
-    state_files: list[tuple[str, Path]] = []
+    primary_label = settings.jira_project_key or "primary"
+    aim_root = _AGENT_ROOT / "aim"
 
-    primary_path = _AGENT_ROOT / "aim" / ".aim_state.json"
+    per_project = executor_runs_db.get_current_execution_per_project(
+        aim_root=aim_root,
+        primary_label=primary_label,
+    )
+
+    executing: list[dict[str, Any]] = [
+        {
+            "project": entry["project"],
+            "key": entry["current_idea_id"],
+            "status": entry["status"],
+            "started_at": entry["started_at"],
+            "last_observation": entry["last_observation"],
+        }
+        for entry in per_project
+        if entry.get("is_executing")
+    ]
+
+    # Second pass: recent completions come from the same files but are a
+    # separate concern — keep them out of the shared helper so callers who
+    # only need "who's executing right now" don't pay for the merge/sort.
+    state_files: list[tuple[str, Path]] = []
+    primary_path = aim_root / ".aim_state.json"
     if primary_path.exists():
-        primary_label = settings.jira_project_key or "primary"
         state_files.append((primary_label, primary_path))
 
-    projects_dir = _AGENT_ROOT / "aim" / "projects"
+    projects_dir = aim_root / "projects"
     if projects_dir.is_dir():
         for sub in sorted(projects_dir.iterdir()):
             if not sub.is_dir():
@@ -2516,31 +2542,11 @@ def _collect_live_executions() -> dict[str, list[dict[str, Any]]]:
             if sub_path.exists():
                 state_files.append((sub.name, sub_path))
 
-    active_statuses = {"assigned", "executing", "watching"}
-    executing: list[dict[str, Any]] = []
     recent: list[dict[str, Any]] = []
-
     for label, path in state_files:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "[LiveLanding] Skipping unreadable state file %s: %s", path, exc
-            )
+        data = executor_runs_db._read_aim_state_file(path)
+        if data is None:
             continue
-
-        worker = data.get("worker") or {}
-        current_id = worker.get("current_idea_id")
-        status = worker.get("status") or ""
-        if current_id and status in active_statuses:
-            executing.append({
-                "project": label,
-                "key": current_id,
-                "status": status,
-                "started_at": worker.get("started_at") or "",
-                "last_observation": worker.get("last_observation") or "",
-            })
-
         snapshot = data.get("board_snapshot") or {}
         for item in snapshot.get("recent_completions", []) or []:
             key = item.get("key")
