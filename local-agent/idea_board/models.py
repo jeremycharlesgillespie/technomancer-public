@@ -18,7 +18,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import dedup_llm
+
 logger = logging.getLogger(__name__)
+
+# Combined word-overlap threshold used as a cost prefilter before the LLM
+# judge. Pairs below this overlap share so little vocabulary that the
+# judge has nothing to weigh and would burn a Haiku round-trip on every
+# call to confirm "obviously different". Above the threshold, accuracy
+# matters more than cost — defer to the LLM. The split is the whole
+# point of TK-764: cheap filter for the easy cases, accurate judge for
+# the borderline ones.
+OVERLAP_PREFILTER_THRESHOLD: float = 0.20
 
 
 def _jira_sync_background(idea: Any) -> None:
@@ -246,16 +257,52 @@ def _meaningful_words(text: str) -> set[str]:
     return words
 
 
+def _call_dedup_llm(
+    a_title: str, a_desc: str, b_title: str, b_desc: str
+) -> tuple[bool, str]:
+    """Wrapper around the LLM near-exact judge for the borderline cases.
+
+    Resolves the judge through the ``dedup_llm`` module attribute (rather
+    than a captured reference) so tests can patch
+    ``idea_board.dedup_llm.is_near_exact_duplicate`` and have the patch
+    take effect here.
+
+    Args:
+        a_title: Title of the new (proposed) story.
+        a_desc: Description of the new story.
+        b_title: Title of the existing story.
+        b_desc: Description of the existing story.
+
+    Returns:
+        ``(is_duplicate, reason)`` — passed through unchanged from
+        :func:`idea_board.dedup_llm.is_near_exact_duplicate`. The judge
+        already falls open on every failure path (timeout, missing
+        binary, malformed output), so this wrapper does not add its own
+        try/except — flakiness is the judge's contract to handle.
+    """
+    return dedup_llm.is_near_exact_duplicate(a_title, a_desc, b_title, b_desc)
+
+
 def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> tuple[bool, str]:
     """Check if a new idea is essentially the same as an existing one.
 
-    Compares both title and description using meaningful word overlap.
-    An idea is a duplicate if:
-    - Title words overlap > 50%, OR
-    - Combined (title + description) meaningful words overlap > 40%
+    Two-stage pipeline:
 
-    This catches rephrased duplicates while allowing legitimately
-    different ideas about the same topic.
+    1. **Word-overlap prefilter** (cheap) — compute combined
+       title+description meaningful-stem overlap. If it sits below
+       ``OVERLAP_PREFILTER_THRESHOLD`` (20%), the pair shares almost no
+       vocabulary and the LLM has nothing useful to weigh, so return
+       ``(False, "low_overlap=…")`` without spending a Haiku round-trip.
+    2. **LLM near-exact judge** (accurate) — when overlap meets or
+       exceeds the threshold, defer to
+       :func:`idea_board.dedup_llm.is_near_exact_duplicate` via
+       :func:`_call_dedup_llm`. Word overlap can't tell follow-ups,
+       refactors, and extensions apart from rewordings (the TK-571
+       symptom), but the LLM judge can.
+
+    The split exists so each piece is independently testable and so the
+    pipeline pays LLM cost only on the small minority of pairs where
+    accuracy actually matters.
 
     Args:
         new_title: Title of the new idea
@@ -264,36 +311,25 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> tuple[bool, 
 
     Returns:
         ``(is_duplicate, reason)`` — ``reason`` is a short code describing
-        which gate fired (``title_overlap=0.67``, ``combined_overlap=0.52``,
-        ``no_overlap``, ``empty_words``). Tuple shape mirrors
-        :func:`idea_board.dedup_llm.is_near_exact_duplicate` so callers can
-        log the reason uniformly regardless of which judge produced it.
+        which gate fired (``low_overlap=0.05``, ``empty_words``, or the
+        verdict reason from the LLM judge). Tuple shape mirrors
+        :func:`idea_board.dedup_llm.is_near_exact_duplicate` so callers
+        can log the reason uniformly regardless of which gate produced it.
     """
-    # Title comparison
-    new_title_words = _meaningful_words(new_title)
-    existing_title_words = _meaningful_words(existing.title)
-
-    if new_title_words and existing_title_words:
-        title_overlap = len(new_title_words & existing_title_words) / max(
-            len(new_title_words), len(existing_title_words)
-        )
-        if title_overlap > 0.5:
-            return True, f"title_overlap={title_overlap:.2f}"
-
-    # Combined title + description comparison (catches rephrased ideas)
     new_combined = _meaningful_words(new_title + " " + new_desc)
     existing_combined = _meaningful_words(existing.title + " " + existing.description)
 
-    if new_combined and existing_combined:
-        combined_overlap = len(new_combined & existing_combined) / max(
-            len(new_combined), len(existing_combined)
-        )
-        if combined_overlap > 0.4:
-            return True, f"combined_overlap={combined_overlap:.2f}"
-
     if not new_combined or not existing_combined:
         return False, "empty_words"
-    return False, "no_overlap"
+
+    combined_overlap = len(new_combined & existing_combined) / max(
+        len(new_combined), len(existing_combined)
+    )
+
+    if combined_overlap < OVERLAP_PREFILTER_THRESHOLD:
+        return False, f"low_overlap={combined_overlap:.2f}"
+
+    return _call_dedup_llm(new_title, new_desc, existing.title, existing.description)
 
 
 def _normalize_description(desc: str) -> str:

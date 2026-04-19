@@ -115,11 +115,11 @@ class TestIsDuplicate:
     def test_tk571_tk321_distinct_descriptions_not_duplicate(self):
         """TK-571 coverage-lift story is NOT a dup of TK-321 abstract dittoed story.
 
-        This is the exact false-positive that motivated TK-742. Titles share
-        {unit, tests, capability_request} (roughly 50% title overlap — not
-        above the > 0.5 threshold), and the descriptions diverge on scope
-        (concrete coverage target vs. abstract "add core logic tests"), so
-        combined overlap falls below the 0.4 threshold too. Result: False.
+        This is the exact false-positive that motivated TK-742. After TK-764
+        the high-overlap pair reaches the LLM judge; the mock returns
+        DIFFERENT (the right verdict for a follow-up vs an abstract original)
+        and ``_is_duplicate`` propagates that to False. The LLM seam is
+        patched so this test does not spawn a real ``claude -p`` subprocess.
         """
         from idea_board.models import Idea, _is_duplicate
 
@@ -133,15 +133,19 @@ class TestIsDuplicate:
             ),
         )
 
-        is_dup, _reason = _is_duplicate(
-            new_title="Unit tests for capability_request.py (50% -> 75%)",
-            new_desc=(
-                "WHAT: Raise coverage from 50 percent to 75 percent. "
-                "WHY: Gaps exist in the error retry and rate-limit branches. "
-                "HOW: Parametrize failure modes in the circuit-breaker helper."
-            ),
-            existing=existing,
-        )
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(False, "scopes diverge: coverage-lift vs abstract"),
+        ):
+            is_dup, _reason = _is_duplicate(
+                new_title="Unit tests for capability_request.py (50% -> 75%)",
+                new_desc=(
+                    "WHAT: Raise coverage from 50 percent to 75 percent. "
+                    "WHY: Gaps exist in the error retry and rate-limit branches. "
+                    "HOW: Parametrize failure modes in the circuit-breaker helper."
+                ),
+                existing=existing,
+            )
         assert is_dup is False
 
     def test_near_identical_title_and_body_is_duplicate(self):
@@ -149,7 +153,10 @@ class TestIsDuplicate:
 
         Creation-time dedup inside ``add_idea`` is the last line of defense
         against the classic "idea generator restates the same idea" failure
-        mode. TK-742 must not weaken that.
+        mode. TK-742 must not weaken that. Post TK-764 the gate routes
+        through the LLM judge for high-overlap pairs; the mock returns SAME
+        (the right verdict for a near-identical rephrase) and the verdict
+        propagates to True.
         """
         from idea_board.models import Idea, _is_duplicate
 
@@ -162,14 +169,18 @@ class TestIsDuplicate:
             ),
         )
 
-        is_dup, _reason = _is_duplicate(
-            new_title="Cache Ollama responses for better performance",
-            new_desc=(
-                "WHY: Ollama inference repeats work for identical prompts. "
-                "HOW: Cache responses keyed by prompt hash to skip recompute."
-            ),
-            existing=existing,
-        )
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(True, "near-exact match: same files, same outcome"),
+        ):
+            is_dup, _reason = _is_duplicate(
+                new_title="Cache Ollama responses for better performance",
+                new_desc=(
+                    "WHY: Ollama inference repeats work for identical prompts. "
+                    "HOW: Cache responses keyed by prompt hash to skip recompute."
+                ),
+                existing=existing,
+            )
         assert is_dup is True
 
 

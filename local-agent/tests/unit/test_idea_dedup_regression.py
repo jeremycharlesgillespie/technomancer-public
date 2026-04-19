@@ -135,25 +135,34 @@ def test_ollama_cluster_dedup_returns_409_on_duplicates(
     multiple repeat attempts). The second and third responses must
     carry the first issue's key so the caller can link to the canonical
     entry instead of writing a new one.
+
+    Post TK-764 the dedup path consults the LLM judge for high-overlap
+    pairs. Mock it to return SAME so the test pins the wiring contract
+    (provider-level dedup → 409 translation) without spawning a real
+    ``claude -p`` subprocess on every CI run.
     """
     start = time.monotonic()
 
-    first = _post_create(client, OLLAMA_CLUSTER[0])
-    assert first.status_code == 201, first.get_json()
-    first_key = first.get_json()["key"]
-    assert first_key, "First call must mint a non-empty idea key"
+    with patch(
+        "idea_board.dedup_llm.is_near_exact_duplicate",
+        return_value=(True, "near-exact match: ollama cluster"),
+    ):
+        first = _post_create(client, OLLAMA_CLUSTER[0])
+        assert first.status_code == 201, first.get_json()
+        first_key = first.get_json()["key"]
+        assert first_key, "First call must mint a non-empty idea key"
 
-    for dup_payload in OLLAMA_CLUSTER[1:]:
-        resp = _post_create(client, dup_payload)
-        assert resp.status_code == 409, (
-            f"Expected 409 for duplicate '{dup_payload['title']}', "
-            f"got {resp.status_code}: {resp.get_json()}"
-        )
-        body = resp.get_json()
-        assert body["key"] == first_key, (
-            f"Duplicate response should point at the first issue's key "
-            f"({first_key}); got {body['key']}"
-        )
+        for dup_payload in OLLAMA_CLUSTER[1:]:
+            resp = _post_create(client, dup_payload)
+            assert resp.status_code == 409, (
+                f"Expected 409 for duplicate '{dup_payload['title']}', "
+                f"got {resp.status_code}: {resp.get_json()}"
+            )
+            body = resp.get_json()
+            assert body["key"] == first_key, (
+                f"Duplicate response should point at the first issue's key "
+                f"({first_key}); got {body['key']}"
+            )
 
     # Only one idea should have been persisted — the other two dedup'd
     # back to it. Guards against a regression where dedup passes through
@@ -191,7 +200,10 @@ def test_tk571_is_not_dup_of_tk321():
 
     Title overlap sits at the ~0.5 boundary (shared stems {unit, tests,
     capab}) — exactly the point where the old auto-veto fired — and the
-    bodies diverge on scope. The function must not flag this pair.
+    bodies diverge on scope. After TK-764 the gate consults the LLM judge
+    for this high-overlap pair; the mock returns DIFFERENT so this test
+    pins the verdict end-to-end without spawning a real ``claude -p``
+    subprocess.
     """
     from idea_board.models import Idea, _is_duplicate
 
@@ -207,17 +219,21 @@ def test_tk571_is_not_dup_of_tk321():
         state="done",
     )
 
-    is_dup, _reason = _is_duplicate(
-        new_title="Unit tests for capability_request.py (50% -> 75%)",
-        new_desc=(
-            "WHAT: Raise line coverage in capability_request.py from 50 "
-            "percent to 75 percent. "
-            "WHY: Gaps remain in the retry, rate-limit, and circuit-breaker "
-            "branches. "
-            "HOW: Parametrize failure modes and assert recovery paths."
-        ),
-        existing=tk321,
-    )
+    with patch(
+        "idea_board.dedup_llm.is_near_exact_duplicate",
+        return_value=(False, "scopes diverge: coverage-lift vs abstract"),
+    ):
+        is_dup, _reason = _is_duplicate(
+            new_title="Unit tests for capability_request.py (50% -> 75%)",
+            new_desc=(
+                "WHAT: Raise line coverage in capability_request.py from 50 "
+                "percent to 75 percent. "
+                "WHY: Gaps remain in the retry, rate-limit, and circuit-breaker "
+                "branches. "
+                "HOW: Parametrize failure modes and assert recovery paths."
+            ),
+            existing=tk321,
+        )
     assert is_dup is False
 
 
