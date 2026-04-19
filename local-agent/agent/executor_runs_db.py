@@ -483,6 +483,18 @@ def get_story_model_usage(story_key: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def get_all_story_model_usage() -> list[dict[str, Any]]:
+    """Return all ``story_model_usage`` rows across every story, oldest first."""
+    init_db()
+    conn = _get_conn()
+    rows = conn.execute(
+        "SELECT id, story_key, model, call_count, cost_usd, recorded_at "
+        "FROM story_model_usage "
+        "ORDER BY recorded_at ASC, id ASC",
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _coerce(key: str, value: Any) -> Any:
     """Coerce booleans to 0/1 for INTEGER columns — sqlite stores either but
     queries are more predictable when we normalize."""
