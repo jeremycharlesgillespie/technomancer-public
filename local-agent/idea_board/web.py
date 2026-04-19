@@ -12,6 +12,7 @@ Routes:
     POST /api/ideas/<id>/execute  — Trigger Claude Code execution
     GET  /api/ideas/<id>/log/stream — SSE stream for live execution log
     GET  /api/aim/logs/tail       — SSE stream of aim.log + worker.log lines filtered by idea
+    GET  /api/aim/projects        — JSON list of available project names for dropdown population
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
     GET  /errors                  — HTML crash log viewer with collapsible stack traces
     POST /api/jira/create         — Create a Jira story/epic via BoardProvider
@@ -2967,6 +2968,31 @@ def api_errors() -> tuple:
 def errors_page() -> str:
     """Serve the crash log / errors viewer page."""
     return _render_errors()
+
+
+# ============================================================================
+# AIM PROJECTS DISCOVERY
+# ============================================================================
+
+
+@app.route("/api/aim/projects")
+def api_aim_projects() -> tuple:
+    """GET /api/aim/projects — JSON list of available AIM project names.
+
+    Scans ``aim/projects/`` subdirectories and returns a JSON array of
+    project objects suitable for populating a dropdown.  The primary
+    Technomancer project is always included first.  Subdirectories without
+    a ``.aim_state.json`` file are skipped — they have never been started.
+
+    Response (200):
+        [{"name": "technomancer"}, {"name": "40acres"}, ...]
+    """
+    try:
+        names = list_aim_projects()
+        return jsonify([{"name": n} for n in names]), 200
+    except Exception as exc:
+        logger.warning("[AIM-Projects] Failed to list projects: %s", exc)
+        return jsonify({"error": "failed to list projects"}), 500
 
 
 # ============================================================================
