@@ -266,9 +266,9 @@ class TestReviewQueueStep2Advisory:
         for c in provider.vote.call_args_list:
             assert c[0][0] != "TK-600"
 
-        # But a comment carrying the "Possible dup of ..." marker is added.
+        # But a comment carrying the "High overlap with ..." marker is added.
         flagged = any(
-            c[0][0] == "TK-600" and "Possible dup of TK-501" in c[0][2]
+            c[0][0] == "TK-600" and "High overlap with TK-501" in c[0][2]
             for c in provider.add_comment.call_args_list
         )
         assert flagged, "dup-of-done must leave an advisory comment"
@@ -276,9 +276,9 @@ class TestReviewQueueStep2Advisory:
     def test_already_flagged_is_not_recommented(self, state):
         """Don't spam the same advisory on every review tick.
 
-        If a prior review already dropped the ``[Queue Review] Possible dup
-        of TK-X`` marker on this idea, skip it — otherwise each 30s tick
-        would add another identical comment and bury the real discussion.
+        If a prior review already dropped the ``High overlap with TK-X:``
+        marker on this idea, skip it — otherwise each 30s tick would add
+        another identical comment and bury the real discussion.
         """
         from board.provider import Comment
 
@@ -299,8 +299,8 @@ class TestReviewQueueStep2Advisory:
 
         prior_comment = Comment(
             author="llm",
-            text="[Queue Review] Possible dup of TK-701 (done). Review and "
-                 "mark vetoed manually if this is a true dup.",
+            text="High overlap with TK-701: Add caching layer v1 (Done). "
+                 "Consider revising scope or closing as duplicate.",
             created="2026-04-18T09:30:00",
             marker=None,
         )
@@ -393,8 +393,8 @@ class TestAddDoneDuplicateFlagComment:
 
         story = Idea(id="idea-100", title="t", description="d")
         marker = (
-            "[Queue Review] Possible dup of TK-501 (done). "
-            "Review and mark vetoed manually if this is a true dup."
+            "High overlap with TK-501: Add caching layer v1 (Done). "
+            "Consider revising scope or closing as duplicate."
         )
 
         appended = add_done_duplicate_flag_comment(story, marker)
@@ -757,25 +757,98 @@ class TestDoneDuplicatePipelineTK759:
 
 
 class TestFormatDoneDuplicateComment:
-    """``format_done_duplicate_comment`` owns the advisory-comment shape."""
+    """``format_done_duplicate_comment`` owns the advisory-comment shape.
 
-    def test_contains_marker_state_qualifier_and_manual_hint(self):
+    TK-760 pinned the exact wire-format so a future observability
+    change (reason code, dedup score, etc.) has to update this one
+    function — every caller either renders the pre-built string or
+    matches against the ``"High overlap with {key}:"`` prefix, and
+    any wording drift here would silently break the already-flagged
+    dedup in ``review_queue``.
+    """
+
+    def test_exact_format_with_known_input(self):
+        """Known ref → exact string. Locks every character of the contract."""
+        from idea_board.models import Idea, format_done_duplicate_comment
+
+        ref = Idea(
+            id="TK-501",
+            title="Add caching layer v1",
+            description="caching layer for requests",
+            state="done",
+        )
+
+        text = format_done_duplicate_comment(ref)
+
+        assert text == (
+            "High overlap with TK-501: Add caching layer v1 (Done). "
+            "Consider revising scope or closing as duplicate."
+        )
+
+    def test_contains_marker_key_title_state_and_directive(self):
         """Operator context is locked into the advisory text.
 
-        The three signals — ``[Queue Review]`` marker for grouping,
-        ``(done)`` so the operator knows the matched state, and a
-        manual-review directive so nobody expects automation — all
-        have to land in the single string. Missing any of these
-        degrades the operator's ability to act on the comment.
+        Four signals — the ``"High overlap with"`` grouping marker,
+        the target ``key`` so the comment points at the right story,
+        the ``title`` so the owner doesn't have to click through, the
+        ``(Done)`` state qualifier, and the ``"Consider revising scope
+        or closing as duplicate"`` directive making clear Step 2 is
+        advisory — all have to land in the single string. Missing any
+        of these degrades the operator's ability to act on the
+        comment without opening the referenced story.
         """
         from idea_board.models import Idea, format_done_duplicate_comment
 
-        ref = Idea(id="TK-501", title="t", description="d", state="done")
+        ref = Idea(
+            id="TK-501",
+            title="Add caching layer v1",
+            description="d",
+            state="done",
+        )
         text = format_done_duplicate_comment(ref)
 
-        assert "[Queue Review] Possible dup of TK-501" in text
-        assert "(done)" in text
-        assert "manually" in text.lower()
+        assert "High overlap with" in text
+        assert "TK-501" in text
+        assert "Add caching layer v1" in text
+        assert "(Done)" in text
+        assert "Consider revising scope or closing as duplicate" in text
+
+    def test_missing_key_falls_back_to_unknown(self):
+        """Empty ``id`` degrades gracefully — no ``KeyError`` or blank gap.
+
+        The comment still has to be readable even when the ref is
+        malformed; an empty key in the middle of the string would
+        produce ``"High overlap with :"`` which is useless to the
+        operator. Pin the fallback so a future refactor that breaks
+        id population (e.g. a provider that returns partial rows)
+        still yields actionable output.
+        """
+        from idea_board.models import Idea, format_done_duplicate_comment
+
+        ref = Idea(id="", title="t", description="d", state="done")
+        text = format_done_duplicate_comment(ref)
+
+        assert text == (
+            "High overlap with unknown: t (Done). "
+            "Consider revising scope or closing as duplicate."
+        )
+
+    def test_missing_title_falls_back_to_untitled(self):
+        """Empty ``title`` degrades to ``(untitled)``.
+
+        Same rationale as the missing-key fallback — a blank title
+        would collapse the format into ``"TK-501:  (Done)"`` which
+        reads like a typo rather than degraded data.
+        """
+        from idea_board.models import Idea, format_done_duplicate_comment
+
+        ref = Idea(id="TK-501", title="", description="d", state="done")
+        text = format_done_duplicate_comment(ref)
+
+        assert text == (
+            "High overlap with TK-501: (untitled) (Done). "
+            "Consider revising scope or closing as duplicate."
+        )
 
 
 class TestReviewQueueStep2DoneOnly:
@@ -859,13 +932,13 @@ class TestReviewQueueStep2DoneOnly:
 
         # Comment names the Done ref, not the Failed one.
         flagged_done = any(
-            c[0][0] == "TK-820" and "Possible dup of TK-821" in c[0][2]
+            c[0][0] == "TK-820" and "High overlap with TK-821" in c[0][2]
             for c in provider.add_comment.call_args_list
         )
         assert flagged_done
 
         for c in provider.add_comment.call_args_list:
-            assert "Possible dup of TK-822" not in c[0][2], (
+            assert "High overlap with TK-822" not in c[0][2], (
                 "Failed ref must not be named in a Step 2 advisory comment"
             )
 

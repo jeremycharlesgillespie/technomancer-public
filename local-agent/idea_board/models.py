@@ -501,10 +501,16 @@ def format_done_duplicate_comment(ref: Idea) -> str:
     Kept as a tiny seam so the marker shape lives in one place — a
     future observability change (e.g. adding the dedup reason code)
     only has to update this formatter, not every call site.
+
+    Missing key or title fall back to ``"unknown"`` / ``"(untitled)"``
+    so a malformed ref doesn't crash the queue review — the operator
+    still gets a comment they can act on.
     """
+    key = getattr(ref, "id", None) or "unknown"
+    title = getattr(ref, "title", None) or "(untitled)"
     return (
-        f"[Queue Review] Possible dup of {ref.id} ({ref.state}). "
-        "Review and mark vetoed manually if this is a true dup."
+        f"High overlap with {key}: {title} (Done). "
+        "Consider revising scope or closing as duplicate."
     )
 
 

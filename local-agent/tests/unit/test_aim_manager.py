@@ -616,21 +616,21 @@ class TestReviewQueueExemptions:
         # the operator without enough context to act) fails this test.
         flagging_calls = [
             c for c in provider.add_comment.call_args_list
-            if c[0][0] == "TK-400" and "Possible dup of TK-401" in c[0][2]
+            if c[0][0] == "TK-400" and "High overlap with TK-401" in c[0][2]
         ]
         assert flagging_calls, "dup-of-done should leave an advisory comment"
         comment_text = flagging_calls[0][0][2]
-        assert "[Queue Review]" in comment_text, (
-            "comment must carry the [Queue Review] marker so it groups with "
+        assert "High overlap with" in comment_text, (
+            "comment must carry the High-overlap marker so it groups with "
             "other queue-hygiene activity"
         )
-        assert "(done)" in comment_text, (
+        assert "(Done)" in comment_text, (
             "comment must surface the matched idea's state so the operator "
             "knows whether the dup ships or was abandoned"
         )
-        assert "manually" in comment_text.lower(), (
-            "comment must direct the operator to act manually — Step 2 is "
-            "advisory, not a queued auto-action"
+        assert "Consider revising scope or closing as duplicate" in comment_text, (
+            "comment must direct the operator toward manual action — Step 2 "
+            "is advisory, not a queued auto-action"
         )
 
         # And no state-mutating method should fire against the orphan beyond
