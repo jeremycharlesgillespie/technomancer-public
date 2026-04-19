@@ -321,6 +321,16 @@ class Settings(BaseSettings):
             "experiments without editing four settings."
         ),
     )
+    aiw_model: str = Field(
+        default="claude-sonnet-4-6",
+        description=(
+            "Model that the AI Worker (claude_code_runner) passes via "
+            "``--model`` on its claude -p invocation. Defaults to Sonnet "
+            "since the Max 20x plan's implicit default is Opus and Sonnet "
+            "is the budget-friendly coding default. Override per-project "
+            "via ``AIW_MODEL`` in projects/<project>.env."
+        ),
+    )
     aim_brain_use_ollama: bool = Field(
         default=True,
         description=(

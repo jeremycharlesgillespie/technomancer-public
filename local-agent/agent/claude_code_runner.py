@@ -686,6 +686,7 @@ async def run_claude_code(
             proc = await asyncio.create_subprocess_exec(
                 str(binary),
                 "-p", full_prompt,
+                "--model", settings.aiw_model,
                 "--output-format", "json",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "--max-turns", "50",
