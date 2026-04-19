@@ -118,7 +118,7 @@ While a Worker is running, anyone with the link can watch in real time:
 ## Highlights
 
 - **5069 automated tests** with 78.7% code coverage
-- **97 Python modules** across 40,753 lines of code
+- **97 Python modules** across 40,763 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -299,7 +299,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Test count | 5069 |
 | Code coverage | 78.7% |
 | Python modules | 97 |
-| Lines of code | 40,753 |
+| Lines of code | 40,763 |
 | Test files | 198 |
 
 ## License

@@ -199,8 +199,10 @@ class TestExecutionState:
 class TestConstants:
     """Verify executor constants exist and are reasonable."""
 
-    def test_pytest_timeout_is_10_min(self):
-        assert PYTEST_TIMEOUT == 600
+    def test_pytest_timeout_matches_settings(self):
+        # PYTEST_TIMEOUT is sourced from settings.executor_pytest_timeout
+        # at import time; verify that wiring rather than pinning a literal.
+        assert PYTEST_TIMEOUT == app_settings.executor_pytest_timeout
 
     def test_max_fix_retries(self):
         assert MAX_FIX_RETRIES == 5

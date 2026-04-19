@@ -349,6 +349,16 @@ class Settings(BaseSettings):
             "cleanly before escalating to SIGKILL."
         ),
     )
+    executor_pytest_timeout: int = Field(
+        default=1200,
+        description=(
+            "Wall-clock timeout (seconds) for the pytest subprocess the executor "
+            "runs after a Claude Code attempt. On timeout the subprocess is killed "
+            "and the run is marked failed. Default 1200s (20 min) — high enough "
+            "for a ~5000-test suite with reruns. Raise if the suite grows, lower "
+            "to fail fast on hangs."
+        ),
+    )
     executor_summary_webhook: str = Field(
         default="",
         description=(

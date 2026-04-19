@@ -231,8 +231,9 @@ logger = logging.getLogger(__name__)
 EXECUTION_TIMEOUT: int = 1800
 
 
-# Timeout for pytest (10 minutes)
-PYTEST_TIMEOUT: int = 600
+# Timeout for pytest — sourced from settings so operators can tune without a
+# code change. Default 1200s (20 min) lives in ``agent/config.py``.
+PYTEST_TIMEOUT: int = settings.executor_pytest_timeout
 
 # Max retries when tests/validation fail — Claude gets to fix its own bugs
 MAX_FIX_RETRIES: int = 5
@@ -585,9 +586,9 @@ def _get_pytest_timeout_warning(
 
     Args:
         elapsed_seconds: How long the pytest subprocess actually ran.
-        timeout_seconds: The configured timeout it was run against (currently
-            the module-level ``PYTEST_TIMEOUT``; TK-790 swaps this for
-            ``settings.executor_pytest_timeout``).
+        timeout_seconds: The configured timeout it was run against (sourced
+            from ``settings.executor_pytest_timeout`` via the module-level
+            ``PYTEST_TIMEOUT`` alias).
 
     Returns:
         Dict with:
@@ -618,7 +619,7 @@ def _run_pytest_with_progress(
     cwd: str,
     state: ExecutionState,
     label: str,
-    timeout: int = 600,
+    timeout: int = PYTEST_TIMEOUT,
 ) -> subprocess.CompletedProcess:
     """Run pytest as a subprocess, streaming progress lines to the execution log.
 
@@ -2354,7 +2355,7 @@ def execute_idea(
                 cwd=local_agent_dir,
                 state=state,
                 label="tests",
-                timeout=PYTEST_TIMEOUT,
+                timeout=settings.executor_pytest_timeout,
             )
 
             full_duration = time.time() - full_start
@@ -2621,12 +2622,13 @@ def execute_idea(
 
             except subprocess.TimeoutExpired:
                 load_at_timeout = _snapshot_system_load()
+                timeout_seconds = settings.executor_pytest_timeout
                 state.log(
-                    f"Deploy timed out after {PYTEST_TIMEOUT}s | {load_at_timeout}"
+                    f"Deploy timed out after {timeout_seconds}s | {load_at_timeout}"
                 )
                 mark_failed(idea_id, state.log_text[-5000:])
                 _notify_discord(
-                    f"Idea {idea_id} deploy timed out ({PYTEST_TIMEOUT}s). "
+                    f"Idea {idea_id} deploy timed out ({timeout_seconds}s). "
                     f"System: {load_at_timeout}"
                 )
             except Exception as deploy_err:
