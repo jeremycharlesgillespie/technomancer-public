@@ -205,9 +205,9 @@ class TestIsNearExactDuplicate:
 
     def test_same_verdict_returns_true_with_reason(self, story_a, story_b):
         """AC #1 + #6: Valid JSON with verdict=SAME → (True, reason)."""
-        fake_cp = _fake_completed_process(_verdict_json("SAME", "near-identical"))
         with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
+            "agent.llm_router.complete",
+            return_value=_verdict_json("SAME", "near-identical"),
         ) as mock_run:
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]

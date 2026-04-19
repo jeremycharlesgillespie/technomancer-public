@@ -304,6 +304,24 @@ class Settings(BaseSettings):
         default="ollama:qwen3.5:latest",
         description="Model for AIMM suggester (approval recommendation)",
     )
+    splitter_decomposer_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description=(
+            "Model for the splitter's failed-story decomposition call. "
+            "Benchmarked to 93% parse-success with qwen3.5:latest over "
+            "100 rounds (p50 2.66s). Falls back to llm_fallback_model on "
+            "any ollama error."
+        ),
+    )
+    evergreen_generator_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description=(
+            "Model for evergreen idle-cycle story generation. "
+            "Benchmarked to 96% parse-success with qwen3.5:latest over "
+            "100 rounds (p50 2.34s). Falls back to llm_fallback_model on "
+            "any ollama error."
+        ),
+    )
     llm_fallback_model: str = Field(
         default="claude-haiku-4-5",
         description="Fallback claude model when ollama primary fails",

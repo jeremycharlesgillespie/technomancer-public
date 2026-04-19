@@ -171,7 +171,8 @@ class TestRoleMapping:
         routing = llm_router.current_routing()
         assert set(routing.values()) == {"ollama:qwen3.5:latest"}
         assert set(routing) == {
-            "aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester"
+            "aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester",
+            "splitter_decomposer", "evergreen_generator",
         }
 
     def test_unset_setting_defaults_to_haiku_claude_path(self, monkeypatch):

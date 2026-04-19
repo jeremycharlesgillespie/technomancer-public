@@ -316,9 +316,8 @@ class TestLLMVerdictPropagation:
         stdout = (
             '{"verdict": "DIFFERENT", "reason": "coverage-lift vs abstract"}'
         )
-        fake_cp = MagicMock(returncode=0, stdout=stdout, stderr="")
         with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
+            "agent.llm_router.complete", return_value=stdout
         ):
             is_dup, reason = dedup_llm.is_near_exact_duplicate(
                 "Unit tests for capability_request.py (50% -> 75%)",

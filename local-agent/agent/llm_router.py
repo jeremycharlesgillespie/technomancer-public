@@ -34,7 +34,14 @@ from agent.ollama_client import chat as ollama_chat
 
 logger = logging.getLogger(__name__)
 
-Role = Literal["aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester"]
+Role = Literal[
+    "aim_brain",
+    "dedup_judge",
+    "aimm_observer",
+    "aimm_suggester",
+    "splitter_decomposer",
+    "evergreen_generator",
+]
 
 
 _claude_binary_cache: str | None = None
@@ -105,6 +112,8 @@ _ROLE_TO_SETTING: dict[Role, str] = {
     "dedup_judge": "dedup_judge_model",
     "aimm_observer": "aimm_observer_model",
     "aimm_suggester": "aimm_suggester_model",
+    "splitter_decomposer": "splitter_decomposer_model",
+    "evergreen_generator": "evergreen_generator_model",
 }
 
 

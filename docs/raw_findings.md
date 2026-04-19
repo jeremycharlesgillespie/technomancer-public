@@ -10,6 +10,65 @@ why it matters, supporting evidence (commit/log pointer).
 
 ---
 
+## 2026-04-19 — Budget-mode trial: two code paths, one of them invisible
+
+**What:** Tried to flip the TK AI Worker from Opus to Sonnet by adding a
+`AIW_MODEL` setting and plumbing it through the claude -p subprocess
+call. First attempt went into `agent/claude_code_runner.py` — which
+turned out to be the Discord hub's escalation helper, not the live AIW
+execution path. The actual worker code lives in
+`idea_board/executor.py`, which calls `claude -p` via
+`subprocess.Popen` with no `--model` flag at all. Claude Code's
+implicit default on Max 20x is Opus, so TK-799 and TK-806 kept running
+on Opus despite the setting change appearing to be in place.
+
+**Why it matters:** Two code paths named "run Claude" with different
+instrumentation, different recording surfaces (`executor_runs.db`
+written by only one), and different default models. An autonomous
+system grew a second claude-p caller without the first caller's
+conventions propagating. Classic drift: the helper was written first
+when Claude Code escalation was interactive-only; the executor came
+later for autonomous ship-to-main work; they never got a common spine.
+The diagnosis was only possible by watching `data/executor_runs.db`
+for rows matching the stories that "shipped on Sonnet" — and finding
+the table empty, which surfaced that our cost accounting was reading
+the wrong surface too.
+
+**The fix was trivial once located:** add `"--model", settings.aiw_model`
+to two call sites in `idea_board/executor.py:1922` and `:2248`. The
+hard part was finding where the real call lived.
+
+**Why the paper cares:** research-worthy findings aren't just "the
+system works" — they're "here's a subtle failure mode of autonomous
+coding systems that's invisible from the dashboard." Route drift
+between helpers claiming the same job is a general pattern we should
+look for everywhere: dedup had it (word-matching vs LLM-judge), brain
+had it (inline subprocess vs router), executor had it again. The LLM
+router introduced earlier today centralizes classification routes but
+the code-generation route sits outside that abstraction because the
+worker process uses the subprocess directly, not through the agent
+framework.
+
+**Also found, same session:**
+
+- Long-running worker processes hold old imported code across AIM
+  manager restarts. A deploy doesn't actually land the new worker
+  behavior until the worker itself is killed. Deserves a story that
+  ties "AIM manager restart" to "kill and respawn the Worker."
+- `safe_update` state file is a single global path. The AIW has its
+  own `safe_update` invocations, which can stomp a human operator's
+  in-progress branch state if they run at the same time. That's the
+  same class of contention TK-630's worktree epic is designed to
+  fix.
+
+**Evidence:** Commit `ced011e` (initial fix, then recovered via
+cherry-pick). executor_runs.db rows empty for TK-799 / TK-806 stories
+shipped between 06:22 and 06:41 — despite successful merge commits on
+main. AIM brain ollama-path confirmed working by the absence of claude
+-p calls in that role for the same window.
+
+---
+
 ## 2026-04-19 — We burned through Anthropic's MAX 20x weekly quota in under 5 days
 
 **What:** By day 5 of running Technomancer + 40Acres autonomous daemons,
