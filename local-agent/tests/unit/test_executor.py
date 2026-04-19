@@ -1743,48 +1743,76 @@ class TestProfileFnInstrumentation:
 
 
 class TestGetPytestTimeoutWarning:
-    """Verify the 80%-of-timeout warning threshold logic."""
+    """Verify the 80%-of-timeout warning threshold logic.
+
+    The helper is a pure ``(elapsed, timeout) -> (should_warn, message)``
+    function; these cases pin down the boundary semantics called out in
+    the TK-799 acceptance criteria (0.79×, 0.80×, 0.81×, 1.0×).
+    """
 
     def test_ratio_constant_is_80_percent(self):
         assert PYTEST_TIMEOUT_WARN_RATIO == 0.8
 
-    def test_no_warning_at_50_percent(self):
+    def test_returns_tuple_of_bool_and_str(self):
+        """Contract: the helper always returns exactly ``(bool, str)``."""
         result = _get_pytest_timeout_warning(500.0, 1000.0)
-        assert result["should_warn"] is False
-        assert result["message"] == ""
-        assert result["pct"] == 50.0
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert isinstance(result[0], bool)
+        assert isinstance(result[1], str)
+
+    def test_no_warning_at_50_percent(self):
+        assert _get_pytest_timeout_warning(500.0, 1000.0) == (False, "")
+
+    # ----- Acceptance-criteria boundary cases (TK-799) -----
+
+    def test_no_warning_at_79_percent(self):
+        """0.79× timeout sits below the threshold → no warning."""
+        should_warn, message = _get_pytest_timeout_warning(790.0, 1000.0)
+        assert should_warn is False
+        assert message == ""
 
     def test_no_warning_exactly_at_threshold(self):
-        """The check is strictly greater than 80%, so 80.0% itself does not warn."""
-        result = _get_pytest_timeout_warning(800.0, 1000.0)
-        assert result["should_warn"] is False
+        """0.80× timeout: strictly-greater semantics → still no warning."""
+        should_warn, message = _get_pytest_timeout_warning(800.0, 1000.0)
+        assert should_warn is False
+        assert message == ""
 
     def test_warning_just_over_threshold(self):
-        result = _get_pytest_timeout_warning(800.1, 1000.0)
-        assert result["should_warn"] is True
-        assert "approaching timeout threshold" in result["message"]
+        """0.81× timeout: first value past the threshold → warns."""
+        should_warn, message = _get_pytest_timeout_warning(810.0, 1000.0)
+        assert should_warn is True
+        assert "810" in message
+        assert "1000" in message
+        assert "81%" in message
 
-    def test_warning_at_85_percent(self):
-        result = _get_pytest_timeout_warning(850.0, 1000.0)
-        assert result["should_warn"] is True
-        assert "85" in result["message"]
-        assert "1000" in result["message"]
+    def test_warning_at_100_percent(self):
+        """1.0× timeout: fully consumed → warns, message carries both values."""
+        should_warn, message = _get_pytest_timeout_warning(1000.0, 1000.0)
+        assert should_warn is True
+        assert "1000" in message
+        assert "100%" in message
+
+    # ----- Additional sanity checks -----
+
+    def test_message_format_matches_spec_example(self):
+        """The example in the story: 984s elapsed, 1200s timeout → 82%."""
+        should_warn, message = _get_pytest_timeout_warning(984.0, 1200.0)
+        assert should_warn is True
+        assert message == "pytest took 984s (82% of 1200s timeout limit)"
 
     def test_warning_over_100_percent(self):
         """An overrun (elapsed > timeout) still returns should_warn=True."""
-        result = _get_pytest_timeout_warning(1200.0, 1000.0)
-        assert result["should_warn"] is True
-        assert result["pct"] == 120.0
+        should_warn, message = _get_pytest_timeout_warning(1200.0, 1000.0)
+        assert should_warn is True
+        assert "120%" in message
 
     def test_zero_timeout_never_warns(self):
         """Guard against divide-by-zero when timeout is misconfigured."""
-        result = _get_pytest_timeout_warning(5.0, 0)
-        assert result["should_warn"] is False
-        assert result["pct"] == 0.0
+        assert _get_pytest_timeout_warning(5.0, 0) == (False, "")
 
     def test_negative_timeout_never_warns(self):
-        result = _get_pytest_timeout_warning(5.0, -10.0)
-        assert result["should_warn"] is False
+        assert _get_pytest_timeout_warning(5.0, -10.0) == (False, "")
 
 
 # ---------------------------------------------------------------------------
@@ -1826,7 +1854,7 @@ class TestRunPytestWithProgressWarning:
         threshold_warnings = [
             r for r in caplog.records
             if r.levelno == logging.WARNING
-            and "approaching timeout threshold" in r.getMessage()
+            and "timeout limit" in r.getMessage()
         ]
         assert threshold_warnings == []
 
@@ -1848,12 +1876,13 @@ class TestRunPytestWithProgressWarning:
         threshold_warnings = [
             r for r in caplog.records
             if r.levelno == logging.WARNING
-            and "approaching timeout threshold" in r.getMessage()
+            and "timeout limit" in r.getMessage()
         ]
         assert len(threshold_warnings) == 1
         msg = threshold_warnings[0].getMessage()
         assert "tests" in msg  # label included
         assert "85" in msg     # percentage included
+        assert "1000" in msg   # configured timeout included
 
 
 # ---------------------------------------------------------------------------

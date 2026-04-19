@@ -581,8 +581,12 @@ PYTEST_TIMEOUT_WARN_RATIO: float = 0.8
 def _get_pytest_timeout_warning(
     elapsed_seconds: float,
     timeout_seconds: float,
-) -> dict[str, Any]:
-    """Return a warning payload when pytest consumed most of its timeout.
+) -> tuple[bool, str]:
+    """Return ``(should_warn, message)`` when pytest consumed most of its timeout.
+
+    Pure helper — no subprocess, logging, or other side effects. Extracted so
+    the threshold logic can be tested independently of the Popen-driven
+    runner in :func:`_run_pytest_with_progress`.
 
     Args:
         elapsed_seconds: How long the pytest subprocess actually ran.
@@ -591,27 +595,21 @@ def _get_pytest_timeout_warning(
             ``PYTEST_TIMEOUT`` alias).
 
     Returns:
-        Dict with:
-            ``should_warn`` (bool): True when elapsed exceeds
-            ``PYTEST_TIMEOUT_WARN_RATIO`` of the timeout budget.
-            ``message`` (str): Human-readable warning, empty when
-            ``should_warn`` is False.
-            ``pct`` (float): Percentage of the timeout budget consumed.
+        ``(True, message)`` when ``elapsed_seconds`` strictly exceeds
+        ``PYTEST_TIMEOUT_WARN_RATIO`` of ``timeout_seconds``; otherwise
+        ``(False, "")``. A non-positive timeout always returns ``(False, "")``
+        — treated as misconfiguration rather than a warning.
     """
     if timeout_seconds <= 0:
-        return {"should_warn": False, "message": "", "pct": 0.0}
-
+        return (False, "")
+    if elapsed_seconds <= PYTEST_TIMEOUT_WARN_RATIO * timeout_seconds:
+        return (False, "")
     pct = (elapsed_seconds / timeout_seconds) * 100.0
-    should_warn = elapsed_seconds > PYTEST_TIMEOUT_WARN_RATIO * timeout_seconds
-    message = ""
-    if should_warn:
-        message = (
-            f"pytest used {elapsed_seconds:.1f}s of {timeout_seconds:.0f}s "
-            f"timeout ({pct:.0f}%) — approaching timeout threshold "
-            f"({int(PYTEST_TIMEOUT_WARN_RATIO * 100)}%). "
-            f"Consider splitting the test suite or raising the timeout."
-        )
-    return {"should_warn": should_warn, "message": message, "pct": pct}
+    message = (
+        f"pytest took {elapsed_seconds:.0f}s "
+        f"({pct:.0f}% of {timeout_seconds:.0f}s timeout limit)"
+    )
+    return (True, message)
 
 
 def _run_pytest_with_progress(
@@ -660,9 +658,9 @@ def _run_pytest_with_progress(
 
     proc.wait()
     elapsed = time.time() - start
-    warning = _get_pytest_timeout_warning(elapsed, timeout)
-    if warning["should_warn"]:
-        logger.warning("[%s] %s", label, warning["message"])
+    should_warn, warn_msg = _get_pytest_timeout_warning(elapsed, timeout)
+    if should_warn:
+        logger.warning("[%s] %s", label, warn_msg)
     stdout = "\n".join(stdout_lines)
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout=stdout, stderr="")
 
