@@ -1919,12 +1919,16 @@ def execute_idea(
 
                 cmd = [
                     str(binary), "-p", "-",
+                    "--model", settings.aiw_model,
                     "--output-format", "stream-json",
                     "--verbose",
                     "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                     "--max-turns", "50",
                 ]
-                state.log("Starting Claude Code with pre-built context...")
+                state.log(
+                    f"Starting Claude Code with pre-built context "
+                    f"(model={settings.aiw_model})..."
+                )
 
                 prompt_input = open(prompt_file, "r", encoding="utf-8")
                 proc = subprocess.Popen(
@@ -2241,6 +2245,7 @@ def execute_idea(
 
                     fix_cmd = [
                         str(binary), "-p", "-",
+                        "--model", settings.aiw_model,
                         "--output-format", "stream-json",
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
