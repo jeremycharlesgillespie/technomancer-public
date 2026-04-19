@@ -403,3 +403,60 @@ class TestHrefSuppressedWhenRouteDoesNotExist:
         body = resp.get_data(as_text=True)
         assert "TK-813-nodisk" in body
         assert 'href="/live/TK-813-nodisk"' not in body
+
+
+# ---------------------------------------------------------------------------
+# TK-812 (TK-788-S1) — href rendered when route handler returns 200
+# ---------------------------------------------------------------------------
+
+
+class TestHrefRenderedWhenRouteExists:
+    """Verify /live renders hrefs when the route check returns success (TK-812).
+
+    Positive-path counterpart to TestHrefSuppressedWhenRouteDoesNotExist.
+    When _live_route_accessible returns True (log file present / route 200),
+    the rendered HTML must contain both the story key as text AND an <a href>
+    element pointing to the live detail route.
+    """
+
+    def test_executing_href_present_when_route_check_returns_true(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Executing row: href rendered when route check returns True (200)."""
+        _seed_executing(fake_agent_root, "TK-812")
+        with mock_route_checker(return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-812" in body
+        assert 'href="/live/TK-812"' in body
+
+    def test_recent_href_present_when_route_check_returns_true(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Recent-completion row: href rendered when route check returns True (200)."""
+        _seed_recent(fake_agent_root, "TK-812")
+        with mock_route_checker(return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-812" in body
+        assert 'href="/live/TK-812"' in body
+
+    def test_href_present_when_log_file_exists_on_disk(self, client, fake_agent_root, tmp_path):
+        """End-to-end: log file present on disk → _live_route_accessible returns True → href shown."""
+        _seed_recent(fake_agent_root, "TK-812-ondisk")
+        import idea_board.web as web_mod
+
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        (logs_dir / "TK-812-ondisk.log").write_text("execution output", encoding="utf-8")
+        with patch.object(web_mod, "EXECUTION_LOGS_DIR", logs_dir), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-812-ondisk" in body
+        assert 'href="/live/TK-812-ondisk"' in body
