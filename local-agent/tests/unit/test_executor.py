@@ -209,6 +209,42 @@ class TestConstants:
 
 
 # ---------------------------------------------------------------------------
+# _run_pytest_with_progress
+# ---------------------------------------------------------------------------
+
+
+class TestRunPytestWithProgress:
+    """Verify _run_pytest_with_progress uses configurable timeout from settings."""
+
+    def test_default_timeout_is_settings_value(self):
+        """Default timeout param must equal settings.executor_pytest_timeout."""
+        import inspect
+        sig = inspect.signature(_run_pytest_with_progress)
+        default = sig.parameters["timeout"].default
+        assert default is PYTEST_TIMEOUT
+        assert default == app_settings.executor_pytest_timeout
+
+    def test_subprocess_receives_settings_timeout(self, tmp_path):
+        """subprocess.Popen is called; the timeout argument flows from settings."""
+        state = ExecutionState(idea_id="test-timeout")
+        proc_mock = MagicMock()
+        proc_mock.stdout = MagicMock()
+        proc_mock.stdout.readline.side_effect = [b"ok\n", b""]
+        proc_mock.stdout.read.return_value = b""
+        proc_mock.poll.return_value = 0
+        proc_mock.returncode = 0
+
+        with patch("idea_board.executor.subprocess.Popen", return_value=proc_mock):
+            result = _run_pytest_with_progress(
+                ["pytest", "-q"], str(tmp_path), state, "tests",
+                timeout=app_settings.executor_pytest_timeout,
+            )
+
+        assert result.returncode == 0
+        assert "ok" in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # _find_related_tests
 # ---------------------------------------------------------------------------
 

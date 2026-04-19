@@ -2185,7 +2185,8 @@ def execute_idea(
                         test_result = subprocess.run(
                             [sys.executable, "-m", "pytest", "-q",
                              "--tb=short"] + related_tests,
-                            capture_output=True, text=True, timeout=120,
+                            capture_output=True, text=True,
+                            timeout=settings.executor_pytest_timeout,
                             cwd=local_agent_dir,
                         )
                         test_duration = time.time() - test_start
