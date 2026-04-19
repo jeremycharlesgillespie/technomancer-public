@@ -181,7 +181,8 @@ class TestLiveLandingRoute:
                 "board_snapshot": {"recent_completions": []},
             },
         )
-        body = client.get("/live").get_data(as_text=True)
+        with patch("idea_board.web._live_route_accessible", return_value=True):
+            body = client.get("/live").get_data(as_text=True)
         assert 'href="/live/TK-553"' in body
         assert "TK-553" in body
 
@@ -197,7 +198,8 @@ class TestLiveLandingRoute:
                 },
             },
         )
-        body = client.get("/live").get_data(as_text=True)
+        with patch("idea_board.web._live_route_accessible", return_value=True):
+            body = client.get("/live").get_data(as_text=True)
         assert 'href="/live/TK-550"' in body
         assert "Add hover tooltips" in body
 

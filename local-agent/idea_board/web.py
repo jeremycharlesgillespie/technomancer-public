@@ -2563,6 +2563,17 @@ def _collect_live_executions() -> dict[str, list[dict[str, Any]]]:
     return {"executing": executing, "recent": recent[:10]}
 
 
+def _live_route_accessible(key: str) -> bool:
+    """Return True when /live/<key> has a backing execution log on disk.
+
+    Checks for ``EXECUTION_LOGS_DIR/<key>.log`` so that the landing page
+    only renders clickable hrefs for stories that have real log content.
+    Isolated into its own function so tests can mock it without touching
+    the file system.
+    """
+    return (EXECUTION_LOGS_DIR / f"{key}.log").exists()
+
+
 def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
     """Render the /live landing page HTML from collected execution data."""
     executing = data.get("executing") or []
@@ -2576,9 +2587,14 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
             status = html.escape(row["status"])
             started = html.escape(row["started_at"])
             observation = html.escape(row["last_observation"])[:120]
+            key_cell = (
+                f'<a href="/live/{key}">{key}</a>'
+                if _live_route_accessible(row["key"])
+                else key
+            )
             rows.append(
                 f'<tr><td>{project}</td>'
-                f'<td><a href="/live/{key}">{key}</a></td>'
+                f'<td>{key_cell}</td>'
                 f'<td><span class="status-pill {status}">{status}</span></td>'
                 f'<td>{started}</td>'
                 f'<td class="obs">{observation}</td></tr>'
@@ -2596,9 +2612,14 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
             project = html.escape(row["project"])
             title = html.escape(row["title"])[:100]
             resolved = html.escape(row["resolved"])[:19].replace("T", " ")
+            key_cell = (
+                f'<a href="/live/{key}">{key}</a>'
+                if _live_route_accessible(row["key"])
+                else key
+            )
             rows.append(
                 f'<tr><td>{project}</td>'
-                f'<td><a href="/live/{key}">{key}</a></td>'
+                f'<td>{key_cell}</td>'
                 f'<td>{title}</td>'
                 f'<td>{resolved}</td></tr>'
             )

@@ -113,7 +113,8 @@ def test_live_with_multiple_executions_renders_links(client, fake_agent_root):
     )
 
     start = time.monotonic()
-    with patch("idea_board.web.settings.jira_project_key", "TK"):
+    with patch("idea_board.web.settings.jira_project_key", "TK"), \
+         patch("idea_board.web._live_route_accessible", return_value=True):
         resp = client.get("/live")
     elapsed = time.monotonic() - start
 
@@ -178,3 +179,112 @@ def test_live_renders_executions(client, fake_agent_root):
     body = resp.get_data(as_text=True)
     for key in ("exec-001", "exec-002", "exec-003"):
         assert key in body, f"{key} missing from rendered /live response body"
+
+
+# ---------------------------------------------------------------------------
+# TK-788 — href rendered only when route is accessible
+# ---------------------------------------------------------------------------
+
+
+class TestLiveHrefConditionalOnRouteAccess:
+    """_render_live_landing must only emit <a href> when _live_route_accessible
+    returns True for the given key (TK-788).
+    """
+
+    def _seed_executing(self, fake_agent_root: Path, key: str) -> None:
+        _write_state(
+            fake_agent_root / "aim" / ".aim_state.json",
+            {
+                "worker": {
+                    "status": "executing",
+                    "current_idea_id": key,
+                    "started_at": "2026-04-19T10:00:00",
+                    "last_observation": "step A",
+                },
+                "board_snapshot": {"recent_completions": []},
+            },
+        )
+
+    def _seed_recent(self, fake_agent_root: Path, key: str) -> None:
+        _write_state(
+            fake_agent_root / "aim" / ".aim_state.json",
+            {
+                "worker": {"status": "idle", "current_idea_id": None},
+                "board_snapshot": {
+                    "recent_completions": [
+                        {"key": key, "summary": "Done story", "resolved": "2026-04-19T09:00:00+0000"},
+                    ]
+                },
+            },
+        )
+
+    def test_href_rendered_when_route_accessible_for_executing(
+        self, client, fake_agent_root
+    ):
+        """Executing row gets an <a href> when _live_route_accessible returns True."""
+        self._seed_executing(fake_agent_root, "TK-788")
+        with patch("idea_board.web._live_route_accessible", return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            body = client.get("/live").get_data(as_text=True)
+        assert "TK-788" in body
+        assert 'href="/live/TK-788"' in body
+
+    def test_href_not_rendered_when_route_inaccessible_for_executing(
+        self, client, fake_agent_root
+    ):
+        """Executing row renders key as plain text when _live_route_accessible returns False."""
+        self._seed_executing(fake_agent_root, "TK-788")
+        with patch("idea_board.web._live_route_accessible", return_value=False), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            body = client.get("/live").get_data(as_text=True)
+        assert "TK-788" in body
+        assert 'href="/live/TK-788"' not in body
+
+    def test_href_rendered_when_route_accessible_for_recent(
+        self, client, fake_agent_root
+    ):
+        """Recent-completion row gets an <a href> when _live_route_accessible returns True."""
+        self._seed_recent(fake_agent_root, "TK-788")
+        with patch("idea_board.web._live_route_accessible", return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            body = client.get("/live").get_data(as_text=True)
+        assert "TK-788" in body
+        assert 'href="/live/TK-788"' in body
+
+    def test_href_not_rendered_when_route_inaccessible_for_recent(
+        self, client, fake_agent_root
+    ):
+        """Recent-completion row renders key as plain text when _live_route_accessible returns False."""
+        self._seed_recent(fake_agent_root, "TK-788")
+        with patch("idea_board.web._live_route_accessible", return_value=False), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            body = client.get("/live").get_data(as_text=True)
+        assert "TK-788" in body
+        assert 'href="/live/TK-788"' not in body
+
+    def test_mixed_accessibility_renders_selectively(self, client, fake_agent_root):
+        """When two keys exist and only one is accessible, only that key gets an href."""
+        _write_state(
+            fake_agent_root / "aim" / ".aim_state.json",
+            {
+                "worker": {"status": "idle", "current_idea_id": None},
+                "board_snapshot": {
+                    "recent_completions": [
+                        {"key": "TK-100", "summary": "has log", "resolved": "2026-04-19T09:00:00+0000"},
+                        {"key": "TK-200", "summary": "no log", "resolved": "2026-04-19T08:00:00+0000"},
+                    ]
+                },
+            },
+        )
+
+        def _accessible(key: str) -> bool:
+            return key == "TK-100"
+
+        with patch("idea_board.web._live_route_accessible", side_effect=_accessible), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            body = client.get("/live").get_data(as_text=True)
+
+        assert 'href="/live/TK-100"' in body, "TK-100 should have href (accessible)"
+        assert 'href="/live/TK-200"' not in body, "TK-200 should not have href (inaccessible)"
+        assert "TK-100" in body
+        assert "TK-200" in body
