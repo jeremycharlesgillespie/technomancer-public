@@ -133,7 +133,7 @@ class TestIsDuplicate:
             ),
         )
 
-        assert not _is_duplicate(
+        is_dup, _reason = _is_duplicate(
             new_title="Unit tests for capability_request.py (50% -> 75%)",
             new_desc=(
                 "WHAT: Raise coverage from 50 percent to 75 percent. "
@@ -142,6 +142,7 @@ class TestIsDuplicate:
             ),
             existing=existing,
         )
+        assert is_dup is False
 
     def test_near_identical_title_and_body_is_duplicate(self):
         """A restated dup (same title, same body) must still be caught.
@@ -161,7 +162,7 @@ class TestIsDuplicate:
             ),
         )
 
-        assert _is_duplicate(
+        is_dup, _reason = _is_duplicate(
             new_title="Cache Ollama responses for better performance",
             new_desc=(
                 "WHY: Ollama inference repeats work for identical prompts. "
@@ -169,6 +170,7 @@ class TestIsDuplicate:
             ),
             existing=existing,
         )
+        assert is_dup is True
 
 
 # ---------------------------------------------------------------------------

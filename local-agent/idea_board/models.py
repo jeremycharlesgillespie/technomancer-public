@@ -246,7 +246,7 @@ def _meaningful_words(text: str) -> set[str]:
     return words
 
 
-def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> bool:
+def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> tuple[bool, str]:
     """Check if a new idea is essentially the same as an existing one.
 
     Compares both title and description using meaningful word overlap.
@@ -263,7 +263,11 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> bool:
         existing: An existing Idea to compare against
 
     Returns:
-        True if the new idea is a duplicate of the existing one
+        ``(is_duplicate, reason)`` — ``reason`` is a short code describing
+        which gate fired (``title_overlap=0.67``, ``combined_overlap=0.52``,
+        ``no_overlap``, ``empty_words``). Tuple shape mirrors
+        :func:`idea_board.dedup_llm.is_near_exact_duplicate` so callers can
+        log the reason uniformly regardless of which judge produced it.
     """
     # Title comparison
     new_title_words = _meaningful_words(new_title)
@@ -274,7 +278,7 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> bool:
             len(new_title_words), len(existing_title_words)
         )
         if title_overlap > 0.5:
-            return True
+            return True, f"title_overlap={title_overlap:.2f}"
 
     # Combined title + description comparison (catches rephrased ideas)
     new_combined = _meaningful_words(new_title + " " + new_desc)
@@ -285,9 +289,11 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> bool:
             len(new_combined), len(existing_combined)
         )
         if combined_overlap > 0.4:
-            return True
+            return True, f"combined_overlap={combined_overlap:.2f}"
 
-    return False
+    if not new_combined or not existing_combined:
+        return False, "empty_words"
+    return False, "no_overlap"
 
 
 def _normalize_description(desc: str) -> str:
@@ -339,8 +345,12 @@ def add_idea(
     for existing in ideas:
         if existing.state == "vetoed":
             continue
-        if _is_duplicate(title, description, existing):
-            logger.info(f"Duplicate idea detected: '{title}' ≈ '{existing.title}' (state={existing.state})")
+        is_dup, reason = _is_duplicate(title, description, existing)
+        if is_dup:
+            logger.info(
+                "Duplicate idea detected: '%s' ≈ '%s' (state=%s, reason=%s)",
+                title, existing.title, existing.state, reason,
+            )
             return existing
 
     idea = Idea(

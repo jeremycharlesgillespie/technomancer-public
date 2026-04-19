@@ -207,7 +207,7 @@ def test_tk571_is_not_dup_of_tk321():
         state="done",
     )
 
-    assert not _is_duplicate(
+    is_dup, _reason = _is_duplicate(
         new_title="Unit tests for capability_request.py (50% -> 75%)",
         new_desc=(
             "WHAT: Raise line coverage in capability_request.py from 50 "
@@ -218,6 +218,7 @@ def test_tk571_is_not_dup_of_tk321():
         ),
         existing=tk321,
     )
+    assert is_dup is False
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +265,7 @@ def test_is_duplicate_true_duplicate_llm_verdict(mock_dedup_llm):
         state="proposed",
     )
 
-    result = models._is_duplicate(
+    is_dup, _reason = models._is_duplicate(
         new_title="Cache Ollama responses for performance gains",
         new_desc=(
             "WHAT: Add a response cache for Ollama prompts. "
@@ -274,7 +275,7 @@ def test_is_duplicate_true_duplicate_llm_verdict(mock_dedup_llm):
         existing=existing,
     )
 
-    assert result is True, "LLM SAME verdict must produce a duplicate flag"
+    assert is_dup is True, "LLM SAME verdict must produce a duplicate flag"
     assert mock_dedup_llm.call_count >= 1, (
         "Dedup judge must be invoked — a 0 call count means the seam "
         "short-circuited and the LLM verdict was never consulted"
@@ -328,7 +329,7 @@ def test_is_duplicate_tk571_vs_tk321_headline(mock_dedup_llm):
         state="done",
     )
 
-    result = models._is_duplicate(
+    is_dup, _reason = models._is_duplicate(
         new_title="Unit tests for capability_request.py (50% -> 75%)",
         new_desc=(
             "WHAT: Raise line coverage in capability_request.py from 50 "
@@ -340,7 +341,7 @@ def test_is_duplicate_tk571_vs_tk321_headline(mock_dedup_llm):
         existing=tk321,
     )
 
-    assert result is False, (
+    assert is_dup is False, (
         "LLM DIFFERENT verdict on the TK-571/TK-321 headline pair must "
         "produce a non-duplicate flag — this is the exact regression "
         "TK-743 was built to prevent"
@@ -410,7 +411,7 @@ def test_is_duplicate_prefilter_zero_overlap(monkeypatch):
         state="proposed",
     )
 
-    result = models._is_duplicate(
+    is_dup, _reason = models._is_duplicate(
         new_title="Submarine propulsion telemetry analyzer",
         new_desc=(
             "Spectrogram viewer renders turbulent wake signatures from "
@@ -419,7 +420,7 @@ def test_is_duplicate_prefilter_zero_overlap(monkeypatch):
         existing=existing,
     )
 
-    assert result is False, (
+    assert is_dup is False, (
         "Two stories with zero meaningful word overlap must return False"
     )
     assert llm_mock.call_count == 0, (

@@ -389,19 +389,19 @@ def mock_dedup_llm(monkeypatch):
     """Control the dedup verdict used by ``review_queue`` and ``add_idea``.
 
     Patches every layer of the dedup seam with a single configurable
-    ``MagicMock`` (default ``return_value=False`` — i.e. *not* a
-    duplicate, so a fixture-using test that forgets to opt in defaults
-    to "let the new story through"):
+    ``MagicMock``. The default side-effect normalises whatever shape a
+    test sets via ``mock_dedup_llm.return_value = True/False`` into the
+    ``tuple[bool, str]`` shape that both seams now expose (TK-766), so
+    legacy tests written against the bool API keep working.
 
       * ``idea_board.models._is_duplicate`` — the public seam every
         caller (``add_idea``, queue review, ``/api/jira/create``) goes
-        through. Patching it lets tests drive higher-level flows
-        without depending on the underlying algorithm.
+        through. Returns ``tuple[bool, str]`` (TK-766).
       * ``idea_board.dedup_llm.is_near_exact_duplicate`` — the LLM
-        near-exact judge that ``_is_duplicate`` will dispatch to once
-        TK-743 lands. Patched with ``raising=False`` and guarded with
-        an import probe so the fixture is forward-compatible: the
-        attribute may not exist yet.
+        near-exact judge. Already returns ``tuple[bool, str]``.
+        Patched with ``raising=False`` and guarded with an import
+        probe so the fixture is safe to load even when the module is
+        not importable in the current environment.
 
     The same ``MagicMock`` instance is bound to both targets so a test
     can ``return_value=`` / ``side_effect=`` once and have it apply
@@ -414,8 +414,25 @@ def mock_dedup_llm(monkeypatch):
             mock_dedup_llm.return_value = True   # treat pair as duplicate
             ...
             mock_dedup_llm.return_value = False  # treat pair as distinct
+            # Or set the full tuple explicitly:
+            mock_dedup_llm.return_value = (True, "title_overlap=0.9")
     """
-    mock = MagicMock(return_value=False)
+
+    def _coerce(*args, **kwargs):
+        # Honor side_effect if a test set one, else use the stored
+        # return_value (which may be True/False from legacy tests or a
+        # tuple from newer callers).
+        raw = mock.return_value
+        if isinstance(raw, tuple):
+            return raw
+        if isinstance(raw, bool):
+            return raw, "mocked"
+        # Fallback for MagicMock sentinel / arbitrary values
+        return bool(raw), "mocked"
+
+    mock = MagicMock()
+    mock.return_value = False  # default: not a duplicate
+    mock.side_effect = _coerce
 
     # Legacy seam — the function every caller already routes through.
     monkeypatch.setattr("idea_board.models._is_duplicate", mock)
