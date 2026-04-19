@@ -31,6 +31,7 @@ Routes:
     POST /api/executor/run/<id>/kill — SIGTERM→SIGKILL a runaway executor run
     GET  /executor-runs           — HTML dashboard with sortable table + totals
     GET  /live                    — Landing page listing in-flight + recent executions
+    GET  /live/<item_id>          — Detail page: execution log viewer for a specific idea or Jira key
     GET  /api/memory/integrity    — Memory compaction health (backup counts, last verify, age)
     GET  /api/metrics             — Observability snapshot + flat SQLite counters as JSON
     GET  /metrics                 — Prometheus exposition of the same snapshot
