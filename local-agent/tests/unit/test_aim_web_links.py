@@ -288,3 +288,119 @@ class TestLiveHrefConditionalOnRouteAccess:
         assert 'href="/live/TK-200"' not in body, "TK-200 should not have href (inaccessible)"
         assert "TK-100" in body
         assert "TK-200" in body
+
+
+# ---------------------------------------------------------------------------
+# TK-813 — unit tests for _live_route_accessible and href suppression on error
+# ---------------------------------------------------------------------------
+
+
+class TestLiveRouteAccessibleUnit:
+    """Unit tests for _live_route_accessible() in isolation (TK-813).
+
+    The existing TestLiveHrefConditionalOnRouteAccess tests mock the helper
+    at the Flask endpoint level. These tests exercise the helper's own logic
+    directly, confirming the file-existence check drives the return value.
+    """
+
+    def test_returns_false_when_log_file_missing(self, tmp_path):
+        """_live_route_accessible returns False when no log file exists on disk."""
+        import idea_board.web as web_mod
+        from idea_board.web import _live_route_accessible
+
+        with patch.object(web_mod, "EXECUTION_LOGS_DIR", tmp_path):
+            result = _live_route_accessible("TK-813-missing")
+        assert result is False
+
+    def test_returns_true_when_log_file_exists(self, tmp_path):
+        """_live_route_accessible returns True when the log file is present."""
+        import idea_board.web as web_mod
+        from idea_board.web import _live_route_accessible
+
+        log_file = tmp_path / "TK-813-present.log"
+        log_file.write_text("execution output", encoding="utf-8")
+        with patch.object(web_mod, "EXECUTION_LOGS_DIR", tmp_path):
+            result = _live_route_accessible("TK-813-present")
+        assert result is True
+
+
+class TestHrefSuppressedWhenRouteDoesNotExist:
+    """Verify /live suppresses hrefs when the route check returns failure (TK-813).
+
+    These tests confirm the negative path end-to-end: when
+    _live_route_accessible returns False (log file absent / route non-200),
+    the rendered HTML must contain the story key as plain text but must NOT
+    wrap it in an <a href> element.
+    """
+
+    def _seed_executing(self, fake_agent_root: Path, key: str) -> None:
+        _write_state(
+            fake_agent_root / "aim" / ".aim_state.json",
+            {
+                "worker": {
+                    "status": "executing",
+                    "current_idea_id": key,
+                    "started_at": "2026-04-19T11:00:00",
+                    "last_observation": "running",
+                },
+                "board_snapshot": {"recent_completions": []},
+            },
+        )
+
+    def _seed_recent(self, fake_agent_root: Path, key: str) -> None:
+        _write_state(
+            fake_agent_root / "aim" / ".aim_state.json",
+            {
+                "worker": {"status": "idle", "current_idea_id": None},
+                "board_snapshot": {
+                    "recent_completions": [
+                        {
+                            "key": key,
+                            "summary": "Story without log",
+                            "resolved": "2026-04-19T10:00:00+0000",
+                        },
+                    ]
+                },
+            },
+        )
+
+    def test_executing_href_absent_when_route_check_returns_false(
+        self, client, fake_agent_root
+    ):
+        """Executing row: plain text only when route check (log missing) returns False."""
+        self._seed_executing(fake_agent_root, "TK-813")
+        with patch("idea_board.web._live_route_accessible", return_value=False), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-813" in body, "key must still appear as plain text"
+        assert 'href="/live/TK-813"' not in body, "href must be absent when route non-200"
+
+    def test_recent_href_absent_when_route_check_returns_false(
+        self, client, fake_agent_root
+    ):
+        """Recent-completion row: plain text only when route check returns False."""
+        self._seed_recent(fake_agent_root, "TK-813")
+        with patch("idea_board.web._live_route_accessible", return_value=False), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-813" in body, "key must still appear as plain text"
+        assert 'href="/live/TK-813"' not in body, "href must be absent when route non-200"
+
+    def test_no_href_when_log_file_absent_on_disk(self, client, fake_agent_root, tmp_path):
+        """End-to-end: no log file on disk → _live_route_accessible returns False → no href."""
+        self._seed_recent(fake_agent_root, "TK-813-nodisk")
+        import idea_board.web as web_mod
+
+        empty_logs_dir = tmp_path / "execution_logs"
+        empty_logs_dir.mkdir()
+        with patch.object(web_mod, "EXECUTION_LOGS_DIR", empty_logs_dir), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "TK-813-nodisk" in body
+        assert 'href="/live/TK-813-nodisk"' not in body
