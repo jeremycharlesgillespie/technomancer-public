@@ -2408,7 +2408,7 @@ AIM_LOG_TAIL_POLL_INTERVAL = 1.0
 
 
 def _iter_matching_lines(
-    log_path: Path, fh, source: str, idea_id: str,
+    log_path: Path, fh, source: str, idea_id: str, since: str | None = None,
 ) -> list[tuple[str, str, str]]:
     """Pull every newly-available line from ``fh`` matching ``idea_id``.
 
@@ -2420,6 +2420,9 @@ def _iter_matching_lines(
     two streams by wall-clock order.  Lines without a timestamp prefix
     are skipped (they're stack-trace continuations that don't carry
     their own ``idea_id``).
+
+    ``since`` is an optional ``"YYYY-MM-DD HH:MM:SS"`` lower bound —
+    lines whose timestamp is strictly before ``since`` are skipped.
     """
     out: list[tuple[str, str, str]] = []
     while True:
@@ -2431,13 +2434,16 @@ def _iter_matching_lines(
             continue
         if idea_id not in stripped:
             continue
-        out.append((stripped[:19], source, f"[{source}] {stripped}"))
+        ts = stripped[:19]
+        if since and ts < since:
+            continue
+        out.append((ts, source, f"[{source}] {stripped}"))
     return out
 
 
 @app.route("/api/aim/logs/tail")
 def api_aim_logs_tail() -> Response:
-    """GET /api/aim/logs/tail?idea=<key>&project=<name> — SSE AIM/Worker tail.
+    """GET /api/aim/logs/tail?idea=<key>&project=<name>&since=<ts> — SSE AIM/Worker tail.
 
     Streams lines from ``aim.log`` + ``worker.log`` (per-project or primary)
     filtered to those mentioning ``idea``, interleaved by their leading
@@ -2452,9 +2458,14 @@ def api_aim_logs_tail() -> Response:
     ``project`` is optional — if omitted, the endpoint looks up which
     project owns the idea via ``.aim_state.json`` files, falling back to
     the primary ``aim/`` directory.
+
+    ``since`` is an optional ``"YYYY-MM-DD HH:MM:SS"`` lower bound —
+    only log lines whose timestamp is >= ``since`` are returned.  Useful
+    for restricting the view to a single execution window.
     """
     idea_id = (request.args.get("idea") or "").strip()
     project = (request.args.get("project") or "").strip() or None
+    since = (request.args.get("since") or "").strip() or None
 
     def _sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -2494,11 +2505,14 @@ def api_aim_logs_tail() -> Response:
                 continue
 
         # Initial tag lets the client show which project/logs it's tailing.
-        yield _sse("state", {
+        initial_state: dict = {
             "project": project,
             "idea": idea_id,
             "sources": [src for src, _p, _fh in open_handles],
-        })
+        }
+        if since:
+            initial_state["since"] = since
+        yield _sse("state", initial_state)
 
         if not open_handles:
             yield _sse("done", {"reason": "no_log_files"})
@@ -2511,7 +2525,7 @@ def api_aim_logs_tail() -> Response:
             while True:
                 new_lines: list[tuple[str, str, str]] = []
                 for source, path, fh in open_handles:
-                    new_lines.extend(_iter_matching_lines(path, fh, source, idea_id))
+                    new_lines.extend(_iter_matching_lines(path, fh, source, idea_id, since))
 
                 if new_lines:
                     new_lines.sort(key=lambda x: x[0])

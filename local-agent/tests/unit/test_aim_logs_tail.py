@@ -215,6 +215,33 @@ class TestIterMatchingLines:
         assert rows[0][0] == "2026-04-17 10:00:00"
         assert len(rows[0][0]) == 19
 
+    def test_since_filters_lines_before_cutoff(self, tmp_path):
+        log = tmp_path / "aim.log"
+        log.write_text(
+            "2026-04-17 09:59:59 [INFO] x: FA-11 old\n"
+            "2026-04-17 10:00:00 [INFO] x: FA-11 at cutoff\n"
+            "2026-04-17 10:00:01 [INFO] x: FA-11 after\n",
+            encoding="utf-8",
+        )
+        with open(log, encoding="utf-8") as fh:
+            rows = _iter_matching_lines(log, fh, "aim", "FA-11", since="2026-04-17 10:00:00")
+        assert len(rows) == 2
+        timestamps = [r[0] for r in rows]
+        assert "2026-04-17 09:59:59" not in timestamps
+        assert "2026-04-17 10:00:00" in timestamps
+        assert "2026-04-17 10:00:01" in timestamps
+
+    def test_since_none_returns_all_lines(self, tmp_path):
+        log = tmp_path / "aim.log"
+        log.write_text(
+            "2026-04-17 09:00:00 [INFO] x: FA-11 early\n"
+            "2026-04-17 10:00:00 [INFO] x: FA-11 late\n",
+            encoding="utf-8",
+        )
+        with open(log, encoding="utf-8") as fh:
+            rows = _iter_matching_lines(log, fh, "aim", "FA-11", since=None)
+        assert len(rows) == 2
+
 
 class TestAimLogsTailEndpoint:
     def test_missing_idea_param_yields_error_done(self, client, isolated_aim_root):
@@ -310,6 +337,46 @@ class TestAimLogsTailEndpoint:
         events = _parse_sse_events(resp.get_data(as_text=True))
         state_events = [p for ev, p in events if ev == "state"]
         assert state_events[0].get("project") == "40acres"
+
+    def test_since_param_filters_historic_lines(
+        self, client, isolated_aim_root, fast_tail
+    ):
+        aim_log = isolated_aim_root / "aim" / "aim.log"
+        aim_log.write_text(
+            "2026-04-17 09:00:00 [INFO] aim.brain: FA-11 old entry\n"
+            "2026-04-17 10:00:00 [INFO] aim.brain: FA-11 at cutoff\n"
+            "2026-04-17 10:00:01 [INFO] aim.brain: FA-11 after cutoff\n",
+            encoding="utf-8",
+        )
+
+        resp = client.get(
+            "/api/aim/logs/tail?idea=FA-11&project=primary&since=2026-04-17+10:00:00"
+        )
+        events = _parse_sse_events(resp.get_data(as_text=True))
+        log_events = [p for ev, p in events if ev == "log"]
+        all_lines: list[str] = []
+        for payload in log_events:
+            all_lines.extend(payload.get("lines", []))
+
+        assert len(all_lines) == 2
+        assert all("FA-11" in ln for ln in all_lines)
+        assert not any("old entry" in ln for ln in all_lines)
+
+    def test_since_param_echoed_in_initial_state_event(
+        self, client, isolated_aim_root, fast_tail
+    ):
+        aim_log = isolated_aim_root / "aim" / "aim.log"
+        aim_log.write_text(
+            "2026-04-17 10:00:00 [INFO] aim.brain: FA-11 test\n",
+            encoding="utf-8",
+        )
+
+        resp = client.get(
+            "/api/aim/logs/tail?idea=FA-11&project=primary&since=2026-04-17+10:00:00"
+        )
+        events = _parse_sse_events(resp.get_data(as_text=True))
+        state_events = [p for ev, p in events if ev == "state"]
+        assert state_events[0].get("since") == "2026-04-17 10:00:00"
 
 
 class TestLiveLogHtmlIncludesPanel:
