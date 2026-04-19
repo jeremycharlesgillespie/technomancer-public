@@ -388,12 +388,25 @@ def _block_jira_sync(monkeypatch):
 def mock_dedup_llm(monkeypatch):
     """Control the dedup verdict used by ``review_queue`` and ``add_idea``.
 
-    Patches ``idea_board.models._is_duplicate`` with a configurable
-    ``MagicMock`` (default ``return_value=True``) so tests can drive the
-    Step 2 advisory-comment path in ``aim.manager.review_queue`` without
-    depending on the underlying dedup algorithm — today's word-overlap
-    judge or the future LLM near-exact judge both live behind this single
-    seam.
+    Patches every layer of the dedup seam with a single configurable
+    ``MagicMock`` (default ``return_value=False`` — i.e. *not* a
+    duplicate, so a fixture-using test that forgets to opt in defaults
+    to "let the new story through"):
+
+      * ``idea_board.models._is_duplicate`` — the public seam every
+        caller (``add_idea``, queue review, ``/api/jira/create``) goes
+        through. Patching it lets tests drive higher-level flows
+        without depending on the underlying algorithm.
+      * ``idea_board.dedup_llm.is_near_exact_duplicate`` — the LLM
+        near-exact judge that ``_is_duplicate`` will dispatch to once
+        TK-743 lands. Patched with ``raising=False`` and guarded with
+        an import probe so the fixture is forward-compatible: the
+        attribute may not exist yet.
+
+    The same ``MagicMock`` instance is bound to both targets so a test
+    can ``return_value=`` / ``side_effect=`` once and have it apply
+    everywhere, and ``call_count`` / ``call_args`` aggregate across
+    layers.
 
     Usage:
 
@@ -402,8 +415,27 @@ def mock_dedup_llm(monkeypatch):
             ...
             mock_dedup_llm.return_value = False  # treat pair as distinct
     """
-    mock = MagicMock(return_value=True)
+    mock = MagicMock(return_value=False)
+
+    # Legacy seam — the function every caller already routes through.
     monkeypatch.setattr("idea_board.models._is_duplicate", mock)
+
+    # Future LLM judge target. The module is introduced by a separate
+    # story (TK-743); guard the patch so this fixture is safe to add
+    # before that lands. Once the module exists, the attribute may or
+    # may not have been bound at import time, so use ``raising=False``
+    # to cover the bootstrap window too.
+    try:
+        import importlib
+
+        importlib.import_module("idea_board.dedup_llm")
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr(
+            "idea_board.dedup_llm.is_near_exact_duplicate", mock, raising=False
+        )
+
     return mock
 
 
