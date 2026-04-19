@@ -217,36 +217,73 @@ class TestCheckJira:
 
 class TestCheckExecutor:
     def test_no_running_runs_is_ok(self):
-        result = health.check_executor()
+        with patch.object(
+            health.executor_runs_db,
+            "get_current_execution_per_project",
+            return_value=[{"project": "TK", "is_executing": False}],
+        ):
+            result = health.check_executor()
         assert result["ok"] is True
         assert result["running_count"] == 0
 
     def test_fresh_running_run_is_ok(self):
-        executor_runs_db.record_run(
-            run_id="abc",
-            jira_key="TK-1",
-            branch="br",
-            started_at=datetime.now().isoformat(),
-            status="running",
-        )
-        result = health.check_executor()
+        rows = [{
+            "project": "TK",
+            "status": "executing",
+            "current_idea_id": "TK-1",
+            "started_at": datetime.now().isoformat(),
+            "last_observation": "Starting",
+            "is_executing": True,
+        }]
+        with patch.object(
+            health.executor_runs_db,
+            "get_current_execution_per_project",
+            return_value=rows,
+        ):
+            result = health.check_executor()
         assert result["ok"] is True
         assert result["running_count"] == 1
         assert "oldest_age_seconds" in result
 
     def test_stale_running_run_is_not_ok(self):
         stale = (datetime.now() - timedelta(hours=3)).isoformat()
-        executor_runs_db.record_run(
-            run_id="old",
-            jira_key="TK-2",
-            branch="br",
-            started_at=stale,
-            status="running",
-        )
-        result = health.check_executor()
+        rows = [{
+            "project": "TK",
+            "status": "executing",
+            "current_idea_id": "TK-2",
+            "started_at": stale,
+            "last_observation": "...",
+            "is_executing": True,
+        }]
+        with patch.object(
+            health.executor_runs_db,
+            "get_current_execution_per_project",
+            return_value=rows,
+        ):
+            result = health.check_executor()
         assert result["ok"] is False
         assert result["running_count"] == 1
         assert result["oldest_age_seconds"] >= 3 * 3600 - 5
+
+    def test_counts_multi_project_executions(self):
+        now = datetime.now().isoformat()
+        rows = [
+            {"project": "TK", "is_executing": True, "started_at": now,
+             "status": "executing", "current_idea_id": "TK-9",
+             "last_observation": ""},
+            {"project": "FA", "is_executing": True, "started_at": now,
+             "status": "watching", "current_idea_id": "FA-3",
+             "last_observation": ""},
+            {"project": "IDLE", "is_executing": False},
+        ]
+        with patch.object(
+            health.executor_runs_db,
+            "get_current_execution_per_project",
+            return_value=rows,
+        ):
+            result = health.check_executor()
+        assert result["ok"] is True
+        assert result["running_count"] == 2
 
 
 # ---------------------------------------------------------------------------

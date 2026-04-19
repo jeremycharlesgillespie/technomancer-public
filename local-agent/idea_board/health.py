@@ -227,22 +227,35 @@ def _parse_started(raw: str) -> float | None:
 
 
 def check_executor() -> dict[str, Any]:
-    """Count running executor_runs and compute the oldest start age.
+    """Count in-flight AIM workers from per-project state files.
 
-    A run that's been ``running`` for more than :data:`EXECUTOR_STALE_HOURS`
+    The canonical "is a story executing?" source is each project's
+    ``aim/.../.aim_state.json`` — it's what the worker itself writes in
+    real time and what the /live page renders. The old SQLite query for
+    ``status='running'`` rows was structurally stuck at 0 because
+    ``idea_board/executor.py`` never writes a 'running' row (only the
+    unused claude_code_runner path does).
+
+    A worker whose ``started_at`` is older than :data:`EXECUTOR_STALE_HOURS`
     hours is treated as stuck and flips the check to ``ok=False``.
     """
     start = _now_ms()
     result: dict[str, Any] = {"ok": False, "detail": "unknown"}
     try:
-        executor_runs_db.init_db()
-        conn = executor_runs_db._get_conn()
-        row = conn.execute(
-            "SELECT COUNT(*) AS n, MIN(started_at) AS oldest "
-            "FROM executor_runs WHERE status = 'running'"
-        ).fetchone()
-        running_count = int(row["n"]) if row else 0
-        oldest_started = row["oldest"] if row and row["oldest"] else None
+        from pathlib import Path as _Path
+        aim_root = _Path(__file__).resolve().parent.parent / "aim"
+        per_project = executor_runs_db.get_current_execution_per_project(
+            aim_root=aim_root,
+            primary_label=settings.jira_project_key or "primary",
+        )
+        executing = [p for p in per_project if p.get("is_executing")]
+        running_count = len(executing)
+
+        oldest_started = None
+        if executing:
+            starts = [p.get("started_at") for p in executing if p.get("started_at")]
+            if starts:
+                oldest_started = min(starts)
 
         result["running_count"] = running_count
         result["oldest_started_at"] = oldest_started

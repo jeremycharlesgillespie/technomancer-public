@@ -2738,26 +2738,99 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
     </div>
 
     <section>
-        <h2>Currently Executing ({len(executing)})</h2>
+        <h2>Currently Executing (<span id="executing-count">{len(executing)}</span>)</h2>
         <table>
             <thead>
                 <tr><th>Project</th><th>Key</th><th>Status</th><th>Started</th><th>Last Observation</th></tr>
             </thead>
-            <tbody>{executing_body}</tbody>
+            <tbody id="executing-body">{executing_body}</tbody>
         </table>
     </section>
 
     <section>
-        <h2>Recently Completed ({len(recent)})</h2>
+        <h2>Recently Completed (<span id="recent-count">{len(recent)}</span>)</h2>
         <table>
             <thead>
                 <tr><th>Project</th><th>Key</th><th>Title</th><th>Resolved</th></tr>
             </thead>
-            <tbody>{recent_body}</tbody>
+            <tbody id="recent-body">{recent_body}</tbody>
         </table>
     </section>
 
-    <p style="color:var(--muted);font-size:0.8rem">Refreshed at {now} &middot; click a key to tail its live log.</p>
+    <p style="color:var(--muted);font-size:0.8rem">
+        Auto-updating every 3s &middot; last update <span id="last-update">{now}</span> &middot;
+        <span id="live-indicator" style="color:#76b900">&#9679; live</span>
+    </p>
+
+    <script>
+    (function() {{
+        const escapeHTML = s => String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+        function renderExecutingRow(r) {{
+            const keyCell = r.log_href
+                ? `<a href="${{escapeHTML(r.log_href)}}">${{escapeHTML(r.key)}}</a>`
+                : escapeHTML(r.key);
+            const obs = escapeHTML((r.last_observation || '').slice(0, 120));
+            return `<tr>
+                <td>${{escapeHTML(r.project)}}</td>
+                <td>${{keyCell}}</td>
+                <td><span class="status-pill ${{escapeHTML(r.status)}}">${{escapeHTML(r.status)}}</span></td>
+                <td>${{escapeHTML(r.started_at)}}</td>
+                <td class="obs">${{obs}}</td>
+            </tr>`;
+        }}
+
+        function renderRecentRow(r) {{
+            const keyCell = r.log_href
+                ? `<a href="${{escapeHTML(r.log_href)}}">${{escapeHTML(r.key)}}</a>`
+                : escapeHTML(r.key);
+            const resolved = escapeHTML((r.resolved || '').slice(0, 19).replace('T', ' '));
+            const title = escapeHTML((r.title || '').slice(0, 100));
+            return `<tr>
+                <td>${{escapeHTML(r.project)}}</td>
+                <td>${{keyCell}}</td>
+                <td>${{title}}</td>
+                <td>${{resolved}}</td>
+            </tr>`;
+        }}
+
+        async function refresh() {{
+            try {{
+                const resp = await fetch('/api/live', {{cache: 'no-store'}});
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                const j = await resp.json();
+
+                const executing = j.executing || [];
+                const eBody = document.getElementById('executing-body');
+                eBody.innerHTML = executing.length
+                    ? executing.map(renderExecutingRow).join('')
+                    : '<tr><td colspan="5" class="empty">No executions in flight.</td></tr>';
+                document.getElementById('executing-count').textContent = executing.length;
+
+                const recent = j.recent || [];
+                const rBody = document.getElementById('recent-body');
+                rBody.innerHTML = recent.length
+                    ? recent.map(renderRecentRow).join('')
+                    : '<tr><td colspan="4" class="empty">No recent completions recorded.</td></tr>';
+                document.getElementById('recent-count').textContent = recent.length;
+
+                const ts = new Date();
+                document.getElementById('last-update').textContent =
+                    ts.toTimeString().slice(0, 8);
+                document.getElementById('live-indicator').style.color = '#76b900';
+                document.getElementById('live-indicator').textContent = '\u25CF live';
+            }} catch (e) {{
+                document.getElementById('live-indicator').style.color = '#e94560';
+                document.getElementById('live-indicator').textContent =
+                    '\u25CF offline (' + e.message + ')';
+            }}
+        }}
+
+        setInterval(refresh, 3000);
+    }})();
+    </script>
 </body>
 </html>"""
 
@@ -2772,6 +2845,35 @@ def live_executions_landing() -> Response:
     """
     data = _collect_live_executions()
     return Response(_render_live_landing(data), mimetype="text/html")
+
+
+@app.route("/api/live")
+def api_live_executions() -> Response:
+    """Return live-page data as JSON for client-side polling.
+
+    Mirrors :func:`_collect_live_executions` but adds a ``log_href`` so the
+    client can render a clickable key without a second round-trip per row.
+    """
+    data = _collect_live_executions()
+    executing = [
+        {
+            **row,
+            "log_href": f"/live/{row['key']}" if _live_route_accessible(row["key"]) else None,
+        }
+        for row in data.get("executing") or []
+    ]
+    recent = [
+        {
+            **row,
+            "log_href": f"/live/{row['key']}" if _live_route_accessible(row["key"]) else None,
+        }
+        for row in data.get("recent") or []
+    ]
+    return jsonify({
+        "executing": executing,
+        "recent": recent,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    })
 
 
 @app.route("/live/<item_id>")
