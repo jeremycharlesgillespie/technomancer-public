@@ -2206,6 +2206,23 @@ def get_project_param(default: str = "technomancer") -> str:
     return raw
 
 
+def set_state_dir(project: str) -> Path:
+    """Resolve the AIM state directory for the given project name.
+
+    Call at the top of every ``/api/aim/*`` handler, immediately before any
+    state-file read, to establish which project directory subsequent I/O
+    should target.  Returns the directory ``Path`` so callers can pass it
+    to helpers that need an explicit path.
+
+    ``'technomancer'`` and its aliases (``''``, ``'primary'``) map to the
+    primary ``aim/`` root; any other name maps to
+    ``aim/projects/<name>/``.
+    """
+    if _is_default_project(project):
+        return _AGENT_ROOT / "aim"
+    return _AGENT_ROOT / "aim" / "projects" / project
+
+
 def list_aim_projects() -> list[str]:
     """Enumerate available project selectors for the dashboard dropdown.
 
@@ -2453,6 +2470,7 @@ def api_aim_logs_tail() -> Response:
     if project is None:
         project = _detect_project_for_idea(idea_id) or "primary"
 
+    set_state_dir(project)
     paths = _aim_log_paths_for_project(project)
 
     def generate():
@@ -3008,6 +3026,8 @@ def api_aim_projects() -> tuple:
         [{"name": "technomancer"}, {"name": "40acres"}, ...]
     """
     try:
+        project = get_project_param()
+        set_state_dir(project)
         names = list_aim_projects()
         return jsonify([{"name": n} for n in names]), 200
     except Exception as exc:
@@ -3033,7 +3053,8 @@ def api_aim_status() -> tuple:
     ``aim/.aim_state.json``; any other name is read from
     ``aim/projects/<name>/.aim_state.json``.
     """
-    project = _project_param()
+    project = get_project_param()
+    set_state_dir(project)
     state = _load_aim_state_for_project(project)
     worker = state.worker
 
@@ -3080,7 +3101,8 @@ def api_aim_metrics() -> tuple:
     ``aim/projects/<name>/events.jsonl`` (falling back to the primary when
     that file doesn't exist yet).
     """
-    project = _project_param()
+    project = get_project_param()
+    set_state_dir(project)
 
     try:
         hours = int(request.args.get("hours", "24"))
@@ -3175,7 +3197,8 @@ def api_aim_backlog() -> tuple:
     the page renders even if Jira credentials don't map to that project —
     and today's done count falls back to ``done_last_24h``.
     """
-    project = _project_param()
+    project = get_project_param()
+    set_state_dir(project)
     jira_project_key = _jira_project_key_for_project(project)
 
     in_progress: dict[str, str] | None = None
