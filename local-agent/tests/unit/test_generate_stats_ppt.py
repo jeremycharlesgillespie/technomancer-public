@@ -173,6 +173,78 @@ class TestTitleSlide:
 
 
 # ---------------------------------------------------------------------------
+# Title / summary slide — exact content
+# ---------------------------------------------------------------------------
+
+
+class TestTitleSummarySlideContent:
+    """Assert the exact strings on the title slide rather than loose contains-checks."""
+
+    def _slide_texts(self, slide) -> list[str]:
+        return [sh.text_frame.text for sh in slide.shapes if sh.has_text_frame]
+
+    def test_title_slide_exact_heading(self):
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation()
+        texts = self._slide_texts(prs.slides[0])
+        assert "Project Stats" in texts
+
+    def test_title_slide_default_subtitle_exact(self):
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation()
+        texts = self._slide_texts(prs.slides[0])
+        assert "All projects · All time" in texts
+
+    def test_title_slide_since_subtitle_exact(self):
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation(since="2026-01-15")
+        texts = self._slide_texts(prs.slides[0])
+        assert "Since 2026-01-15" in texts
+
+    def test_title_slide_project_subtitle_exact(self):
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation(project="TK")
+        texts = self._slide_texts(prs.slides[0])
+        assert "Project: TK" in texts
+
+    def test_title_slide_both_filters_subtitle_exact(self):
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation(since="2026-03-01", project="FA")
+        texts = self._slide_texts(prs.slides[0])
+        assert "Since 2026-03-01  ·  Project: FA" in texts
+
+    def test_title_slide_date_appears_verbatim(self):
+        """Exact date string passed as `since` must appear in the subtitle text."""
+        from scripts.generate_stats_ppt import build_presentation
+
+        date = "2026-04-19"
+        prs = build_presentation(since=date)
+        all_text = " ".join(self._slide_texts(prs.slides[0]))
+        assert date in all_text
+
+    def test_title_slide_has_exactly_two_text_shapes(self):
+        """The title slide always has exactly two textboxes: heading + subtitle."""
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation()
+        texts = self._slide_texts(prs.slides[0])
+        assert len(texts) == 2
+
+    def test_title_slide_no_extra_text_when_no_filters(self):
+        """Without filters the subtitle must be the fallback string, nothing else."""
+        from scripts.generate_stats_ppt import build_presentation
+
+        prs = build_presentation()
+        texts = self._slide_texts(prs.slides[0])
+        assert texts == ["Project Stats", "All projects · All time"]
+
+
+# ---------------------------------------------------------------------------
 # Slide registry iteration
 # ---------------------------------------------------------------------------
 
