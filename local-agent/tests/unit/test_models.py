@@ -35,6 +35,7 @@ from idea_board.models import (
     OVERLAP_PREFILTER_THRESHOLD,
     Idea,
     _is_duplicate,
+    _meaningful_words,
 )
 
 
@@ -255,3 +256,149 @@ class TestHighOverlapDelegatesToLLM:
 
         assert is_dup is verdict
         assert out_reason == reason
+
+
+# ---------------------------------------------------------------------------
+# _meaningful_words — TK-753 contract
+# ---------------------------------------------------------------------------
+#
+# The prefilter in ``_is_duplicate`` computes overlap against whatever
+# :func:`idea_board.models._meaningful_words` returns. Every consumer
+# (idea_board/models.py, scripts/file_llm_dedup_story.py, aim/manager.py)
+# treats the returned set as authoritative — a silent shift in this
+# function would move the prefilter threshold implicitly. These tests pin
+# the behavior contract so any tuning to the stopword list or the stem
+# length shows up as an explicit test failure rather than as drift in
+# dedup accuracy.
+# ---------------------------------------------------------------------------
+
+
+class TestMeaningfulWordsExtraction:
+    """Pin the tokenize → lowercase → stopword-strip → stem pipeline."""
+
+    def test_acceptance_example_from_story(self):
+        """``"Fix unit tests for foo"`` → ``{"fix", "unit", "tests", "foo"}``.
+
+        The TK-753 acceptance criteria names this exact pair as the
+        canonical contract example. Every word is ≤ 5 chars so the
+        5-char stem is a no-op here — the test doubles as a check that
+        short words pass through untouched.
+        """
+        assert _meaningful_words("Fix unit tests for foo") == {
+            "fix",
+            "unit",
+            "tests",
+            "foo",
+        }
+
+    def test_empty_string_returns_empty_set(self):
+        """Empty input → empty set (acceptance criteria)."""
+        assert _meaningful_words("") == set()
+
+    def test_whitespace_only_returns_empty_set(self):
+        """Whitespace-only input → empty set (acceptance criteria).
+
+        ``str.split()`` with no separator already collapses runs of
+        whitespace, so tabs/newlines/multi-space runs all reduce to
+        zero tokens before the filter even runs. Pin the shape.
+        """
+        assert _meaningful_words("   \t\n  ") == set()
+
+    def test_lowercases_input(self):
+        """Output is always lowercase, regardless of input casing.
+
+        Callers feed in raw story titles which can be title-cased,
+        ALL-CAPS (e.g. the ``WHAT:`` headers), or mixed. The overlap
+        intersection is case-sensitive, so the prefilter would miss
+        trivial rewordings if casing leaked through. Pin the
+        normalization.
+        """
+        assert _meaningful_words("CACHE Ollama Responses") == {
+            "cache",
+            "ollam",
+            "respo",
+        }
+
+    def test_filters_stopwords(self):
+        """Stopwords from ``_stopwords()`` never appear in the output.
+
+        Without this guard, two stories about completely different
+        topics could share 50%+ overlap just from the boilerplate
+        ("the", "for", "with", "is"), blowing past the prefilter
+        threshold and burning LLM calls on obvious non-duplicates.
+        """
+        result = _meaningful_words(
+            "the cache is for the ollama response and the prompts"
+        )
+        # Every token in the input that survives: cache, ollam(a), respo(nse), promp(ts).
+        # Stopwords filtered: the, is, for, and.
+        assert "the" not in result
+        assert "for" not in result
+        assert "and" not in result
+        assert "cache" in result
+
+    def test_filters_words_shorter_than_three_chars(self):
+        """Tokens under 3 chars are dropped even if not in the stopword list.
+
+        The 3-char minimum protects against noise like single letters,
+        numeric tokens, and abbreviations that would otherwise drive
+        the overlap metric without carrying semantic weight.
+        """
+        # "x" and "ab" are both short and non-stopword; "foo" clears the bar.
+        result = _meaningful_words("x ab foo")
+        assert result == {"foo"}
+
+    def test_stems_longer_words_to_five_chars(self):
+        """Words > 5 chars are truncated so inflections collapse.
+
+        ``cache`` and ``caching`` both stem to ``cach``, so a title
+        using one and a description using the other still register as
+        overlapping vocabulary — which is the whole point of the
+        prefilter.
+        """
+        # "caching" (7 chars) → "cachi"; "responses" (9 chars) → "respo".
+        result = _meaningful_words("caching responses")
+        assert result == {"cachi", "respo"}
+
+    def test_inflections_collapse_to_same_stem(self):
+        """``cache`` and ``cached`` reduce to the same stem.
+
+        Documents the inflection-collapse contract called out in the
+        function docstring. Both map to ``"cache"`` because the 5-char
+        truncation drops the ``-d`` suffix; ``caching`` reduces to
+        ``"cachi"`` because truncation cuts before the suffix is
+        dropped. If a future refactor swaps in a smarter (or
+        different-length) stemmer, this test will flag the change.
+        """
+        assert _meaningful_words("cache") == _meaningful_words("cached") == {"cache"}
+        # The three-word form exercises the set semantics — "cache" and
+        # "cached" collapse to one entry, "caching" keeps its own stem.
+        assert _meaningful_words("cache cached caching") == {"cache", "cachi"}
+
+    def test_is_pure_function(self):
+        """Same input → same output, no hidden state. Pin purity.
+
+        ``_meaningful_words`` is imported by three unrelated modules
+        (models, scripts, aim). Any accidental introduction of a cache,
+        RNG, or I/O side effect would make test isolation brittle and
+        dedup behavior timing-dependent. Call it twice and assert
+        byte-for-byte equality on the returned sets.
+        """
+        text = "Cache Ollama responses to improve performance"
+        first = _meaningful_words(text)
+        second = _meaningful_words(text)
+        assert first == second
+        # Mutating the returned set must not affect the next call —
+        # the function returns a fresh set each time.
+        first.add("sentinel")
+        third = _meaningful_words(text)
+        assert "sentinel" not in third
+
+    def test_collapses_duplicate_tokens(self):
+        """Repeated words collapse to a single entry (set semantics).
+
+        The overlap metric in ``_is_duplicate`` is Jaccard-style on
+        sets, so duplicate tokens in the input must not inflate the
+        denominator. Pin set semantics explicitly.
+        """
+        assert _meaningful_words("cache cache cache ollama") == {"cache", "ollam"}

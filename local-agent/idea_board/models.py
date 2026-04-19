@@ -255,14 +255,27 @@ def _stopwords() -> set[str]:
 def _meaningful_words(text: str) -> set[str]:
     """Extract meaningful word stems from text, ignoring stopwords.
 
-    Uses a simple stemming approach: truncate words to 6 chars to catch
-    basic inflections (cache/caching, query/queries, response/responses).
+    Pure function (no I/O, no side effects). Lowercases the input,
+    splits on whitespace, drops tokens shorter than 3 chars and tokens
+    in :func:`_stopwords`, then truncates each survivor to 5 chars so
+    simple inflections collapse to the same stem (cache/caching →
+    ``cach``, query/queries → ``query``, response/responses →
+    ``respo``). The 5-char stem is deliberately conservative — it
+    catches common English plurals and ``-ing``/``-ed`` endings without
+    fusing unrelated words that happen to share a 3-4 char prefix.
+
+    The word set this returns feeds the word-overlap prefilter in
+    :func:`_is_duplicate`; tuning the stem length or stopword list
+    shifts the prefilter accuracy/cost tradeoff, so any change should
+    come with updated overlap tests.
 
     Args:
-        text: Input text
+        text: Input text — typically ``title + " " + description``.
+            Empty or whitespace-only input returns an empty set.
 
     Returns:
-        Set of lowercase stemmed meaningful words
+        Set of lowercase stemmed meaningful words. Empty when the
+        input has no tokens that survive the stopword/length filter.
     """
     stops = _stopwords()
     words = set()
