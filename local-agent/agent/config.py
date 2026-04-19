@@ -283,6 +283,44 @@ class Settings(BaseSettings):
     aim_queue_review_interval: int = Field(
         default=10, description="Run queue review (dedup + failure detection) every N cycles"
     )
+
+    # LLM routing — per-role model selection.
+    # Format: "ollama:<tag>" for local ollama; anything else goes to
+    # claude -p --model <name>. On ollama failure, falls back to
+    # llm_fallback_model (a claude model).
+    aim_brain_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description="Model for AIM brain decision classification",
+    )
+    dedup_judge_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description="Model for idea-board near-exact duplicate judge",
+    )
+    aimm_observer_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description="Model for AIMM observer (finding-worthiness scoring)",
+    )
+    aimm_suggester_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description="Model for AIMM suggester (approval recommendation)",
+    )
+    llm_fallback_model: str = Field(
+        default="claude-haiku-4-5",
+        description="Fallback claude model when ollama primary fails",
+    )
+    llm_experiment_mode: str = Field(
+        default="",
+        description=(
+            "Experiment knob that overrides ALL per-role models in one place. "
+            "Accepted values: '' (default — per-role settings apply), "
+            "'ollama' (force every role to ollama:qwen3.5:latest), "
+            "'claude' (force every role to claude-haiku-4-5), or any "
+            "explicit model name (e.g. 'ollama:llama3.1:8b', "
+            "'claude-sonnet-4-6') to apply that everywhere. Useful for "
+            "quick 'how well does <model> handle all the non-coding roles?' "
+            "experiments without editing four settings."
+        ),
+    )
     aim_brain_use_ollama: bool = Field(
         default=True,
         description=(

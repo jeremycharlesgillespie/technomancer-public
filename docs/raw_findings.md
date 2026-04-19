@@ -10,6 +10,55 @@ why it matters, supporting evidence (commit/log pointer).
 
 ---
 
+## 2026-04-19 — We burned through Anthropic's MAX 20x weekly quota in under 5 days
+
+**What:** By day 5 of running Technomancer + 40Acres autonomous daemons,
+the Anthropic Max 20x subscription (the highest non-enterprise tier
+Anthropic sells) showed **94% of the weekly "All models" bucket
+consumed**, with Sonnet untouched at 0%. Resets Friday 4am. That means
+the two projects shipped ~500 commits on the full Max 20x budget plus
+some. The *cap* is the constraint, not the cost per story.
+
+**Why it matters:** This is its own headline. The closest competitor
+pitch ("AI coding agent that writes code for you") implies a task-per-
+day cadence. Technomancer's cadence is task-per-hour sustained for 5
+days on the most expensive consumer plan available — and it ran out.
+Two useful angles for the paper:
+
+1. **Saturation is the autonomy test.** If an autonomous system doesn't
+   hit the ceiling of whatever resource you give it, it's probably not
+   being aggressive enough about finding work to do. Technomancer's
+   brain generates new stories on idle cycles, the splitter
+   recursively decomposes failures, AIMM proposes hypotheses, AIV
+   scores every merge — every role burns compute by design. The
+   resource cap surfaces as a natural back-pressure.
+
+2. **Tiered model routing is the obvious mitigation.** The Sonnet
+   bucket was at 0% because I gutted Ollama earlier in the week and
+   forced everything through claude -p (Opus for workers, Haiku for
+   brain). Re-introducing ollama for classification-shaped work (AIM
+   brain decision, dedup judge, AIMM observer, AIMM suggester) and
+   routing code generation to Sonnet instead of Opus is a 10× cost
+   reduction without architectural change. That is: the system is
+   dominated by Opus calls that don't need Opus-grade reasoning.
+
+**The specific trigger:** at 94% weekly consumption, session-level
+usage was still 28% on the current rolling window. So the weekly cap
+is hit by *sustained* operation, not a burst. A less aggressive
+system would never approach the weekly ceiling in a week; ours hit it
+by day 5. Measure of how autonomous autonomy actually gets.
+
+**Evidence:** Anthropic usage dashboard screenshot (not committed,
+personal). Raw number: 94% of Max 20x weekly, day 5 of the reset
+window, with daemons stopped for parts of days 3-4.
+
+**Action taken:** AIMs stopped for the remainder of the week; test
+suite pruned (`--reruns` removed, top-10 slow tests mocked). Ollama
+routing plan in flight — re-introduce ollama as tier-0 for
+classification tasks and save the Claude budget for code generation.
+
+---
+
 ## 2026-04-18 — Competitive landscape: what exists vs what Technomancer is
 
 **What:** Survey of adjacent commercial + open-source systems in the

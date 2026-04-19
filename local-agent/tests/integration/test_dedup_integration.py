@@ -239,21 +239,19 @@ class TestLLMFailureFallsOpen:
     ``is_near_exact_duplicate`` must fall open.
     """
 
-    def test_subprocess_timeout_returns_fallopen_tuple(
+    def test_router_failure_returns_fallopen_tuple(
         self, reset_binary_cache
     ):
-        """``subprocess.TimeoutExpired`` → ``(False, "llm_timeout")``.
+        """Router returns None (any error path) → ``(False, "llm_unavailable")``.
 
-        Haiku round-trips occasionally stall on cold-start GPU load or
-        network hiccups. The 30s timeout guard is what keeps the idea
-        pipeline from deadlocking on a single unresponsive call.
+        Under the post-routing architecture (TK-???), every subprocess-
+        level error (TimeoutExpired, missing binary, non-zero exit,
+        connection reset) collapses to a single ``None`` return from
+        ``agent.llm_router.complete``. The dedup gate falls open on
+        every such path. The router has its own unit-test coverage for
+        the individual error variants.
         """
-        def _raise_timeout(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="claude", timeout=30)
-
-        with patch(
-            "idea_board.dedup_llm.subprocess.run", side_effect=_raise_timeout
-        ):
+        with patch("agent.llm_router.complete", return_value=None):
             is_dup, reason = dedup_llm.is_near_exact_duplicate(
                 "Story A title",
                 "Story A description",
@@ -262,72 +260,11 @@ class TestLLMFailureFallsOpen:
             )
 
         assert is_dup is False, (
-            "Timeout must fall open, not veto — killing a real story on "
-            "a transient Haiku blip is the exact regression this guard "
-            "prevents"
+            "Router failure must fall open, not veto — killing a real "
+            "story on a transient LLM blip is the exact regression this "
+            "guard prevents"
         )
-        assert reason == "llm_timeout", (
-            "reason code must be 'llm_timeout' specifically — generic "
-            "error codes lose the signal that distinguishes cold-start "
-            "stalls from other LLM failure modes in aggregate logs"
-        )
-
-    def test_missing_binary_returns_fallopen_without_subprocess(
-        self, monkeypatch
-    ):
-        """No ``claude`` on PATH → ``(False, "no_binary")``, subprocess never runs.
-
-        Local-dev machines without Claude Code installed must not crash
-        the dedup path. The guard short-circuits before the subprocess
-        layer so ``subprocess.run`` is never even reached.
-        """
-        monkeypatch.setattr(dedup_llm, "_claude_binary_cache", None)
-        monkeypatch.setattr(dedup_llm, "_find_claude_binary", lambda: None)
-
-        with patch("idea_board.dedup_llm.subprocess.run") as mock_run:
-            is_dup, reason = dedup_llm.is_near_exact_duplicate(
-                "Story A title",
-                "Story A description",
-                "Story B title",
-                "Story B description",
-            )
-
-        assert is_dup is False
-        assert reason == "no_binary"
-        assert mock_run.call_count == 0, (
-            "subprocess.run must never be invoked when the binary is "
-            "absent — the no_binary guard is the gate that protects "
-            "local dev environments from spurious subprocess errors"
-        )
-
-    def test_nonzero_exit_returns_fallopen_tuple(self, reset_binary_cache):
-        """``claude -p`` exit code != 0 → ``(False, "llm_exit_<code>")``.
-
-        When Haiku is rate-limited or the subscription lapses, claude -p
-        exits non-zero. The dedup gate still falls open (keep, don't
-        veto) and the exit code is preserved in the reason for
-        operator diagnosis.
-        """
-        failed_cp = MagicMock(
-            returncode=1,
-            stdout="",
-            stderr="rate-limited",
-        )
-        with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=failed_cp
-        ):
-            is_dup, reason = dedup_llm.is_near_exact_duplicate(
-                "A title", "A desc", "B title", "B desc"
-            )
-
-        assert is_dup is False
-        assert reason.startswith("llm_exit_"), (
-            f"reason must encode the exit code; got {reason!r}"
-        )
-        assert "1" in reason, (
-            "specific exit code must be preserved in the reason so "
-            "dashboards can distinguish rate-limits (1) from crashes (2+)"
-        )
+        assert reason == "llm_unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -349,9 +286,8 @@ class TestLLMVerdictPropagation:
         response or dedup log entry can quote the model's rationale.
         """
         stdout = '{"verdict": "SAME", "reason": "same files, same outcome"}'
-        fake_cp = MagicMock(returncode=0, stdout=stdout, stderr="")
         with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
+            "agent.llm_router.complete", return_value=stdout
         ) as mock_run:
             is_dup, reason = dedup_llm.is_near_exact_duplicate(
                 "Cache Ollama responses",

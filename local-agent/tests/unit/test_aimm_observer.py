@@ -72,26 +72,14 @@ def sample_test_output() -> str:
     return "============ 5 passed in 0.42s ============"
 
 
-def _claude_ok(result_text: str) -> dict:
-    return {
-        "success": True,
-        "result": result_text,
-        "cost_usd": 0.0,
-        "session_id": "sess-1",
-        "duration": 0.1,
-        "error": None,
-    }
+def _claude_ok(result_text: str) -> str:
+    """Router returns the raw LLM text directly (not a dict)."""
+    return result_text
 
 
-def _claude_err(error: str = "boom") -> dict:
-    return {
-        "success": False,
-        "result": "",
-        "cost_usd": 0.0,
-        "session_id": "",
-        "duration": 0.1,
-        "error": error,
-    }
+def _claude_err(error: str = "boom") -> None:
+    """Router returns None on any LLM-side failure."""
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +265,7 @@ class TestScoreShippedStory:
             ' "why_it_matters": "exposed a latent race", "evidence_pointer": "abc1234",'
             ' "theme": "failure-mode discoveries"}'
         )
-        with patch("aimm.observer.run_claude_prompt", return_value=fake) as mock_run:
+        with patch("agent.llm_router.complete", return_value=fake) as mock_run:
             obs = score_shipped_story(
                 sample_story,
                 sample_commit,
@@ -290,15 +278,16 @@ class TestScoreShippedStory:
         assert obs.theme == "failure-mode discoveries"
         assert obs.reason == "ok"
         mock_run.assert_called_once()
-        # claude -p was invoked with a prompt that mentions the story key
-        (prompt_arg,) = mock_run.call_args.args
+        # Router signature: complete(role, prompt, timeout=...)
+        role_arg, prompt_arg = mock_run.call_args.args
+        assert role_arg == "aimm_observer"
         assert "TK-660" in prompt_arg
 
     def test_malformed_response_returns_parse_failure(
         self, rubric_file, sample_story, sample_commit, sample_test_output
     ):
         fake = _claude_ok("definitely not json")
-        with patch("aimm.observer.run_claude_prompt", return_value=fake):
+        with patch("agent.llm_router.complete", return_value=fake):
             obs = score_shipped_story(
                 sample_story,
                 sample_commit,
@@ -313,7 +302,7 @@ class TestScoreShippedStory:
     def test_claude_failure_returns_llm_error(
         self, rubric_file, sample_story, sample_commit, sample_test_output
     ):
-        with patch("aimm.observer.run_claude_prompt", return_value=_claude_err()):
+        with patch("agent.llm_router.complete", return_value=_claude_err()):
             obs = score_shipped_story(
                 sample_story,
                 sample_commit,
@@ -327,7 +316,7 @@ class TestScoreShippedStory:
         self, rubric_file, sample_story, sample_commit, sample_test_output
     ):
         with patch(
-            "aimm.observer.run_claude_prompt",
+            "agent.llm_router.complete",
             side_effect=RuntimeError("subprocess exploded"),
         ):
             obs = score_shipped_story(
@@ -343,7 +332,7 @@ class TestScoreShippedStory:
         self, tmp_path, sample_story, sample_commit, sample_test_output
     ):
         missing = tmp_path / "nope.md"
-        with patch("aimm.observer.run_claude_prompt") as mock_run:
+        with patch("agent.llm_router.complete") as mock_run:
             obs = score_shipped_story(
                 sample_story,
                 sample_commit,
@@ -353,22 +342,23 @@ class TestScoreShippedStory:
         assert obs.reason == "rubric_unavailable"
         mock_run.assert_not_called()
 
-    def test_non_dict_result_returns_llm_error(
+    def test_non_parseable_result_returns_parse_failure(
         self, rubric_file, sample_story, sample_commit, sample_test_output
     ):
-        with patch("aimm.observer.run_claude_prompt", return_value="oops"):
+        """Router returned a string but it has no JSON object — parse fail."""
+        with patch("agent.llm_router.complete", return_value="oops"):
             obs = score_shipped_story(
                 sample_story,
                 sample_commit,
                 sample_test_output,
                 rubric_path=rubric_file,
             )
-        assert obs.reason == "llm_error"
+        assert obs.reason == "parse_failure"
 
     def test_function_never_raises_on_any_input(self, rubric_file):
         """Scoring must swallow every exception path."""
         with patch(
-            "aimm.observer.run_claude_prompt",
+            "agent.llm_router.complete",
             side_effect=Exception("arbitrary"),
         ):
             obs = score_shipped_story({}, {}, "", rubric_path=rubric_file)
@@ -411,7 +401,7 @@ class TestNoJiraMutations:
     ):
         before = {m for m in sys.modules if "jira" in m.lower()}
         with patch(
-            "aimm.observer.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok('{"finding_worthy": false}'),
         ):
             score_shipped_story(

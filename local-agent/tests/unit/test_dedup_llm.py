@@ -222,7 +222,7 @@ class TestIsNearExactDuplicate:
         fake_cp = _fake_completed_process(
             _verdict_json("DIFFERENT", "scopes diverge")
         )
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete", return_value=fake_cp.stdout):
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
             )
@@ -230,43 +230,24 @@ class TestIsNearExactDuplicate:
         assert is_dup is False
         assert reason == "scopes diverge"
 
-    def test_timeout_returns_llm_timeout(self, story_a, story_b):
-        """AC #2: TimeoutExpired → (False, 'llm_timeout')."""
-        with patch(
-            "idea_board.dedup_llm.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=30),
-        ):
+    def test_router_failure_returns_llm_unavailable(self, story_a, story_b):
+        """All router-side error paths (timeout, non-zero exit, missing binary,
+        network failure) collapse to a single code now that the router owns
+        subprocess error handling. The router returns None; this function
+        falls open with ``(False, "llm_unavailable")``.
+        """
+        with patch("agent.llm_router.complete", return_value=None):
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
             )
 
         assert is_dup is False
-        assert reason == "llm_timeout"
-
-    def test_nonzero_exit_returns_llm_exit_code(self, story_a, story_b):
-        """AC #3: Non-zero exit → (False, 'llm_exit_<code>')."""
-        fake_cp = _fake_completed_process("", returncode=2, stderr="boom")
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
-            is_dup, reason = is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-
-        assert is_dup is False
-        assert reason == "llm_exit_2"
-
-    def test_nonzero_exit_includes_actual_code(self, story_a, story_b):
-        """AC #3: exit code is interpolated into the reason string."""
-        fake_cp = _fake_completed_process("", returncode=137, stderr="OOM")
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
-            _, reason = is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-        assert reason == "llm_exit_137"
+        assert reason == "llm_unavailable"
 
     def test_no_json_in_output_returns_no_json(self, story_a, story_b):
         """AC #4: No JSON in output → (False, 'no_json')."""
         fake_cp = _fake_completed_process("just prose, no braces here at all")
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete", return_value=fake_cp.stdout):
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
             )
@@ -277,7 +258,7 @@ class TestIsNearExactDuplicate:
     def test_empty_stdout_returns_no_json(self, story_a, story_b):
         """AC #4: empty stdout is the same fall-open path as missing JSON."""
         fake_cp = _fake_completed_process("")
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete", return_value=fake_cp.stdout):
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
             )
@@ -288,7 +269,7 @@ class TestIsNearExactDuplicate:
     def test_malformed_json_returns_parse_failure(self, story_a, story_b):
         """AC #5: Malformed JSON → (False, 'parse_failure')."""
         fake_cp = _fake_completed_process('{"verdict": "SAME", "reason":}')
-        with patch("idea_board.dedup_llm.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete", return_value=fake_cp.stdout):
             is_dup, reason = is_near_exact_duplicate(
                 story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
             )
@@ -296,95 +277,9 @@ class TestIsNearExactDuplicate:
         assert is_dup is False
         assert reason == "parse_failure"
 
-    def test_missing_binary_returns_no_binary_without_subprocess(
-        self, story_a, story_b, monkeypatch
-    ):
-        """AC: Missing binary → (False, 'no_binary'); subprocess.run is NOT called."""
-        monkeypatch.setattr(dedup_llm, "_find_claude_binary", lambda: None)
-        with patch("idea_board.dedup_llm.subprocess.run") as mock_run:
-            is_dup, reason = is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
 
-        assert is_dup is False
-        assert reason == "no_binary"
-        assert mock_run.call_count == 0
-
-
-# ---------------------------------------------------------------------------
-# subprocess invocation shape
-# ---------------------------------------------------------------------------
-
-
-class TestSubprocessInvocation:
-    """Lock down the command shape so a future refactor doesn't silently
-    drop ``--model`` or change the output format and mask a regression
-    in the parser path.
-    """
-
-    def test_command_includes_model_and_prompt_flag(self, story_a, story_b):
-        fake_cp = _fake_completed_process(_verdict_json("DIFFERENT"))
-        with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
-        ) as mock_run:
-            is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-
-        cmd = mock_run.call_args.args[0]
-        assert "-p" in cmd
-        assert "--model" in cmd
-        assert DEFAULT_MODEL in cmd
-
-    def test_default_timeout_is_forwarded(self, story_a, story_b):
-        fake_cp = _fake_completed_process(_verdict_json("DIFFERENT"))
-        with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
-        ) as mock_run:
-            is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-
-        assert mock_run.call_args.kwargs.get("timeout") == DEFAULT_TIMEOUT
-
-    def test_custom_timeout_is_forwarded(self, story_a, story_b):
-        fake_cp = _fake_completed_process(_verdict_json("DIFFERENT"))
-        with patch(
-            "idea_board.dedup_llm.subprocess.run", return_value=fake_cp
-        ) as mock_run:
-            is_near_exact_duplicate(
-                story_a["title"],
-                story_a["desc"],
-                story_b["title"],
-                story_b["desc"],
-                timeout=7,
-            )
-
-        assert mock_run.call_args.kwargs.get("timeout") == 7
-
-    def test_arbitrary_subprocess_error_returns_subprocess_error(
-        self, story_a, story_b
-    ):
-        """OSError / unexpected exception → caller still gets a tuple,
-        never raises."""
-        with patch(
-            "idea_board.dedup_llm.subprocess.run",
-            side_effect=OSError("disk full"),
-        ):
-            is_dup, reason = is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-
-        assert is_dup is False
-        assert reason == "subprocess_error"
-
-    def test_function_never_raises_on_unexpected_exception(self, story_a, story_b):
-        with patch(
-            "idea_board.dedup_llm.subprocess.run",
-            side_effect=RuntimeError("kernel panic"),
-        ):
-            # Just asserting nothing escapes.
-            is_dup, _ = is_near_exact_duplicate(
-                story_a["title"], story_a["desc"], story_b["title"], story_b["desc"]
-            )
-        assert is_dup is False
+# Subprocess-invocation tests retired: the command shape is now owned by
+# ``agent.llm_router._claude_chat`` (and by the ollama primary path in
+# the router). See ``tests/unit/test_llm_router.py`` for the router's
+# own shape + error-path coverage. This module only tests the verdict-
+# parsing and the pass-through-on-failure contract.

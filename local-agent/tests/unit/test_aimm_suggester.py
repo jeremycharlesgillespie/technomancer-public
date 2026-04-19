@@ -84,26 +84,14 @@ def three_pending_stories():
     ]
 
 
-def _claude_ok(result_text: str) -> dict:
-    return {
-        "success": True,
-        "result": result_text,
-        "cost_usd": 0.0,
-        "session_id": "sess-1",
-        "duration": 0.1,
-        "error": None,
-    }
+def _claude_ok(result_text: str) -> str:
+    """Router returns raw LLM text directly (not a dict)."""
+    return result_text
 
 
-def _claude_err(error: str = "boom") -> dict:
-    return {
-        "success": False,
-        "result": "",
-        "cost_usd": 0.0,
-        "session_id": "",
-        "duration": 0.1,
-        "error": error,
-    }
+def _claude_err(error: str = "boom") -> None:
+    """Router returns None on any LLM-side failure."""
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -272,7 +260,7 @@ class TestSuggestApproval:
             _claude_ok('{"recommend": true, "reasoning": "rubric pass 503"}'),
         ]
         with patch(
-            "aimm.suggester.run_claude_prompt", side_effect=responses
+            "agent.llm_router.complete", side_effect=responses
         ) as mock_run:
             results = [
                 suggest_approval(
@@ -316,7 +304,7 @@ class TestSuggestApproval:
             '{"recommend": true, "reasoning": "first run"}'
         )
         with patch(
-            "aimm.suggester.run_claude_prompt", return_value=first_fake
+            "agent.llm_router.complete", return_value=first_fake
         ) as mock_run:
             first = suggest_approval(
                 story, SAMPLE_RUBRIC, findings_path=tmp_findings
@@ -329,7 +317,7 @@ class TestSuggestApproval:
         decisions_after_first = tmp_decisions_log.read_text(encoding="utf-8")
 
         # Second call: must not invoke claude -p and must not append.
-        with patch("aimm.suggester.run_claude_prompt") as mock_run2:
+        with patch("agent.llm_router.complete") as mock_run2:
             second = suggest_approval(
                 story, SAMPLE_RUBRIC, findings_path=tmp_findings
             )
@@ -343,7 +331,7 @@ class TestSuggestApproval:
     def test_missing_story_key_returns_missing_key(
         self, tmp_findings, tmp_decisions_log
     ):
-        with patch("aimm.suggester.run_claude_prompt") as mock_run:
+        with patch("agent.llm_router.complete") as mock_run:
             s = suggest_approval(
                 {"title": "no key"}, SAMPLE_RUBRIC, findings_path=tmp_findings
             )
@@ -355,7 +343,7 @@ class TestSuggestApproval:
     def test_missing_rubric_returns_rubric_unavailable(
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
-        with patch("aimm.suggester.run_claude_prompt") as mock_run:
+        with patch("agent.llm_router.complete") as mock_run:
             s = suggest_approval(
                 three_pending_stories[0], "", findings_path=tmp_findings
             )
@@ -367,7 +355,7 @@ class TestSuggestApproval:
     def test_whitespace_only_rubric_returns_rubric_unavailable(
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
-        with patch("aimm.suggester.run_claude_prompt") as mock_run:
+        with patch("agent.llm_router.complete") as mock_run:
             s = suggest_approval(
                 three_pending_stories[0], "   \n\t  ", findings_path=tmp_findings
             )
@@ -378,7 +366,7 @@ class TestSuggestApproval:
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
         with patch(
-            "aimm.suggester.run_claude_prompt", return_value=_claude_err()
+            "agent.llm_router.complete", return_value=_claude_err()
         ):
             s = suggest_approval(
                 three_pending_stories[0],
@@ -394,7 +382,7 @@ class TestSuggestApproval:
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             side_effect=RuntimeError("subprocess exploded"),
         ):
             s = suggest_approval(
@@ -409,7 +397,7 @@ class TestSuggestApproval:
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok("definitely not json"),
         ):
             s = suggest_approval(
@@ -424,13 +412,13 @@ class TestSuggestApproval:
     def test_non_dict_result_returns_llm_error(
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
-        with patch("aimm.suggester.run_claude_prompt", return_value="oops"):
+        with patch("agent.llm_router.complete", return_value="oops"):
             s = suggest_approval(
                 three_pending_stories[0],
                 SAMPLE_RUBRIC,
                 findings_path=tmp_findings,
             )
-        assert s.reason == "llm_error"
+        assert s.reason == "parse_failure"
 
     def test_findings_heading_created_only_once(
         self, three_pending_stories, tmp_findings, tmp_decisions_log
@@ -439,7 +427,7 @@ class TestSuggestApproval:
             _claude_ok(f'{{"recommend": true, "reasoning": "r{i}"}}')
             for i in range(3)
         ]
-        with patch("aimm.suggester.run_claude_prompt", side_effect=responses):
+        with patch("agent.llm_router.complete", side_effect=responses):
             for story in three_pending_stories:
                 suggest_approval(
                     story, SAMPLE_RUBRIC, findings_path=tmp_findings
@@ -451,7 +439,7 @@ class TestSuggestApproval:
         self, three_pending_stories, tmp_findings, tmp_decisions_log
     ):
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok('{"recommend": true, "reasoning": "r"}'),
         ):
             suggest_approval(
@@ -473,7 +461,7 @@ class TestSuggestApproval:
             encoding="utf-8",
         )
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok('{"recommend": true, "reasoning": "r"}'),
         ):
             suggest_approval(
@@ -546,7 +534,7 @@ class TestNoJiraMutations:
         provider = MagicMock(name="BoardProvider")
 
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok(
                 '{"recommend": true, "reasoning": "r"}'
             ),
@@ -581,7 +569,7 @@ class TestNoJiraMutations:
     ):
         before = {m for m in sys.modules if "jira" in m.lower()}
         with patch(
-            "aimm.suggester.run_claude_prompt",
+            "agent.llm_router.complete",
             return_value=_claude_ok(
                 '{"recommend": false, "reasoning": "skip"}'
             ),

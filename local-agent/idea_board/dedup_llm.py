@@ -173,41 +173,12 @@ def is_near_exact_duplicate(
         ``(False, <error_code_or_reason>)`` so callers fall open and the
         new story is not blocked by an LLM outage.
     """
-    binary = _find_claude_binary()
-    if not binary:
-        logger.warning("[dedup_llm] Claude binary not found; falling open")
-        return False, "no_binary"
+    from agent.llm_router import complete
 
     prompt = _build_prompt(a_title, a_desc, b_title, b_desc)
-    cmd = [
-        binary, "-p",
-        "--model", DEFAULT_MODEL,
-        "--output-format", "text",
-        prompt,
-    ]
-
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("[dedup_llm] claude -p timed out after %ds", timeout)
-        return False, "llm_timeout"
-    except Exception as exc:
-        logger.warning("[dedup_llm] claude -p raised: %s", exc)
-        return False, "subprocess_error"
-
-    if proc.returncode != 0:
-        logger.warning(
-            "[dedup_llm] claude -p exit %d: %s",
-            proc.returncode,
-            (proc.stderr or "")[:200],
-        )
-        return False, f"llm_exit_{proc.returncode}"
-
-    return _parse_verdict(proc.stdout or "")
+    raw = complete("dedup_judge", prompt, timeout=timeout)
+    if raw is None:
+        # Router already logged which layer failed. Fall open so a new
+        # story isn't blocked by an LLM outage.
+        return False, "llm_unavailable"
+    return _parse_verdict(raw)
