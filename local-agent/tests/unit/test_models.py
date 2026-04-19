@@ -259,6 +259,102 @@ class TestHighOverlapDelegatesToLLM:
 
 
 # ---------------------------------------------------------------------------
+# Overlap denominator — TK-754 contract (``min``, not ``max``)
+# ---------------------------------------------------------------------------
+#
+# The prefilter formula is ``len(intersection) / min(len(a), len(b))``.
+# Dividing by the *smaller* set means a short story whose vocabulary is
+# fully subsumed by a long story still registers as near-100% overlap,
+# routing that subset case to the LLM judge (where it belongs). A prior
+# iteration used ``max`` in the denominator, which buried exactly those
+# cases as "low overlap" and silently skipped the judge. These tests
+# pin the ``min`` choice so a future refactor can't quietly flip it.
+# ---------------------------------------------------------------------------
+
+
+class TestMinDenominatorRoutesSubsetToLLM:
+    """Small vocabulary inside a large one must reach the LLM judge."""
+
+    def test_short_story_contained_in_long_story_invokes_llm(self):
+        """3-stem new story inside 20-stem existing → LLM called once.
+
+        Intersection size 3 under ``min`` gives overlap=1.0 (well
+        above the 20% threshold); under ``max`` it would have been
+        3/20=0.15 and the prefilter would have blocked the call. The
+        ``call_count == 1`` assertion is the tripwire — if someone
+        flips the denominator back to ``max``, this test fires.
+        """
+        # 20 unique 5-char stems, including {cache, ollam, respo}.
+        existing = Idea(
+            id="TK-300",
+            title="Cache Ollama responses database prompt queue thread logger",
+            description=(
+                "config parser router handler adapter server network "
+                "timer client driver engine monitor"
+            ),
+        )
+
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(False, "different scope"),
+        ) as llm_mock:
+            is_dup, reason = _is_duplicate(
+                new_title="Cache Ollama responses",
+                new_desc="",
+                existing=existing,
+            )
+
+        assert llm_mock.call_count == 1, (
+            "min-denominator must route a subset-vocabulary pair to "
+            "the LLM judge; call_count==0 means the formula regressed "
+            "to max() and the prefilter is now silently skipping exactly "
+            "the borderline cases the judge exists to handle"
+        )
+        assert is_dup is False
+        assert reason == "different scope"
+
+    def test_reason_encodes_min_denominator_value(self):
+        """Below-threshold reason string shows the ``min``-based percentage.
+
+        Constructs a pair where ``min`` and ``max`` both produce values
+        below the 20% threshold (so both versions of the code skip the
+        LLM), but the *number* in the ``low_overlap=…`` reason differs:
+
+        * ``min`` formula → 1/10 = 0.10 → reason ``"low_overlap=0.10"``
+        * ``max`` formula → 1/20 = 0.05 → reason ``"low_overlap=0.05"``
+
+        Asserting on the exact value makes this test sensitive to the
+        denominator choice even when the is_dup verdict is the same,
+        giving a second tripwire below the routing test above.
+        """
+        # Existing set: 20 distinct 5-char stems, only one shared with new.
+        existing = Idea(
+            id="TK-301",
+            title="cache datab promp queue threa logge confi parse route handl",
+            description="adapt serve netwo timer clien drive engin monit secur polic",
+        )
+        # New set: 10 distinct stems, exactly one shared ("cache").
+        new_title = "cache alpha bravo charl delta echoe foxtr golfx hotel india"
+        new_desc = ""
+
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(True, "forced_same"),
+        ) as llm_mock:
+            is_dup, reason = _is_duplicate(new_title, new_desc, existing)
+
+        assert llm_mock.call_count == 0, (
+            "1/10=0.10 is still below the 20% threshold; prefilter "
+            "must skip the LLM here"
+        )
+        assert is_dup is False
+        assert reason == "low_overlap=0.10", (
+            "reason must reflect the min-denominator value (1/10=0.10); "
+            f"a value of 0.05 means the code reverted to max(); got {reason!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # _meaningful_words — TK-753 contract
 # ---------------------------------------------------------------------------
 #

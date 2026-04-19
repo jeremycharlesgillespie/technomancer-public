@@ -353,7 +353,11 @@ def _is_duplicate(new_title: str, new_desc: str, existing: Idea) -> tuple[bool, 
     if not new_combined or not existing_combined:
         return False, "empty_words"
 
-    combined_overlap = len(new_combined & existing_combined) / max(
+    # Divide by the smaller set's size so a short story whose vocabulary
+    # is fully contained in a longer story's still registers as high
+    # overlap — that subset case is exactly the borderline where the LLM
+    # judge earns its keep. max() would bury it as "low overlap".
+    combined_overlap = len(new_combined & existing_combined) / min(
         len(new_combined), len(existing_combined)
     )
 
