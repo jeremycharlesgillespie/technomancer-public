@@ -2046,6 +2046,51 @@ class TestRunPytestWithProgressTimeoutFromSettings:
         assert result.returncode == 0
         proc.kill.assert_not_called()
 
+    def test_default_timeout_parameter_uses_pytest_timeout_constant(self, tmp_path):
+        """Function default for ``timeout`` is ``PYTEST_TIMEOUT``; a non-600 configured
+        value propagates correctly to the subprocess kill, confirming no hardcodes.
+
+        Acceptance criteria (TK-809):
+        - Function default equals the module-level PYTEST_TIMEOUT constant.
+        - PYTEST_TIMEOUT was sourced from settings.executor_pytest_timeout at import.
+        - Passing settings.executor_pytest_timeout=300 (not 600) kills at exactly 300.
+        """
+        import inspect
+
+        sig = inspect.signature(_run_pytest_with_progress)
+        default_timeout = sig.parameters["timeout"].default
+        assert default_timeout == PYTEST_TIMEOUT, (
+            f"_run_pytest_with_progress default timeout is {default_timeout!r}, "
+            f"expected PYTEST_TIMEOUT={PYTEST_TIMEOUT!r}"
+        )
+
+        # PYTEST_TIMEOUT is set at module load from settings; they must agree
+        # before any mocking is applied.
+        assert PYTEST_TIMEOUT == app_settings.executor_pytest_timeout
+
+        # Now verify a non-600 value flows through to the kill correctly.
+        custom_timeout = 300  # deliberately not 600 to catch hardcoded literals
+        state = ExecutionState(idea_id="TK-809-DEFAULT-PARAM")
+        proc = self._build_hanging_proc()
+        times = iter([0.0, float(custom_timeout + 1)])
+
+        with _mock_setting("executor_pytest_timeout", custom_timeout), \
+             patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor.time.time", side_effect=lambda: next(times)), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+                _run_pytest_with_progress(
+                    ["pytest"],
+                    cwd=str(tmp_path),
+                    state=state,
+                    label="tests",
+                    timeout=app_settings.executor_pytest_timeout,
+                )
+
+        assert exc_info.value.timeout == custom_timeout
+        assert exc_info.value.timeout != 600
+        proc.kill.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # _run_pytest_with_progress — elapsed_seconds measurement accuracy (TK-806)
