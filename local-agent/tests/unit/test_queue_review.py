@@ -209,8 +209,23 @@ class TestReviewQueueStep2Advisory:
                 "moderate overlap with done story must not trigger auto-veto"
             )
 
-    def test_high_overlap_with_done_is_flagged_with_comment(self, state):
-        """Real dup-of-done shape → add_comment fires with the marker."""
+    def test_high_overlap_with_done_is_flagged_with_comment(
+        self, state, mock_dedup_llm
+    ):
+        """Real dup-of-done shape → add_comment fires with the marker.
+
+        Drives Step 2 via the ``mock_dedup_llm`` dedup seam so the
+        assertion is independent of which judge is live. The legacy
+        word-overlap heuristic returned True for this pair; the LLM
+        near-exact judge (TK-743) returns ``(False, "no_binary")`` when
+        no Claude binary is present — which is the normal case in CI —
+        so the test would otherwise flip from green to red the moment
+        the seam is rewired. Mocking the seam pins the outcome to the
+        advisory-comment behavior this test is actually meant to lock
+        in, regardless of whichever judge ships underneath.
+        """
+        mock_dedup_llm.return_value = True
+
         ideas = [
             FakeIdea(
                 id="TK-600",
