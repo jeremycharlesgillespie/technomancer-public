@@ -218,3 +218,64 @@ def test_tk571_is_not_dup_of_tk321():
         ),
         existing=tk321,
     )
+
+
+# ---------------------------------------------------------------------------
+# TK-750 — LLM dedup verdict (SAME) flagged as duplicate
+# ---------------------------------------------------------------------------
+#
+# The dedup seam at ``idea_board.models._is_duplicate`` is the one place
+# every caller (``add_idea``, queue review, ``/api/jira/create``) consults
+# to decide whether two stories collide. Today the implementation is a
+# word-overlap heuristic, but the seam is intentionally swappable for an
+# LLM near-exact judge — the ``mock_dedup_llm`` fixture exists for that
+# transition.
+#
+# This test pins down the SAME-verdict half of the contract: when the
+# (mocked) LLM returns True for a near-identical pair, the dedup gate
+# must fire. If a future refactor drops the call into ``_is_duplicate``
+# entirely (e.g. caches the result and skips the judge on a subsequent
+# call), ``call_count == 0`` will catch the regression here before it
+# silently neuters the dedup signal in production.
+
+
+def test_is_duplicate_true_duplicate_llm_verdict(mock_dedup_llm):
+    """LLM verdict SAME → ``_is_duplicate`` returns True and judge was called.
+
+    Fed two stories with heavy stem overlap (the kind of restated pair the
+    word-overlap heuristic catches today and an LLM judge would catch
+    tomorrow), the dedup seam must (a) return True and (b) actually
+    invoke the judge — not short-circuit on a cached or stale verdict.
+    """
+    # Re-import through the module so we hit the monkeypatched attribute,
+    # not the original function bound at file-import time above.
+    from idea_board import models
+
+    mock_dedup_llm.return_value = True
+
+    existing = Idea(
+        id="TK-900",
+        title="Cache Ollama responses to improve performance",
+        description=(
+            "WHAT: Cache responses keyed by prompt hash. "
+            "WHY: Repeated prompts waste GPU time. "
+            "HOW: Wrap the Ollama call site with a hash-keyed lookup."
+        ),
+        state="proposed",
+    )
+
+    result = models._is_duplicate(
+        new_title="Cache Ollama responses for performance gains",
+        new_desc=(
+            "WHAT: Add a response cache for Ollama prompts. "
+            "WHY: Identical prompts repeat work. "
+            "HOW: Hash the prompt and short-circuit on cache hit."
+        ),
+        existing=existing,
+    )
+
+    assert result is True, "LLM SAME verdict must produce a duplicate flag"
+    assert mock_dedup_llm.call_count >= 1, (
+        "Dedup judge must be invoked — a 0 call count means the seam "
+        "short-circuited and the LLM verdict was never consulted"
+    )
