@@ -495,3 +495,73 @@ class TestLiveDetailRoute:
             elapsed = time.monotonic() - start
         assert resp.status_code == 200
         assert elapsed < 5.0, f"/live/TK-785 took {elapsed:.2f}s (exceeds 5s budget)"
+
+
+# ---------------------------------------------------------------------------
+# TK-782 — href attributes on execution list items in /live template
+# ---------------------------------------------------------------------------
+
+
+class TestTK782HrefListItems:
+    """Verify /live renders href attributes on execution list items (TK-782).
+
+    Acceptance criteria:
+    - Each execution list item has an href attribute (when route accessible)
+    - Template renders without syntax errors
+    - hrefs use _live_route_accessible helper to generate URLs
+    """
+
+    def test_executing_item_has_href_attribute(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Executing list item must include href="/live/<key>" when accessible."""
+        _seed_executing(fake_agent_root, "TK-782")
+        with mock_route_checker(return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert 'href="/live/TK-782"' in body
+
+    def test_recent_item_has_href_attribute(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Recent-completion list item must include href="/live/<key>" when accessible."""
+        _seed_recent(fake_agent_root, "TK-782")
+        with mock_route_checker(return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert 'href="/live/TK-782"' in body
+
+    def test_template_renders_without_errors(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Template must return HTTP 200 with valid HTML — no syntax errors."""
+        _seed_executing(fake_agent_root, "TK-782")
+        with mock_route_checker(return_value=True), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "<!DOCTYPE html>" in body
+        assert "</html>" in body
+
+    def test_href_uses_helper_function(
+        self, client, fake_agent_root, mock_route_checker
+    ):
+        """Verify hrefs are generated via _live_route_accessible helper — not hardcoded."""
+        _seed_executing(fake_agent_root, "TK-782")
+        call_log: list[str] = []
+
+        def tracking_helper(key: str) -> bool:
+            call_log.append(key)
+            return True
+
+        with patch("idea_board.web._live_route_accessible", side_effect=tracking_helper), \
+             patch("idea_board.web.settings.jira_project_key", "TK"):
+            resp = client.get("/live")
+
+        assert resp.status_code == 200
+        assert "TK-782" in call_log, "_live_route_accessible must be called for each list item key"
