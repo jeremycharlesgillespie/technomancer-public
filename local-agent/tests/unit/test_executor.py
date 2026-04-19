@@ -2009,3 +2009,55 @@ class TestRunPytestWithProgressTimeoutFromSettings:
 
         assert result.returncode == 0
         proc.kill.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _run_pytest_with_progress — elapsed_seconds measurement accuracy (TK-806)
+# ---------------------------------------------------------------------------
+
+
+class TestRunPytestElapsedMeasurement:
+    """Verify the elapsed timing captured by ``_run_pytest_with_progress``
+    reflects actual wall-clock duration.
+
+    Uses a real ``time.sleep`` inside the mocked Popen's ``readline`` so
+    ``time.time()`` is *not* patched — the measurement logic runs against
+    real time. The value handed to :func:`_get_pytest_timeout_warning` is
+    the same ``elapsed`` local that gates warning emission, so spying on
+    its first positional argument gives us the measured duration.
+    """
+
+    def test_elapsed_matches_actual_sleep_duration(self, tmp_path):
+        """Fake Popen that sleeps 0.1s: measured elapsed must be within 0.5s."""
+        expected_duration = 0.1
+        state = ExecutionState(idea_id="TK-806-elapsed")
+
+        def _readline_sleeps() -> bytes:
+            import time as _time
+            _time.sleep(expected_duration)
+            return b""
+
+        proc = MagicMock()
+        proc.stdout = MagicMock()
+        proc.stdout.readline.side_effect = _readline_sleeps
+        proc.stdout.read.return_value = b""
+        proc.poll.return_value = 0
+        proc.wait.return_value = 0
+        proc.returncode = 0
+
+        warning_spy = MagicMock(return_value=(False, ""))
+
+        with patch("idea_board.executor.subprocess.Popen", return_value=proc), \
+             patch("idea_board.executor._get_pytest_timeout_warning", warning_spy), \
+             patch("idea_board.executor.EXECUTION_LOGS_DIR", tmp_path):
+            _run_pytest_with_progress(
+                ["pytest"], cwd=str(tmp_path), state=state,
+                label="tests", timeout=1000,
+            )
+
+        warning_spy.assert_called_once()
+        measured_elapsed = warning_spy.call_args.args[0]
+        assert abs(measured_elapsed - expected_duration) <= 0.5, (
+            f"elapsed measurement drifted: got {measured_elapsed:.3f}s, "
+            f"expected ~{expected_duration:.3f}s"
+        )
