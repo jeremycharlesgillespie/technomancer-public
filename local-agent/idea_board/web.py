@@ -4206,8 +4206,14 @@ def aim_dashboard() -> str:
     Renders a header widget that polls /api/aim/status every 5 seconds
     and displays worker PID, status (color-coded), current assignment,
     cycle count, and last decision summary.
+
+    The optional ``?project=`` query param selects which AIM instance to
+    display: empty/``technomancer`` shows the primary AIM; any other name
+    targets a per-project AIM instance. The normalized project name is
+    embedded in the served HTML so the JS initial state is server-confirmed.
     """
-    return _render_aim_dashboard()
+    project = _project_param()
+    return _render_aim_dashboard(project=project)
 
 
 # ---------------------------------------------------------------------------
@@ -4506,8 +4512,9 @@ section { margin-bottom: 1.25rem; }
   let currentWorkStartedAt = null;
 
   // Project selector — AJAX switching without full reload
+  // __PROJECT_JSON__ is replaced server-side; URL param is the fallback.
   const _dashUrlParams = new URLSearchParams(window.location.search);
-  let currentProject = _dashUrlParams.get('project') || 'technomancer';
+  let currentProject = __PROJECT_JSON__ || _dashUrlParams.get('project') || 'technomancer';
 
   function withProject(url) {
     if (!currentProject || currentProject === 'technomancer') return url;
@@ -4898,8 +4905,16 @@ def aim_team_dashboard() -> Response:
     /api/aim/commits, and /api/aim/metrics on the intervals from Decision 5
     and lets the user switch the metrics time window between 1h, 6h, 24h,
     and 7d.
+
+    The optional ``?project=`` query param selects which AIM instance to
+    display: empty/``technomancer`` shows the primary AIM; any other name
+    targets a per-project AIM instance. The normalized project name is
+    injected into the HTML so the JS initial state is server-confirmed.
     """
-    return Response(_AIM_TEAM_DASHBOARD_HTML, mimetype="text/html")
+    project = _project_param()
+    project_json = json.dumps(project)
+    html = _AIM_TEAM_DASHBOARD_HTML.replace("__PROJECT_JSON__", project_json)
+    return Response(html, mimetype="text/html")
 
 
 @app.route("/api/evolve/status")
@@ -7193,12 +7208,21 @@ a { color: var(--accent); }
 """
 
 
-def _render_aim_dashboard() -> str:
-    """Render the /aim dashboard page with worker status widget."""
+def _render_aim_dashboard(project: str = "") -> str:
+    """Render the /aim dashboard page with worker status widget.
+
+    ``project`` is the normalized ``?project=`` value from the request
+    (empty string for the primary Technomancer AIM).  It is JSON-encoded
+    and embedded as the initial ``currentProject`` JS variable so the
+    widget polls the correct project from the first paint rather than
+    waiting for the async project-list fetch to resolve.
+    """
     jira_url = (settings.jira_url or "").rstrip("/")
     # Expose jira_url to the client-side JS as a JSON-encoded string so
     # it handles empty, quotes, etc. safely.
     jira_url_json = json.dumps(jira_url)
+    project_json = json.dumps(project)
+    title_suffix = f" — {project}" if project else ""
     now = datetime.now().strftime("%H:%M:%S")
 
     return f"""<!DOCTYPE html>
@@ -7206,7 +7230,7 @@ def _render_aim_dashboard() -> str:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIM Dashboard</title>
+    <title>AIM Dashboard{title_suffix}</title>
     <style>{AIM_DASHBOARD_CSS}</style>
 </head>
 <body>
@@ -7256,8 +7280,9 @@ def _render_aim_dashboard() -> str:
     const POLL_MS = 5000;
 
     // Project selector — AJAX switching without full reload
+    // Server-side project value takes priority; URL param is the fallback.
     const _aimUrlParams = new URLSearchParams(window.location.search);
-    let currentProject = _aimUrlParams.get('project') || 'technomancer';
+    let currentProject = {project_json} || _aimUrlParams.get('project') || 'technomancer';
 
     function withProject(url) {{
         if (!currentProject || currentProject === 'technomancer') return url;
