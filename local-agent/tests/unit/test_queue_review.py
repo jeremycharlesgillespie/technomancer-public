@@ -568,3 +568,410 @@ class TestReviewQueueReasonLogging:
             if "flagged" in rec.getMessage() and "near-exact" in rec.getMessage()
         ]
         assert flagged, "flagged-dup INFO log must include the LLM reason"
+
+
+# ---------------------------------------------------------------------------
+# TK-762 — Step 2 helper pipeline integration
+# ---------------------------------------------------------------------------
+
+
+class TestFindDuplicateTargetStory:
+    """``find_duplicate_target_story`` is the lookup half of Step 2."""
+
+    def test_returns_first_match_with_reason(self):
+        """First candidate that ``_is_duplicate`` flags wins — order matters.
+
+        Locks the "first match" contract. A later test is the only way
+        to notice if a future refactor switches to "best match" silently.
+        """
+        from idea_board.models import Idea, find_duplicate_target_story
+
+        c1 = Idea(id="TK-A", title="unrelated story", description="alpha", state="done")
+        c2 = Idea(id="TK-B", title="winner", description="beta", state="done")
+        c3 = Idea(id="TK-C", title="also matches", description="gamma", state="done")
+
+        def _fake_is_dup(new_title, new_desc, ref):
+            return (ref.id in ("TK-B", "TK-C"), f"match={ref.id}")
+
+        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+            ref, reason = find_duplicate_target_story("t", "d", [c1, c2, c3])
+
+        assert ref is c2, "helper must return the first matching candidate"
+        assert reason == "match=TK-B"
+
+    def test_returns_none_and_last_reason_when_no_match(self):
+        """When nothing matches, the last non-match reason is surfaced.
+
+        Callers use the reason to detect LLM fall-open outages
+        (``no_binary``, ``llm_timeout``, etc.) and emit a WARNING.
+        Dropping the reason on a no-match would silently disable that
+        observability path.
+        """
+        from idea_board.models import Idea, find_duplicate_target_story
+
+        c1 = Idea(id="TK-A", title="x", description="y", state="done")
+        c2 = Idea(id="TK-B", title="x", description="y", state="done")
+
+        def _fake_is_dup(new_title, new_desc, ref):
+            return (False, f"llm_timeout on {ref.id}")
+
+        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+            ref, reason = find_duplicate_target_story("t", "d", [c1, c2])
+
+        assert ref is None
+        assert reason == "llm_timeout on TK-B", (
+            "no-match path must surface the last reason so LLM outages are loggable"
+        )
+
+    def test_empty_candidates_returns_none_and_empty_reason(self):
+        """No candidates → no LLM calls, no reason."""
+        from idea_board.models import find_duplicate_target_story
+
+        with patch("idea_board.models._is_duplicate") as mock_dedup:
+            ref, reason = find_duplicate_target_story("t", "d", [])
+
+        assert ref is None
+        assert reason == ""
+        mock_dedup.assert_not_called()
+
+
+class TestIsDuplicateOfDoneStory:
+    """``is_duplicate_of_done_story`` narrows Step 2 to Done refs only."""
+
+    def test_done_ref_returns_true(self):
+        from idea_board.models import Idea, is_duplicate_of_done_story
+
+        ref = Idea(id="TK-1", title="t", description="d", state="done")
+        assert is_duplicate_of_done_story(ref) is True
+
+    def test_failed_ref_returns_false(self):
+        """Dups of Failed stories are out of scope for Step 2 (TK-762).
+
+        Step 1 already handles the repeated-failure pattern with an
+        auto-veto, and a one-off Failed dup is often a legitimate
+        retry. The advisory flag would just add noise.
+        """
+        from idea_board.models import Idea, is_duplicate_of_done_story
+
+        ref = Idea(id="TK-1", title="t", description="d", state="failed")
+        assert is_duplicate_of_done_story(ref) is False
+
+    def test_non_terminal_state_returns_false(self):
+        """Only ``done`` is flagged — no other state qualifies."""
+        from idea_board.models import Idea, is_duplicate_of_done_story
+
+        for state in ("proposed", "approved", "refining", "executing", "vetoed"):
+            ref = Idea(id="TK-1", title="t", description="d", state=state)
+            assert is_duplicate_of_done_story(ref) is False, (
+                f"state={state!r} must not qualify as a done-duplicate"
+            )
+
+
+class TestFormatDoneDuplicateComment:
+    """``format_done_duplicate_comment`` owns the advisory-comment shape."""
+
+    def test_contains_marker_state_qualifier_and_manual_hint(self):
+        """Operator context is locked into the advisory text.
+
+        The three signals — ``[Queue Review]`` marker for grouping,
+        ``(done)`` so the operator knows the matched state, and a
+        manual-review directive so nobody expects automation — all
+        have to land in the single string. Missing any of these
+        degrades the operator's ability to act on the comment.
+        """
+        from idea_board.models import Idea, format_done_duplicate_comment
+
+        ref = Idea(id="TK-501", title="t", description="d", state="done")
+        text = format_done_duplicate_comment(ref)
+
+        assert "[Queue Review] Possible dup of TK-501" in text
+        assert "(done)" in text
+        assert "manually" in text.lower()
+
+
+class TestReviewQueueStep2DoneOnly:
+    """TK-762: Step 2 flags Done dups only; Failed dups skip the flow."""
+
+    def test_failed_duplicate_is_not_flagged(self, state, mock_dedup_llm):
+        """A Failed-state duplicate match must not emit the advisory comment.
+
+        The legacy code iterated ``done + failed`` and flagged both.
+        TK-762 narrows Step 2 to Done refs — a Failed dup is either
+        already vetoed (Step 1 pattern match) or a legitimate retry,
+        and the advisory just adds noise. This test pins the new
+        behavior so a future refactor can't silently widen it back.
+        """
+        mock_dedup_llm.return_value = True
+
+        ideas = [
+            FakeIdea(
+                id="TK-810",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-811",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="failed",
+                execution_log="test failure",
+            ),
+        ]
+
+        provider = _run_review(state, ideas)
+
+        # No advisory comment was added for the Failed-dup match.
+        for c in provider.add_comment.call_args_list:
+            assert c[0][0] != "TK-810", (
+                "Failed-state duplicates must not trigger the Step 2 advisory"
+            )
+        # Also no veto (a single failure doesn't meet Step 1's 2+ bar).
+        for c in provider.vote.call_args_list:
+            assert c[0][0] != "TK-810"
+
+    def test_done_ref_preferred_over_failed_when_both_match(
+        self, state, mock_dedup_llm
+    ):
+        """When the first match is Failed, the pipeline short-circuits on it.
+
+        ``find_duplicate_target_story`` returns the first match in
+        iteration order (``done + failed``) and
+        ``is_duplicate_of_done_story`` gates the advisory. Putting the
+        Done ref first in the ordered candidates and asserting it's
+        the one the marker names locks in both halves of that
+        contract.
+        """
+        mock_dedup_llm.return_value = True
+
+        ideas = [
+            FakeIdea(
+                id="TK-820",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-821",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="done",
+            ),
+            FakeIdea(
+                id="TK-822",
+                title="Add caching layer v2",
+                description="caching layer for requests",
+                state="failed",
+                execution_log="test failure",
+            ),
+        ]
+
+        provider = _run_review(state, ideas)
+
+        # Comment names the Done ref, not the Failed one.
+        flagged_done = any(
+            c[0][0] == "TK-820" and "Possible dup of TK-821" in c[0][2]
+            for c in provider.add_comment.call_args_list
+        )
+        assert flagged_done
+
+        for c in provider.add_comment.call_args_list:
+            assert "Possible dup of TK-822" not in c[0][2], (
+                "Failed ref must not be named in a Step 2 advisory comment"
+            )
+
+
+class TestReviewQueueHelperPipelineOrder:
+    """``review_queue`` must call the four helpers in the documented order."""
+
+    def test_helpers_called_in_sequence_for_done_duplicate(
+        self, state, mock_dedup_llm
+    ):
+        """Spy every helper; verify the call order matches the contract.
+
+        The order — find → is_done → format → add_comment — is the
+        invariant this story (TK-762) wires in. If a future refactor
+        flips the sequence (e.g. formatting before the Done gate) it
+        silently changes when the Jira sync fires and which refs can
+        leak through; this test is the tripwire.
+        """
+        import idea_board.models as models
+
+        mock_dedup_llm.return_value = True
+
+        ideas = [
+            FakeIdea(
+                id="TK-830",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-831",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="done",
+            ),
+        ]
+
+        call_log: list[str] = []
+
+        real_find = models.find_duplicate_target_story
+        real_is_done = models.is_duplicate_of_done_story
+        real_format = models.format_done_duplicate_comment
+        real_add = models.add_done_duplicate_flag_comment
+
+        def _spy_find(*args, **kwargs):
+            call_log.append("find")
+            return real_find(*args, **kwargs)
+
+        def _spy_is_done(*args, **kwargs):
+            call_log.append("is_done")
+            return real_is_done(*args, **kwargs)
+
+        def _spy_format(*args, **kwargs):
+            call_log.append("format")
+            return real_format(*args, **kwargs)
+
+        def _spy_add(*args, **kwargs):
+            call_log.append("add")
+            return real_add(*args, **kwargs)
+
+        from aim.manager import review_queue
+
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = ideas
+        mock_provider.get_comments.return_value = []
+
+        with patch("board.get_provider", return_value=mock_provider), \
+             patch("aim.manager._notify_discord"), \
+             patch("idea_board.models.find_duplicate_target_story", _spy_find), \
+             patch("idea_board.models.is_duplicate_of_done_story", _spy_is_done), \
+             patch("idea_board.models.format_done_duplicate_comment", _spy_format), \
+             patch("idea_board.models.add_done_duplicate_flag_comment", _spy_add):
+            review_queue(state)
+
+        # Only the Done-dup idea drives the pipeline; the Done ref
+        # itself has no active-state entry in still_active. So the
+        # sequence fires exactly once, in order.
+        assert call_log == ["find", "is_done", "format", "add"], (
+            f"helpers must fire in documented order; got {call_log}"
+        )
+
+    def test_non_done_match_skips_format_and_add(self, state, mock_dedup_llm):
+        """When the dup is Failed, the pipeline stops after is_done.
+
+        ``format_done_duplicate_comment`` and
+        ``add_done_duplicate_flag_comment`` are never reached. That's
+        the whole point of the Done-only gate — work that doesn't
+        need flagging doesn't pay the formatting cost or emit a
+        comment.
+        """
+        import idea_board.models as models
+
+        mock_dedup_llm.return_value = True
+
+        ideas = [
+            FakeIdea(
+                id="TK-840",
+                title="Add caching layer",
+                description="caching layer for requests",
+                state="approved",
+            ),
+            FakeIdea(
+                id="TK-841",
+                title="Add caching layer v1",
+                description="caching layer for requests",
+                state="failed",
+                execution_log="test failure",
+            ),
+        ]
+
+        real_find = models.find_duplicate_target_story
+        real_is_done = models.is_duplicate_of_done_story
+
+        from aim.manager import review_queue
+
+        mock_provider = MagicMock()
+        mock_provider.load_all.return_value = ideas
+        mock_provider.get_comments.return_value = []
+
+        with patch("board.get_provider", return_value=mock_provider), \
+             patch("aim.manager._notify_discord"), \
+             patch(
+                 "idea_board.models.find_duplicate_target_story",
+                 side_effect=real_find,
+             ) as find_spy, \
+             patch(
+                 "idea_board.models.is_duplicate_of_done_story",
+                 side_effect=real_is_done,
+             ) as is_done_spy, \
+             patch(
+                 "idea_board.models.format_done_duplicate_comment",
+             ) as format_spy, \
+             patch(
+                 "idea_board.models.add_done_duplicate_flag_comment",
+             ) as add_spy:
+            review_queue(state)
+
+        assert find_spy.called, "find must always run for an active idea"
+        assert is_done_spy.called, "is_done gate must always run when a match is found"
+        format_spy.assert_not_called()
+        add_spy.assert_not_called()
+
+
+class TestAddDoneDuplicateFlagCommentProviderMode:
+    """TK-762: helper gains a provider arg so review_queue can wire it in.
+
+    The unit-test path (no provider) is covered by
+    ``TestAddDoneDuplicateFlagComment`` above — these tests pin the new
+    provider-aware branch.
+    """
+
+    def test_provider_add_comment_called_with_story_id_author_text(self):
+        """When a provider is supplied, persistence goes through it."""
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        story = Idea(id="idea-200", title="t", description="d")
+        provider = MagicMock()
+
+        add_done_duplicate_flag_comment(story, "marker text", provider=provider)
+
+        provider.add_comment.assert_called_once_with("idea-200", "llm", "marker text")
+
+    def test_provider_mode_does_not_mutate_story_comments(self):
+        """Provider owns persistence; the in-memory list stays untouched.
+
+        Avoids a double-append once the provider's own write lands
+        in ``story.comments`` on the next load.
+        """
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        story = Idea(id="idea-201", title="t", description="d")
+        provider = MagicMock()
+
+        add_done_duplicate_flag_comment(story, "marker text", provider=provider)
+
+        assert story.comments == [], (
+            "with provider supplied, the helper must not mutate story.comments"
+        )
+
+    def test_provider_mode_skips_direct_jira_sync(self, monkeypatch):
+        """When provider is given, the helper doesn't fire its own Jira sync.
+
+        The provider's ``add_comment`` already runs Jira sync for the
+        story. Firing it again here would double-sync — harmless but
+        wasteful, and obscures which write actually triggered a Jira
+        update when debugging.
+        """
+        from idea_board.models import Idea, add_done_duplicate_flag_comment
+
+        sync_spy = MagicMock()
+        monkeypatch.setattr("idea_board.models._jira_sync_background", sync_spy)
+
+        story = Idea(id="idea-202", title="t", description="d")
+        provider = MagicMock()
+
+        add_done_duplicate_flag_comment(story, "marker text", provider=provider)
+
+        sync_spy.assert_not_called()

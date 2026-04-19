@@ -441,37 +441,114 @@ def vote(idea_id: str, voter: str, vote_value: str) -> Idea | None:
     return idea
 
 
-def add_done_duplicate_flag_comment(story: Idea, comment_text: str) -> Comment:
+def find_duplicate_target_story(
+    new_title: str,
+    new_description: str,
+    candidates: list[Idea],
+) -> tuple[Idea | None, str]:
+    """Find the first candidate that ``_is_duplicate`` flags as a match.
+
+    First half of the Step-2 advisory pipeline extracted in TK-762.
+    Iterates ``candidates`` in order and returns the first ref whose
+    title+body is a near-duplicate of ``(new_title, new_description)``
+    together with the verdict reason from :func:`_is_duplicate`. When
+    no candidate matches, returns the reason from the last comparison
+    — so callers can detect an LLM fall-open (``no_binary``,
+    ``llm_timeout``, etc.) and surface it for observability instead of
+    silently skipping Step 2.
+
+    Args:
+        new_title: Title of the story being reviewed.
+        new_description: Full description of the story being reviewed.
+        candidates: Reference stories to check against (typically
+            ``done + failed`` from the current board snapshot).
+
+    Returns:
+        ``(ref, reason)`` where ``ref`` is the first matched candidate
+        or ``None`` if none matched. ``reason`` is the dedup verdict
+        string for the matched pair, or the last non-match reason if
+        nothing matched (empty string if ``candidates`` was empty).
+    """
+    last_reason = ""
+    for ref in candidates:
+        is_dup, reason = _is_duplicate(new_title, new_description, ref)
+        last_reason = reason
+        if is_dup:
+            return ref, reason
+    return None, last_reason
+
+
+def is_duplicate_of_done_story(ref: Idea) -> bool:
+    """Return True iff the duplicate reference is in state ``"done"``.
+
+    Step 2 of ``review_queue`` only fires the advisory-comment flow for
+    dups of shipped work. A dup-of-failed story is either already
+    handled by Step 1's repeated-failure veto or is a legitimate retry
+    attempt; neither case benefits from the "possible dup" nudge.
+    """
+    return ref.state == "done"
+
+
+def format_done_duplicate_comment(ref: Idea) -> str:
+    """Format the advisory-comment text flagging a Done duplicate.
+
+    Kept as a tiny seam so the marker shape lives in one place — a
+    future observability change (e.g. adding the dedup reason code)
+    only has to update this formatter, not every call site.
+    """
+    return (
+        f"[Queue Review] Possible dup of {ref.id} ({ref.state}). "
+        "Review and mark vetoed manually if this is a true dup."
+    )
+
+
+def add_done_duplicate_flag_comment(
+    story: Idea,
+    comment_text: str,
+    provider: Any = None,
+) -> Comment:
     """Append an ``llm``-authored advisory comment flagging a Done duplicate.
 
     Pulled out of ``review_queue`` Step 2 so the comment-append + Jira
     fan-out path is testable in isolation (TK-761). The caller already
     knows which Done story the new idea resembles and formats the
     human-readable marker; this helper is just the "attach and persist"
-    glue: mutate ``story.comments`` in place, and, if Jira is
-    configured, fire the same background sync every other state change
-    on the story goes through so the comment lands in the Jira comment
-    thread too.
+    glue.
+
+    Two persistence modes:
+
+    * **No provider (unit-test / in-memory callers)** — append a new
+      ``Comment`` to ``story.comments`` and fire
+      :func:`_jira_sync_background` directly.
+    * **Provider given (review_queue wiring, TK-762)** — route through
+      ``provider.add_comment`` so the write is durable and the
+      provider's own Jira sync handles the fan-out. In this mode we do
+      not mutate ``story.comments`` or call ``_jira_sync_background``
+      ourselves — the provider owns both.
 
     Timestamp is delegated to ``Comment.__post_init__`` rather than set
     here — one source of truth for the ISO format and one place to fix
     if it ever needs to change.
 
     Args:
-        story: The idea being flagged. Mutated in place — the new
-            Comment is appended to ``story.comments``.
+        story: The idea being flagged. Mutated in place when
+            ``provider`` is ``None``.
         comment_text: Pre-formatted advisory text (the caller owns the
-            marker shape, e.g. ``"[Queue Review] Possible dup of TK-42
-            (done). Review and mark vetoed manually if this is a true
-            dup."``).
+            marker shape — see :func:`format_done_duplicate_comment`).
+        provider: Optional board provider. When supplied, the comment
+            is persisted via ``provider.add_comment(story.id, "llm",
+            comment_text)`` and no direct object mutation happens.
 
     Returns:
-        The ``Comment`` that was appended, for callers that want to
-        log or assert on the timestamp without re-reading the list.
+        The ``Comment`` that was (or would have been) appended, for
+        callers that want to log or assert on the timestamp.
     """
     comment = Comment(author="llm", text=comment_text)
-    story.comments.append(comment)
-    _jira_sync_background(story)
+    if provider is not None:
+        provider.add_comment(story.id, "llm", comment_text)
+    else:
+        story.comments.append(comment)
+        _jira_sync_background(story)
     return comment
 
 
