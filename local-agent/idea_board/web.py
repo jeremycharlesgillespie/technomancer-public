@@ -6502,11 +6502,11 @@ def _render_analytics() -> str:
         gw = get_gateway_trend(24)
         health = gw["current_health"]
         gw_html = f"""<h2>Gateway Health</h2>
-        <p>Score: <strong>{health['health_score']}/100</strong> ({health['prediction']})
-        &bull; Disconnects (24h): {gw['disconnects']}
-        &bull; Resumes: {gw['resumes']}</p>"""
+        <p>Score: <strong title="Composite Discord gateway health score from 0-100 based on the past 24 hours of connection events; higher is better.">{health['health_score']}/100</strong> ({health['prediction']})
+        &bull; <span title="Number of full Discord gateway disconnects (lost socket, had to reconnect from scratch) in the last 24 hours.">Disconnects (24h): {gw['disconnects']}</span>
+        &bull; <span title="Number of successful session resumes after a transient Discord gateway drop in the last 24 hours.">Resumes: {gw['resumes']}</span></p>"""
         if gw["latency"]:
-            gw_html += f"<p>Latency: avg {gw['latency']['avg']}ms, p95 {gw['latency']['p95']}ms</p>"
+            gw_html += f"<p><span title=\"Average Discord gateway heartbeat latency in milliseconds over the last 24 hours.\">Latency: avg {gw['latency']['avg']}ms</span>, <span title=\"95th-percentile Discord gateway heartbeat latency in milliseconds over the last 24 hours.\">p95 {gw['latency']['p95']}ms</span></p>"
     except Exception:
         gw_html = ""
 
@@ -6514,7 +6514,7 @@ def _render_analytics() -> str:
     try:
         fb = get_feedback_summary(days)
         fb_html = f"""<h2>Response Satisfaction</h2>
-        <p>Total feedback: {fb.get('total', 0)} &bull; Satisfaction: {fb.get('satisfaction_rate', 0)}%</p>"""
+        <p><span title="Total number of thumbs-up / thumbs-down reactions users left on bot responses in the last {days} days.">Total feedback: {fb.get('total', 0)}</span> &bull; <span title="Percentage of reactions that were positive (thumbs-up / total) over the last {days} days.">Satisfaction: {fb.get('satisfaction_rate', 0)}%</span></p>"""
     except Exception:
         fb_html = ""
 

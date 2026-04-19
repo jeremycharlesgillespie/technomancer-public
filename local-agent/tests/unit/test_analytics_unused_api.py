@@ -182,6 +182,67 @@ class TestAnalyticsStatCardTooltips:
         assert "Click to see the list" in body
 
 
+class TestAnalyticsGatewayAndFeedbackTooltips:
+    """TK-596: every stat on /analytics (not just the top-of-page stat cards)
+    carries a title tooltip explaining what the metric measures and its
+    time window — this extends TK-550 to the Gateway Health and Response
+    Satisfaction sections."""
+
+    @pytest.fixture
+    def rendered_analytics(self, client):
+        """Render /analytics with gateway + feedback stats filled in so the
+        tooltip markup actually reaches the response body."""
+        gateway_payload = {
+            "current_health": {"health_score": 87, "prediction": "stable"},
+            "disconnects": 3,
+            "resumes": 2,
+            "latency": {"avg": 42, "p95": 95},
+        }
+        feedback_payload = {
+            "total": 10,
+            "positive": 8,
+            "negative": 2,
+            "satisfaction_rate": 80.0,
+        }
+        with patch(
+            "agent.discord_errors.get_gateway_trend", return_value=gateway_payload
+        ), patch(
+            "agent.discord_errors.get_feedback_summary", return_value=feedback_payload
+        ):
+            resp = client.get("/analytics")
+        return resp.get_data(as_text=True)
+
+    def test_gateway_score_has_tooltip(self, rendered_analytics):
+        assert 'title="Composite Discord gateway health score' in rendered_analytics
+
+    def test_gateway_disconnects_has_tooltip(self, rendered_analytics):
+        assert 'title="Number of full Discord gateway disconnects' in rendered_analytics
+        assert "Disconnects (24h): 3" in rendered_analytics
+
+    def test_gateway_resumes_has_tooltip(self, rendered_analytics):
+        assert 'title="Number of successful session resumes' in rendered_analytics
+        assert "Resumes: 2" in rendered_analytics
+
+    def test_gateway_latency_avg_has_tooltip(self, rendered_analytics):
+        assert 'title="Average Discord gateway heartbeat latency' in rendered_analytics
+        assert "avg 42ms" in rendered_analytics
+
+    def test_gateway_latency_p95_has_tooltip(self, rendered_analytics):
+        assert 'title="95th-percentile Discord gateway heartbeat latency' in rendered_analytics
+        assert "p95 95ms" in rendered_analytics
+
+    def test_feedback_total_has_tooltip_with_time_window(self, rendered_analytics):
+        assert 'title="Total number of thumbs-up / thumbs-down reactions' in rendered_analytics
+        assert "Total feedback: 10" in rendered_analytics
+        # Time window (14 days, the default)
+        assert "in the last 14 days" in rendered_analytics
+
+    def test_feedback_satisfaction_has_tooltip_with_time_window(self, rendered_analytics):
+        assert 'title="Percentage of reactions that were positive' in rendered_analytics
+        assert "Satisfaction: 80.0%" in rendered_analytics
+        assert "over the last 14 days" in rendered_analytics
+
+
 class TestDiscordAnalyticsLabel:
     """TK-594: the analytics surface is explicitly labeled 'Discord Analytics'
     everywhere it appears (hub card, page heading, nav links) so operators
