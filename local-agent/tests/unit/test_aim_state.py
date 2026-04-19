@@ -11,12 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
+import aim.state as aim_state_mod
 from aim.state import (
     AIMState,
     WorkerState,
     assign_idea_to_worker,
     clear_pid,
     clear_worker_assignment,
+    get_project_name,
     is_process_alive,
     load_state,
     read_pid,
@@ -24,6 +26,7 @@ from aim.state import (
     record_worker_failure,
     reset_worker_failures,
     save_state,
+    set_state_dir,
     update_worker_heartbeat,
     update_worker_status,
     write_pid,
@@ -33,6 +36,7 @@ from aim.state import (
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     """Redirect all state files to a temp directory."""
+    monkeypatch.setattr("aim.state.STATE_DIR", tmp_path)
     monkeypatch.setattr("aim.state.STATE_FILE", tmp_path / ".aim_state.json")
     monkeypatch.setattr("aim.state.LOCK_FILE", tmp_path / ".aim_state.lock")
     monkeypatch.setattr("aim.state.PID_FILE", tmp_path / "aim.pid")
@@ -348,3 +352,112 @@ class TestPIDHelpers:
 
     def test_is_process_alive_negative(self):
         assert is_process_alive(-1) is False
+
+
+# ---------------------------------------------------------------------------
+# set_state_dir tests
+# ---------------------------------------------------------------------------
+
+class TestSetStateDir:
+    def test_writes_land_in_new_dir(self, tmp_path):
+        target = tmp_path / "custom"
+        set_state_dir(target)
+
+        save_state(AIMState(cycle_count=9))
+
+        expected = target / ".aim_state.json"
+        assert expected.exists()
+        data = json.loads(expected.read_text(encoding="utf-8"))
+        assert data["cycle_count"] == 9
+
+    def test_creates_missing_directory(self, tmp_path):
+        target = tmp_path / "nested" / "does" / "not" / "exist"
+        assert not target.exists()
+
+        set_state_dir(target)
+
+        assert target.is_dir()
+
+    def test_load_reads_from_new_dir(self, tmp_path):
+        target = tmp_path / "project_a"
+        set_state_dir(target)
+
+        save_state(AIMState(cycle_count=11, completions_today=4))
+        loaded = load_state()
+
+        assert loaded.cycle_count == 11
+        assert loaded.completions_today == 4
+
+    def test_accepts_string_path(self, tmp_path):
+        target = tmp_path / "as_string"
+        set_state_dir(str(target))
+
+        save_state(AIMState(cycle_count=1))
+
+        assert (target / ".aim_state.json").exists()
+
+    def test_missing_state_file_in_new_dir_returns_default(self, tmp_path):
+        target = tmp_path / "fresh_project"
+        set_state_dir(target)
+
+        loaded = load_state()
+
+        assert loaded.manager_pid is None
+        assert loaded.cycle_count == 0
+
+    def test_sequential_calls_dont_corrupt_state(self, tmp_path):
+        dir_a = tmp_path / "project_a"
+        dir_b = tmp_path / "project_b"
+
+        set_state_dir(dir_a)
+        save_state(AIMState(cycle_count=10))
+
+        set_state_dir(dir_b)
+        save_state(AIMState(cycle_count=20))
+
+        # Switch back — dir_a state is intact
+        set_state_dir(dir_a)
+        assert load_state().cycle_count == 10
+
+        # Switch to dir_b — separate state
+        set_state_dir(dir_b)
+        assert load_state().cycle_count == 20
+
+    def test_pid_file_in_new_dir(self, tmp_path):
+        target = tmp_path / "project_pid"
+        set_state_dir(target)
+
+        write_pid()
+        pid = read_pid()
+
+        assert pid == os.getpid()
+        assert (target / "aim.pid").exists()
+
+
+# ---------------------------------------------------------------------------
+# get_project_name tests
+# ---------------------------------------------------------------------------
+
+class TestGetProjectName:
+    def test_returns_name_from_project_dir(self, tmp_path, monkeypatch):
+        target = tmp_path / "projects" / "TK"
+        monkeypatch.setattr("aim.state.STATE_DIR", target)
+
+        assert get_project_name() == "TK"
+
+    def test_returns_none_for_default_package_dir(self, monkeypatch):
+        from pathlib import Path
+        default = Path(aim_state_mod.__file__).parent
+        monkeypatch.setattr("aim.state.STATE_DIR", default)
+
+        assert get_project_name() is None
+
+    def test_sequential_set_state_dir_updates_name(self, tmp_path):
+        dir_a = tmp_path / "projects" / "40acres"
+        dir_b = tmp_path / "projects" / "TK"
+
+        set_state_dir(dir_a)
+        assert get_project_name() == "40acres"
+
+        set_state_dir(dir_b)
+        assert get_project_name() == "TK"
