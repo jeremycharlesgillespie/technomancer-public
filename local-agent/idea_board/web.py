@@ -130,6 +130,18 @@ def get_execution_order(idea_id):
 def set_epic_context(idea_id, context):
     return _get_board_provider().set_epic_context(idea_id, context)
 
+
+def get_execution_detail_href(idea_id) -> str:
+    """Return the /live/<idea_id> href for the given idea_id.
+
+    Returns an empty string for falsy or whitespace-only idea_ids so
+    callers always get a safe string to embed in templates.
+    """
+    if not idea_id or not str(idea_id).strip():
+        return ""
+    return f"/live/{idea_id}"
+
+
 logger = logging.getLogger(__name__)
 
 BOARD_PORT: int = 8322
