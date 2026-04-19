@@ -627,6 +627,70 @@ def sample_tool_schema():
 
 
 # =============================================================================
+# /live PAGE DATA - Mocked executor_runs_db + AIM state files
+# =============================================================================
+
+
+@pytest.fixture
+def mock_executor_runs_db(monkeypatch):
+    """Patch ``executor_runs_db.get_current_execution_per_project`` so /live
+    tests never touch real AIM state files.
+
+    Returns a ``MagicMock`` seeded with one executing row so any test hitting
+    the /live landing page sees a populated "Currently Executing" table
+    without disk I/O. Override per-test via ``mock.return_value = [...]``.
+    """
+    import agent.executor_runs_db as db_module
+
+    default_rows = [
+        {
+            "project": "TK",
+            "status": "executing",
+            "current_idea_id": "TK-793",
+            "started_at": "2026-04-19T00:00:00",
+            "last_observation": "running tests",
+            "is_executing": True,
+        },
+    ]
+    mock = MagicMock(return_value=default_rows)
+    monkeypatch.setattr(db_module, "get_current_execution_per_project", mock)
+    return mock
+
+
+@pytest.fixture
+def mock_aim_state_files(monkeypatch):
+    """Patch ``executor_runs_db._read_aim_state_file`` so /live tests never
+    open real AIM state files on disk.
+
+    Returns a ``MagicMock`` whose default payload matches the AIM schema
+    (``worker`` + ``board_snapshot.recent_completions``). Override per-test
+    via ``mock.return_value = {...}`` or ``mock.side_effect = [...]``.
+    """
+    import agent.executor_runs_db as db_module
+
+    default_state = {
+        "worker": {
+            "status": "executing",
+            "current_idea_id": "TK-793",
+            "started_at": "2026-04-19T00:00:00",
+            "last_observation": "running tests",
+        },
+        "board_snapshot": {
+            "recent_completions": [
+                {
+                    "key": "TK-792",
+                    "summary": "Previous story",
+                    "resolved": "2026-04-18T23:00:00+0900",
+                },
+            ],
+        },
+    }
+    mock = MagicMock(return_value=default_state)
+    monkeypatch.setattr(db_module, "_read_aim_state_file", mock)
+    return mock
+
+
+# =============================================================================
 # DEV LEARNING - Patched state file
 # =============================================================================
 
