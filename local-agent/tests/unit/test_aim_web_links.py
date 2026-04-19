@@ -131,3 +131,50 @@ def test_live_with_multiple_executions_renders_links(client, fake_agent_root):
         assert matching, (
             f"No href target referencing {key}; hrefs seen: {sorted(hrefs)}"
         )
+
+
+def test_live_renders_executions(client, fake_agent_root):
+    """GET /live must render every seeded execution id as text (TK-795).
+
+    Stops at the text-rendering layer — href formatting is covered by
+    ``test_live_with_multiple_executions_renders_links``. This test
+    proves data flows from the mocked state files into the response
+    body, independent of link markup.
+    """
+    _write_state(
+        fake_agent_root / "aim" / ".aim_state.json",
+        {
+            "worker": {
+                "status": "executing",
+                "current_idea_id": "exec-001",
+                "started_at": "2026-04-19T09:00:00",
+                "last_observation": "step 1",
+            },
+            "board_snapshot": {
+                "recent_completions": [
+                    {
+                        "key": "exec-002",
+                        "summary": "Completed task 2",
+                        "resolved": "2026-04-19T08:00:00+0000",
+                    },
+                    {
+                        "key": "exec-003",
+                        "summary": "Completed task 3",
+                        "resolved": "2026-04-19T07:00:00+0000",
+                    },
+                ]
+            },
+        },
+    )
+
+    start = time.monotonic()
+    with patch("idea_board.web.settings.jira_project_key", "TK"):
+        resp = client.get("/live")
+    elapsed = time.monotonic() - start
+
+    assert resp.status_code == 200
+    assert elapsed < 2.0, f"/live took {elapsed:.2f}s (exceeds 2s budget)"
+
+    body = resp.get_data(as_text=True)
+    for key in ("exec-001", "exec-002", "exec-003"):
+        assert key in body, f"{key} missing from rendered /live response body"
