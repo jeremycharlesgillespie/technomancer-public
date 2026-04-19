@@ -226,15 +226,14 @@ def _run_pytest_subprocess(
     """Run pytest once as a subprocess. Returns (returncode, combined output).
 
     When ``nodeids`` is supplied, only those tests are collected — used for
-    the flaky retry. Full-suite runs keep ``--reruns`` so in-process rerun
-    behavior is unchanged from before; the retry run skips it because we
-    want a clean pass/fail signal.
+    the flaky retry. No global ``--reruns`` flag: a test that doesn't pass
+    on its first attempt is a bug in the test or the code, not a reason to
+    paper over with a retry loop. External-API tests that genuinely need
+    retry should mark themselves with ``@pytest.mark.flaky(reruns=N)``.
     """
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
     if nodeids:
         cmd.extend(nodeids)
-    else:
-        cmd.extend(["--reruns", "2", "--reruns-delay", "1"])
     if junit_xml is not None:
         cmd.append(f"--junitxml={junit_xml}")
     result = subprocess.run(

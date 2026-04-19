@@ -2346,10 +2346,7 @@ def execute_idea(
             if _settings.test_command:
                 full_cmd = base_test_cmd
             else:
-                full_cmd = base_test_cmd + [
-                    "-q", "--tb=short",
-                    "--reruns", "2", "--reruns-delay", "1",
-                ]
+                full_cmd = base_test_cmd + ["-q", "--tb=short"]
             full_result = _run_pytest_with_progress(
                 full_cmd,
                 cwd=local_agent_dir,

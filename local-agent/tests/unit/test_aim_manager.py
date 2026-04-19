@@ -259,6 +259,7 @@ class TestAssessBoard:
 # Decision execution
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestExecuteDecision:
     def test_assign_valid_idea(self, state):
         from aim.brain import Decision
@@ -434,6 +435,7 @@ class TestCreateNewWork:
 # Queue review — vetoed exclusion
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestReviewQueueVetoedExclusion:
     def test_vetoed_items_excluded_from_active_and_failed(self, state):
         """review_queue must never process vetoed items as active or failed."""
@@ -505,6 +507,7 @@ class TestReviewQueueVetoedExclusion:
         mock_provider.vote.assert_called_once_with("TK-10", "owner", "veto")
 
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestReviewQueueExemptions:
     """Human-intent exemptions prevent auto-veto of legitimately planned work."""
 

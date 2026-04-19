@@ -195,6 +195,7 @@ class TestAutoResolve:
 # ============================================================================
 
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestIdeaGeneration:
     """Tests for LLM-based idea generation from complaints."""
 

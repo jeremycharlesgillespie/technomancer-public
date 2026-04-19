@@ -117,12 +117,16 @@ class TestRestartBot:
         with patch.object(safe_update, "SCRIPT_DIR", tmp_path):
             assert safe_update.restart_bot() is True
 
+    @patch.object(safe_update, "BOT_LIVENESS_POLL_DEADLINE", 0)
     @patch("safe_update.time.sleep")
     @patch("safe_update.subprocess.run")
     @patch("safe_update.check_bot_running")
     def test_returns_false_when_subprocess_ok_but_bot_dead(
         self, mock_check, mock_run, _mock_sleep, tmp_path
     ):
+        # Patch the deadline constant so the wall-clock loop returns
+        # immediately — otherwise this test spins for 30s (real time,
+        # since time.time() isn't mocked).
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         mock_check.return_value = False  # bot never comes up
         (tmp_path / "bot_service.py").write_text("# stub")

@@ -197,6 +197,7 @@ class TestIsDuplicate:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestReviewQueueStep2Advisory:
     """Dup-of-done stories get a flag comment, never an auto-veto (TK-742)."""
 
@@ -326,6 +327,7 @@ class TestReviewQueueStep2Advisory:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("mock_dedup_llm")
 class TestReviewQueueStep1StillVetoes:
     """Matches 2+ failed stories → auto-veto. Not touched by TK-742."""
 
