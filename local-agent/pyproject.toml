@@ -39,6 +39,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "prometheus-client>=0.20.0",
+    "python-pptx>=0.6.21",
 ]
 
 [project.optional-dependencies]
