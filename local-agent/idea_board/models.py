@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 # the borderline ones.
 OVERLAP_PREFILTER_THRESHOLD: float = 0.20
 
+# Reason prefixes from ``idea_board.dedup_llm`` that indicate the LLM
+# judge fell open rather than rendering a real verdict (missing binary,
+# timeout, non-zero exit, malformed output). Every failure path in
+# ``dedup_llm.is_near_exact_duplicate`` returns ``(False, <code>)`` with
+# one of these prefixes, so checking ``reason.startswith(...)`` is the
+# canonical way to tell a "genuine DIFFERENT verdict" apart from a
+# silent outage. Kept here so callers don't need to re-declare the
+# tuple — see ``find_duplicate_target_story`` below and the former
+# in-function copy in ``aim.manager.review_queue`` (removed in TK-758).
+_LLM_FAILURE_PREFIXES: tuple[str, ...] = (
+    "no_binary",
+    "llm_timeout",
+    "llm_exit_",
+    "no_json",
+    "parse_failure",
+    "subprocess_error",
+)
+
 
 def _jira_sync_background(idea: Any) -> None:
     """Sync idea to Jira in a background thread (non-blocking)."""
@@ -457,6 +475,12 @@ def find_duplicate_target_story(
     ``llm_timeout``, etc.) and surface it for observability instead of
     silently skipping Step 2.
 
+    TK-758 folds the "dedup LLM fell open" warning log into this helper
+    so the "logs error on graceful failure" contract lives next to the
+    function that actually knows what happened — callers used to have
+    to re-check ``reason.startswith(_LLM_FAILURE_PREFIXES)`` themselves,
+    which meant a new caller could silently drop the outage signal.
+
     Args:
         new_title: Title of the story being reviewed.
         new_description: Full description of the story being reviewed.
@@ -475,6 +499,11 @@ def find_duplicate_target_story(
         last_reason = reason
         if is_dup:
             return ref, reason
+    if last_reason.startswith(_LLM_FAILURE_PREFIXES):
+        logger.warning(
+            "dedup LLM fell open on %r (%d candidates): %s",
+            new_title[:80], len(candidates), last_reason,
+        )
     return None, last_reason
 
 

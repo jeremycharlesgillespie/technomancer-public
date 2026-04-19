@@ -635,6 +635,147 @@ class TestFindDuplicateTargetStory:
         mock_dedup.assert_not_called()
 
 
+class TestFindDuplicateTargetStoryDedupLlmIntegrationTK758:
+    """TK-758 — pin the full stack down to ``dedup_llm.is_near_exact_duplicate``.
+
+    The tests above (``TestFindDuplicateTargetStory``) stub out
+    ``_is_duplicate`` and verify the iteration contract. That's the
+    right level for the "first match wins" / "last reason surfaced"
+    invariants, but it doesn't prove the helper actually delegates to
+    the LLM judge — a future refactor that swaps ``_is_duplicate`` for
+    a cached reply or a different dedup backend would sail past those
+    tests.
+
+    These tests patch one layer deeper, at
+    ``idea_board.dedup_llm.is_near_exact_duplicate``, exercising the
+    real ``_is_duplicate`` prefilter + LLM-call pipeline. Inputs are
+    chosen so the word-overlap prefilter passes (identical stems) and
+    control reaches the LLM seam. The three cases pin the full
+    contract TK-758 asks for:
+
+    * **match** — LLM returns ``SAME`` → helper returns ``(ref, reason)``.
+    * **no match** — LLM returns ``DIFFERENT`` → helper returns
+      ``(None, reason)``.
+    * **graceful failure** — LLM falls open with a failure code →
+      helper returns ``(None, code)`` AND logs a WARNING so the outage
+      is visible instead of silently disabling the advisory flow.
+    """
+
+    def test_match_propagates_from_dedup_llm(self):
+        """LLM verdict ``SAME`` → ``find_duplicate_target_story`` returns ref.
+
+        Uses identical title+description on both sides so the
+        ``_meaningful_words`` prefilter computes ~100% overlap, which
+        pushes the pair past ``OVERLAP_PREFILTER_THRESHOLD`` and forces
+        the call into the patched LLM seam. If a future change makes
+        the prefilter reject identical inputs, this test will fail with
+        ``assert_called_once`` instead of silently skipping the LLM.
+        """
+        from idea_board.models import Idea, find_duplicate_target_story
+
+        ref = Idea(
+            id="TK-100",
+            title="add retry logic to webhook delivery",
+            description="add retry logic to webhook delivery",
+            state="done",
+        )
+
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(True, "identical acceptance criteria"),
+        ) as mock_llm:
+            matched, reason = find_duplicate_target_story(
+                "add retry logic to webhook delivery",
+                "add retry logic to webhook delivery",
+                [ref],
+            )
+
+        assert matched is ref
+        assert reason == "identical acceptance criteria"
+        mock_llm.assert_called_once()
+
+    def test_no_match_propagates_from_dedup_llm(self):
+        """LLM verdict ``DIFFERENT`` → helper returns ``(None, reason)``.
+
+        Same prefilter-passing trick as the match test. Verifies the
+        DIFFERENT reason string is preserved in ``last_reason`` so
+        observability isn't lost on legitimate non-dup verdicts.
+        """
+        from idea_board.models import Idea, find_duplicate_target_story
+
+        ref = Idea(
+            id="TK-101",
+            title="add retry logic to webhook delivery",
+            description="add retry logic to webhook delivery",
+            state="done",
+        )
+
+        with patch(
+            "idea_board.dedup_llm.is_near_exact_duplicate",
+            return_value=(False, "different acceptance criteria"),
+        ) as mock_llm:
+            matched, reason = find_duplicate_target_story(
+                "add retry logic to webhook delivery",
+                "add retry logic to webhook delivery",
+                [ref],
+            )
+
+        assert matched is None
+        assert reason == "different acceptance criteria"
+        mock_llm.assert_called_once()
+
+    def test_dedup_llm_failure_returns_none_and_logs_warning(self, caplog):
+        """LLM fall-open (``llm_timeout`` etc.) → ``(None, code)`` + WARNING log.
+
+        TK-758 moved the "dedup LLM fell open" warning from
+        ``aim.manager.review_queue`` into the helper itself — without
+        the log, a Haiku outage silently disables the Step-2 advisory
+        flow and duplicate work quietly lands on the board.
+
+        The test uses ``caplog`` rather than patching the logger so it
+        pins the real WARNING level + message format a human reading
+        the bot log would see. The message must carry the failure code
+        so the operator can tell "binary missing" apart from
+        "malformed JSON" without cross-referencing source.
+        """
+        import logging
+
+        from idea_board.models import Idea, find_duplicate_target_story
+
+        ref = Idea(
+            id="TK-102",
+            title="add retry logic to webhook delivery",
+            description="add retry logic to webhook delivery",
+            state="done",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="idea_board.models"):
+            with patch(
+                "idea_board.dedup_llm.is_near_exact_duplicate",
+                return_value=(False, "llm_timeout"),
+            ) as mock_llm:
+                matched, reason = find_duplicate_target_story(
+                    "add retry logic to webhook delivery",
+                    "add retry logic to webhook delivery",
+                    [ref],
+                )
+
+        assert matched is None, "LLM fall-open must not flag a false match"
+        assert reason == "llm_timeout"
+        mock_llm.assert_called_once()
+
+        warnings = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "fell open" in r.getMessage()
+        ]
+        assert len(warnings) == 1, (
+            f"expected one fall-open WARNING, got {[r.getMessage() for r in caplog.records]}"
+        )
+        assert "llm_timeout" in warnings[0].getMessage(), (
+            "warning must include the failure code so operators can triage"
+        )
+
+
 class TestIsDuplicateOfDoneStory:
     """``is_duplicate_of_done_story`` narrows Step 2 to Done refs only."""
 
