@@ -279,3 +279,74 @@ def test_is_duplicate_true_duplicate_llm_verdict(mock_dedup_llm):
         "Dedup judge must be invoked — a 0 call count means the seam "
         "short-circuited and the LLM verdict was never consulted"
     )
+
+
+# ---------------------------------------------------------------------------
+# TK-751 — LLM dedup verdict (DIFFERENT) for the TK-571 vs TK-321 headline pair
+# ---------------------------------------------------------------------------
+#
+# TK-743 introduced the LLM-backed dedup judge specifically because the old
+# word-overlap heuristic kept killing concrete follow-up stories as
+# duplicates of older abstract ones. The motivating headline case: TK-571
+# ("Unit tests for capability_request.py (50% -> 75%)" — a concrete
+# coverage-lift story with specific branch targets) getting auto-vetoed
+# against TK-321 ("[idea-197] Add Unit Tests for capability_request.py Core
+# Logic" — an older, generic, already-Done story). A human reader sees two
+# different stories; the stem-overlap heuristic sees {unit, tests,
+# capab(ility_request)} and fires.
+#
+# This test pins down the DIFFERENT-verdict half of the contract at the same
+# seam as ``test_is_duplicate_true_duplicate_llm_verdict`` above. When the
+# (mocked) LLM judge returns False for this exact pair, ``_is_duplicate``
+# must propagate that verdict — and must have actually invoked the judge,
+# not short-circuited on a title-overlap pre-check that would mask the
+# regression in production.
+
+
+def test_is_duplicate_tk571_vs_tk321_headline(mock_dedup_llm):
+    """LLM verdict DIFFERENT on the TK-571/TK-321 pair → returns False.
+
+    The headline case for TK-743. If a future refactor reintroduces a
+    pre-LLM overlap gate that rejects this pair before reaching the
+    judge, ``call_count == 0`` catches it; if the gate flips polarity
+    and returns True for legitimate follow-ups, the ``is False`` check
+    catches it.
+    """
+    from idea_board import models
+
+    mock_dedup_llm.return_value = False
+
+    tk321 = Idea(
+        id="TK-321",
+        title="[idea-197] Add Unit Tests for capability_request.py Core Logic",
+        description=(
+            "WHAT: Add unit tests covering the core capability evaluation "
+            "logic in capability_request.py. "
+            "WHY: No unit coverage today. "
+            "HOW: Write tests against the Claude API evaluation path."
+        ),
+        state="done",
+    )
+
+    result = models._is_duplicate(
+        new_title="Unit tests for capability_request.py (50% -> 75%)",
+        new_desc=(
+            "WHAT: Raise line coverage in capability_request.py from 50 "
+            "percent to 75 percent. "
+            "WHY: Gaps remain in the retry, rate-limit, and circuit-breaker "
+            "branches. "
+            "HOW: Parametrize failure modes and assert recovery paths."
+        ),
+        existing=tk321,
+    )
+
+    assert result is False, (
+        "LLM DIFFERENT verdict on the TK-571/TK-321 headline pair must "
+        "produce a non-duplicate flag — this is the exact regression "
+        "TK-743 was built to prevent"
+    )
+    assert mock_dedup_llm.call_count >= 1, (
+        "Dedup judge must be invoked — a 0 call count means the seam "
+        "short-circuited on a pre-LLM overlap gate and the headline "
+        "regression case silently bypassed the judge"
+    )
