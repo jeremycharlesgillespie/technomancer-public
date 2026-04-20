@@ -354,6 +354,13 @@ class Settings(BaseSettings):
             "AIMState.last_assigned_at."
         ),
     )
+    aim_daily_story_limit: int = Field(
+        default=0,
+        description=(
+            "Maximum stories AIM will assign per calendar day. 0 = unlimited. "
+            "Checked against AIMState.completions_today which resets at midnight."
+        ),
+    )
     aim_peak_hour_pause_enabled: bool = Field(
         default=True,
         description=(
