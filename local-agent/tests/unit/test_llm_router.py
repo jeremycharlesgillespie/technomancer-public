@@ -30,6 +30,11 @@ def _fake_settings(**overrides):
         "dedup_judge_model": "ollama:qwen3.5:27b",
         "aimm_observer_model": "ollama:qwen3.5:27b",
         "aimm_suggester_model": "ollama:qwen3.5:27b",
+        "splitter_decomposer_model": "ollama:qwen3.5:27b",
+        "evergreen_generator_model": "ollama:qwen3.5:27b",
+        "aiv_classifier_model": "ollama:qwen3.5:27b",
+        "aiv_scorer_model": "ollama:qwen3.5:27b",
+        "dev_learning_model": "ollama:qwen3.5:27b",
         "llm_fallback_model": "claude-haiku-4-5",
         "llm_experiment_mode": "",
     }
@@ -46,17 +51,44 @@ class TestOllamaPrimary:
         assert out == "ollama reply"
         mock_claude.assert_not_called()
 
-    def test_ollama_failure_falls_back_to_claude(self, monkeypatch):
+    def test_ollama_failure_retries_once_before_claude_fallback(self, monkeypatch):
+        """On first ollama failure, retry once before considering a fallback."""
         monkeypatch.setattr(llm_router, "get_settings", _fake_settings)
-        with patch.object(llm_router, "ollama_chat", return_value=None):
+        with patch.object(
+            llm_router, "ollama_chat", return_value=None,
+        ) as mock_ollama:
             with patch.object(
                 llm_router, "_claude_chat", return_value="claude reply"
             ) as mock_claude:
                 out = llm_router.complete("dedup_judge", "hi")
         assert out == "claude reply"
-        # Fallback invoked with the configured fallback model.
-        args, kwargs = mock_claude.call_args
+        assert mock_ollama.call_count == 2  # retry before fallback
+        args, _ = mock_claude.call_args
         assert args[1] == "claude-haiku-4-5"
+
+    def test_ollama_retry_recovers_skips_fallback(self, monkeypatch):
+        """If retry succeeds, no claude call is made."""
+        monkeypatch.setattr(llm_router, "get_settings", _fake_settings)
+        responses = iter([None, "recovered"])
+        with patch.object(
+            llm_router, "ollama_chat", side_effect=lambda *a, **kw: next(responses),
+        ):
+            with patch.object(llm_router, "_claude_chat") as mock_claude:
+                out = llm_router.complete("dedup_judge", "hi")
+        assert out == "recovered"
+        mock_claude.assert_not_called()
+
+    def test_empty_fallback_returns_none_instead_of_claude(self, monkeypatch):
+        """Default fallback="" means ollama-only; don't burn claude quota."""
+        monkeypatch.setattr(
+            llm_router, "get_settings",
+            lambda: _fake_settings(llm_fallback_model=""),
+        )
+        with patch.object(llm_router, "ollama_chat", return_value=None):
+            with patch.object(llm_router, "_claude_chat") as mock_claude:
+                out = llm_router.complete("aim_brain", "hi")
+        assert out is None
+        mock_claude.assert_not_called()
 
     def test_both_paths_fail_returns_none(self, monkeypatch):
         monkeypatch.setattr(llm_router, "get_settings", _fake_settings)
@@ -173,7 +205,27 @@ class TestRoleMapping:
         assert set(routing) == {
             "aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester",
             "splitter_decomposer", "evergreen_generator",
+            "aiv_classifier", "aiv_scorer", "dev_learning",
         }
+
+    def test_new_roles_route_to_their_own_settings(self, monkeypatch):
+        settings = _fake_settings(
+            aiv_classifier_model="ollama:classifier-tag",
+            aiv_scorer_model="ollama:scorer-tag",
+            dev_learning_model="ollama:learn-tag",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        captured: list[str] = []
+
+        def fake_ollama(prompt, tag, timeout=60, options=None):
+            captured.append(tag)
+            return "ok"
+
+        with patch.object(llm_router, "ollama_chat", side_effect=fake_ollama):
+            llm_router.complete("aiv_classifier", "x")
+            llm_router.complete("aiv_scorer", "x")
+            llm_router.complete("dev_learning", "x")
+        assert captured == ["classifier-tag", "scorer-tag", "learn-tag"]
 
     def test_unset_setting_defaults_to_haiku_claude_path(self, monkeypatch):
         # Simulate a setting explicitly set to empty / None — _resolve_primary

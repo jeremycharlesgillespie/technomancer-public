@@ -181,102 +181,50 @@ class TestParseResponse:
 
 
 class TestPickVerifier:
+    """Verifier picking now routes through agent.llm_router.complete."""
+
     def test_happy_path_returns_web_render(self, sample_paths, sample_summary):
-        """Acceptance: mocked claude -p returning 'web-render' → returned verdict."""
-        envelope = _claude_envelope(json.dumps({"verifier": "web-render"}))
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp) as mock_run:
+        raw = json.dumps({"verifier": "web-render"})
+        with patch("agent.llm_router.complete", return_value=raw) as mock_llm:
             verdict = pick_verifier(sample_paths, sample_summary)
-
         assert verdict == "web-render"
-        assert mock_run.call_count == 1
-        args, kwargs = mock_run.call_args
-        cmd = args[0]
-        assert "--model" in cmd
-        assert DEFAULT_MODEL in cmd
-        assert "-p" in cmd
+        assert mock_llm.call_count == 1
+        args, kwargs = mock_llm.call_args
+        assert args[0] == "aiv_classifier"
         assert kwargs.get("timeout") == classifier_llm.DEFAULT_TIMEOUT
 
     def test_parse_failure_returns_tests_only(self, sample_paths, sample_summary):
-        """Acceptance: parse failure → 'tests-only'."""
-        envelope = _claude_envelope("garbled response with no json object")
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
-            verdict = pick_verifier(sample_paths, sample_summary)
-
-        assert verdict == FALLBACK_VERIFIER
+        with patch("agent.llm_router.complete", return_value="garbled response"):
+            assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
 
     @pytest.mark.parametrize("label", list(ALLOWED_VERIFIERS))
     def test_each_verifier_roundtrips(self, sample_paths, sample_summary, label):
-        envelope = _claude_envelope(json.dumps({"verifier": label}))
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
+        raw = json.dumps({"verifier": label})
+        with patch("agent.llm_router.complete", return_value=raw):
             assert pick_verifier(sample_paths, sample_summary) == label
 
     def test_unknown_verifier_label_falls_back(self, sample_paths, sample_summary):
-        envelope = _claude_envelope(json.dumps({"verifier": "load-test"}))
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
+        raw = json.dumps({"verifier": "load-test"})
+        with patch("agent.llm_router.complete", return_value=raw):
             assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
 
-    def test_timeout_falls_back(self, sample_paths, sample_summary):
-        with patch(
-            "aiv.classifier_llm.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=30),
-        ):
-            assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
-
-    def test_non_zero_exit_falls_back(self, sample_paths, sample_summary):
-        fake_cp = _fake_completed_process("", returncode=2, stderr="oops")
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
-            assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
-
-    def test_empty_stdout_falls_back(self, sample_paths, sample_summary):
-        fake_cp = _fake_completed_process("   \n  ")
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
-            assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
-
-    def test_missing_binary_falls_back(self, sample_paths, sample_summary, monkeypatch):
-        monkeypatch.setattr(classifier_llm, "_find_claude_binary", lambda: None)
-
-        with patch("aiv.classifier_llm.subprocess.run") as mock_run:
-            verdict = pick_verifier(sample_paths, sample_summary)
-
-        assert verdict == FALLBACK_VERIFIER
-        assert mock_run.call_count == 0  # binary missing → no subprocess call
-
-    def test_arbitrary_subprocess_error_falls_back(self, sample_paths, sample_summary):
-        with patch(
-            "aiv.classifier_llm.subprocess.run", side_effect=OSError("arbitrary")
-        ):
+    def test_router_none_falls_back(self, sample_paths, sample_summary):
+        """When the router returns None (all backends failed) → fallback."""
+        with patch("agent.llm_router.complete", return_value=None):
             assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER
 
     def test_custom_timeout_is_forwarded(self, sample_paths, sample_summary):
-        envelope = _claude_envelope(json.dumps({"verifier": "db-query"}))
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp) as mock_run:
+        raw = json.dumps({"verifier": "db-query"})
+        with patch("agent.llm_router.complete", return_value=raw) as mock_llm:
             verdict = pick_verifier(sample_paths, sample_summary, timeout=7)
-
         assert verdict == "db-query"
-        assert mock_run.call_args.kwargs.get("timeout") == 7
+        assert mock_llm.call_args.kwargs.get("timeout") == 7
 
     def test_empty_paths_and_summary_still_return_valid_verifier(self):
-        envelope = _claude_envelope(json.dumps({"verifier": "tests-only"}))
-        fake_cp = _fake_completed_process(envelope)
-
-        with patch("aiv.classifier_llm.subprocess.run", return_value=fake_cp):
+        raw = json.dumps({"verifier": "tests-only"})
+        with patch("agent.llm_router.complete", return_value=raw):
             assert pick_verifier([], "") == "tests-only"
 
     def test_never_raises_on_arbitrary_exception(self, sample_paths, sample_summary):
-        with patch(
-            "aiv.classifier_llm.subprocess.run", side_effect=Exception("boom")
-        ):
-            # Just asserting no exception escapes.
+        with patch("agent.llm_router.complete", side_effect=Exception("boom")):
             assert pick_verifier(sample_paths, sample_summary) == FALLBACK_VERIFIER

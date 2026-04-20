@@ -322,9 +322,38 @@ class Settings(BaseSettings):
             "any ollama error."
         ),
     )
+    aiv_classifier_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description=(
+            "Model for AIV verifier-method classification (pick web-render / "
+            "api-call / db-query / tests-only for ambiguous diffs). Short "
+            "structured-JSON output — qwen3.5 handles this comfortably."
+        ),
+    )
+    aiv_scorer_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description=(
+            "Model for AIV post-merge story quality scoring (7-axis rubric + "
+            "red flags). Structured JSON; qwen3.5 equivalent to Haiku on "
+            "rubric tasks."
+        ),
+    )
+    dev_learning_model: str = Field(
+        default="ollama:qwen3.5:latest",
+        description=(
+            "Model for daily learning-article generation. Long-form prose, "
+            "not code — qwen3.5 produces acceptable quality and saves Claude "
+            "quota for the AIW coding loop."
+        ),
+    )
     llm_fallback_model: str = Field(
-        default="claude-haiku-4-5",
-        description="Fallback claude model when ollama primary fails",
+        default="",
+        description=(
+            "Optional claude-model fallback when ollama primary fails. "
+            "Empty (default) means: return None on failure and let the "
+            "caller handle it. Keeps the classification path pure-Ollama "
+            "and prevents silent Claude quota burn from Ollama hiccups."
+        ),
     )
     llm_experiment_mode: str = Field(
         default="",

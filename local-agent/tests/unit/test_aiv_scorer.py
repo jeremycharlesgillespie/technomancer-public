@@ -345,6 +345,8 @@ class TestBuildPrompt:
 
 
 class TestScoreEndToEnd:
+    """Scoring now routes through agent.llm_router.complete (qwen3.5 default)."""
+
     def test_happy_path_parses_valid_scores(
         self, sample_story, sample_diff, sample_verify
     ):
@@ -352,29 +354,22 @@ class TestScoreEndToEnd:
             scores={axis: 9 for axis in SCORE_COLUMNS},
             red_flags=["no_tests_added"],
         )
-        fake_cp = _fake_completed_process(_claude_json_envelope(model_json))
-        with patch("aiv.scorer.subprocess.run", return_value=fake_cp) as mock_run:
+        with patch("agent.llm_router.complete", return_value=model_json) as mock_llm:
             result = score(sample_story, sample_diff, sample_verify)
 
         assert result.error == ""
         for axis in SCORE_COLUMNS:
             assert getattr(result, axis) == 9
         assert result.red_flags == ["no_tests_added"]
-        mock_run.assert_called_once()
-
-        # The invocation must target haiku via --model.
-        argv = mock_run.call_args.args[0]
-        assert "--model" in argv
-        assert DEFAULT_MODEL in argv
-        assert "-p" in argv
+        mock_llm.assert_called_once()
+        args, _ = mock_llm.call_args
+        assert args[0] == "aiv_scorer"
 
     def test_malformed_response_returns_sentinel_parse_failure(
         self, sample_story, sample_diff, sample_verify
     ):
-        fake_cp = _fake_completed_process(
-            _claude_json_envelope("definitely not json here either")
-        )
-        with patch("aiv.scorer.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete",
+                   return_value="definitely not json here either"):
             result = score(sample_story, sample_diff, sample_verify)
 
         assert result.error == "parse_failure"
@@ -382,63 +377,22 @@ class TestScoreEndToEnd:
             assert getattr(result, axis) == SENTINEL_SCORE
         assert result.red_flags == []
 
-    def test_subprocess_timeout_returns_sentinel_timeout(
+    def test_router_returns_none_yields_llm_error(
         self, sample_story, sample_diff, sample_verify
     ):
-        with patch(
-            "aiv.scorer.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=1),
-        ):
-            result = score(sample_story, sample_diff, sample_verify, timeout=1)
+        with patch("agent.llm_router.complete", return_value=None):
+            result = score(sample_story, sample_diff, sample_verify)
 
-        assert result.error == "timeout"
+        assert result.error == "llm_error"
         for axis in SCORE_COLUMNS:
             assert getattr(result, axis) == SENTINEL_SCORE
 
-    def test_subprocess_nonzero_returns_sentinel_llm_error(
+    def test_raw_ollama_output_parses_directly(
         self, sample_story, sample_diff, sample_verify
     ):
-        fake_cp = _fake_completed_process("", returncode=1, stderr="boom")
-        with patch("aiv.scorer.subprocess.run", return_value=fake_cp):
-            result = score(sample_story, sample_diff, sample_verify)
-
-        assert result.error == "llm_error"
-
-    def test_missing_binary_returns_sentinel_binary_not_found(
-        self, monkeypatch, sample_story, sample_diff, sample_verify
-    ):
-        monkeypatch.setattr(scorer, "_find_claude_binary", lambda: None)
-        with patch("aiv.scorer.subprocess.run") as mock_run:
-            result = score(sample_story, sample_diff, sample_verify)
-
-        assert result.error == "binary_not_found"
-        mock_run.assert_not_called()
-
-    def test_arbitrary_exception_returns_sentinel_llm_error(
-        self, sample_story, sample_diff, sample_verify
-    ):
-        with patch(
-            "aiv.scorer.subprocess.run", side_effect=OSError("arbitrary")
-        ):
-            result = score(sample_story, sample_diff, sample_verify)
-        assert result.error == "llm_error"
-
-    def test_empty_stdout_returns_sentinel_llm_error(
-        self, sample_story, sample_diff, sample_verify
-    ):
-        fake_cp = _fake_completed_process("")
-        with patch("aiv.scorer.subprocess.run", return_value=fake_cp):
-            result = score(sample_story, sample_diff, sample_verify)
-        assert result.error == "llm_error"
-
-    def test_raw_stdout_without_envelope_still_parses(
-        self, sample_story, sample_diff, sample_verify
-    ):
-        # If claude -p emits the model JSON directly (no envelope wrapper),
-        # the scorer must still parse it rather than fall back to parse_failure.
+        """Ollama returns raw model JSON — no claude -p envelope wrapper."""
         model_json = _valid_scores_json()
-        fake_cp = _fake_completed_process(model_json)
-        with patch("aiv.scorer.subprocess.run", return_value=fake_cp):
+        with patch("agent.llm_router.complete", return_value=model_json):
             result = score(sample_story, sample_diff, sample_verify)
 
         assert result.error == ""
@@ -446,9 +400,7 @@ class TestScoreEndToEnd:
 
     def test_never_raises_on_bad_inputs(self):
         """Scoring must swallow every exception path."""
-        with patch(
-            "aiv.scorer.subprocess.run", side_effect=Exception("arbitrary")
-        ):
+        with patch("agent.llm_router.complete", side_effect=Exception("arbitrary")):
             result = score({}, None, None)  # type: ignore[arg-type]
         assert isinstance(result, StoryQualityScores)
         assert result.error != ""

@@ -597,31 +597,31 @@ Include common pitfalls and mistakes to watch for.
 - Be practical and actionable
 - Include specific advice for someone using {stack}"""
 
-    # Use claude -p (Pro subscription) instead of API credits
-    from .claude_code_runner import run_claude_prompt
+    # Route via llm_router — defaults to local Ollama (qwen3.5:latest).
+    # Long-form prose doesn't need Claude's code-reasoning depth; keeping
+    # Claude quota for the AIW loop.
+    from .llm_router import complete as _llm_complete
 
-    def _call_claude() -> str:
+    def _call_llm() -> str:
         start = _time.perf_counter()
-        result = run_claude_prompt(prompt, timeout=120, max_turns=1)
+        content = _llm_complete("dev_learning", prompt, timeout=120)
         duration = _time.perf_counter() - start
 
-        if result["success"]:
-            content = result["result"]
+        if content:
             _record_perf(
-                "claude_pro_sub", duration, success=True,
-                model="claude-code-pro",
+                "dev_learning_router", duration, success=True,
+                model="llm_router:dev_learning",
             )
-            log(f"Content generated: {len(content)} chars (Pro sub, ${result.get('cost_usd', 0):.4f})")
+            log(f"Content generated: {len(content)} chars via llm_router")
             return content
-        else:
-            _record_perf(
-                "claude_pro_sub", duration, success=False,
-                model="claude-code-pro", error=str(result.get("error", ""))[:200],
-            )
-            log(f"claude -p failed: {result.get('error')} — falling back to Ollama")
-            return f"Error generating content: {result.get('error')}"
+        _record_perf(
+            "dev_learning_router", duration, success=False,
+            model="llm_router:dev_learning", error="empty_or_none",
+        )
+        log("llm_router returned None for dev_learning")
+        return "Error generating content: llm_router returned no output"
 
-    return await asyncio.to_thread(_call_claude)
+    return await asyncio.to_thread(_call_llm)
 
 
 async def send_daily_learning(client: Any, channel_name: str) -> None:

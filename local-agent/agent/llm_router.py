@@ -41,6 +41,9 @@ Role = Literal[
     "aimm_suggester",
     "splitter_decomposer",
     "evergreen_generator",
+    "aiv_classifier",
+    "aiv_scorer",
+    "dev_learning",
 ]
 
 
@@ -114,6 +117,9 @@ _ROLE_TO_SETTING: dict[Role, str] = {
     "aimm_suggester": "aimm_suggester_model",
     "splitter_decomposer": "splitter_decomposer_model",
     "evergreen_generator": "evergreen_generator_model",
+    "aiv_classifier": "aiv_classifier_model",
+    "aiv_scorer": "aiv_scorer_model",
+    "dev_learning": "dev_learning_model",
 }
 
 
@@ -172,8 +178,14 @@ def _cli() -> int:
 
 
 def _resolve_fallback() -> str:
+    """Return the claude fallback model, or empty string for no-fallback.
+
+    Default is "" — an intentional choice to keep classification roles
+    pure-Ollama and avoid silent Claude quota burn from transient Ollama
+    errors. Callers already handle None gracefully.
+    """
     s = get_settings()
-    return getattr(s, "llm_fallback_model", None) or "claude-haiku-4-5"
+    return getattr(s, "llm_fallback_model", None) or ""
 
 
 def complete(
@@ -186,6 +198,11 @@ def complete(
     Returns stripped response text, or ``None`` on every-path failure.
     Never raises — callers already handle None (the legacy claude-only
     behavior returned None on any error).
+
+    When the primary is Ollama and the call fails, we retry Ollama once
+    before (optionally) falling back to Claude. This avoids silently
+    burning Max-20x quota on transient Ollama hiccups — the backend we
+    deliberately chose to offload to.
     """
     primary = _resolve_primary(role)
     fallback = _resolve_fallback()
@@ -195,8 +212,19 @@ def complete(
         out = ollama_chat(prompt, tag, timeout=timeout)
         if out is not None:
             return out
+        # Retry once before considering this a hard failure.
+        logger.info("[llm_router] %s ollama:%s failed, retrying once", role, tag)
+        out = ollama_chat(prompt, tag, timeout=timeout)
+        if out is not None:
+            return out
+        if not fallback:
+            logger.warning(
+                "[llm_router] %s ollama:%s failed twice; no claude fallback configured, returning None",
+                role, tag,
+            )
+            return None
         logger.info(
-            "[llm_router] %s ollama:%s failed, falling back to %s",
+            "[llm_router] %s ollama:%s failed twice, falling back to %s",
             role, tag, fallback,
         )
         return _claude_chat(prompt, fallback, timeout=timeout)

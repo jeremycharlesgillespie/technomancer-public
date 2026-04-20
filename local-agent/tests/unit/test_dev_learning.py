@@ -192,30 +192,27 @@ class TestTopicSelection:
 class TestCommandHandler:
     """Tests for the better_dev command handler."""
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_handle_custom_topic(self, mock_search, mock_run, patched_dev_learning):
+    def test_handle_custom_topic(self, mock_search, mock_llm, patched_dev_learning):
         """Custom topic (not a predefined category) generates content."""
         mock_search.return_value = "Sample search results"
-        mock_run.return_value = {
-            "success": True, "cost_usd": 0,
-            "result": (
-                "## Quick Overview\n\n"
-                "Neo4j is a graph database management system that stores data as nodes "
-                "and relationships rather than tables and rows. This makes it ideal for "
-                "connected data problems like social networks, recommendation engines, "
-                "and fraud detection. Unlike relational databases, Neo4j uses the Cypher "
-                "query language which lets you express complex graph patterns intuitively. "
-                "Performance remains constant regardless of dataset size because queries "
-                "traverse only the relevant portion of the graph. Getting started is "
-                "straightforward with the Neo4j Desktop application. You can model your "
-                "domain as nodes with properties and connect them using typed relationships "
-                "that also carry properties. This article explores practical patterns for "
-                "building graph-powered applications with Python and the neo4j driver. "
-                "Here we cover installation, configuration, basic queries, and advanced "
-                "traversal patterns that will help you build production-ready applications."
-            ),
-        }
+        mock_llm.return_value = (
+            "## Quick Overview\n\n"
+            "Neo4j is a graph database management system that stores data as nodes "
+            "and relationships rather than tables and rows. This makes it ideal for "
+            "connected data problems like social networks, recommendation engines, "
+            "and fraud detection. Unlike relational databases, Neo4j uses the Cypher "
+            "query language which lets you express complex graph patterns intuitively. "
+            "Performance remains constant regardless of dataset size because queries "
+            "traverse only the relevant portion of the graph. Getting started is "
+            "straightforward with the Neo4j Desktop application. You can model your "
+            "domain as nodes with properties and connect them using typed relationships "
+            "that also carry properties. This article explores practical patterns for "
+            "building graph-powered applications with Python and the neo4j driver. "
+            "Here we cover installation, configuration, basic queries, and advanced "
+            "traversal patterns that will help you build production-ready applications."
+        )
 
         from agent.dev_learning import handle_better_dev_command
 
@@ -223,26 +220,27 @@ class TestCommandHandler:
         assert "neo4j" in response.lower()
         assert html_url is not None
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_handle_valid_category_calls_claude(self, mock_search, mock_run, patched_dev_learning):
-        """Valid category generates content via claude -p."""
+    def test_handle_valid_category_calls_llm(self, mock_search, mock_llm, patched_dev_learning):
+        """Valid category generates content via llm_router (Ollama default)."""
         mock_search.return_value = "Sample search results"
-        mock_run.return_value = {"success": True, "result": "Generated learning content", "cost_usd": 0}
+        mock_llm.return_value = "Generated learning content"
 
         from agent.dev_learning import handle_better_dev_command
 
         response, html_url = asyncio.run(handle_better_dev_command("python"))
         assert "**Developer Learning:" in response
         assert "python" in response.lower()
-        mock_run.assert_called_once()
+        mock_llm.assert_called_once()
+        assert mock_llm.call_args.args[0] == "dev_learning"
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_handle_marks_topic_as_sent(self, mock_search, mock_run, patched_dev_learning):
+    def test_handle_marks_topic_as_sent(self, mock_search, mock_llm, patched_dev_learning):
         """Command handler marks topic as sent."""
         mock_search.return_value = "Sample search results"
-        mock_run.return_value = {"success": True, "result": "Content", "cost_usd": 0}
+        mock_llm.return_value = "Content"
 
         from agent.dev_learning import handle_better_dev_command, load_sent_topics
 
@@ -253,26 +251,26 @@ class TestCommandHandler:
 
 
 class TestContentGeneration:
-    """Tests for content generation via claude -p (Pro subscription)."""
+    """Tests for content generation via llm_router (Ollama default)."""
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_generate_uses_web_search(self, mock_search, mock_run, patched_dev_learning):
+    def test_generate_uses_web_search(self, mock_search, mock_llm, patched_dev_learning):
         """Content generation calls web search first."""
         mock_search.return_value = "Web search results"
-        mock_run.return_value = {"success": True, "result": "Generated content", "cost_usd": 0}
+        mock_llm.return_value = "Generated content"
 
         from agent.dev_learning import generate_learning_content
 
         asyncio.run(generate_learning_content("Test topic", "python"))
         mock_search.assert_called_once()
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_generate_returns_content(self, mock_search, mock_run, patched_dev_learning):
-        """Claude -p generates article content."""
+    def test_generate_returns_content(self, mock_search, mock_llm, patched_dev_learning):
+        """llm_router returns article content directly."""
         mock_search.return_value = "Web results"
-        mock_run.return_value = {"success": True, "result": "## Quick Overview\nGreat article", "cost_usd": 0}
+        mock_llm.return_value = "## Quick Overview\nGreat article"
 
         from agent.dev_learning import generate_learning_content
 
@@ -280,12 +278,12 @@ class TestContentGeneration:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    @patch("agent.claude_code_runner.run_claude_prompt")
+    @patch("agent.llm_router.complete")
     @patch("agent.dev_learning.web_search")
-    def test_generate_handles_failure(self, mock_search, mock_run, patched_dev_learning):
-        """Handles claude -p failure gracefully."""
+    def test_generate_handles_failure(self, mock_search, mock_llm, patched_dev_learning):
+        """Handles router-returning-None gracefully."""
         mock_search.return_value = "Web results"
-        mock_run.return_value = {"success": False, "result": "", "error": "binary not found", "cost_usd": 0}
+        mock_llm.return_value = None
 
         from agent.dev_learning import generate_learning_content
 
