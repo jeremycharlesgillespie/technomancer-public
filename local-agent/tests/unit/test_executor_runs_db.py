@@ -1110,3 +1110,89 @@ class TestGetCurrentExecutionPerProject:
             aim_root=aim_root, primary_label="TK"
         )
         assert [r["project"] for r in rows] == ["TK"]
+
+
+# ---------------------------------------------------------------------------
+# story_model_usage cache token columns
+# ---------------------------------------------------------------------------
+
+
+class TestStoryModelUsageCacheTokens:
+    """cache_read_tokens and cache_write_tokens stored and retrieved correctly."""
+
+    def test_columns_exist_on_fresh_db(self):
+        conn = executor_runs_db._get_conn()
+        cols = {
+            r["name"]
+            for r in conn.execute(
+                "PRAGMA table_info(story_model_usage)"
+            ).fetchall()
+        }
+        assert "cache_read_tokens" in cols
+        assert "cache_write_tokens" in cols
+
+    def test_record_and_retrieve_cache_tokens(self):
+        executor_runs_db.record_story_model_usage(
+            story_key="TK-999",
+            model="claude-sonnet-4-6",
+            call_count=5,
+            cost_usd=0.25,
+            cache_read_tokens=12000,
+            cache_write_tokens=3500,
+        )
+        rows = executor_runs_db.get_story_model_usage("TK-999")
+        assert len(rows) == 1
+        assert rows[0]["cache_read_tokens"] == 12000
+        assert rows[0]["cache_write_tokens"] == 3500
+
+    def test_defaults_to_zero_when_not_provided(self):
+        executor_runs_db.record_story_model_usage(
+            story_key="TK-998",
+            model="claude-sonnet-4-6",
+            call_count=3,
+            cost_usd=0.10,
+        )
+        rows = executor_runs_db.get_story_model_usage("TK-998")
+        assert rows[0]["cache_read_tokens"] == 0
+        assert rows[0]["cache_write_tokens"] == 0
+
+    def test_get_all_includes_cache_tokens(self):
+        executor_runs_db.record_story_model_usage(
+            story_key="TK-997",
+            model="claude-sonnet-4-6",
+            call_count=2,
+            cost_usd=0.05,
+            cache_read_tokens=8000,
+            cache_write_tokens=1000,
+        )
+        rows = executor_runs_db.get_all_story_model_usage()
+        assert any(r["cache_read_tokens"] == 8000 for r in rows)
+
+    def test_migration_adds_columns_to_legacy_db(self, tmp_path, monkeypatch):
+        """An older DB without the cache columns gets them added on init_db()."""
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE story_model_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_key TEXT, model TEXT,
+                call_count INTEGER, cost_usd REAL, recorded_at TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        if hasattr(executor_runs_db._local, "conn"):
+            executor_runs_db._local.conn.close()
+            del executor_runs_db._local.conn
+
+        executor_runs_db.init_db()
+
+        conn2 = sqlite3.connect(str(db_path))
+        conn2.row_factory = sqlite3.Row
+        cols = {r["name"] for r in conn2.execute("PRAGMA table_info(story_model_usage)").fetchall()}
+        conn2.close()
+        assert "cache_read_tokens" in cols
+        assert "cache_write_tokens" in cols

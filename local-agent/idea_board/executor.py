@@ -1642,10 +1642,21 @@ def _accumulate_model_usage(
     usage = message.get("usage")
     if not isinstance(model, str) or not model or not isinstance(usage, dict):
         return
-    bucket = model_usage.setdefault(model, {"call_count": 0, "cost_usd": 0.0})
+    bucket = model_usage.setdefault(
+        model, {"call_count": 0, "cost_usd": 0.0,
+                "cache_read_tokens": 0, "cache_write_tokens": 0}
+    )
     bucket["call_count"] = int(bucket["call_count"]) + 1
     bucket["cost_usd"] = float(bucket["cost_usd"]) + _cost_from_usage_dict(
         usage, model=model
+    )
+    bucket["cache_read_tokens"] = (
+        int(bucket["cache_read_tokens"])
+        + int(usage.get("cache_read_input_tokens") or 0)
+    )
+    bucket["cache_write_tokens"] = (
+        int(bucket["cache_write_tokens"])
+        + int(usage.get("cache_creation_input_tokens") or 0)
     )
 
 
@@ -1661,6 +1672,8 @@ def _flush_story_model_usage(
                 model=model,
                 call_count=int(stats.get("call_count", 0)),
                 cost_usd=float(stats.get("cost_usd", 0.0)),
+                cache_read_tokens=int(stats.get("cache_read_tokens", 0)),
+                cache_write_tokens=int(stats.get("cache_write_tokens", 0)),
             )
         except Exception:
             logger.debug(

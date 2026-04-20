@@ -52,7 +52,8 @@ class TestSchema:
             ).fetchall()
         }
         assert {
-            "story_key", "model", "call_count", "cost_usd", "recorded_at",
+            "story_key", "model", "call_count", "cost_usd",
+            "cache_read_tokens", "cache_write_tokens", "recorded_at",
         }.issubset(cols)
 
     def test_index_exists(self):
@@ -189,6 +190,47 @@ class TestAccumulateModelUsage:
             bucket,
         )
         assert bucket == {}
+
+    def test_cache_tokens_accumulated(self):
+        """cache_read_input_tokens and cache_creation_input_tokens are tracked."""
+        bucket: dict = {}
+        # First call: writes cache (creation tokens)
+        executor_mod._accumulate_model_usage(
+            self._assistant_line("claude-sonnet-4-6", {
+                "input_tokens": 500,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 3800,
+            }),
+            bucket,
+        )
+        # Second call: reads cache
+        executor_mod._accumulate_model_usage(
+            self._assistant_line("claude-sonnet-4-6", {
+                "input_tokens": 0,
+                "output_tokens": 300,
+                "cache_read_input_tokens": 3800,
+                "cache_creation_input_tokens": 0,
+            }),
+            bucket,
+        )
+        s = bucket["claude-sonnet-4-6"]
+        assert s["cache_write_tokens"] == 3800
+        assert s["cache_read_tokens"] == 3800
+        assert s["call_count"] == 2
+
+    def test_cache_tokens_default_zero_when_absent(self):
+        """Usage blocks without cache fields default to 0."""
+        bucket: dict = {}
+        executor_mod._accumulate_model_usage(
+            self._assistant_line("claude-sonnet-4-6", {
+                "input_tokens": 100,
+                "output_tokens": 50,
+            }),
+            bucket,
+        )
+        assert bucket["claude-sonnet-4-6"]["cache_read_tokens"] == 0
+        assert bucket["claude-sonnet-4-6"]["cache_write_tokens"] == 0
 
 
 class TestFlushStoryModelUsage:
@@ -335,3 +377,46 @@ class TestSimulatedClaudeRun:
             by_model["claude-opus-4-6"]["cost_usd"]
             > by_model["claude-haiku-4-5-20251001"]["cost_usd"]
         )
+
+    def test_cache_hit_run_stored_and_retrieved(self):
+        """cache_read_tokens and cache_write_tokens round-trip through DB."""
+        bucket: dict = {}
+        # Simulate a 16-turn run: call 1 writes cache, calls 2-15 read it.
+        events = []
+        events.append({
+            "type": "assistant",
+            "message": {
+                "model": "claude-sonnet-4-6",
+                "usage": {
+                    "input_tokens": 200,
+                    "output_tokens": 400,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 3800,
+                },
+                "content": [],
+            },
+        })
+        for _ in range(15):
+            events.append({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-sonnet-4-6",
+                    "usage": {
+                        "input_tokens": 200,
+                        "output_tokens": 300,
+                        "cache_read_input_tokens": 3800,
+                        "cache_creation_input_tokens": 0,
+                    },
+                    "content": [],
+                },
+            })
+        for evt in events:
+            executor_mod._accumulate_model_usage(json.dumps(evt), bucket)
+        executor_mod._flush_story_model_usage("TK-633", bucket)
+
+        rows = executor_runs_db.get_story_model_usage("TK-633")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["call_count"] == 16
+        assert row["cache_write_tokens"] == 3800       # only call 1
+        assert row["cache_read_tokens"] == 15 * 3800   # calls 2-16

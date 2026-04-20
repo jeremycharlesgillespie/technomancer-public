@@ -129,6 +129,23 @@ _TOOL_COLUMNS: frozenset[str] = frozenset({
 })
 
 
+def _migrate_story_model_usage_cache_cols(conn: sqlite3.Connection) -> None:
+    """Add cache_read_tokens / cache_write_tokens if the table predates them."""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(story_model_usage)").fetchall()
+    }
+    for col, defn in (
+        ("cache_read_tokens", "INTEGER DEFAULT 0"),
+        ("cache_write_tokens", "INTEGER DEFAULT 0"),
+    ):
+        if col not in existing:
+            conn.execute(
+                f"ALTER TABLE story_model_usage ADD COLUMN {col} {defn}"
+            )
+    conn.commit()
+
+
 def _get_conn() -> sqlite3.Connection:
     """Per-thread SQLite connection (created on first use)."""
     conn: sqlite3.Connection | None = getattr(_local, "conn", None)
@@ -233,18 +250,22 @@ def init_db() -> None:
     """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS story_model_usage (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            story_key    TEXT,
-            model        TEXT,
-            call_count   INTEGER,
-            cost_usd     REAL,
-            recorded_at  TEXT
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            story_key           TEXT,
+            model               TEXT,
+            call_count          INTEGER,
+            cost_usd            REAL,
+            cache_read_tokens   INTEGER DEFAULT 0,
+            cache_write_tokens  INTEGER DEFAULT 0,
+            recorded_at         TEXT
         )
     """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_story_model_usage_story
         ON story_model_usage (story_key, recorded_at)
     """)
+    # Migration: add cache columns to existing databases that predate this schema.
+    _migrate_story_model_usage_cache_cols(conn)
     conn.commit()
 
 
@@ -441,6 +462,8 @@ def record_story_model_usage(
     model: str,
     call_count: int,
     cost_usd: float,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
     recorded_at: str | None = None,
 ) -> int:
     """Insert one ``story_model_usage`` row for a finished claude -p call.
@@ -452,6 +475,10 @@ def record_story_model_usage(
             the run being recorded.
         cost_usd: Dollar cost for those turns. Callers compute this from the
             per-turn ``usage`` blocks.
+        cache_read_tokens: Cumulative ``cache_read_input_tokens`` across all
+            turns — tokens served from the prompt cache at 0.1× rate.
+        cache_write_tokens: Cumulative ``cache_creation_input_tokens`` — tokens
+            written to the cache at 1.25× rate.
         recorded_at: ISO8601 timestamp. Defaults to ``datetime.now()``.
 
     Returns:
@@ -462,9 +489,18 @@ def record_story_model_usage(
     ts = recorded_at or datetime.now().isoformat()
     cursor = conn.execute(
         "INSERT INTO story_model_usage "
-        "(story_key, model, call_count, cost_usd, recorded_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (story_key, model, int(call_count), float(cost_usd), ts),
+        "(story_key, model, call_count, cost_usd, "
+        "cache_read_tokens, cache_write_tokens, recorded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            story_key,
+            model,
+            int(call_count),
+            float(cost_usd),
+            int(cache_read_tokens),
+            int(cache_write_tokens),
+            ts,
+        ),
     )
     conn.commit()
     return int(cursor.lastrowid or 0)
@@ -475,7 +511,8 @@ def get_story_model_usage(story_key: str) -> list[dict[str, Any]]:
     init_db()
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT id, story_key, model, call_count, cost_usd, recorded_at "
+        "SELECT id, story_key, model, call_count, cost_usd, "
+        "cache_read_tokens, cache_write_tokens, recorded_at "
         "FROM story_model_usage WHERE story_key = ? "
         "ORDER BY recorded_at ASC, id ASC",
         (story_key,),
@@ -488,7 +525,8 @@ def get_all_story_model_usage() -> list[dict[str, Any]]:
     init_db()
     conn = _get_conn()
     rows = conn.execute(
-        "SELECT id, story_key, model, call_count, cost_usd, recorded_at "
+        "SELECT id, story_key, model, call_count, cost_usd, "
+        "cache_read_tokens, cache_write_tokens, recorded_at "
         "FROM story_model_usage "
         "ORDER BY recorded_at ASC, id ASC",
     ).fetchall()
