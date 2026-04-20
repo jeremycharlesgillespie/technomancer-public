@@ -7,11 +7,20 @@ dedup, short-answer routing). Nothing here replaces the shim.
 
 One function: :func:`chat`. On any failure (network, non-200, bad
 JSON), returns ``None`` so the caller can fall back to claude -p.
+
+Backpressure: we track in-flight requests with an atomic counter.
+When the count reaches ``MAX_CONCURRENT``, new calls return ``None``
+immediately instead of joining Ollama's internal queue (default 512).
+This prevents runaway loops from piling up thousands of requests and
+stalling the entire system. 503 responses are routed to the health
+monitor so the ``/health`` endpoint reflects queue saturation in real
+time.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 import requests
@@ -28,6 +37,34 @@ OLLAMA_HOST: str = "http://127.0.0.1:11434"
 #: takes minutes. 8K is more than enough for every classification prompt
 #: we send (the splitter prompt tops out around ~500 tokens).
 DEFAULT_NUM_CTX: int = 8192
+
+# ---------------------------------------------------------------------------
+# In-flight request tracking
+# ---------------------------------------------------------------------------
+
+#: Hard cap on simultaneous Ollama requests from this process. Ollama's
+#: internal queue is 512; we shed load at 30 so the system stays responsive
+#: and the health monitor has time to react before things cascade.
+MAX_CONCURRENT: int = 30
+
+_inflight_lock = threading.Lock()
+_inflight_count: int = 0
+
+
+def get_inflight_count() -> int:
+    """Return the number of Ollama requests currently in-flight."""
+    with _inflight_lock:
+        return _inflight_count
+
+
+def _notify_monitor_degraded(reason: str) -> None:
+    """Push a degraded signal to the health monitor without importing at module level."""
+    try:
+        from .ollama_health import get_monitor
+
+        get_monitor().mark_degraded(reason)
+    except Exception:
+        pass
 
 
 def chat(
@@ -56,44 +93,74 @@ def chat(
     Returns:
         Response text, or ``None`` on any failure. Never raises.
     """
-    opts = dict(options or {})
-    opts.setdefault("num_ctx", DEFAULT_NUM_CTX)
-    body: dict[str, Any] = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "keep_alive": keep_alive,
-        "options": opts,
-        # qwen3.5 and other Qwen variants emit reasoning in a separate
-        # ``thinking`` field when think-mode is on, which leaves ``response``
-        # empty. Classification callers want the answer, not the CoT, so
-        # disable thinking by default. Callers that specifically want CoT
-        # can pass ``options={"think": True}``.
-        "think": opts.pop("think", False),
-    }
-    if format:
-        body["format"] = format
+    global _inflight_count
+
+    # Backpressure: shed load before we can fill Ollama's internal queue.
+    with _inflight_lock:
+        if _inflight_count >= MAX_CONCURRENT:
+            logger.warning(
+                "[ollama_client] in-flight cap reached (%d/%d), shedding request for %s",
+                _inflight_count,
+                MAX_CONCURRENT,
+                model,
+            )
+            return None
+        _inflight_count += 1
+
     try:
-        r = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
-            json=body,
-            timeout=timeout,
-        )
-    except requests.RequestException as exc:
-        logger.warning("[ollama_client] %s network error: %s", model, exc)
-        return None
-    if r.status_code != 200:
-        logger.warning(
-            "[ollama_client] %s HTTP %d: %s",
-            model, r.status_code, r.text[:200],
-        )
-        return None
-    try:
-        data = r.json()
-    except ValueError:
-        logger.warning("[ollama_client] %s returned non-JSON body", model)
-        return None
-    response = data.get("response")
-    if not isinstance(response, str):
-        return None
-    return response.strip() or None
+        opts = dict(options or {})
+        opts.setdefault("num_ctx", DEFAULT_NUM_CTX)
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "keep_alive": keep_alive,
+            "options": opts,
+            # qwen3.5 and other Qwen variants emit reasoning in a separate
+            # ``thinking`` field when think-mode is on, which leaves ``response``
+            # empty. Classification callers want the answer, not the CoT, so
+            # disable thinking by default. Callers that specifically want CoT
+            # can pass ``options={"think": True}``.
+            "think": opts.pop("think", False),
+        }
+        if format:
+            body["format"] = format
+        try:
+            r = requests.post(
+                f"{OLLAMA_HOST}/api/generate",
+                json=body,
+                timeout=timeout,
+            )
+        except requests.RequestException as exc:
+            logger.warning("[ollama_client] %s network error: %s", model, exc)
+            return None
+        if r.status_code == 503:
+            # Ollama's queue is full — tell the health monitor so /health
+            # reflects saturation immediately (not just on the next /api/tags poll).
+            logger.warning(
+                "[ollama_client] %s HTTP 503 — Ollama queue full (inflight=%d)",
+                model,
+                _inflight_count,
+            )
+            _notify_monitor_degraded("HTTP 503 - Ollama queue full")
+            return None
+        if r.status_code != 200:
+            logger.warning(
+                "[ollama_client] %s HTTP %d: %s",
+                model,
+                r.status_code,
+                r.text[:200],
+            )
+            return None
+        try:
+            data = r.json()
+        except ValueError:
+            logger.warning("[ollama_client] %s returned non-JSON body", model)
+            return None
+        response = data.get("response")
+        if not isinstance(response, str):
+            return None
+        return response.strip() or None
+    finally:
+        with _inflight_lock:
+            _inflight_count -= 1

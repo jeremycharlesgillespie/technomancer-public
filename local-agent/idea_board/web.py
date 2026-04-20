@@ -2641,10 +2641,43 @@ def _live_route_accessible(key: str) -> bool:
     return (EXECUTION_LOGS_DIR / f"{key}.log").exists()
 
 
+def _queue_pct(inflight: int, cap: int) -> int:
+    if cap <= 0:
+        return 0
+    return min(100, int(inflight * 100 / cap))
+
+
+def _queue_bar_class(inflight: int, cap: int) -> str:
+    pct = _queue_pct(inflight, cap)
+    if pct >= 80:
+        return "bar-crit"
+    if pct >= 50:
+        return "bar-warn"
+    return "bar-ok"
+
+
+def _queue_status_text(inflight: int, cap: int) -> str:
+    pct = _queue_pct(inflight, cap)
+    if pct >= 80:
+        return "&#9888; near cap — shedding new requests"
+    if pct >= 50:
+        return "&#9888; elevated"
+    return "&#10003; normal"
+
+
 def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
     """Render the /live landing page HTML from collected execution data."""
     executing = data.get("executing") or []
     recent = data.get("recent") or []
+
+    try:
+        from agent.ollama_client import MAX_CONCURRENT, get_inflight_count
+
+        ollama_inflight = get_inflight_count()
+        ollama_inflight_max = MAX_CONCURRENT
+    except Exception:
+        ollama_inflight = 0
+        ollama_inflight_max = 30
 
     if executing:
         rows = []
@@ -2725,6 +2758,18 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
     .status-pill.executing {{ background: var(--orange); color: #000; }}
     .status-pill.watching {{ background: var(--accent); color: #000; }}
     .status-pill.assigned {{ background: var(--muted); color: #000; }}
+    .queue-bar {{ background: var(--surface); border-radius: 8px; padding: 0.75rem 1.25rem;
+                 border: 1px solid var(--border); margin-bottom: 1.25rem;
+                 display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }}
+    .queue-bar .label {{ color: var(--muted); font-size: 0.8rem; text-transform: uppercase;
+                         letter-spacing: 0.05em; }}
+    .queue-bar .val {{ font-size: 1.1rem; font-weight: 600; font-family: 'Cascadia Code', monospace; }}
+    .queue-bar .bar-wrap {{ flex: 1; min-width: 120px; background: #222; border-radius: 4px;
+                            height: 8px; overflow: hidden; }}
+    .queue-bar .bar-fill {{ height: 100%; border-radius: 4px; transition: width 0.4s ease; }}
+    .bar-ok {{ background: #76b900; }}
+    .bar-warn {{ background: var(--orange); }}
+    .bar-crit {{ background: #e94560; }}
     </style>
 </head>
 <body>
@@ -2736,6 +2781,18 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
         <a href="/aim">AIM Timeline</a>
         <a href="/aim/dashboard">AI Dev Team</a>
         <a href="/executor-runs">Executor Runs</a>
+    </div>
+
+    <div class="queue-bar" id="ollama-queue-bar">
+        <div>
+            <div class="label">Ollama Queue</div>
+            <div class="val"><span id="ollama-inflight">{ollama_inflight}</span>&thinsp;/&thinsp;<span id="ollama-inflight-max">{ollama_inflight_max}</span></div>
+        </div>
+        <div class="bar-wrap">
+            <div class="bar-fill {_queue_bar_class(ollama_inflight, ollama_inflight_max)}" id="ollama-bar-fill"
+                 style="width:{_queue_pct(ollama_inflight, ollama_inflight_max)}%"></div>
+        </div>
+        <div style="color:var(--muted);font-size:0.8rem" id="ollama-queue-status">{_queue_status_text(ollama_inflight, ollama_inflight_max)}</div>
     </div>
 
     <section>
@@ -2817,6 +2874,21 @@ def _render_live_landing(data: dict[str, list[dict[str, Any]]]) -> str:
                     : '<tr><td colspan="4" class="empty">No recent completions recorded.</td></tr>';
                 document.getElementById('recent-count').textContent = recent.length;
 
+                // Update Ollama queue bar
+                const inflight = j.ollama_inflight ?? 0;
+                const cap = j.ollama_inflight_max ?? 30;
+                const pct = cap > 0 ? Math.min(100, Math.round(inflight * 100 / cap)) : 0;
+                const barClass = pct >= 80 ? 'bar-crit' : pct >= 50 ? 'bar-warn' : 'bar-ok';
+                const statusText = pct >= 80
+                    ? '&#9888; near cap \u2014 shedding new requests'
+                    : pct >= 50 ? '&#9888; elevated' : '&#10003; normal';
+                document.getElementById('ollama-inflight').textContent = inflight;
+                document.getElementById('ollama-inflight-max').textContent = cap;
+                const fill = document.getElementById('ollama-bar-fill');
+                fill.style.width = pct + '%';
+                fill.className = 'bar-fill ' + barClass;
+                document.getElementById('ollama-queue-status').innerHTML = statusText;
+
                 const ts = new Date();
                 document.getElementById('last-update').textContent =
                     ts.toTimeString().slice(0, 8);
@@ -2870,9 +2942,20 @@ def api_live_executions() -> Response:
         }
         for row in data.get("recent") or []
     ]
+    try:
+        from agent.ollama_client import MAX_CONCURRENT, get_inflight_count
+
+        ollama_inflight = get_inflight_count()
+        ollama_inflight_max = MAX_CONCURRENT
+    except Exception:
+        ollama_inflight = 0
+        ollama_inflight_max = 30
+
     return jsonify({
         "executing": executing,
         "recent": recent,
+        "ollama_inflight": ollama_inflight,
+        "ollama_inflight_max": ollama_inflight_max,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     })
 
