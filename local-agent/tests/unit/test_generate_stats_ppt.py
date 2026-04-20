@@ -61,6 +61,68 @@ def _unload_slide_modules():
 
 
 # ---------------------------------------------------------------------------
+# build_title_slide_content — pure data function (TK-831)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildTitleSlideContent:
+    """build_title_slide_content returns a dict without touching a Presentation."""
+
+    def test_returns_dict_with_title_and_subtitle_keys(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content()
+        assert isinstance(result, dict)
+        assert "title" in result
+        assert "subtitle" in result
+
+    def test_default_title_value(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content()
+        assert result["title"] == "Project Stats"
+
+    def test_default_subtitle_when_no_filters(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content()
+        assert result["subtitle"] == "All projects · All time"
+
+    def test_subtitle_with_since_only(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content(since="2026-01-15")
+        assert result["subtitle"] == "Since 2026-01-15"
+
+    def test_subtitle_with_project_only(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content(project="TK")
+        assert result["subtitle"] == "Project: TK"
+
+    def test_subtitle_with_both_filters(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content(since="2026-03-01", project="FA")
+        assert result["subtitle"] == "Since 2026-03-01  ·  Project: FA"
+
+    def test_result_values_are_strings(self):
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        result = build_title_slide_content(since="2026-04-19", project="TK")
+        assert isinstance(result["title"], str)
+        assert isinstance(result["subtitle"], str)
+
+    def test_no_presentation_object_required(self):
+        """Calling build_title_slide_content never touches pptx — no import side-effects."""
+        from scripts.generate_stats_ppt import build_title_slide_content
+
+        # If this raises it means the function accidentally requires a Presentation.
+        result = build_title_slide_content(since="2026-01-01", project="TK")
+        assert result  # non-empty dict
+
+
+# ---------------------------------------------------------------------------
 # CLI parsing
 # ---------------------------------------------------------------------------
 
