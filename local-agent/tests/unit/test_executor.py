@@ -2166,3 +2166,25 @@ class TestRunPytestElapsedMeasurement:
             )
 
         assert state.elapsed_seconds == pytest.approx(42.5)
+
+
+class TestPromptCacheFlag:
+    """The AIW executor must pass --exclude-dynamic-system-prompt-sections
+    to enable cross-invocation prompt caching (~90% discount on reads).
+
+    Guard test: grep the source file for the flag in both the primary
+    and fix-retry claude -p invocations. A lint-style check rather than
+    a runtime exercise because the real subprocess path requires a full
+    story fixture; regressing the flag is cheap to detect via source scan.
+    """
+
+    def test_flag_present_in_executor_source(self):
+        from pathlib import Path
+        src = Path(
+            "idea_board/executor.py"
+        ).read_text(encoding="utf-8")
+        occurrences = src.count('"--exclude-dynamic-system-prompt-sections"')
+        assert occurrences >= 2, (
+            f'Expected --exclude-dynamic-system-prompt-sections in both '
+            f'the primary cmd and fix_cmd, found {occurrences} occurrence(s)'
+        )

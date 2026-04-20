@@ -1926,6 +1926,12 @@ def execute_idea(
                     "--verbose",
                     "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                     "--max-turns", "50",
+                    # Move per-machine sections (cwd, env info, memory
+                    # paths, git status) out of the system prompt and
+                    # into the first user message. Stabilizes the system
+                    # prompt so Anthropic's prompt cache activates
+                    # across story runs — 90% discount on cache reads.
+                    "--exclude-dynamic-system-prompt-sections",
                 ]
                 state.log(
                     f"Starting Claude Code with pre-built context "
@@ -2252,6 +2258,8 @@ def execute_idea(
                         "--output-format", "stream-json",
                         "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                         "--max-turns", "30",
+                        # Stable system prompt = cacheable prefix.
+                        "--exclude-dynamic-system-prompt-sections",
                     ]
 
                     fix_proc = subprocess.Popen(
