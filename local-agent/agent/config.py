@@ -346,6 +346,30 @@ class Settings(BaseSettings):
             "quota for the AIW coding loop."
         ),
     )
+    aim_assign_cooldown_seconds: int = Field(
+        default=3600,
+        description=(
+            "Minimum seconds between ASSIGN actions. Rate-limits AIW to "
+            "~1 story per hour by default; set to 0 to disable. Tracked via "
+            "AIMState.last_assigned_at."
+        ),
+    )
+    aim_peak_hour_pause_enabled: bool = Field(
+        default=True,
+        description=(
+            "If True, AIM refuses ASSIGN during the Anthropic peak-hour "
+            "window (see aim_peak_hour_start_pt / aim_peak_hour_end_pt). "
+            "Peak hours burn Max-20x quota 1.3-1.5x faster."
+        ),
+    )
+    aim_peak_hour_start_pt: int = Field(
+        default=5,
+        description="Peak-hour window start (inclusive, Pacific Time hour 0-23).",
+    )
+    aim_peak_hour_end_pt: int = Field(
+        default=11,
+        description="Peak-hour window end (exclusive, Pacific Time hour 0-23).",
+    )
     llm_fallback_model: str = Field(
         default="",
         description=(

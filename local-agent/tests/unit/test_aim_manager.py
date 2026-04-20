@@ -310,6 +310,117 @@ class TestExecuteDecision:
 
         mock_assign.assert_not_called()
 
+    def test_is_peak_hour_pt_inside_window(self):
+        """Hour 9 PT is inside the default 5-11 window."""
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        from aim.manager import _is_peak_hour_pt
+
+        # 9am PT on an arbitrary date.
+        now_pt = datetime(2026, 4, 19, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        assert _is_peak_hour_pt(now_pt) is True
+
+    def test_is_peak_hour_pt_outside_window(self):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        from aim.manager import _is_peak_hour_pt
+
+        now_pt = datetime(2026, 4, 19, 15, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        assert _is_peak_hour_pt(now_pt) is False
+
+    def test_is_peak_hour_pt_respects_disable_flag(self, monkeypatch):
+        """Setting aim_peak_hour_pause_enabled=False disables the guard."""
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        from agent.config import settings
+        from aim.manager import _is_peak_hour_pt
+
+        monkeypatch.setattr(settings, "aim_peak_hour_pause_enabled", False)
+        now_pt = datetime(2026, 4, 19, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        assert _is_peak_hour_pt(now_pt) is False
+
+    def test_assign_blocked_during_peak_hour(self, state):
+        """Peak-hour window (5-11am PT) holds the assignment."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+
+        decision = Decision(action="ASSIGN", target="TK-100", reason="top")
+
+        with patch("aim.manager._is_peak_hour_pt", return_value=True), \
+             patch("aim.state.assign_idea_to_worker") as mock_assign:
+            execute_decision(state, decision, {"todo": 20})
+
+        mock_assign.assert_not_called()
+
+    def test_assign_blocked_when_cooldown_active(self, state):
+        """ASSIGN is held if last_assigned_at is within the cooldown window."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+        from datetime import datetime, timedelta
+
+        # 30 min ago — inside a 1-hour cooldown.
+        state.last_assigned_at = (
+            datetime.now() - timedelta(minutes=30)
+        ).isoformat(timespec="seconds")
+
+        decision = Decision(action="ASSIGN", target="TK-101", reason="top")
+
+        with patch("aim.manager._is_peak_hour_pt", return_value=False), \
+             patch("aim.state.assign_idea_to_worker") as mock_assign:
+            execute_decision(state, decision, {"todo": 20})
+
+        mock_assign.assert_not_called()
+
+    def test_assign_allowed_after_cooldown_elapses(self, state):
+        """ASSIGN proceeds when last_assigned_at is older than the cooldown."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+        from datetime import datetime, timedelta
+
+        @dataclass
+        class FakeIdea:
+            id: str = "TK-102"
+            title: str = "Ready"
+            state: str = "approved"
+
+        state.last_assigned_at = (
+            datetime.now() - timedelta(hours=2)
+        ).isoformat(timespec="seconds")
+
+        decision = Decision(action="ASSIGN", target="TK-102", reason="top")
+
+        with patch("aim.manager._is_peak_hour_pt", return_value=False), \
+             patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("aim.state.assign_idea_to_worker") as mock_assign, \
+             patch("aim.manager._notify_discord"), \
+             patch("aim.state.save_state"):
+            execute_decision(state, decision, {"todo": 20})
+
+        mock_assign.assert_called_once_with("TK-102")
+
+    def test_assign_stamps_last_assigned_at(self, state):
+        """After a successful ASSIGN, state.last_assigned_at is updated."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
+
+        @dataclass
+        class FakeIdea:
+            id: str = "TK-103"
+            title: str = "x"
+            state: str = "approved"
+
+        state.last_assigned_at = ""
+
+        decision = Decision(action="ASSIGN", target="TK-103", reason="top")
+        with patch("aim.manager._is_peak_hour_pt", return_value=False), \
+             patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("aim.state.assign_idea_to_worker"), \
+             patch("aim.manager._notify_discord"), \
+             patch("aim.state.save_state"):
+            execute_decision(state, decision, {"todo": 20})
+
+        assert state.last_assigned_at != ""
+
     def test_assign_blocked_when_jira_in_progress(self, state):
         """Hard guard: don't assign new work while something is already In Progress.
 
