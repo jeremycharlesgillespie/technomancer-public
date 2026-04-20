@@ -148,12 +148,16 @@ def patched_claude_vault(vault_with_profile, monkeypatch):
     vault_path = vault_with_profile / "LLM Memory"
     monkeypatch.setattr(cv_module, "_session", None)
 
-    # Patch settings to use temp vault
+    # Patch settings to use temp vault. Force the tests onto the shim
+    # path so existing monkeypatch("anthropic.Anthropic", ...) fixtures
+    # keep intercepting client construction — the real-SDK path is
+    # covered by its own targeted test.
     mock_settings = MagicMock()
     mock_settings.llm_memory_path = vault_path
     mock_settings.anthropic_api_key = "test-api-key"
     mock_settings.claude_cache_ttl = "5m"
     mock_settings.claude_use_vault_context = True
+    mock_settings.claude_vault_use_real_api = False
     monkeypatch.setattr(cv_module, "settings", mock_settings)
 
     return vault_path
@@ -830,3 +834,73 @@ class TestCacheStats:
         assert payload == get_cache_stats()
         assert payload["calls"] == 1
         assert payload["cache_hit_rate"] == pytest.approx(0.9)
+
+
+# =============================================================================
+# TESTS: REAL SDK PATH (prompt caching)
+# =============================================================================
+
+
+class TestRealSdkPath:
+    """When claude_vault_use_real_api=True, the session should construct
+    its client from agent.real_anthropic — so cache_control markers are
+    actually sent to the API rather than stripped by the shim."""
+
+    def test_uses_real_sdk_when_flag_true(self, vault_with_profile, monkeypatch):
+        import agent.claude_vault as cv_module
+
+        vault_path = vault_with_profile / "LLM Memory"
+        monkeypatch.setattr(cv_module, "_session", None)
+
+        mock_settings = MagicMock()
+        mock_settings.llm_memory_path = vault_path
+        mock_settings.anthropic_api_key = "sk-test-fake"
+        mock_settings.claude_cache_ttl = "5m"
+        mock_settings.claude_use_vault_context = True
+        mock_settings.claude_vault_use_real_api = True
+        monkeypatch.setattr(cv_module, "settings", mock_settings)
+
+        # Stub real_anthropic.get() to return a mock module that records
+        # construction, so we don't actually load the SDK from disk.
+        fake_client = MagicMock(name="real_client")
+        fake_anthropic_ctor = MagicMock(return_value=fake_client)
+        fake_module = MagicMock()
+        fake_module.Anthropic = fake_anthropic_ctor
+        monkeypatch.setattr(cv_module.real_anthropic, "get", lambda: fake_module)
+
+        session = cv_module.ClaudeVaultSession(vault_path=vault_path)
+
+        assert session.using_real_sdk is True
+        fake_anthropic_ctor.assert_called_once()
+        assert fake_anthropic_ctor.call_args.kwargs.get("api_key") == "sk-test-fake"
+        assert session.client is fake_client
+
+    def test_falls_back_to_shim_when_real_anthropic_unavailable(
+        self, vault_with_profile, monkeypatch
+    ):
+        import agent.claude_vault as cv_module
+
+        vault_path = vault_with_profile / "LLM Memory"
+        monkeypatch.setattr(cv_module, "_session", None)
+
+        mock_settings = MagicMock()
+        mock_settings.llm_memory_path = vault_path
+        mock_settings.anthropic_api_key = "sk-test-fake"
+        mock_settings.claude_cache_ttl = "5m"
+        mock_settings.claude_use_vault_context = True
+        mock_settings.claude_vault_use_real_api = True
+        monkeypatch.setattr(cv_module, "settings", mock_settings)
+
+        # real_anthropic.get() fails → should fall through to shim.
+        def _raise():
+            raise ImportError("stubbed: real SDK not on disk")
+        monkeypatch.setattr(cv_module.real_anthropic, "get", _raise)
+
+        # Mock the shim's Anthropic so we can verify it's reached.
+        shim_client = MagicMock(name="shim_client")
+        monkeypatch.setattr("anthropic.Anthropic", lambda **kw: shim_client)
+
+        session = cv_module.ClaudeVaultSession(vault_path=vault_path)
+
+        assert session.using_real_sdk is False
+        assert session.client is shim_client

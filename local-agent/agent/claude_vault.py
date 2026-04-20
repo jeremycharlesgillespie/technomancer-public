@@ -8,11 +8,14 @@ Features:
 - Supports 5-minute and 1-hour cache TTL options
 """
 
+import logging
 import re
 import threading
 import time as _time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import Any
 
 try:
@@ -21,6 +24,11 @@ try:
     HAS_ANTHROPIC = True
 except ImportError:
     HAS_ANTHROPIC = False
+
+# The module-level ``anthropic`` above is the shim. For genuine prompt
+# caching we need the real SDK — loaded lazily inside ClaudeVault so
+# the shim stays in effect everywhere else.
+from . import real_anthropic
 
 from .config import settings
 from .logging_config import DEFAULT_REQUEST_ID, request_id_var
@@ -292,25 +300,33 @@ Be concise and helpful. Reference the user's background when relevant."""
     except Exception as e:
         blocks.append({"type": "text", "text": f"[Profile unavailable: {e}]"})
 
-    # Block 3: Full permanent memories
-    memories_file = vault_path / "Permanent" / "memories.md"
-    if memories_file.exists():
+    # Block 3+: stable long-form context from Permanent/.
+    # Pulling Resume, claude_handoff, and memories together pushes the
+    # cached prefix well above Anthropic's 1024-token minimum for cache
+    # activation on Sonnet. Everything here is static — rebuilt hourly
+    # via refresh_cache().
+    permanent = vault_path / "Permanent"
+    static_sources = [
+        ("Resume", permanent / "Resume.md"),
+        ("Handoff Notes", permanent / "claude_handoff.md"),
+        ("Permanent Knowledge", permanent / "memories.md"),
+    ]
+    any_content = False
+    for label, src in static_sources:
+        if not src.exists():
+            continue
         try:
-            memories_content = memories_file.read_text(encoding="utf-8")
-            # Truncate if extremely large (>20KB)
-            if len(memories_content) > 20000:
-                memories_content = memories_content[:20000] + "\n\n[Truncated...]"
-
-            blocks.append(
-                {
-                    "type": "text",
-                    "text": f"## Permanent Knowledge\n\n{memories_content}",
-                }
-            )
+            content = src.read_text(encoding="utf-8")
         except Exception as e:
-            blocks.append({"type": "text", "text": f"[Memories unavailable: {e}]"})
-    else:
-        blocks.append({"type": "text", "text": "[No permanent memories found]"})
+            blocks.append({"type": "text", "text": f"[{label} unavailable: {e}]"})
+            continue
+        if len(content) > 20000:
+            content = content[:20000] + "\n\n[Truncated...]"
+        blocks.append({"type": "text", "text": f"## {label}\n\n{content}"})
+        any_content = True
+
+    if not any_content:
+        blocks.append({"type": "text", "text": "[No permanent context available]"})
 
     return _finalize_cache_breakpoint(blocks)
 
@@ -538,9 +554,26 @@ class ClaudeVaultSession:
         self.model = model
         self.cache_ttl = cache_ttl
 
+        # Prefer the real SDK so cache_control markers aren't stripped by
+        # the shim. Falls back to the shim (claude -p subprocess) if the
+        # real package can't be located or the user disabled real-API use
+        # via CLAUDE_VAULT_USE_REAL_API=false.
         self.client = None
-        if HAS_ANTHROPIC and self.api_key:
-            self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.using_real_sdk = False
+        if self.api_key:
+            if getattr(settings, "claude_vault_use_real_api", True):
+                try:
+                    real = real_anthropic.get()
+                    self.client = real.Anthropic(api_key=self.api_key)
+                    self.using_real_sdk = True
+                except ImportError as exc:
+                    logger.warning(
+                        "[ClaudeVault] real_anthropic unavailable (%s); "
+                        "falling back to shimmed client — cache_control will be dropped.",
+                        exc,
+                    )
+            if self.client is None and HAS_ANTHROPIC:
+                self.client = anthropic.Anthropic(api_key=self.api_key)
 
         # Build initial cached prefix
         self._cached_prefix = build_cached_prefix(self.vault_path)

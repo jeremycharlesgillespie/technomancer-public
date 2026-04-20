@@ -370,6 +370,17 @@ class Settings(BaseSettings):
         default=11,
         description="Peak-hour window end (exclusive, Pacific Time hour 0-23).",
     )
+    claude_vault_use_real_api: bool = Field(
+        default=True,
+        description=(
+            "When True (default), ClaudeVault bypasses the anthropic_shim "
+            "via agent.real_anthropic and uses the real Anthropic SDK with "
+            "cache_control ephemeral markers. Reads cost 0.1x (90% discount), "
+            "writes cost 1.25x. Uses API credits from ANTHROPIC_API_KEY. "
+            "Set to False to route through claude -p (Pro subscription, no "
+            "caching) instead."
+        ),
+    )
     llm_fallback_model: str = Field(
         default="",
         description=(
