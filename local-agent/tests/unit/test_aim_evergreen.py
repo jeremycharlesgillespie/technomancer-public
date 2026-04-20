@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.story_format import ATOMIC_LABEL
 from aim.evergreen import (
     EVERGREEN_TOPICS,
     _build_perf_prompt,
@@ -188,3 +189,27 @@ class TestGenerateEvergreenStory:
             module_sampler=lambda: [],
         )
         assert story is None
+
+    def test_atomic_label_stamped_on_topic_path(self):
+        story = generate_evergreen_story(
+            claude_runner=lambda _p, timeout: self._fake_story_json(),
+            perf_reader=lambda: [],
+            module_sampler=lambda: ["agent/foo.py"],
+        )
+        assert story is not None
+        assert ATOMIC_LABEL in story["labels"]
+
+    def test_atomic_label_stamped_on_perf_path(self):
+        with patch("aim.evergreen.random.random", return_value=0.1):
+            story = generate_evergreen_story(
+                claude_runner=lambda _p, timeout: self._fake_story_json(
+                    title="Speed up foo", desc="Cache result"
+                ),
+                perf_reader=lambda: [
+                    {"name": "mod.foo", "call_count": 100,
+                     "p95_seconds": 2.0, "total_seconds": 200.0}
+                ],
+                module_sampler=lambda: ["agent/foo.py"],
+            )
+        assert story is not None
+        assert ATOMIC_LABEL in story["labels"]
