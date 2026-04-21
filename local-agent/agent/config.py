@@ -448,8 +448,13 @@ class Settings(BaseSettings):
         description="Max tool-call turns per fix round in OllamaCoder's inner loop.",
     )
     aiw_ollama_coder_num_ctx: int = Field(
-        default=16384,
-        description="Context window size (tokens) for OllamaCoder sessions.",
+        default=32768,
+        description=(
+            "Context window size (tokens) for OllamaCoder sessions. "
+            "RTX 5080 (16GB): qwen3.5:27b uses ~8.4GB, leaving ~7.7GB for KV cache. "
+            "32768 ctx → ~4.7GB KV → total ~13.1GB (fits in VRAM). "
+            "Larger values (65536+) will spill KV cache to CPU RAM (slower but functional)."
+        ),
     )
     aiw_ollama_coder_max_rounds: int = Field(
         default=20,

@@ -521,7 +521,7 @@ class OllamaCoder:
             r = requests.post(
                 f"{OLLAMA_HOST}/api/chat",
                 json=body,
-                timeout=300,
+                timeout=600,
             )
         except requests.RequestException as exc:
             logger.warning("[OllamaCoder] Network error: %s", exc)

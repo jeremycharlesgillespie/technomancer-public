@@ -1478,22 +1478,51 @@ def _build_diagnostic_fix_prompt(
     return "\n".join(sections)
 
 
-def _build_codebase_context(idea: Any, project_root: Path) -> str:
+def _extract_claude_md_architecture(claude_md_path: "Path") -> str:
+    """Extract only the Architecture section from CLAUDE.md.
+
+    Ollama models have small context windows — the full CLAUDE.md (~23KB)
+    consumes most of the available tokens. The Architecture section contains
+    the file map and patterns that a coder actually needs; the rest is
+    workflow instructions for Claude Code sessions.
+    """
+    text = claude_md_path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines) if l.strip() == "## Architecture"), None)
+    if start is None:
+        return text[:4000]  # fallback: first 4000 chars
+    # Collect until the next top-level section that isn't what we want
+    out = []
+    for line in lines[start:]:
+        if line.startswith("## ") and line.strip() not in ("## Architecture",):
+            break
+        out.append(line)
+    return "\n".join(out)
+
+
+def _build_codebase_context(idea: Any, project_root: Path, ollama_mode: bool = False) -> str:
     """Build codebase context with code, not an LLM.
 
     Replaces the 5-minute LLM exploration pass with a <1 second script
     that reads CLAUDE.md, identifies relevant files, and extracts test
     patterns — everything the LLM was slowly discovering on its own.
+
+    ollama_mode=True: include only CLAUDE.md's Architecture section instead
+    of the full file, keeping the prompt within a small num_ctx budget.
     """
     local_agent = project_root / "local-agent"
     agent_dir = local_agent / "agent"
     test_dir = local_agent / "tests" / "unit"
     sections = []
 
-    # 1. CLAUDE.md (full — it's the project bible)
+    # 1. CLAUDE.md — full for Claude Code, Architecture-only for Ollama
     claude_md = project_root / "CLAUDE.md"
     if claude_md.exists():
-        sections.append(f"## CLAUDE.md\n```\n{claude_md.read_text(encoding='utf-8')}\n```")
+        if ollama_mode:
+            arch_text = _extract_claude_md_architecture(claude_md)
+            sections.append(f"## CLAUDE.md (Architecture section)\n```\n{arch_text}\n```")
+        else:
+            sections.append(f"## CLAUDE.md\n```\n{claude_md.read_text(encoding='utf-8')}\n```")
 
     # 2. Find relevant files from the idea description
     desc = (idea.description or "") + " " + (idea.title or "")
@@ -1885,7 +1914,8 @@ def execute_idea(
             _ctx_meta: dict[str, Any] = {}
             with _state_timer(state, "executor.context_build", metadata=_ctx_meta):
                 state.log("--- Building codebase context ---")
-                codebase_context = _build_codebase_context(idea, project_root)
+                _ollama_mode = settings.aiw_worker_backend == "ollama"
+                codebase_context = _build_codebase_context(idea, project_root, ollama_mode=_ollama_mode)
                 context_chars = len(codebase_context)
                 state.log(
                     f"Context built: {context_chars} chars "
