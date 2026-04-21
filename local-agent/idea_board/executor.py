@@ -2676,9 +2676,10 @@ def execute_idea(
                                     capture_output=True, timeout=10,
                                     cwd=project_root,
                                 )
+                            _deploy_title = (idea.title or "").strip() or "Deploy"
                             subprocess.run(
                                 ["git", "commit", "-m",
-                                 f"[{idea_id}] Deploy + update stats"],
+                                 f"[{idea_id}] {_deploy_title}"],
                                 capture_output=True, timeout=10,
                                 cwd=project_root,
                             )
