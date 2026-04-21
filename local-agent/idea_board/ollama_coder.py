@@ -207,6 +207,13 @@ class OllamaCoder:
         self._log = state.log if hasattr(state, "log") else lambda m: None
 
     # ------------------------------------------------------------------
+    # Cancellation
+    # ------------------------------------------------------------------
+
+    def _is_cancelled(self) -> bool:
+        return bool(getattr(self.state, "cancelled", False))
+
+    # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
 
@@ -230,6 +237,9 @@ class OllamaCoder:
         changed_files: list[str] = []
 
         for round_num in range(self.max_rounds):
+            if self._is_cancelled():
+                self._log("[OllamaCoder] Cancelled — stopping")
+                return
             self._log(f"[OllamaCoder] --- Round {round_num} ---")
 
             # Build prompt for this round
@@ -285,8 +295,14 @@ class OllamaCoder:
         self_reviewed = False
 
         for turn in range(self.max_turns):
+            if self._is_cancelled():
+                self._log("[OllamaCoder] Cancelled — stopping inner loop")
+                return False
             messages = self._trim_context(messages)
             response = self._chat_with_tools(system_prompt, messages)
+            if self._is_cancelled():
+                self._log("[OllamaCoder] Cancelled after Ollama call — stopping")
+                return False
             if response is None:
                 self._log(f"[OllamaCoder] Round {round_num} turn {turn}: Ollama returned None, aborting")
                 return False

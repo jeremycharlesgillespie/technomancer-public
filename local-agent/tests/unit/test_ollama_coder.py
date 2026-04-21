@@ -26,6 +26,7 @@ from idea_board.ollama_coder import (
 def _make_coder(tmp_path: Path, prompt: str = "Implement feature X") -> OllamaCoder:
     state = MagicMock()
     state.log = lambda m: None
+    state.cancelled = False
     return OllamaCoder(
         prompt=prompt,
         project_root=tmp_path,
@@ -220,6 +221,48 @@ class TestOllamaCoderRun:
         with patch("agent.ollama_client.acquire_coder_priority"), \
              patch("agent.ollama_client.release_coder_priority"):
             coder.run()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# TestCancellation
+# ---------------------------------------------------------------------------
+
+class TestCancellation:
+    def test_cancelled_before_round_stops_immediately(self, tmp_path: Path) -> None:
+        """If state.cancelled is True before round 0, run() exits without calling Ollama."""
+        coder = _make_coder(tmp_path)
+        coder.state.cancelled = True
+        call_count = [0]
+        coder._chat_with_tools = lambda s, m: (call_count.__setitem__(0, call_count[0] + 1) or {})  # type: ignore[method-assign]
+
+        with patch("agent.ollama_client.acquire_coder_priority"), \
+             patch("agent.ollama_client.release_coder_priority"):
+            coder.run()
+
+        assert call_count[0] == 0
+
+    def test_cancelled_after_http_call_stops_inner_loop(self, tmp_path: Path) -> None:
+        """If cancelled is set while Ollama call is in flight, stop after it returns."""
+        coder = _make_coder(tmp_path)
+        finish_response = _response([_tool_call("finish", summary="done")])
+
+        call_count = [0]
+        def mock_chat(sys, msgs):
+            call_count[0] += 1
+            coder.state.cancelled = True  # simulate worker setting cancel mid-call
+            return finish_response
+
+        coder._chat_with_tools = mock_chat  # type: ignore[method-assign]
+        coder._run_pytest = lambda: {"passed": True, "failing": [], "output": ""}  # type: ignore[method-assign]
+        coder._get_changed_files = lambda: []  # type: ignore[method-assign]
+        coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+
+        with patch("agent.ollama_client.acquire_coder_priority"), \
+             patch("agent.ollama_client.release_coder_priority"):
+            coder.run()
+
+        # Stopped after exactly 1 Ollama call (the cancellation check fires before finish executes)
+        assert call_count[0] == 1
 
 
 # ---------------------------------------------------------------------------
