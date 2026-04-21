@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logging best practices: structured logging - Technomancer Learning</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css" media="(prefers-color-scheme: dark)">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" media="(prefers-color-scheme: light)">
+    <style>
+
+:root {
+    --bg: #ffffff;
+    --text: #1a1a1a;
+    --text-muted: #666666;
+    --code-bg: #f5f5f5;
+    --code-border: #e0e0e0;
+    --link: #0066cc;
+    --heading: #111111;
+    --blockquote-border: #ddd;
+    --blockquote-bg: #f9f9f9;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1a1a1a;
+        --text: #e0e0e0;
+        --text-muted: #999999;
+        --code-bg: #2d2d2d;
+        --code-border: #404040;
+        --link: #66b3ff;
+        --heading: #ffffff;
+        --blockquote-border: #444;
+        --blockquote-bg: #252525;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 18px;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.7;
+    color: var(--text);
+    background: var(--bg);
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+    -webkit-font-smoothing: antialiased;
+}
+
+header {
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--code-border);
+}
+
+header a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: none;
+}
+
+header a:hover {
+    color: var(--link);
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.2;
+    color: var(--heading);
+    margin: 1rem 0 0.5rem 0;
+}
+
+h2 {
+    font-size: 1.5rem;
+    line-height: 1.3;
+    color: var(--heading);
+    margin-top: 2rem;
+    margin-bottom: 1rem;
+}
+
+h3 {
+    font-size: 1.25rem;
+    line-height: 1.4;
+    color: var(--heading);
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.meta {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+p {
+    margin: 1rem 0;
+}
+
+ul, ol {
+    margin: 1rem 0;
+    padding-left: 1.5rem;
+}
+
+li {
+    margin: 0.5rem 0;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-border);
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.9em;
+}
+
+:not(pre) > code {
+    background: var(--code-bg);
+    padding: 0.2em 0.4em;
+    border-radius: 4px;
+}
+
+blockquote {
+    border-left: 4px solid var(--blockquote-border);
+    background: var(--blockquote-bg);
+    margin: 1.5rem 0;
+    padding: 1rem 1.5rem;
+    font-style: italic;
+}
+
+blockquote p {
+    margin: 0;
+}
+
+hr {
+    border: none;
+    border-top: 1px solid var(--code-border);
+    margin: 2rem 0;
+}
+
+strong {
+    font-weight: 600;
+}
+
+/* Index page specific styles */
+.article-list {
+    list-style: none;
+    padding: 0;
+}
+
+.article-list li {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--code-border);
+}
+
+.article-list li:last-child {
+    border-bottom: none;
+}
+
+.article-list a {
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.article-list .date {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+.article-list .category {
+    display: inline-block;
+    background: var(--code-bg);
+    padding: 0.2em 0.6em;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+}
+
+    </style>
+</head>
+<body>
+    <article>
+        <header>
+            <a href="index.html">&larr; Back to articles</a>
+            <h1>Logging best practices: structured logging</h1>
+            <p class="meta">best_practices &bull; April 20, 2026</p>
+        </header>
+        <main>
+<h2>Quick Overview</h2>
+
+<p>Structured logging is the practice of emitting log messages as a series of key-value pairs rather than free-form text strings. Instead of writing a log line like <code>&quot;User 123 failed login due to: invalid password&quot;</code>, you emit structured data like <code>{&quot;event&quot;: &quot;login_failure&quot;, &quot;user_id&quot;: 123, &quot;reason&quot;: &quot;invalid_password&quot;, &quot;level&quot;: &quot;error&quot;}</code>. This shift transforms logs from opaque narrative streams into machine-readable datasets. In the context of autonomous systems and AI tooling, where debugging non-deterministic LLM behaviors or race conditions in FPGA-driven pipelines is common, this distinction is not merely stylistic; it is fundamental to observability.</p>
+
+<p>The &quot;why&quot; becomes clear when you consider the ecosystem you likely manage: a hybrid of Flask services running local Ollama instances, Django monoliths serving Discord bots, and backend databases like PostgreSQL storing session states. When an issue arises in a distributed or semi-distributed environment, unstructured logs require a human to scan gigabytes of text to find a pattern. Structured logs allow your Prometheus/Grafana stack to ingest and index data automatically, enabling automated alerting and rapid root-cause analysis without human pattern recognition. This reduces Mean Time To Resolution (MTTR) significantly, allowing you to focus on architecture and AI optimization rather than grep-ing through <code>stdout</code>.</p>
+
+<p>Here is a simple comparison showing the shift from chaotic text to machine-actionable data:</p>
+
+<p><strong>Unstructured (Hard to parse, filter, or correlate):</strong><br>
+<pre><code class="language-python">logger.info(f&quot;Processing request for {user_id} with model {model_name} on GPU {gpu_idx}&quot;)<br>
+<h1>Output: &quot;Processing request for 12345 with model llama3:8b on GPU 0&quot;</h1><br>
+</code></pre></p>
+
+<p><strong>Structured (Instantly indexable, filterable, and enrichable):</strong><br>
+<pre><code class="language-python">logger.info(<br>
+    &quot;Processing request&quot;,<br>
+    user_id=12345,<br>
+    model_name=&quot;llama3:8b&quot;,<br>
+    gpu_idx=0,<br>
+    response_time_ms=120<br>
+)<br>
+<h1>Output: {&quot;event&quot;: &quot;Processing request&quot;, &quot;user_id&quot;: 12345, &quot;model_name&quot;: &quot;llama3:8b&quot;, &quot;gpu_idx&quot;: 0, &quot;response_time_ms&quot;: 120}</h1><br>
+</code></pre></p>
+
+<h2>How This Makes You a Better Developer</h2>
+
+<p>Adopting structured logging elevates your skillset from &quot;writing code that works&quot; to &quot;engineering resilient, observable systems.&quot; In the autonomous systems space, where your stack involves integrating local LLM inference (Ollama) with real-time Discord interactions, unstructured logs often lead to &quot;heisenbugs&quot; where issues only appear under specific load or hardware conditions. Structured logging provides the forensic clarity needed to debug these complex, stateful interactions. For a Senior Engineer, this knowledge opens doors to building self-healing infrastructure. By defining strict schemas for your logs, you enable downstream tools to automatically correlate a failed API call from your Flask service with the specific prompt context sent to Ollama and the latency spike on your specific NVIDIA GPU. This transforms you from a coder who patches symptoms into an architect who designs systems that expose their own weaknesses for automated remediation.</p>
+
+<p>Specifically, this skill solves the &quot;context loss&quot; problem common in microservices and serverless architectures. When your Discord bot (<code>Discord.py</code>) hits a rate limit and retries via a background worker, unstructured logs might just say &quot;Retry failed.&quot; Structured logs can tell you <em>exactly</em> which user channel, the specific Discord event ID, and the internal error code caused the failure, along with the cost implications for your AWS bill if the retry loop spins out of control. Furthermore, when optimizing for resource efficiency—a key interest of yours—structured logs containing tags like <code>region</code>, <code>instance_type</code>, or <code>model_variant</code> allow you to query your observability stack to identify which specific deployments are burning through credits unnecessarily, enabling precise cost optimization strategies.</p>
+
+<h2>How to Implement It</h2>
+
+<p>Implementing structured logging in Python is straightforward, but the choice of library dictates your long-term success. For your stack, <code>python-json-logger</code> (PJL) is often preferred for its zero-dependency footprint and strict JSON formatting, which integrates perfectly with standard AWS CloudWatch or ELK stacks. Alternatively, <code>structlog</code> offers a more feature-rich API ideal for complex tracing and tagging.</p>
+
+<p>Below is a practical guide to implementing this across your specific environments.</p>
+
+<h3>1. The Foundation: Python &amp; JSON</h3>
+First, ensure your logging configuration is centralized. Do not use <code>logging.basicConfig</code> for production; instead, configure the formatter to output JSON.
+
+<pre><code class="language-python">import json
+import logging
+from datetime import datetime
+
+<h1>Use python-json-logger for strict JSON formatting</h1>
+from python_json_logger import json_logger as json_logging
+
+<h1>Configure the root logger</h1>
+logging.basicConfig(
+    format=json_logging.get_format(),
+    datefmt=json_logging.get_date_format()
+)
+
+<p>logger = logging.getLogger(__name__)</p>
+
+<p>def track_llm_inference(prompt_tokens, response_tokens, latency_ms, model_name):<br>
+    &quot;&quot;&quot;<br>
+    Track specific metrics for local Ollama inference.<br>
+    This allows filtering by model name or latency thresholds later.<br>
+    &quot;&quot;&quot;<br>
+    try:<br>
+        logger.info(<br>
+            &quot;inference_complete&quot;,<br>
+            extra={<br>
+                &quot;prompt_tokens&quot;: prompt_tokens,<br>
+                &quot;response_tokens&quot;: response_tokens,<br>
+                &quot;latency_ms&quot;: latency_ms,<br>
+                &quot;model_name&quot;: model_name,<br>
+                &quot;status&quot;: &quot;success&quot;<br>
+            }<br>
+        )<br>
+    except Exception as e:<br>
+        logger.error(<br>
+            &quot;inference_failed&quot;,<br>
+            extra={<br>
+                &quot;error_type&quot;: type(e).__name__,<br>
+                &quot;error_message&quot;: str(e),<br>
+                &quot;model_name&quot;: model_name<br>
+            },<br>
+            exc_info=True<br>
+        )<br>
+</code></pre></p>
+
+<h3>2. Framework Specifics: Django &amp; Flask</h3>
+
+<p><strong>Django Integration:</strong><br>
+Django&#x27;s standard logger can be converted to structured format by overriding the logger class or using a third-party package like <code>structlog-django</code>. This ensures that when your Django views serve data to your Discord bot backend, every request carries a consistent <code>trace_id</code> and <code>user_id</code>.</p>
+
+<pre><code class="language-python"># views.py example
+import structlog
+from django.http import JsonResponse
+
+<h1>Bind context globally if using structlog</h1>
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt=&quot;iso&quot;),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.JSONRenderer() 
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+<p>logger = structlog.get_logger()</p>
+
+<p>def discord_webhook_view(request):<br>
+    logger.info(<br>
+        &quot;discord_webhook_dispatched&quot;,<br>
+        extra={<br>
+            &quot;channel_id&quot;: request.POST.get(&quot;channel_id&quot;),<br>
+            &quot;message_type&quot;: &quot;audio_stream&quot;, # Context specific to your use case<br>
+            &quot;payload_size&quot;: len(request.body)<br>
+        }<br>
+    )<br>
+    # ... dispatch logic<br>
+    return JsonResponse({&quot;status&quot;: &quot;ok&quot;})<br>
+</code></pre></p>
+
+<p><strong>Flask &amp; Discord.py Integration:</strong><br>
+When building your Discord bots, you often run Flask backends. Ensure the bot&#x27;s internal logic (e.g., handling voice connections or sending audio to headsets) logs structured events. If the bot crashes, having <code>bot_id</code>, <code>guild_id</code>, and <code>function</code> in the log is invaluable.</p>
+
+<pre><code class="language-python"># bot.py example
+import logging
+import discord
+import json
+
+<h1>Custom formatter for Discord.py handlers</h1>
+class StructuredFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            &#x27;timestamp&#x27;: datetime.utcnow().isoformat(),
+            &#x27;level&#x27;: record.levelname,
+            &#x27;logger&#x27;: record.name,
+            &#x27;message&#x27;: record.getMessage(),
+        }
+        
+        # Add common context like environment or version
+        log_record[&#x27;environment&#x27;] = os.getenv(&#x27;ENV&#x27;)
+        
+        if record.exc_info:
+            log_record[&#x27;exception&#x27;] = format_exception()
+            
+        return json.dumps(log_record)
+
+<h1>Configure logger specifically for the bot</h1>
+handler = logging.StreamHandler()
+handler.setFormatter(StructuredFormatter())
+bot_logger = logging.getLogger(&#x27;discord_bot&#x27;)
+bot_logger.addHandler(handler)
+bot_logger.setLevel(logging.INFO)
+
+<p>@bot_event_handler(&#x27;on_ready&#x27;)<br>
+async def ready():<br>
+    bot_logger.info(&quot;bot_startup_complete&quot;, extra={&quot;shards&quot;: len(bot.shards)})<br>
+</code></pre></p>
+
+<h3>3. Observability &amp; Cost Optimization</h3>
+Finally, leverage these logs in your Prometheus/Grafana stack. You can scrape logs (via Loki) and create queries like:
+<code>sum(rate(structured_logs{model_name=&quot;llama3:8b&quot;, status=&quot;error&quot;}[5m])) by (model_name)</code>
+This directly answers: &quot;How many times did my local LLM fail in the last 5 minutes?&quot; allowing you to correlate this with CPU utilization or memory pressure on your FPGA/embedded host.
+
+<h2>Where to Use / Where NOT to Use</h2>
+
+<p><strong>Good use cases:</strong><br>
+<ul><br>
+<li><strong>Autonomous Agent Loops:</strong> When an AI agent attempts to self-correct a code generation error, logging the <code>attempt_count</code>, <code>error_reason</code>, and <code>corrected_code</code> allows you to replay the execution in your local debug environment to verify the fix.</li><br>
+<li><strong>Discord Bot Event Tracing:</strong> For high-volume Discord bots handling audio streams or complex state machines, logging <code>message_id</code>, <code>user_id</code>, and <code>command_type</code> allows you to quickly identify if a specific user or channel is triggering memory leaks or rate limit throttling.</li><br>
+<li><strong>AWS Cost Attribution:</strong> Tag logs with <code>cost_center</code> or <code>project_code</code>. When your AWS bill spikes, you can query logs to see exactly which Flask service or Ollama deployment generated the excess compute load, rather than guessing.</li><br>
+</ul><br>
+<strong>Avoid when:</strong><br>
+<ul><br>
+<li><strong>Interactive CLI Tools:</strong> Do not use complex structured JSON logging for local development CLI scripts intended for human reading in <code>stderr</code>. Humans prefer concise lines. Save structured output for ingestion into a backend (Loki/ELK/Splunk).</li><br>
+<li><strong>High-Throughput Micro-Kernels:</strong> If you are running an extremely lightweight embedded process (e.g., on an FPGA or Raspberry Pi for specific audio processing tasks), the overhead of Python&#x27;s JSON encoder might be too high. In such cases, consider logfmt (structured text) or simply writing compact text logs that can be parsed by simple scripts, avoiding the latency of complex JSON serialization.</li><br>
+</ul><br>
+<strong>Common Pitfalls:</strong><br>
+<ul><br>
+<li><strong>Variable Pollution:</strong> Avoid logging mutable variables directly. Instead, log copies or specific fields. If you log a large DataFrame or a massive dictionary representing an LLM response, you will crash the logger thread or bloat your disk I/O.</li><br>
+<li><strong>Hardcoded Messages:</strong> Never concatenate strings like <code>f&quot;Error: {error}&quot;</code>. This destroys the structure. Always pass the error object or string as a named argument.</li><br>
+<li><strong>Ignoring Context:</strong> A log without context is useless. Always include <code>trace_id</code> or <code>request_id</code> in web service logs so that a 500 error in Flask can be correlated with the specific prompt sent to Ollama.</li><br>
+</ul><br>
+<h2>Key Takeaways</h2></p>
+
+<ul>
+<li><strong>Logs are Code Artifacts:</strong> Treat logs as the primary source of truth for your system&#x27;s state, not just error notifications. They are the &quot;source code&quot; of your runtime behavior.</li>
+<li><strong>Structured Enables Automation:</strong> Without structure, your Prometheus queries are blind. With structure, your observability stack becomes proactive, alerting on patterns like &quot;LLM inference latency &gt; 2000ms&quot; instead of just &quot;Service Down.&quot;</li>
+<li><strong>Context is King:</strong> The value of a log entry is proportional to its context. Always include identifiers (User ID, Model Name, Trace ID) so that a log entry tells a complete story of <em>what happened</em> and <em>where</em>.</li>
+<li><strong>Efficiency Matters:</strong> In a home server or cloud environment, logging strategy impacts cost and disk life. Choose the right granularity; log high-level events frequently, but reserve verbose debugging for specific <code>DEBUG</code> levels in controlled environments.</li>
+<li><strong>Future-Proof Your Debugging:</strong> By writing structured logs today, you ensure that when an issue surfaces in a month or a year (perhaps after upgrading Ollama or changing your FPGA firmware), you can instantly reconstruct the timeline of events without rewriting your grep commands.</li>
+</ul>
+        </main>
+    </article>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script>hljs.highlightAll();</script>
+</body>
+</html>
