@@ -231,7 +231,7 @@ class TestImporters:
     pipeline — no ad-hoc inserts scattered across the codebase.
     """
 
-    ALLOWED_IMPORTERS = frozenset({"daily_stats.py", "daily_rollup.py"})
+    ALLOWED_IMPORTERS = frozenset({"daily_stats.py", "daily_rollup.py", "startup_checks.py"})
 
     def test_only_allowed_agent_modules_import_daily_stats(self):
         from pathlib import Path

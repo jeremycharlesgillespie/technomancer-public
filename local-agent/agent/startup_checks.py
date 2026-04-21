@@ -3,11 +3,12 @@ Startup Readiness Gate — validate external dependencies before the bot marks i
 
 The readiness gate runs a small set of required checks during bot startup so
 failures surface immediately instead of the bot coming up and dying on the
-first user message. Three checks are currently enforced:
+first user message. Four checks are currently enforced:
 
 * ``_check_ollama`` — Ollama ``/api/tags`` reachable and ``settings.ollama_model`` present.
 * ``_check_vault`` — vault root exists and ``LLM Memory/Context/`` is writable.
 * ``_check_executor_db`` — executor_runs SQLite opens with migrations current.
+* ``_check_daily_stats`` — daily_stats SQLite DB exists and is accessible.
 
 Each check runs with a per-check timeout and up to two attempts, with a short
 backoff between retries. An escape hatch — ``BOT_SKIP_REQUIRED_CHECKS=1`` in
@@ -31,7 +32,7 @@ from typing import Callable
 
 import httpx
 
-from . import executor_runs_db
+from . import daily_stats, executor_runs_db
 from .config import settings
 
 log = logging.getLogger(__name__)
@@ -188,6 +189,33 @@ def _check_executor_db() -> None:
         )
 
 
+def _check_daily_stats() -> None:
+    """Verify the daily_stats SQLite DB exists and is accessible.
+
+    Runs ``daily_stats.init_db()`` (idempotent — safe to call from the
+    gate) and then validates that the database file exists and the
+    daily_stats table is present. A missing database or table means
+    the daily stats system is not initialized.
+    """
+    daily_stats.init_db()
+    daily_stats.validate_daily_stats_db()
+
+
+def make_daily_stats_check() -> Check:
+    """Create a Check object for the daily stats readiness check.
+
+    Returns a Check with ``required=True`` so the gate fails fast if
+    daily stats data is missing. This ensures the bot doesn't start
+    without the daily stats database being available.
+    """
+    return Check(
+        name="daily_stats",
+        fn=_check_daily_stats,
+        required=True,
+        timeout=5.0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -249,12 +277,18 @@ def _run_with_retry(
 
 
 def default_checks() -> list[Check]:
-    """Return the default set of required startup checks."""
+    """Return the default set of required startup checks.
+
+    Includes the daily stats check to ensure the daily stats database
+    is available before the bot marks itself ready. This enables fast
+    failure detection when daily stats data is missing.
+    """
     ollama_timeout = max(settings.ollama_health_check_timeout + 2.0, 3.0)
     return [
         Check(name="ollama", fn=_check_ollama, required=True, timeout=ollama_timeout),
         Check(name="vault", fn=_check_vault, required=True, timeout=5.0),
         Check(name="executor_db", fn=_check_executor_db, required=True, timeout=5.0),
+        make_daily_stats_check(),
     ]
 
 

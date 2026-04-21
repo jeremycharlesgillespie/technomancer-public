@@ -20,11 +20,13 @@ from agent.startup_checks import (
     STATUS_OK,
     STATUS_SKIPPED,
     STATUS_TIMEOUT,
+    _check_daily_stats,
     _check_executor_db,
     _check_ollama,
     _check_vault,
     _run_with_retry,
     default_checks,
+    make_daily_stats_check,
     run_readiness_checks,
 )
 
@@ -68,6 +70,20 @@ def fake_executor_db(tmp_path, monkeypatch):
 def _clear_skip_env(monkeypatch):
     """Ensure the escape-hatch env var is unset unless a test opts in."""
     monkeypatch.delenv(SKIP_REQUIRED_ENV, raising=False)
+
+
+@pytest.fixture
+def fake_daily_stats_db(tmp_path, monkeypatch):
+    """Point daily_stats at a temporary SQLite DB for isolation."""
+    db_path = tmp_path / "daily_stats.db"
+    monkeypatch.setattr(startup_checks.daily_stats, "DB_DIR", tmp_path)
+    monkeypatch.setattr(startup_checks.daily_stats, "DB_PATH", db_path)
+    startup_checks.daily_stats._local.__dict__.pop("conn", None)
+    yield db_path
+    conn = getattr(startup_checks.daily_stats._local, "conn", None)
+    if conn:
+        conn.close()
+        startup_checks.daily_stats._local.conn = None
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +309,89 @@ class TestCheckExecutorDb:
 
 
 # ---------------------------------------------------------------------------
+# _check_daily_stats — pass / fail / timeout
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDailyStats:
+    def test_ok_after_init(self, fake_daily_stats_db):
+        _check_daily_stats()
+
+    def test_fails_when_db_missing(self, tmp_path, monkeypatch):
+        """If the daily_stats DB file doesn't exist, the check must fail."""
+        monkeypatch.setattr(
+            startup_checks.daily_stats, "DB_PATH", tmp_path / "does-not-exist.db"
+        )
+        # Neutralize init_db so it doesn't create the file.
+        monkeypatch.setattr(
+            startup_checks.daily_stats, "init_db", lambda: None
+        )
+        with pytest.raises(RuntimeError, match="Daily stats database missing"):
+            _check_daily_stats()
+
+    def test_fails_when_table_missing(self, fake_daily_stats_db, monkeypatch):
+        """If the daily_stats table is missing, the check must fail."""
+        db_path = fake_daily_stats_db
+        conn = sqlite3.connect(str(db_path))
+        # Create a minimal table without the daily_stats table
+        conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        # Neutralise init_db so it doesn't re-add the table.
+        monkeypatch.setattr(
+            startup_checks.daily_stats, "init_db", lambda: None
+        )
+
+        with pytest.raises(RuntimeError, match="Daily stats database corrupted"):
+            _check_daily_stats()
+
+    def test_timeout_path_via_retry_wrapper(self, monkeypatch):
+        evt = threading.Event()
+
+        def slow_init():
+            evt.wait(5)
+
+        monkeypatch.setattr(
+            startup_checks.daily_stats, "init_db", slow_init
+        )
+        try:
+            result = _run_with_retry(
+                Check(name="daily_stats", fn=_check_daily_stats, timeout=0.1),
+                attempts=1,
+            )
+        finally:
+            evt.set()
+        assert result.status == STATUS_TIMEOUT
+
+    def test_gate_fails_on_missing_daily_stats(self, monkeypatch, _no_retry_sleep, _clear_skip_env):
+        """The gate should fail when daily stats check fails."""
+        def fail_check():
+            raise RuntimeError("daily_stats table missing")
+
+        checks = [
+            Check(name="ok", fn=lambda: None, timeout=1.0),
+            Check(name="daily_stats", fn=fail_check, timeout=1.0, required=True),
+        ]
+        report = run_readiness_checks(checks=checks, attempts=1)
+        assert report.ok is False
+        assert [r.name for r in report.failed_required()] == ["daily_stats"]
+
+
+# ---------------------------------------------------------------------------
+# make_daily_stats_check — helper function
+# ---------------------------------------------------------------------------
+
+
+class TestMakeDailyStatsCheck:
+    def test_creates_required_check(self):
+        check = make_daily_stats_check()
+        assert check.name == "daily_stats"
+        assert check.required is True
+        assert check.timeout == 5.0
+
+
+# ---------------------------------------------------------------------------
 # _run_with_retry behaviour
 # ---------------------------------------------------------------------------
 
@@ -439,11 +538,12 @@ class TestRunReadinessChecks:
         assert report.skipped is False
         assert report.ok is False
 
-    def test_default_checks_returns_three_required(self):
+    def test_default_checks_returns_four_required(self):
+        """default_checks now includes the daily stats check."""
         checks = default_checks()
-        assert len(checks) == 3
+        assert len(checks) == 4
         names = [c.name for c in checks]
-        assert names == ["ollama", "vault", "executor_db"]
+        assert names == ["ollama", "vault", "executor_db", "daily_stats"]
         assert all(c.required for c in checks)
 
     def test_orchestrator_uses_default_checks_when_none_supplied(
