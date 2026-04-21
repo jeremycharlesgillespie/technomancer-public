@@ -660,7 +660,11 @@ class OllamaCoder:
 
     def _run_pytest(self) -> dict[str, Any]:
         """Run pytest and return {passed, failing, output}."""
-        # Run only tests related to changed files if possible
+        # Tests live in local-agent/ — run from there so pytest.ini is found
+        test_cwd = self.project_root / "local-agent"
+        if not test_cwd.is_dir():
+            test_cwd = self.project_root
+
         changed = self._get_changed_files()
         test_files = _find_related_tests_for_files(changed, self.project_root)
 
@@ -669,22 +673,38 @@ class OllamaCoder:
         else:
             cmd = [sys.executable, "-m", "pytest", "--tb=short", "-q"]
 
+        # Write output to a temp file to avoid Windows pipe-deadlock when pytest
+        # spawns child processes and capture_output=True fills the pipe buffer.
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tf:
+            out_path = tf.name
+
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(self.project_root),
-                timeout=300,
-            )
-            output = (result.stdout or "") + (result.stderr or "")
+            with open(out_path, "w") as out_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=out_fh,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(test_cwd),
+                )
+            try:
+                proc.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                return {"passed": False, "failing": [], "output": "ERROR: pytest timed out"}
+            with open(out_path, encoding="utf-8", errors="replace") as f:
+                output = f.read()
             failing = _parse_failing_tests(output)
-            passed = result.returncode == 0
+            passed = proc.returncode == 0
             return {"passed": passed, "failing": failing, "output": output}
-        except subprocess.TimeoutExpired:
-            return {"passed": False, "failing": [], "output": "ERROR: pytest timed out"}
         except Exception as exc:
             return {"passed": False, "failing": [], "output": f"ERROR: {exc}"}
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
 
     def _get_changed_files(self) -> list[str]:
         """Return list of files changed on current branch vs main."""
@@ -759,7 +779,10 @@ def _parse_failing_tests(output: str) -> list[str]:
 
 def _find_related_tests_for_files(changed_files: list[str], project_root: Path) -> list[str]:
     """Find test files related to changed source files."""
-    test_dir = project_root / "tests" / "unit"
+    # Tests live in local-agent/tests/unit/
+    test_dir = project_root / "local-agent" / "tests" / "unit"
+    if not test_dir.is_dir():
+        test_dir = project_root / "tests" / "unit"
     if not test_dir.is_dir():
         return []
     related: list[str] = []
