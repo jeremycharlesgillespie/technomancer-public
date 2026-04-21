@@ -201,6 +201,37 @@ def _check_daily_stats() -> None:
     daily_stats.validate_daily_stats_db()
 
 
+def _check_daily_stats_db() -> None:
+    """Verify the daily_stats SQLite DB opens and the daily_stats table exists.
+
+    Opens a read-only connection to ``local-agent/data/daily_stats.db`` and
+    executes ``SELECT 1 FROM daily_stats``. Raises ``sqlite3.OperationalError``
+    if the table does not exist. This isolates database connectivity and schema
+    validation logic for specific DB errors before reporting generation.
+
+    Raises:
+        sqlite3.OperationalError: if the database file doesn't exist or the
+            daily_stats table is missing.
+    """
+    import sqlite3
+
+    db_path = daily_stats.DB_PATH
+    if not db_path.exists():
+        raise sqlite3.OperationalError(
+            f"Daily stats database file missing: {db_path}"
+        )
+
+    try:
+        # Open read-only connection to avoid modifying the database
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        conn.execute("SELECT 1 FROM daily_stats LIMIT 1")
+        conn.close()
+    except sqlite3.OperationalError as exc:
+        raise sqlite3.OperationalError(
+            f"Daily stats table missing or corrupted: {exc}"
+        ) from exc
+
+
 def make_daily_stats_check(
     required: bool = True,
     timeout: float = 5.0,
