@@ -423,11 +423,30 @@ class TestExecuteDecision:
         assert state.last_assigned_at != ""
 
     def test_assign_blocked_when_jira_in_progress(self, state):
-        """Hard guard: don't assign new work while something is already In Progress.
+        """If recovery can't clear In Progress items, assignment is still blocked."""
+        from aim.brain import Decision
+        from aim.manager import execute_decision
 
-        Prevents parallel runs on the same board when a stuck orphan or a
-        live execution would conflict with a fresh assignment.
-        """
+        @dataclass
+        class FakeIdea:
+            id: str = "TK-100"
+            title: str = "new work"
+            state: str = "approved"
+
+        decision = Decision(action="ASSIGN", target="TK-100", reason="?")
+        # Still shows in_progress=1 after recovery attempt
+        board = {"todo": 20, "in_progress": 1}
+
+        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("aim.state.assign_idea_to_worker") as mock_assign, \
+             patch("aim.manager._recover_orphan_in_progress"), \
+             patch("aim.manager.assess_board", return_value={"todo": 20, "in_progress": 1}):
+            execute_decision(state, decision, board)
+
+        mock_assign.assert_not_called()
+
+    def test_assign_proceeds_after_orphan_recovery(self, state):
+        """Auto-recover clears the In Progress item; assignment then proceeds."""
         from aim.brain import Decision
         from aim.manager import execute_decision
 
@@ -440,12 +459,20 @@ class TestExecuteDecision:
         decision = Decision(action="ASSIGN", target="TK-100", reason="?")
         board = {"todo": 20, "in_progress": 1}
 
+        call_count = [0]
+        def mock_assess(s):
+            call_count[0] += 1
+            return {"todo": 20, "in_progress": 0, "approved_ideas": []}
+
         with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
-             patch("aim.manager._notify_discord_throttled"):
+             patch("aim.manager._recover_orphan_in_progress"), \
+             patch("aim.manager.assess_board", side_effect=mock_assess), \
+             patch("board.get_provider") as mock_provider:
+            mock_provider.return_value.get.return_value = FakeIdea()
             execute_decision(state, decision, board)
 
-        mock_assign.assert_not_called()
+        mock_assign.assert_called_once_with("TK-100")
 
     def test_create_work(self, state):
         from aim.brain import Decision
