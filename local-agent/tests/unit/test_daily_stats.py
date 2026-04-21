@@ -250,3 +250,32 @@ class TestImporters:
             f"Unexpected modules importing daily_stats: {offenders}. "
             f"Allowed: {sorted(self.ALLOWED_IMPORTERS)}"
         )
+
+
+class TestDailyStatsChecker:
+    """Tests for validate_daily_stats_db — startup readiness gate."""
+
+    def test_validate_db_missing(self):
+        """When the DB file doesn't exist, validate_daily_stats_db raises RuntimeError."""
+        with pytest.raises(RuntimeError, match="Daily stats database missing"):
+            daily_stats.validate_daily_stats_db()
+
+    def test_validate_db_valid(self):
+        """When the DB exists and is valid, validate_daily_stats_db returns True."""
+        daily_stats.init_db()
+        result = daily_stats.validate_daily_stats_db()
+        assert result is True
+
+    def test_validate_db_corrupted(self):
+        """When the DB file exists but the table is missing, it raises RuntimeError."""
+        # Create a DB file without the table
+        db_path = daily_stats.DB_PATH
+        db_path.touch()
+        with pytest.raises(RuntimeError, match="Daily stats database corrupted"):
+            daily_stats.validate_daily_stats_db()
+
+    def test_validate_db_returns_true_after_init(self):
+        """After init_db, validation should succeed."""
+        daily_stats.init_db()
+        result = daily_stats.validate_daily_stats_db()
+        assert result is True
