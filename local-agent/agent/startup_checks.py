@@ -201,6 +201,41 @@ def _check_daily_stats() -> None:
     daily_stats.validate_daily_stats_db()
 
 
+def _migrate_daily_stats_schema() -> None:
+    """Migrate the daily_stats table schema by adding missing columns.
+
+    Adds columns like ``status`` if they don't exist, following the pattern
+    in ``executor_runs_db.init_db()``. This ensures older databases that
+    predate the column additions are automatically upgraded on startup.
+
+    The migration is idempotent — ``ALTER TABLE`` raises ``OperationalError``
+    if the column already exists, which is caught and ignored.
+
+    Raises:
+        sqlite3.OperationalError: if the database file doesn't exist.
+    """
+    import sqlite3
+
+    db_path = daily_stats.DB_PATH
+    if not db_path.exists():
+        raise sqlite3.OperationalError(
+            f"Daily stats database file missing: {db_path}"
+        )
+
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        # Add status column if missing (for tracking run status in daily aggregates)
+        try:
+            conn.execute("ALTER TABLE daily_stats ADD COLUMN status TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        conn.commit()
+    except sqlite3.OperationalError as exc:
+        raise sqlite3.OperationalError(
+            f"Daily stats table missing or corrupted: {exc}"
+        ) from exc
+
+
 def _check_daily_stats_db() -> None:
     """Verify the daily_stats SQLite DB opens and the daily_stats table exists.
 

@@ -333,3 +333,90 @@ class TestDailyStatsDBCheck:
         # This should succeed since the table exists, even if schema is wrong
         # The test is about connectivity, not schema validation
         startup_checks._check_daily_stats_db()
+
+
+class TestDailyStatsDBMigration:
+    """Tests for _migrate_daily_stats_schema — schema migration for missing columns."""
+
+    def test_migration_adds_missing_columns(self, fake_daily_stats_db):
+        """When the daily_stats table exists but is missing columns, migration adds them."""
+        db_path = fake_daily_stats_db
+        conn = sqlite3.connect(str(db_path))
+        # Create a minimal table without the status column
+        conn.execute("""
+            CREATE TABLE daily_stats (
+                date TEXT NOT NULL,
+                project TEXT NOT NULL,
+                shipped INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                split_children INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                p50_wall_s REAL NOT NULL DEFAULT 0.0,
+                p95_wall_s REAL NOT NULL DEFAULT 0.0,
+                loc_added INTEGER NOT NULL DEFAULT 0,
+                loc_removed INTEGER NOT NULL DEFAULT 0,
+                first_attempt_success INTEGER NOT NULL DEFAULT 0,
+                splitter_child_success INTEGER,
+                splitter_child_fail INTEGER,
+                phase_timings_json TEXT,
+                PRIMARY KEY (date, project)
+            )
+        """)
+        conn.execute("INSERT INTO daily_stats (date, project) VALUES ('2026-04-17', 'TK')")
+        conn.commit()
+        conn.close()
+
+        # Run migration
+        startup_checks._migrate_daily_stats_schema()
+
+        # Verify the status column was added
+        conn = sqlite3.connect(str(db_path))
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_stats)").fetchall()}
+        conn.close()
+        assert "status" in cols, "status column should be added by migration"
+
+    def test_migration_is_idempotent(self, fake_daily_stats_db):
+        """Running migration multiple times is safe and doesn't duplicate columns."""
+        db_path = fake_daily_stats_db
+        conn = sqlite3.connect(str(db_path))
+        # Create a table with the status column already present
+        conn.execute("""
+            CREATE TABLE daily_stats (
+                date TEXT NOT NULL,
+                project TEXT NOT NULL,
+                shipped INTEGER NOT NULL DEFAULT 0,
+                failed INTEGER NOT NULL DEFAULT 0,
+                split_children INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0.0,
+                p50_wall_s REAL NOT NULL DEFAULT 0.0,
+                p95_wall_s REAL NOT NULL DEFAULT 0.0,
+                loc_added INTEGER NOT NULL DEFAULT 0,
+                loc_removed INTEGER NOT NULL DEFAULT 0,
+                first_attempt_success INTEGER NOT NULL DEFAULT 0,
+                splitter_child_success INTEGER,
+                splitter_child_fail INTEGER,
+                phase_timings_json TEXT,
+                status TEXT,
+                PRIMARY KEY (date, project)
+            )
+        """)
+        conn.execute("INSERT INTO daily_stats (date, project) VALUES ('2026-04-17', 'TK')")
+        conn.commit()
+        conn.close()
+
+        # Run migration multiple times
+        startup_checks._migrate_daily_stats_schema()
+        startup_checks._migrate_daily_stats_schema()
+        startup_checks._migrate_daily_stats_schema()
+
+        # Verify the status column still exists (not duplicated)
+        conn = sqlite3.connect(str(db_path))
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_stats)").fetchall()}
+        conn.close()
+        assert "status" in cols, "status column should still exist"
+        # Check that status column appears only once
+        conn = sqlite3.connect(str(db_path))
+        status_rows = list(conn.execute("PRAGMA table_info(daily_stats)").fetchall())
+        conn.close()
+        status_count = sum(1 for row in status_rows if row[1] == "status")
+        assert status_count == 1, f"status column should appear once, found {status_count}"
