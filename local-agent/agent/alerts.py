@@ -13,6 +13,7 @@ the main bot.
 
 import logging
 import time as _time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import metrics
@@ -74,13 +75,12 @@ def send_alert(
         color = colors.get(level, colors["info"])
 
         if title:
-            from datetime import datetime
             payload = {
                 "embeds": [{
                     "title": title,
                     "description": message[:4000],
                     "color": color,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
                     "footer": {"text": f"Technomancer | {level.upper()}"},
                 }]
             }

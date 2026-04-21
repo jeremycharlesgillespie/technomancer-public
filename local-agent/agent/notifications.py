@@ -3,7 +3,7 @@ Notifications - Send alerts to Discord, ntfy, etc.
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -50,7 +50,7 @@ def discord_send(
                         "title": title,
                         "description": message,
                         "color": color,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
                         "footer": {"text": "Local Agent"},
                     }
                 ]
@@ -268,7 +268,7 @@ def build_executor_summary_payload(run_record: dict[str, Any]) -> dict[str, Any]
         "title": header_title,
         "description": "\n".join(description_parts),
         "color": color,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "footer": {"text": "Executor"},
         "fields": [
             {"name": "Status", "value": status, "inline": True},
