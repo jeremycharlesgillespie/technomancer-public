@@ -1926,9 +1926,56 @@ def execute_idea(
                 f"Prompt: {full_prompt_chars} chars (~{full_prompt_tokens} tokens)"
             )
 
+            # Ollama backend: replace claude -p subprocess with OllamaCoder
+            if settings.aiw_worker_backend == "ollama":
+                from idea_board.ollama_coder import OllamaCoder
+                with _state_timer(state, "executor.ollama_coder"):
+                    coder = OllamaCoder(
+                        prompt=full_prompt,
+                        project_root=project_root,
+                        idea_id=idea_id,
+                        state=state,
+                        model=settings.aiw_ollama_coder_model,
+                        max_turns=settings.aiw_ollama_coder_max_turns,
+                        max_rounds=settings.aiw_ollama_coder_max_rounds,
+                        num_ctx=settings.aiw_ollama_coder_num_ctx,
+                    )
+                    coder.run()
+                with _state_timer(state, "executor.auto_commit"):
+                    _auto_commit_uncommitted(project_root, idea_id, state)
+                # Check commits — same success criterion as claude backend
+                project_root_str = str(project_root)
+                current_branch_check = subprocess.run(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, cwd=project_root_str,
+                )
+                current_branch = current_branch_check.stdout.strip()
+                commits_ahead = 0
+                if current_branch and current_branch != "main":
+                    ahead = subprocess.run(
+                        ["git", "rev-list", "--count", f"main..{current_branch}"],
+                        capture_output=True, text=True, cwd=project_root_str,
+                    )
+                    commits_ahead = int((ahead.stdout or "0").strip() or "0")
+                state.log(
+                    f"OllamaCoder done: {commits_ahead} commit(s) on {current_branch} ahead of main"
+                )
+                if not commits_ahead:
+                    state.log("OllamaCoder produced no commits — marking failed")
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(f"Idea {idea_id} execution failed (no commits): {idea.title}")
+                    return
+                state.log(f"OllamaCoder finished. Proceeding to full test suite...")
+                _notify_discord(f"[{idea_id}] OllamaCoder complete. Running full test suite...")
+                # Skip Phase 2.5 — OllamaCoder owns its own test-and-fix loop
+                # Jump directly to Phase 3 (full test suite gate is below)
+            else:
+                pass  # Claude backend runs below
+
             # Write prompt to temp file — Windows has 32K command-line limit
             import tempfile
-            with _state_timer(state, "executor.claude_spawn"):
+            if settings.aiw_worker_backend != "ollama":
+             with _state_timer(state, "executor.claude_spawn"):
                 prompt_file = Path(tempfile.mktemp(suffix=".txt", prefix="executor_"))
                 prompt_file.write_text(full_prompt, encoding="utf-8")
 
@@ -1964,6 +2011,8 @@ def execute_idea(
                 state.log(f"Claude Code started (PID: {proc.pid})")
                 state.log(f"Working on: {idea.title}")
                 logger.info(f"[Executor] {idea_id} started, PID {proc.pid}")
+            else:
+                proc = None  # ollama path: no subprocess
 
             # Stream stdout line-by-line, parsing JSON events as they arrive
             last_discord_time = 0.0
@@ -1983,6 +2032,9 @@ def execute_idea(
             _model_usage: dict[str, dict[str, Any]] = {}
 
             while True:
+                # Ollama backend: no subprocess to stream
+                if proc is None:
+                    break
                 # Check cancellation and timeout before blocking on readline
                 if state.cancelled:
                     proc.kill()
@@ -2053,14 +2105,15 @@ def execute_idea(
                         last_jira_progress_time = now
 
             # Process finished — kill immediately to free resources for Phase 3
-            if proc.poll() is None:
+            if proc is not None and proc.poll() is None:
                 proc.kill()
                 try:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     pass
-            # Brief pause to let OS fully release resources
-            time.sleep(2)
+            # Brief pause to let OS fully release resources (skip for ollama path)
+            if proc is not None:
+                time.sleep(2)
             _claude_meta["outcome"] = "completed"
             _claude_meta["final_result"] = bool(final_result)
             _claude_work_phase.finish(success=True)
@@ -2118,7 +2171,7 @@ def execute_idea(
                 # a real failure. On rate-limit we do NOT call mark_failed —
                 # we return with state.rate_limited set, and the Worker runs
                 # its retry loop (see aim/worker.py::execute_assigned_idea).
-                if _classify_rate_limit(state, claude_succeeded, project_root):
+                if settings.aiw_worker_backend != "ollama" and _classify_rate_limit(state, claude_succeeded, project_root):
                     state.rate_limited = True
                     state.log(
                         "Detected Claude usage/rate limit — deferring retry to worker"
@@ -2143,18 +2196,21 @@ def execute_idea(
             _notify_discord(f"[{idea_id}] Code complete. Running validation...")
 
             # --- Phase 2.5: Validate + targeted test retry loop ---
+            # Ollama backend: OllamaCoder handles its own test-fix loop — skip Phase 2.5.
+            _skip_phase25 = settings.aiw_worker_backend == "ollama"
             # Fast feedback: validate + run only tests related to changed files.
             # If failures, give Claude a chance to fix. Full suite runs once at the end.
             related_tests = _find_related_tests(project_root)
-            if related_tests:
+            if related_tests and not _skip_phase25:
                 state.log(
                     f"Related tests: {len(related_tests)} file(s) — "
                     + ", ".join(Path(t).name for t in related_tests)
                 )
-            else:
+            elif not _skip_phase25:
                 state.log("No related test files found — will run full suite only")
 
-            for attempt in range(1, MAX_FIX_RETRIES + 2):  # +2: 1 initial + N retries
+            _phase25_range = range(0) if _skip_phase25 else range(1, MAX_FIX_RETRIES + 2)
+            for attempt in _phase25_range:  # ollama: 0 iterations; claude: N retries
                 failure_output = ""
                 delta: set[str] = set()
 

@@ -50,6 +50,26 @@ MAX_CONCURRENT: int = 30
 _inflight_lock = threading.Lock()
 _inflight_count: int = 0
 
+# ---------------------------------------------------------------------------
+# GPU exclusivity gate — held by OllamaCoder during story implementation
+# ---------------------------------------------------------------------------
+
+#: Set while OllamaCoder owns the GPU. Other callers wait up to 60s then
+#: proceed anyway so the bot stays responsive if the coder stalls.
+_coder_active = threading.Event()
+
+
+def acquire_coder_priority() -> None:
+    """Signal that OllamaCoder is starting. Other chat() callers yield the GPU."""
+    _coder_active.set()
+    logger.info("[ollama_client] Coder priority acquired — other callers will wait")
+
+
+def release_coder_priority() -> None:
+    """Signal that OllamaCoder is done. Other chat() callers resume immediately."""
+    _coder_active.clear()
+    logger.info("[ollama_client] Coder priority released")
+
 
 def get_inflight_count() -> int:
     """Return the number of Ollama requests currently in-flight."""
@@ -94,6 +114,12 @@ def chat(
         Response text, or ``None`` on any failure. Never raises.
     """
     global _inflight_count
+
+    # GPU gate: yield to OllamaCoder if it's actively coding. Wait up to 60s
+    # then proceed anyway so the bot never hard-blocks on a stalled coder.
+    if _coder_active.is_set():
+        logger.debug("[ollama_client] coder active — waiting up to 60s for GPU slot")
+        _coder_active.wait(timeout=60)
 
     # Backpressure: shed load before we can fill Ollama's internal queue.
     with _inflight_lock:

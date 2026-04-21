@@ -420,6 +420,30 @@ class Settings(BaseSettings):
             "via ``AIW_MODEL`` in projects/<project>.env."
         ),
     )
+    aiw_worker_backend: str = Field(
+        default="ollama",
+        description=(
+            "Coding engine for Phase 2. 'ollama' uses OllamaCoder with "
+            "qwen3.5:27b at $0/story; 'claude' uses the claude -p subprocess. "
+            "Defaults to 'ollama'."
+        ),
+    )
+    aiw_ollama_coder_model: str = Field(
+        default="qwen3.5:27b",
+        description="Ollama model tag used by OllamaCoder for story implementation.",
+    )
+    aiw_ollama_coder_max_turns: int = Field(
+        default=40,
+        description="Max tool-call turns per fix round in OllamaCoder's inner loop.",
+    )
+    aiw_ollama_coder_num_ctx: int = Field(
+        default=16384,
+        description="Context window size (tokens) for OllamaCoder sessions.",
+    )
+    aiw_ollama_coder_max_rounds: int = Field(
+        default=20,
+        description="Max outer fix rounds OllamaCoder runs before declaring failure.",
+    )
     aim_brain_use_ollama: bool = Field(
         default=True,
         description=(
