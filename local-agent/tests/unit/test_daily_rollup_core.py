@@ -305,6 +305,11 @@ class TestCLI:
             sys, "argv",
             ["agent.daily_rollup", "--date", "2026-04-17", "--project", "TK"],
         )
+        # runpy warns when the module is already in sys.modules (Python 3.14+
+        # runpy._get_module_details emits RuntimeWarning if it finds the module
+        # registered before re-executing it as __main__). Remove it first so
+        # runpy sees a clean slate; monkeypatch restores the entry after the test.
+        monkeypatch.delitem(sys.modules, "agent.daily_rollup", raising=False)
         with pytest.raises(SystemExit) as excinfo:
             runpy.run_module("agent.daily_rollup", run_name="__main__")
         assert excinfo.value.code == 0
