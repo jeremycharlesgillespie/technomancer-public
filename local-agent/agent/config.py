@@ -283,6 +283,17 @@ class Settings(BaseSettings):
     aim_queue_review_interval: int = Field(
         default=10, description="Run queue review (dedup + failure detection) every N cycles"
     )
+    aim_sequential_mode: bool = Field(
+        default=True,
+        description=(
+            "Sequential AIM→AIW pipeline: no inter-story cooldown, 30s health poll "
+            "during execution, and maintenance tasks (queue review, scan-and-split, "
+            "orphan cleanup) deferred on the cycle immediately after story completion "
+            "so the brain assigns the next story without delay. "
+            "Set False to restore the original parallel-friendly behavior "
+            "(recommended when using the claude -p backend with its own rate limits)."
+        ),
+    )
 
     # LLM routing — per-role model selection.
     # Format: "ollama:<tag>" for local ollama; anything else goes to
