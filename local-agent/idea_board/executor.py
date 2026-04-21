@@ -777,6 +777,7 @@ def _auto_commit_uncommitted(
     project_root: Path | str,
     idea_id: str,
     state: "ExecutionState",
+    idea_title: str = "",
 ) -> bool:
     """Commit any uncommitted changes left behind by ``claude -p``.
 
@@ -817,13 +818,12 @@ def _auto_commit_uncommitted(
             ["git", "add", "-A"],
             capture_output=True, text=True, timeout=15, cwd=cwd,
         )
+        subject = idea_title.strip() or "Implement story"
         commit = subprocess.run(
             [
                 "git", "commit",
                 "-m",
-                f"[{idea_id}] Auto-commit from claude -p session\n\n"
-                f"Claude exited without running git commit. Executor captured "
-                f"uncommitted changes automatically.",
+                f"[{idea_id}] {subject}",
             ],
             capture_output=True, text=True, timeout=15, cwd=cwd,
         )
@@ -1972,7 +1972,7 @@ def execute_idea(
                     )
                     coder.run()
                 with _state_timer(state, "executor.auto_commit"):
-                    _auto_commit_uncommitted(project_root, idea_id, state)
+                    _auto_commit_uncommitted(project_root, idea_id, state, idea.title)
                 # Check commits — same success criterion as claude backend
                 project_root_str = str(project_root)
                 current_branch_check = subprocess.run(
@@ -2160,7 +2160,7 @@ def execute_idea(
             # than a prompt instruction: if the working tree is dirty
             # after Claude exits, auto-commit before checking.
             with _state_timer(state, "executor.auto_commit"):
-                _auto_commit_uncommitted(project_root, idea_id, state)
+                _auto_commit_uncommitted(project_root, idea_id, state, idea.title)
 
             # Success is authoritatively determined by whether the feature
             # branch has commits ahead of main. Claude's stdout is a weak
@@ -2553,7 +2553,7 @@ def execute_idea(
                 # etc.) which shouldn't kill a story whose real code
                 # already committed. Same pattern as the post-claude-p
                 # auto-commit — process step as code, not prompt.
-                _auto_commit_uncommitted(project_root, idea_id, state)
+                _auto_commit_uncommitted(project_root, idea_id, state, idea.title)
 
                 # Double-check: if _auto_commit_uncommitted couldn't land
                 # (git returned non-zero, no changes ever existed, etc.),

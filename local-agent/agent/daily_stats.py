@@ -167,28 +167,6 @@ def _relax_splitter_nullability(conn: sqlite3.Connection) -> None:
 
 
 def validate_daily_stats_db() -> bool:
-    """Validate that the daily_stats database is properly initialized.
-
-    Returns:
-        True if the database exists and the daily_stats table is present.
-
-    Raises:
-        RuntimeError: if the database file doesn't exist or the table is missing.
-    """
-    if not DB_PATH.exists():
-        raise RuntimeError(f"Daily stats database not found: {DB_PATH}")
-
-    conn = _get_conn()
-    try:
-        conn.execute("SELECT 1 FROM daily_stats LIMIT 1")
-        return True
-    except sqlite3.OperationalError as exc:
-        raise RuntimeError(
-            f"Daily stats table missing or corrupted: {exc}"
-        ) from exc
-
-
-def validate_daily_stats_db() -> bool:
     """Validate that the daily_stats database exists and is accessible.
 
     Returns True if the database exists and can be opened, False otherwise.
