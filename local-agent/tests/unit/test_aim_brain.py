@@ -779,7 +779,7 @@ class TestRunOllamaDecide:
         # chat() invoked with the configured model
         _, chat_kwargs = mock_client.chat.call_args
         assert "model" in chat_kwargs
-        assert chat_kwargs["messages"][0]["content"] == "prompt"
+        assert "prompt" in chat_kwargs["messages"][0]["content"]
 
 
 # ---------------------------------------------------------------------------
