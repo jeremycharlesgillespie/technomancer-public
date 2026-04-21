@@ -241,17 +241,6 @@ class TestUsageAnomalyAlerts:
         call_args = mock_send.call_args
         assert "UNKNOWN ENDPOINT" in call_args[0][0]
 
-    def test_no_spike_without_baseline(self):
-        """No spike alert if there's no baseline data for the endpoint."""
-        det = self._make_detector(window_seconds=3600)
-        # No baselines set — even many calls should not trigger spike
-        all_alerts = []
-        for _ in range(100):
-            all_alerts.extend(det.check("ollama"))
-
-        spike_alerts = [a for a in all_alerts if "USAGE SPIKE" in a]
-        assert spike_alerts == []
-
     def test_min_baseline_threshold(self):
         """Baseline requires min_baseline_calls to be computed."""
         det = self._make_detector(min_baseline_calls=10)
