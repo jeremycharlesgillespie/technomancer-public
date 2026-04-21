@@ -201,18 +201,29 @@ def _check_daily_stats() -> None:
     daily_stats.validate_daily_stats_db()
 
 
-def make_daily_stats_check() -> Check:
+def make_daily_stats_check(
+    required: bool = True,
+    timeout: float = 5.0,
+) -> Check:
     """Create a Check object for the daily stats readiness check.
 
-    Returns a Check with ``required=True`` so the gate fails fast if
-    daily stats data is missing. This ensures the bot doesn't start
-    without the daily stats database being available.
+    Args:
+        required: If True, the gate fails if this check fails. Default is True.
+        timeout: Per-check timeout in seconds. Default is 5.0.
+
+    Returns:
+        A Check object configured with the daily stats check function.
+
+    Example:
+        >>> check = make_daily_stats_check(required=False, timeout=10.0)
+        >>> assert check.required is False
+        >>> assert check.timeout == 10.0
     """
     return Check(
         name="daily_stats",
         fn=_check_daily_stats,
-        required=True,
-        timeout=5.0,
+        required=required,
+        timeout=timeout,
     )
 
 
