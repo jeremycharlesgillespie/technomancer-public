@@ -532,6 +532,8 @@ def _collect_recent_changes() -> str:
             ["git", "log", "--since=1 hour ago", "--name-only", "--pretty=format:%h %s"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             cwd=str(REPO_ROOT),
         )

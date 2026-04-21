@@ -271,6 +271,7 @@ def test_story_state_transitions(
     monkeypatch.setattr("aim.state.is_process_alive", lambda pid: True)
     monkeypatch.setattr("aim.manager._notify_discord", lambda *a, **k: None)
     monkeypatch.setattr("aim.manager._notify_discord_throttled", lambda *a, **k: None)
+    monkeypatch.setattr("aim.manager._is_peak_hour_pt", lambda: False)
 
     start = time.monotonic()
 

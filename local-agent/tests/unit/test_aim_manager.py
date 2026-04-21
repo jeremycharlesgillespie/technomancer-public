@@ -275,7 +275,8 @@ class TestExecuteDecision:
 
         with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
-             patch("aim.manager._notify_discord"):
+             patch("aim.manager._notify_discord"), \
+             patch("aim.manager._is_peak_hour_pt", return_value=False):
             execute_decision(state, decision, {"todo": 20})
 
         mock_assign.assert_called_once_with("idea-042")

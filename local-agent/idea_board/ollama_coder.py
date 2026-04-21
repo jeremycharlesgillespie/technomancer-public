@@ -514,7 +514,7 @@ class OllamaCoder:
             "messages": [{"role": "system", "content": system_prompt}] + messages,
             "tools": _TOOLS,
             "stream": False,
-            "think": True,
+            "think": False,
             "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
         }
         try:
@@ -573,6 +573,7 @@ class OllamaCoder:
 
     def _build_system_prompt(self) -> str:
         return (
+            "/no_think\n"
             "You are an expert Python software engineer implementing Jira stories.\n"
             "You have tools to read, write, and edit files, run git/pytest/python commands, "
             "list files, and search code.\n\n"
