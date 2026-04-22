@@ -53,8 +53,12 @@ def _project_key_for(idea_id: str | None) -> str | None:
     if settings.jira_project_key:
         return settings.jira_project_key
     
-    # Reject obviously malformed inputs
-    if not idea_id or idea_id in ('--', '-', '', ' '):
+    # Reject obviously malformed inputs early
+    if not idea_id:
+        return None
+    if idea_id in ('--', '-', '', ' '):
+        return None
+    if not idea_id.strip():
         return None
     
     # Basic validation: must contain at least one digit and some structure
