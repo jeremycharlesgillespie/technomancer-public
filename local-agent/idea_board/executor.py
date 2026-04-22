@@ -47,6 +47,8 @@ def _project_key_for(idea_id: str | None) -> str | None:
     falls back to the alpha prefix of ``idea_id`` (so ``FA-12`` → ``"FA"``
     works even on hosts that haven't wired up Jira yet). Returns ``None``
     when nothing parses — phase timers accept ``None`` and store NULL.
+    
+    Handles malformed inputs gracefully by returning None instead of crashing.
     """
     try:
         if settings.jira_project_key:
@@ -55,6 +57,15 @@ def _project_key_for(idea_id: str | None) -> str | None:
         logger.warning(
             "[Executor] Failed to read Jira project key: %s", exc,
         )
+    
+    # Reject obviously malformed inputs
+    if not idea_id or idea_id in ('--', '-', '', ' '):
+        return None
+    
+    # Basic validation: must contain at least one digit and some structure
+    if not any(c.isdigit() for c in idea_id):
+        return None
+        
     if idea_id and "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
         if prefix.isalpha():
