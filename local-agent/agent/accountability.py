@@ -146,6 +146,58 @@ def verify_memory_saved(category: str) -> str:
         return f"NOT FOUND: No memory file for category '{category}'"
 
 
+def verify_git_clean() -> str:
+    """
+    Verify that the git working directory is clean (no uncommitted changes).
+
+    Returns:
+        Verification result with details about git status
+    """
+    import subprocess
+    import shlex
+
+    try:
+        # Check if git is available
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        if result.returncode != 0:
+            return f"NOT FOUND: Git repository not found or git is not installed"
+        
+        # Get git status
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        
+        status_output = result.stdout
+        
+        if not status_output.strip():
+            return "VERIFIED: Git working directory is clean - no uncommitted changes"
+        else:
+            # Parse the status output to get a summary
+            lines = status_output.strip().split('\n')
+            modified_files = [line for line in lines if line.startswith(" M") or line.startswith(" D")]
+            untracked_files = [line for line in lines if line.startswith("?")]
+            
+            modified_summary = ", ".join(modified_files) if modified_files else "none"
+            untracked_summary = ", ".join(untracked_files) if untracked_files else "none"
+            
+            return f"DIRTY: Git working directory has uncommitted changes: {modified_summary} {untracked_summary}"
+    except subprocess.TimeoutExpired:
+        return "ERROR: Git command timed out"
+    except FileNotFoundError:
+        return "NOT FOUND: Git is not installed or not in PATH"
+    except Exception as e:
+        return f"ERROR: Could not check git status: {e}"
+
+
 def get_accountability_tools() -> list:
     """Get verification tools for the agent."""
     from .core import create_tool

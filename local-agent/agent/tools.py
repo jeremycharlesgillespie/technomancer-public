@@ -290,6 +290,49 @@ def get_current_time() -> str:
     )
 
 
+def verify_git_clean() -> str:
+    """Verify that the git repository is clean (no uncommitted changes)."""
+    try:
+        result = subprocess.run(
+            "git status --porcelain",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout + result.stderr
+        
+        if result.returncode != 0:
+            return f"[Exit code: {result.returncode}]\n{output}"
+        
+        if output.strip():
+            # There are uncommitted changes
+            lines = output.strip().split("\n")
+            changes = []
+            for line in lines:
+                if line.startswith("??"):
+                    changes.append(f"  Untracked: {line[2:]}")
+                elif line.startswith(" M") or line.startswith("M "):
+                    changes.append(f"  Modified: {line[2:]}")
+                elif line.startswith(" D"):
+                    changes.append(f"  Deleted: {line[2:]}")
+                elif line.startswith("A "):
+                    changes.append(f"  Added: {line[2:]}")
+                elif line.startswith("R "):
+                    changes.append(f"  Renamed: {line[2:]}")
+            
+            return (
+                f"Git repository is NOT clean!\n"
+                f"Uncommitted changes detected:\n"
+            ) + "\n".join(changes) + "\n"
+        else:
+            return "Git repository is clean. No uncommitted changes."
+    except subprocess.TimeoutExpired:
+        return "Error: Git status command timed out"
+    except Exception as e:
+        return f"Error checking git status: {e}"
+
+
 # =============================================================================
 # TOOL REGISTRY
 # =============================================================================
@@ -407,6 +450,21 @@ def get_system_tools() -> list[Tool]:
             description="Get the current date and time",
             parameters={"type": "object", "properties": {}, "required": []},
             function=get_current_time,
+        ),
+        create_tool(
+            name="verify_git_clean",
+            description="Check if git working directory is clean (no uncommitted changes). Returns True if clean, False if dirty.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "repo_path": {
+                        "type": "string",
+                        "description": "Path to git repository (default: current directory)",
+                    },
+                },
+                "required": [],
+            },
+            function=verify_git_clean,
         ),
     ]
 
