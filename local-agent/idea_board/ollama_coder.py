@@ -484,7 +484,7 @@ class OllamaCoder:
             return f"ERROR: not a directory: {path}"
         try:
             files = list(full.glob(pattern))[:LIST_FILES_MAX]
-            return "\n".join(str(f) for f in files) or "(empty)"
+            return "\n".join(f.as_posix() for f in files) or "(empty)"
         except Exception as exc:
             return f"ERROR: {exc}"
 
@@ -509,7 +509,7 @@ class OllamaCoder:
                     text = f.read_text(encoding="utf-8", errors="replace")
                     for i, line in enumerate(text.splitlines(), 1):
                         if re.search(pattern, line):
-                            matches.append(f"{f}:{i}: {line.strip()}")
+                            matches.append(f"{f.as_posix()}:{i}: {line.strip()}")
                             if len(matches) >= 50:
                                 break
                 except Exception:
