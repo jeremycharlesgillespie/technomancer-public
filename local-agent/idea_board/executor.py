@@ -50,13 +50,8 @@ def _project_key_for(idea_id: str | None) -> str | None:
     
     Handles malformed inputs gracefully by returning None instead of crashing.
     """
-    try:
-        if settings.jira_project_key:
-            return settings.jira_project_key
-    except Exception as exc:
-        logger.warning(
-            "[Executor] Failed to read Jira project key: %s", exc,
-        )
+    if settings.jira_project_key:
+        return settings.jira_project_key
     
     # Reject obviously malformed inputs
     if not idea_id or idea_id in ('--', '-', '', ' '):
