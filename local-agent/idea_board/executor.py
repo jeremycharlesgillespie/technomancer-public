@@ -39,6 +39,8 @@ from board import get_provider as _get_board_provider
 
 from idea_board.aiv_post_merge import enqueue_merged_story
 
+__all__ = ["enqueue_merged_story"]
+
 
 def _project_key_for(idea_id: str | None) -> str | None:
     """Return the project key for story-timing rows (e.g. ``TK``, ``FA``).
@@ -49,6 +51,7 @@ def _project_key_for(idea_id: str | None) -> str | None:
     when nothing parses — phase timers accept ``None`` and store NULL.
     
     Handles malformed inputs gracefully by returning None instead of crashing.
+    Returns ``None`` for inputs lacking digits (e.g., plain text without numbers).
     """
     if settings.jira_project_key:
         return settings.jira_project_key
@@ -61,7 +64,7 @@ def _project_key_for(idea_id: str | None) -> str | None:
     if not idea_id.strip():
         return None
     
-    # Basic validation: must contain at least one digit and some structure
+    # Must contain at least one digit to be a valid story ID
     if not any(c.isdigit() for c in idea_id):
         return None
         
