@@ -545,16 +545,27 @@ class OllamaCoder:
             "think": False,
             "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
         }
-        try:
-            r = requests.post(
-                f"{OLLAMA_HOST}/api/chat",
-                json=body,
-                timeout=900,
-            )
-        except requests.RequestException as exc:
-            logger.warning("[OllamaCoder] Network error: %s", exc)
-            return None
-        if r.status_code != 200:
+        for attempt in range(4):  # 1 initial + 3 retries
+            try:
+                r = requests.post(
+                    f"{OLLAMA_HOST}/api/chat",
+                    json=body,
+                    timeout=900,
+                )
+            except requests.RequestException as exc:
+                logger.warning("[OllamaCoder] Network error: %s", exc)
+                return None
+            if r.status_code == 200:
+                break
+            # HTTP 500 with Ollama's XML parse bug is transient — retry with backoff
+            if r.status_code == 500 and attempt < 3:
+                delay = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(
+                    "[OllamaCoder] HTTP 500 (attempt %d/4), retrying in %ds: %s",
+                    attempt + 1, delay, r.text[:120],
+                )
+                time.sleep(delay)
+                continue
             logger.warning("[OllamaCoder] HTTP %d: %s", r.status_code, r.text[:200])
             return None
         try:
