@@ -406,9 +406,17 @@ class OllamaCoder:
             return f"ERROR: {exc}"
 
     def _resolve_path(self, path: str) -> Path:
-        """Return absolute Path. Absolute inputs used as-is; relative prepend project_root."""
+        """Return absolute Path within project_root. Rejects traversal outside project_root."""
         p = Path(path)
-        return p if p.is_absolute() else self.project_root / p
+        resolved = (p if p.is_absolute() else self.project_root / p).resolve()
+        project_root_resolved = self.project_root.resolve()
+        try:
+            resolved.relative_to(project_root_resolved)
+        except ValueError:
+            # Path escapes project_root — clamp to project_root to prevent writing outside
+            logger.warning("[OllamaCoder] Path %s escapes project_root, rejected", path)
+            return project_root_resolved / Path(path).name
+        return resolved
 
     def _tool_read_file(self, path: str) -> str:
         full = self._resolve_path(path)
@@ -603,7 +611,7 @@ class OllamaCoder:
             "Rules:\n"
             "- Always read relevant files before editing them\n"
             "- Use absolute paths for all file operations\n"
-            "- Run `git add -A && git commit -m '[<idea_id>] <description>'` after each meaningful change\n"
+            "- Run `git add <file1> <file2> ... && git commit -m '[<idea_id>] <description>'` after each meaningful change. Only add files you explicitly modified — never use `git add -A` or `git add .`\n"
             "- Run tests with pytest to verify your implementation\n"
             "- Call finish() only after committing all changes\n"
             "- Do not modify test files unless the story explicitly asks you to\n"

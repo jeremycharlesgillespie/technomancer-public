@@ -1959,10 +1959,15 @@ def execute_idea(
             # Ollama backend: replace claude -p subprocess with OllamaCoder
             if settings.aiw_worker_backend == "ollama":
                 from idea_board.ollama_coder import OllamaCoder
+                # OllamaCoder operates within local-agent/ (the Python package root).
+                # executor's project_root is the repo root (technomancer/); pass the
+                # local-agent/ subdirectory so the model resolves paths correctly.
+                _la = project_root / "local-agent"
+                coder_root = _la if _la.is_dir() else project_root
                 with _state_timer(state, "executor.ollama_coder"):
                     coder = OllamaCoder(
                         prompt=full_prompt,
-                        project_root=project_root,
+                        project_root=coder_root,
                         idea_id=idea_id,
                         state=state,
                         model=settings.aiw_ollama_coder_model,
