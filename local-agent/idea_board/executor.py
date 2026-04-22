@@ -51,8 +51,10 @@ def _project_key_for(idea_id: str | None) -> str | None:
     try:
         if settings.jira_project_key:
             return settings.jira_project_key
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "[Executor] Failed to read Jira project key: %s", exc,
+        )
     if idea_id and "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
         if prefix.isalpha():
