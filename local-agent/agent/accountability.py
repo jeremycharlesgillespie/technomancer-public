@@ -5,11 +5,22 @@ Provides verification tools so the LLM can confirm its actions before
 reporting success to the user.
 """
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from .config import settings
 VAULT_PATH = settings.llm_memory_path
+
+logger = logging.getLogger(__name__)
+
+
+class GitNotInstalledError(Exception):
+    """Raised when git is not installed or unavailable."""
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or "Git is not installed or not in PATH")
+        logger.debug("GitNotInstalledError: %s", self)
 
 
 def verify_file_exists(file_path: str) -> str:
