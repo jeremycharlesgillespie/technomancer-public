@@ -597,7 +597,7 @@ class OllamaCoder:
             "You are an expert Python software engineer implementing Jira stories.\n"
             "You have tools to read, write, and edit files, run git/pytest/python commands, "
             "list files, and search code.\n\n"
-            f"Project root: {self.project_root}\n"
+            f"Project root: {self.project_root.as_posix()}\n"
             "All tool paths (read_file, write_file, edit_file, list_files, search_code) "
             "accept absolute paths. Always use absolute paths when referencing files.\n\n"
             "Rules:\n"
