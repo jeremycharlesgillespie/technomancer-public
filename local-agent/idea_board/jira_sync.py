@@ -164,6 +164,30 @@ def _post_with_retry(
     raise JiraRetryExhausted(last_status, last_body, max_attempts, path=path)
 
 
+def _remove_artifacts(idea_id: str) -> None:
+    """Remove artifacts for an idea when it's done or failed.
+
+    Cleans up temporary files and directories in the executor_artifacts
+    directory for the given idea_id.
+    """
+    try:
+        from idea_board.settings import settings
+        from idea_board.utils import get_executor_artifacts_path
+
+        artifacts_path = get_executor_artifacts_path()
+        if not artifacts_path:
+            return
+
+        idea_dir = artifacts_path / idea_id
+        if idea_dir.exists():
+            # Remove the entire idea directory
+            import shutil
+            shutil.rmtree(idea_dir, ignore_errors=True)
+            logger.info("[JiraSync] Removed artifacts for idea %s", idea_id)
+    except Exception as exc:
+        logger.warning("[JiraSync] Failed to remove artifacts for %s: %s", idea_id, exc)
+
+
 def _write_deadletter(
     idea_id: str,
     target_state: str,
