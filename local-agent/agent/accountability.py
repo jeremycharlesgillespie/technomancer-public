@@ -23,6 +23,14 @@ class GitNotInstalledError(Exception):
         logger.debug("GitNotInstalledError: %s", self)
 
 
+class GitDirtyError(Exception):
+    """Raised when the working directory has uncommitted changes."""
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or "Git working directory is dirty - uncommitted changes detected")
+        logger.debug("GitDirtyError: %s", self)
+
+
 def verify_file_exists(file_path: str) -> str:
     """
     Verify that a file exists at the given path.
