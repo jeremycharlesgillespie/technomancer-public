@@ -22,6 +22,15 @@ repos:
       - id: ruff
         args: ['--fix', '--exit-non-zero-on-fix']
 
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        args: ['--config-file=local-agent/pyproject.toml']
+        pass_filenames: false
+        entry: mypy local-agent/agent/
+        additional_dependencies: ['types-requests']
+
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
