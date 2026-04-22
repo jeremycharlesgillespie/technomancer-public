@@ -76,7 +76,7 @@ _TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path relative to project root"}
+                    "path": {"type": "string", "description": "Absolute file path"}
                 },
                 "required": ["path"],
             },
@@ -90,7 +90,7 @@ _TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path relative to project root"},
+                    "path": {"type": "string", "description": "Absolute file path"},
                     "content": {"type": "string", "description": "File content to write"},
                 },
                 "required": ["path", "content"],
@@ -105,7 +105,7 @@ _TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Path relative to project root"},
+                    "path": {"type": "string", "description": "Absolute file path"},
                     "old_string": {"type": "string", "description": "Exact string to find"},
                     "new_string": {"type": "string", "description": "Replacement string"},
                 },
@@ -138,7 +138,7 @@ _TOOLS: list[dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory path relative to project root"},
+                    "path": {"type": "string", "description": "Absolute directory path"},
                     "pattern": {"type": "string", "description": "Glob pattern (optional)", "default": "*"},
                 },
                 "required": ["path"],
@@ -154,7 +154,7 @@ _TOOLS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regex or string to search for"},
-                    "path": {"type": "string", "description": "Directory to search (default: project root)"},
+                    "path": {"type": "string", "description": "Absolute directory to search (default: project root)"},
                     "file_pattern": {"type": "string", "description": "File glob (e.g. '*.py')", "default": "*.py"},
                 },
                 "required": ["pattern"],
@@ -405,8 +405,13 @@ class OllamaCoder:
         except Exception as exc:
             return f"ERROR: {exc}"
 
+    def _resolve_path(self, path: str) -> Path:
+        """Return absolute Path. Absolute inputs used as-is; relative prepend project_root."""
+        p = Path(path)
+        return p if p.is_absolute() else self.project_root / p
+
     def _tool_read_file(self, path: str) -> str:
-        full = self.project_root / path
+        full = self._resolve_path(path)
         if not full.exists():
             return f"ERROR: file not found: {path}"
         try:
@@ -418,7 +423,7 @@ class OllamaCoder:
         return content
 
     def _tool_write_file(self, path: str, content: str) -> str:
-        full = self.project_root / path
+        full = self._resolve_path(path)
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
             full.write_text(content, encoding="utf-8")
@@ -429,7 +434,7 @@ class OllamaCoder:
     def _tool_edit_file(self, path: str, old_string: str, new_string: str) -> str:
         if not old_string:
             return "ERROR: old_string must not be empty"
-        full = self.project_root / path
+        full = self._resolve_path(path)
         if not full.exists():
             return f"ERROR: file not found: {path}"
         try:
@@ -474,17 +479,17 @@ class OllamaCoder:
             return f"ERROR: {exc}"
 
     def _tool_list_files(self, path: str, pattern: str = "*") -> str:
-        full = self.project_root / path
+        full = self._resolve_path(path)
         if not full.is_dir():
             return f"ERROR: not a directory: {path}"
         try:
             files = list(full.glob(pattern))[:LIST_FILES_MAX]
-            return "\n".join(str(f.relative_to(self.project_root)) for f in files) or "(empty)"
+            return "\n".join(str(f) for f in files) or "(empty)"
         except Exception as exc:
             return f"ERROR: {exc}"
 
     def _tool_search_code(self, pattern: str, path: str = ".", file_pattern: str = "*.py") -> str:
-        search_dir = self.project_root / path
+        search_dir = self._resolve_path(path)
         try:
             result = subprocess.run(
                 ["python", "-m", "grep", "-rn", pattern, "--include", file_pattern, str(search_dir)],
@@ -504,8 +509,7 @@ class OllamaCoder:
                     text = f.read_text(encoding="utf-8", errors="replace")
                     for i, line in enumerate(text.splitlines(), 1):
                         if re.search(pattern, line):
-                            rel = f.relative_to(self.project_root)
-                            matches.append(f"{rel}:{i}: {line.strip()}")
+                            matches.append(f"{f}:{i}: {line.strip()}")
                             if len(matches) >= 50:
                                 break
                 except Exception:
@@ -593,8 +597,12 @@ class OllamaCoder:
             "You are an expert Python software engineer implementing Jira stories.\n"
             "You have tools to read, write, and edit files, run git/pytest/python commands, "
             "list files, and search code.\n\n"
+            f"Project root: {self.project_root}\n"
+            "All tool paths (read_file, write_file, edit_file, list_files, search_code) "
+            "accept absolute paths. Always use absolute paths when referencing files.\n\n"
             "Rules:\n"
             "- Always read relevant files before editing them\n"
+            "- Use absolute paths for all file operations\n"
             "- Run `git add -A && git commit -m '[<idea_id>] <description>'` after each meaningful change\n"
             "- Run tests with pytest to verify your implementation\n"
             "- Call finish() only after committing all changes\n"
@@ -724,13 +732,16 @@ class OllamaCoder:
                 pass
 
     def _get_changed_files(self) -> list[str]:
-        """Return list of files changed on current branch vs main."""
+        """Return absolute paths of files changed on current branch vs main."""
         try:
             result = subprocess.run(
                 ["git", "diff", "--name-only", "main...HEAD"],
                 capture_output=True, text=True, cwd=str(self.project_root),
             )
-            return [f for f in result.stdout.strip().splitlines() if f]
+            return [
+                str(self.project_root / f)
+                for f in result.stdout.strip().splitlines() if f
+            ]
         except Exception:
             return []
 
