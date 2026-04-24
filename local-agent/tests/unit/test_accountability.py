@@ -5,7 +5,6 @@ Tests for agent/accountability.py - Verification tools.
 from unittest.mock import MagicMock
 
 from agent.accountability import (
-    GitNotInstalledError,
     get_accountability_tools,
     verify_content_contains,
     verify_file_exists,
@@ -239,25 +238,10 @@ class TestVerifyGitClean:
             # Mock subprocess.run to raise FileNotFoundError
             mock_run.side_effect = FileNotFoundError("git command not found")
             
-            # This should raise GitNotInstalledError, not return a string
-            with pytest.raises(GitNotInstalledError):
-                verify_git_clean()
-
-    def test_verify_git_clean_raises_git_not_installed_error(self, patched_accountability):
-        """verify_git_clean raises GitNotInstalledError when git command not found."""
-        import subprocess
-        from unittest.mock import patch
-        
-        with patch('subprocess.run') as mock_run:
-            # Mock git rev-parse to raise FileNotFoundError (git not installed)
-            mock_rev_parse = MagicMock()
-            mock_rev_parse.side_effect = FileNotFoundError("git command not found")
+            result = verify_git_clean()
             
-            mock_run.side_effect = [mock_rev_parse]
-            
-            # This should raise GitNotInstalledError, not return a string
-            with pytest.raises(GitNotInstalledError):
-                verify_git_clean()
+            assert "NOT FOUND" in result
+            assert "git" in result.lower()
 
 
 class TestGetAccountabilityTools:

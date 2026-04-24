@@ -17,7 +17,10 @@ from aim.splitter import (
     SPLITTER_SOURCE,
     _apply_split,
     _build_context,
+    _build_dedup_prompt,
     _build_prompt,
+    _classify_dedup,
+    _collect_done_titles,
     _count_prior_failures,
     _get_generation,
     _parse_split_response,
@@ -848,3 +851,282 @@ class TestPickRelevantFiles:
         results = _pick_relevant_files({"compaction", "atomic"}, tmp_path, max_files=2)
         paths = [r[0] for r in results]
         assert "agent/memory_system.py" in paths
+
+
+# ---------------------------------------------------------------------------
+# Dedup guardrail — semantic comparison against Done stories via Ollama
+# ---------------------------------------------------------------------------
+
+
+class TestCollectDoneTitles:
+    def test_returns_titles_of_done_items(self, provider):
+        provider.seed(make_item(item_id="TK-1", title="Add foo tests", state="done"))
+        provider.seed(make_item(item_id="TK-2", title="Add bar tests", state="done"))
+        provider.seed(make_item(item_id="TK-3", title="Not done yet", state="approved"))
+
+        titles = _collect_done_titles(provider)
+
+        assert set(titles) == {"Add foo tests", "Add bar tests"}
+
+    def test_empty_when_no_done_items(self, provider):
+        provider.seed(make_item(item_id="TK-1", title="Pending work", state="approved"))
+
+        assert _collect_done_titles(provider) == []
+
+    def test_respects_limit(self, provider):
+        for i in range(10):
+            provider.seed(make_item(item_id=f"TK-{i}", title=f"Done {i}", state="done"))
+
+        titles = _collect_done_titles(provider, limit=3)
+
+        assert len(titles) == 3
+
+    def test_provider_error_returns_empty(self, provider):
+        def boom(state):
+            raise RuntimeError("Jira down")
+        provider.list_by_state = boom
+
+        assert _collect_done_titles(provider) == []
+
+
+class TestBuildDedupPrompt:
+    def test_includes_candidate_and_numbered_done_titles(self):
+        prompt = _build_dedup_prompt(
+            "Add retry logic to webhook delivery",
+            ["Add foo tests", "Fix bar bug"],
+        )
+
+        assert "Add retry logic to webhook delivery" in prompt
+        assert "1. Add foo tests" in prompt
+        assert "2. Fix bar bug" in prompt
+        # JSON schema hint must be present so the model emits structured output.
+        assert '"duplicate"' in prompt
+        assert '"match"' in prompt
+
+
+class TestClassifyDedup:
+    def test_no_done_titles_short_circuits(self):
+        """No Done titles → return (False, '', '') without calling Ollama."""
+        calls = []
+        def chat_fn(*a, **kw):
+            calls.append((a, kw))
+            return None
+
+        result = _classify_dedup("Anything", [], chat_fn=chat_fn)
+
+        assert result == (False, "", "")
+        assert calls == []
+
+    def test_model_marks_duplicate_returns_match(self):
+        chat_fn = MagicMock(return_value=json.dumps({
+            "duplicate": True,
+            "match": "verify_git_clean function",
+            "reason": "candidate would rebuild the same helper",
+        }))
+
+        is_dup, matched, reason = _classify_dedup(
+            "Add verify_git_clean function",
+            ["verify_git_clean function", "unrelated story"],
+            chat_fn=chat_fn,
+        )
+
+        assert is_dup
+        assert matched == "verify_git_clean function"
+        assert "rebuild" in reason
+
+    def test_model_marks_not_duplicate(self):
+        chat_fn = MagicMock(return_value=json.dumps({
+            "duplicate": False,
+            "match": "",
+            "reason": "different scope",
+        }))
+
+        is_dup, matched, reason = _classify_dedup(
+            "Add retry logic",
+            ["Unrelated work"],
+            chat_fn=chat_fn,
+        )
+
+        assert not is_dup
+        assert matched == ""
+
+    def test_ollama_unreachable_falls_through(self):
+        """chat_fn returning None → treat as not duplicate (fail-open)."""
+        chat_fn = MagicMock(return_value=None)
+
+        is_dup, matched, reason = _classify_dedup(
+            "Some candidate",
+            ["Some done story"],
+            chat_fn=chat_fn,
+        )
+
+        assert (is_dup, matched, reason) == (False, "", "")
+
+    def test_ollama_raises_falls_through(self):
+        def chat_fn(*a, **kw):
+            raise ConnectionError("ollama down")
+
+        result = _classify_dedup("c", ["d"], chat_fn=chat_fn)
+
+        assert result == (False, "", "")
+
+    def test_non_json_response_falls_through(self):
+        chat_fn = MagicMock(return_value="this is not json at all")
+
+        result = _classify_dedup("c", ["d"], chat_fn=chat_fn)
+
+        assert result == (False, "", "")
+
+    def test_duplicate_true_but_empty_match_rejected(self):
+        """Safety: duplicate=true with empty match is unsafe (nothing to cite)."""
+        chat_fn = MagicMock(return_value=json.dumps({
+            "duplicate": True,
+            "match": "",
+            "reason": "vague",
+        }))
+
+        is_dup, matched, reason = _classify_dedup(
+            "c", ["d"], chat_fn=chat_fn,
+        )
+
+        assert not is_dup
+
+
+class TestDedupGuardrailInEvaluateFailure:
+    def test_dupe_aborts_split_and_vetoes_parent(self, provider, monkeypatch):
+        """A candidate that duplicates a Done title aborts the entire split."""
+        # Seed parent + a Done story we're about to duplicate.
+        provider.seed(make_item(), comments=failure_comments(1))
+        provider.seed(make_item(
+            item_id="TK-DONE1",
+            title="Add verify_git_clean function",
+            state="done",
+        ))
+
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "Add verify_git_clean function", "description": "dup"},
+                {"title": "Unique other work", "description": "also"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+        monkeypatch.setattr(
+            "aim.splitter._classify_dedup",
+            lambda title, dones, **kw: (
+                (True, "Add verify_git_clean function", "exact duplicate")
+                if "verify_git_clean" in title else (False, "", "")
+            ),
+        )
+
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert not result.fired
+        assert result.reason == "dedup_of_done"
+        # Parent still exists (veto, not delete).
+        assert provider.get("TK-100") is not None
+        # Veto was recorded.
+        assert ("TK-100", "owner", "veto") in provider.votes
+        # Comment explains the dedup trip.
+        dedup_comments = [
+            c for c in provider.get_comments("TK-100")
+            if "Dedup guard tripped" in c.text
+        ]
+        assert len(dedup_comments) == 1
+        assert "verify_git_clean" in dedup_comments[0].text
+
+    def test_no_dupe_proceeds_normally(self, provider, monkeypatch):
+        """When no candidate duplicates Done work, split proceeds."""
+        provider.seed(make_item(), comments=failure_comments(1))
+        provider.seed(make_item(
+            item_id="TK-DONE1",
+            title="Completely unrelated work",
+            state="done",
+        ))
+
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "Fresh atom one", "description": "a"},
+                {"title": "Fresh atom two", "description": "b"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+        monkeypatch.setattr(
+            "aim.splitter._classify_dedup",
+            lambda *a, **kw: (False, "", ""),
+        )
+
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        assert result.reason == "split_done"
+        assert len(result.new_keys) == 2
+        # Parent was deleted as normal (not vetoed).
+        assert provider.get("TK-100") is None
+        assert ("TK-100", "owner", "veto") not in provider.votes
+
+    def test_dedup_skipped_when_no_done_titles(self, provider, monkeypatch):
+        """No Done items on board → dedup is a no-op, split proceeds."""
+        provider.seed(make_item(), comments=failure_comments(1))
+
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "Atom A", "description": "a"},
+                {"title": "Atom B", "description": "b"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+
+        # _classify_dedup should NOT be called since there are no done titles.
+        def explode(*a, **kw):
+            raise AssertionError("_classify_dedup called despite empty done list")
+        monkeypatch.setattr("aim.splitter._classify_dedup", explode)
+
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        assert result.reason == "split_done"
+
+    def test_dedup_first_hit_stops_further_classification(self, provider, monkeypatch):
+        """First duplicate candidate ends the loop — don't classify the rest."""
+        provider.seed(make_item(), comments=failure_comments(1))
+        provider.seed(make_item(
+            item_id="TK-DONE1", title="Already done thing", state="done",
+        ))
+
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "First candidate", "description": "a"},
+                {"title": "Second candidate", "description": "b"},
+                {"title": "Third candidate", "description": "c"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+
+        call_count = {"n": 0}
+        def classify(title, dones, **kw):
+            call_count["n"] += 1
+            # First candidate is a dupe; we expect to never see the others.
+            return (True, "Already done thing", "match") if title == "First candidate" else (False, "", "")
+        monkeypatch.setattr("aim.splitter._classify_dedup", classify)
+
+        result = evaluate_failure(
+            "TK-100", provider=provider, claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert not result.fired
+        assert result.reason == "dedup_of_done"
+        assert call_count["n"] == 1
