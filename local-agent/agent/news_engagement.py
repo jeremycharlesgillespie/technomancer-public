@@ -10,7 +10,7 @@ news digest can prioritise higher-value content.
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,17 @@ log = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "news_engagement.db"
+
+
+def _utc_since(days: int) -> str:
+    """Return a UTC cutoff string in SQLite's `datetime('now')` format.
+
+    `sent_at` / `created_at` default to `datetime('now')` which is UTC and
+    renders as `YYYY-MM-DD HH:MM:SS`. Comparing a local-time ISO string
+    against that silently drops rows whenever the machine isn't on UTC.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 _local = threading.local()
 
@@ -152,7 +163,7 @@ def get_source_stats(days: int = 30) -> list[dict[str, Any]]:
     """Get engagement stats per news source."""
     init_db()
     conn = _get_conn()
-    since = (datetime.now() - timedelta(days=days)).isoformat()
+    since = _utc_since(days)
     rows = conn.execute(
         """SELECT
                 na.source,
@@ -174,7 +185,7 @@ def get_top_articles(days: int = 30, limit: int = 5) -> list[dict[str, Any]]:
     """Get the most-engaged articles."""
     init_db()
     conn = _get_conn()
-    since = (datetime.now() - timedelta(days=days)).isoformat()
+    since = _utc_since(days)
     rows = conn.execute(
         """SELECT
                 na.title,
@@ -199,7 +210,7 @@ def get_engagement_report(days: int = 30) -> str:
     """Human-readable engagement report for Discord."""
     init_db()
     conn = _get_conn()
-    since = (datetime.now() - timedelta(days=days)).isoformat()
+    since = _utc_since(days)
 
     total_articles = conn.execute(
         "SELECT COUNT(*) AS cnt FROM news_articles WHERE sent_at >= ?", (since,)

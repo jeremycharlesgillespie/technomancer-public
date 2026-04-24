@@ -46,6 +46,24 @@ class SafeUpdateError(Exception):
     pass
 
 
+def _skip_discord_startup() -> bool:
+    """True when the environment opts out of bot restart + liveness checks.
+
+    Set ``SKIP_DISCORD_STARTUP=true`` in ``local-agent/.env`` on machines
+    that don't host the Discord bot (e.g. a Mac running only AIM / AIMM /
+    AIV). When set, safe_update.py still runs tests + merges to main, but
+    skips Step 6 (``restart_bot``) and Step 6b (``post_deploy_health_check``)
+    — so the bot-liveness gate can't cause a false-positive rollback on a
+    machine that was never going to run the bot anyway.
+
+    Checked against os.environ (not agent.config.settings) to match the
+    validate.py helper of the same name and avoid paying the Settings
+    import cost for a single boolean.
+    """
+    raw = os.environ.get("SKIP_DISCORD_STARTUP", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _extract_story_id(branch_name: str) -> str:
     """Extract a story ID (e.g. TK-409) from a branch name.
 
@@ -862,16 +880,41 @@ def continue_workflow():
         delete_branch(branch_name)
         clear_state()
 
-        # Step 6: Restart bot
-        log("Step 6: Restarting bot...")
-        bot_ok = restart_bot()
+        # Step 6: Restart bot (skippable on non-bot-hosting machines)
+        if _skip_discord_startup():
+            log("Step 6: Skipping bot restart (SKIP_DISCORD_STARTUP is set)")
+            log("Step 6b: Skipping post-deploy health check (bot not hosted here)")
+            bot_ok = True  # Treat as OK so the summary doesn't scare the user
+        else:
+            log("Step 6: Restarting bot...")
+            bot_ok = restart_bot()
 
-        # Step 6b: Post-deploy health check (verify bot stays alive 30s)
-        if bot_ok:
-            log("Step 6b: Post-deploy health check...")
-            healthy = post_deploy_health_check()
-            if not healthy:
-                log("Bot crashed after deploy — initiating auto-rollback", "ERROR")
+            # Step 6b: Post-deploy health check (verify bot stays alive 30s)
+            if bot_ok:
+                log("Step 6b: Post-deploy health check...")
+                healthy = post_deploy_health_check()
+                if not healthy:
+                    log("Bot crashed after deploy — initiating auto-rollback", "ERROR")
+                    rollback_ok, rollback_msg = rollback_deploy(reverted_branch=branch_name)
+                    print()
+                    print("=" * 60)
+                    print("DEPLOY ROLLED BACK")
+                    print("=" * 60)
+                    print()
+                    print(rollback_msg)
+                    print()
+                    print("The bot crashed within 30 seconds of restart.")
+                    print("The merge has been reverted and the bot restarted")
+                    print("on the previous version.")
+                    print()
+                    print("Next steps:")
+                    print("  1. Check crash logs for the root cause")
+                    print("  2. Fix the issue on a new branch")
+                    print("  3. Re-deploy with safe_update.py")
+                    print("=" * 60)
+                    sys.exit(1)
+            else:
+                log("Bot restart failed — initiating auto-rollback", "ERROR")
                 rollback_ok, rollback_msg = rollback_deploy(reverted_branch=branch_name)
                 print()
                 print("=" * 60)
@@ -880,7 +923,7 @@ def continue_workflow():
                 print()
                 print(rollback_msg)
                 print()
-                print("The bot crashed within 30 seconds of restart.")
+                print("Bot failed to start after merge.")
                 print("The merge has been reverted and the bot restarted")
                 print("on the previous version.")
                 print()
@@ -890,26 +933,6 @@ def continue_workflow():
                 print("  3. Re-deploy with safe_update.py")
                 print("=" * 60)
                 sys.exit(1)
-        else:
-            log("Bot restart failed — initiating auto-rollback", "ERROR")
-            rollback_ok, rollback_msg = rollback_deploy(reverted_branch=branch_name)
-            print()
-            print("=" * 60)
-            print("DEPLOY ROLLED BACK")
-            print("=" * 60)
-            print()
-            print(rollback_msg)
-            print()
-            print("Bot failed to start after merge.")
-            print("The merge has been reverted and the bot restarted")
-            print("on the previous version.")
-            print()
-            print("Next steps:")
-            print("  1. Check crash logs for the root cause")
-            print("  2. Fix the issue on a new branch")
-            print("  3. Re-deploy with safe_update.py")
-            print("=" * 60)
-            sys.exit(1)
 
         # Step 7: Push to remote
         log("Step 7: Pushing to origin...")

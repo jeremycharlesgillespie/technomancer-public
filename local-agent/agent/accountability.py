@@ -193,7 +193,8 @@ def verify_git_clean() -> str:
     except subprocess.TimeoutExpired:
         return "ERROR: Git command timed out"
     except FileNotFoundError:
-        return "NOT FOUND: Git is not installed or not in PATH"
+        # Raise GitNotInstalledError instead of returning a string
+        raise GitNotInstalledError("Git is not installed or not in PATH")
     except Exception as e:
         return f"ERROR: Could not check git status: {e}"
 

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Exercises Windows-specific orphan kill (taskkill /T) — not applicable on Unix.",
+)
 
 from aim.state import AIMState, WorkerState, save_state
 
@@ -928,6 +934,7 @@ class TestKillWorker:
 # ---------------------------------------------------------------------------
 
 
+@windows_only
 class TestCleanupOrphanedProcesses:
     def _make_proc(self, pid, name, cmdline=None, environ=None):
         """Create a mock psutil process info entry."""
@@ -1132,6 +1139,7 @@ class TestEventLogEmits:
         assert esc_events[0]["data"]["reason"] == "worker stuck"
         assert esc_events[0]["data"]["target"] == "3h without progress"
 
+    @windows_only
     def test_orphan_cleanup_event(self, state):
         from aim import event_log
         from aim.manager import _cleanup_orphaned_processes

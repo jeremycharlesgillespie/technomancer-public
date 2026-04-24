@@ -92,7 +92,7 @@ def chat(
     model: str,
     timeout: int = 60,
     options: dict[str, Any] | None = None,
-    keep_alive: str | int = "24h",
+    keep_alive: str | int = 0,
     format: str | None = None,
 ) -> str | None:
     """Send a single-turn prompt to local ollama and return the response text.
@@ -106,9 +106,14 @@ def chat(
             not set, we default to :data:`DEFAULT_NUM_CTX` (8192) so the
             model fits fully in VRAM — see the note above.
         keep_alive: How long to keep the model resident after this call.
-            Default ``"24h"`` so classification workers don't pay the
-            ~30s reload cost. Use ``-1`` for indefinite, ``0`` to force
-            immediate unload.
+            Default ``0`` — unload immediately. This prevents classification
+            models (brain, splitter, karen, web_search) from sitting in
+            memory and evicting the long-running OllamaCoder on
+            memory-constrained machines (e.g. 36GB M-series unified).
+            OllamaCoder pins itself with ``keep_alive=-1`` and should not
+            be displaced by a one-shot classification call that finished
+            seconds ago. Pass ``-1`` for indefinite, ``"24h"`` or similar
+            to keep resident on machines with ample VRAM.
 
     Returns:
         Response text, or ``None`` on any failure. Never raises.

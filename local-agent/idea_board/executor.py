@@ -1795,12 +1795,16 @@ def execute_idea(
 
         Falls back to single-pass if exploration fails.
         """
-        binary = _find_claude_binary()
-        if not binary:
-            state.log("ERROR: Claude Code binary not found")
-            mark_failed(idea_id, "Claude Code binary not found")
-            _active.pop(idea_id, None)
-            return
+        # Claude Code binary is only needed for the 'claude' backend.
+        # The 'ollama' backend uses OllamaCoder (pure Python + HTTP) and
+        # does not shell out to claude.exe at all, so skip the precheck.
+        if settings.aiw_worker_backend == "claude":
+            binary = _find_claude_binary()
+            if not binary:
+                state.log("ERROR: Claude Code binary not found")
+                mark_failed(idea_id, "Claude Code binary not found")
+                _active.pop(idea_id, None)
+                return
 
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)

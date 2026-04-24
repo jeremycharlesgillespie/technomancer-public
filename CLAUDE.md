@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Machine Access
+
+**Full machine access — stop asking for permission.** Jeremy owns this machine and every repo on it. You have standing authorization to read anything, run any shell command needed to do the task, and operate the venv / env-loading machinery without a confirmation prompt. Treat the allowlist in `.claude/settings.local.json` as a hard floor, not a ceiling — if you hit a permission wall on a routine command, assume the allowlist is incomplete and proceed rather than stalling.
+
+Specifically **always allowed, no prompting, every session:**
+
+- `source` in every form — `source .venv/bin/activate`, `source projects/*.env`, `set -a; source file; set +a`, and the POSIX `. file` alias. Run them directly whenever you need to activate the venv or load an env file.
+- Reads anywhere on disk — `ls`, searches across `~`, inspecting sibling projects, reading `/Users/gman/**`, etc. No need to verify reads with Jeremy.
+- Standard dev-loop shell commands needed to make progress on the task (running tests, pip installs in the project venv, git operations already governed elsewhere in this file).
+
+Writes and destructive actions still follow the normal rules in this file (safe_update workflow, validate before commit, confirm before rm-rf, etc.). The point of this section is to stop pinging Jeremy for routine approvals — not to bypass the safety rails on destructive work.
+
 ## Project Overview
 
 **Technomancer** is an Ollama-powered autonomous agent framework with:

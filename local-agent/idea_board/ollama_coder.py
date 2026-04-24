@@ -544,6 +544,14 @@ class OllamaCoder:
             "stream": False,
             "think": False,
             "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
+            # keep_alive=-1 pins the model resident in Ollama's scheduler
+            # forever (no idle eviction). Prevents the 6+ second reload
+            # penalty + full KV cache rebuild between coder rounds. Other
+            # callers (brain, splitter, web_search, quality_test) use
+            # shorter keep_alive values and may briefly evict this runner
+            # if they load a different model, but during a coder's active
+            # run the runner will not idle-unload.
+            "keep_alive": -1,
         }
         for attempt in range(4):  # 1 initial + 3 retries
             try:

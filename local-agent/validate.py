@@ -22,6 +22,7 @@ Usage:
 
 import ast
 import importlib
+import os
 import subprocess
 import sys
 import time
@@ -31,6 +32,18 @@ AGENT_DIR = Path(__file__).parent / "agent"
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
 SKIP = "\033[93mSKIP\033[0m"
+
+
+def _skip_discord_startup() -> bool:
+    """True when the environment opts out of the Discord-bot startup check.
+
+    Read from SKIP_DISCORD_STARTUP in os.environ rather than from
+    ``agent.config.settings`` — validate.py runs before deps may be
+    installed, and importing the Settings model would be heavier than the
+    check warrants. Treat the usual ``1/true/yes/on`` values as truthy.
+    """
+    raw = os.environ.get("SKIP_DISCORD_STARTUP", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def check_syntax() -> list[str]:
@@ -140,10 +153,20 @@ def check_startup() -> list[str]:
 
     Catches: crashes on startup, missing config, Discord auth failures,
     anything that kills the process immediately.
+
+    When ``SKIP_DISCORD_STARTUP`` is truthy (set by machines that don't
+    host the Discord bot — e.g. a Mac running only AIM/AIMM/AIV), this
+    check is reported as skipped rather than failed.
     """
     print("\n" + "=" * 60)
     print("LEVEL 4: STARTUP CHECK")
     print("=" * 60)
+
+    if _skip_discord_startup():
+        print(f"  [{SKIP}] Discord bot startup skipped (SKIP_DISCORD_STARTUP is set)")
+        print("         This machine does not host the Discord bot. Level 4")
+        print("         will be validated on a bot-hosting machine before deploy.")
+        return []
 
     errors = []
     try:
