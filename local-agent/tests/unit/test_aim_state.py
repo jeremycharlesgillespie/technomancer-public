@@ -128,6 +128,19 @@ class TestAIMState:
         assert state.cycle_count == 0
         assert state.worker.status == "idle"
 
+    def test_clean_shutdown_default_false(self):
+        state = AIMState()
+        assert state.clean_shutdown is False
+
+    def test_clean_shutdown_round_trip(self):
+        state = AIMState(clean_shutdown=True)
+        restored = AIMState.from_dict(state.to_dict())
+        assert restored.clean_shutdown is True
+
+    def test_clean_shutdown_missing_key_defaults_false(self):
+        state = AIMState.from_dict({"manager_pid": 1, "cycle_count": 7})
+        assert state.clean_shutdown is False
+
 
 # ---------------------------------------------------------------------------
 # Persistence tests

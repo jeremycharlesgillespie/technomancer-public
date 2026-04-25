@@ -1276,3 +1276,87 @@ class TestRecoverOrphanInProgress:
             _recover_orphan_in_progress(state)
 
         mock_api.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Clean-shutdown / cooldown-on-clean-stop fix
+# ---------------------------------------------------------------------------
+
+class TestApplyCleanShutdownReset:
+    """Verifies the fix for the 5-min cooldown after a normal `aim stop`.
+
+    Reproducer for the original bug: aim.log showed five consecutive
+    cooldowns in 24h, all firing right after `Manager started` — the
+    previous user-initiated SIGTERM left the worker dead, but the
+    consecutive_failures counter persisted across restarts and
+    crossed the cooldown threshold within seconds.
+    """
+
+    def test_reset_when_clean_shutdown_true(self):
+        from aim.manager import _apply_clean_shutdown_reset
+
+        state = AIMState(
+            worker=WorkerState(consecutive_failures=3),
+            clean_shutdown=True,
+        )
+
+        applied = _apply_clean_shutdown_reset(state)
+
+        assert applied is True
+        assert state.worker.consecutive_failures == 0
+        assert state.clean_shutdown is False
+
+    def test_no_reset_when_clean_shutdown_false(self):
+        """A crash-restart (clean_shutdown=False) must keep the counter."""
+        from aim.manager import _apply_clean_shutdown_reset
+
+        state = AIMState(
+            worker=WorkerState(consecutive_failures=2),
+            clean_shutdown=False,
+        )
+
+        applied = _apply_clean_shutdown_reset(state)
+
+        assert applied is False
+        assert state.worker.consecutive_failures == 2
+        assert state.clean_shutdown is False
+
+    def test_reset_clears_flag_even_if_counter_already_zero(self):
+        """The flag itself must always be cleared so it doesn't leak."""
+        from aim.manager import _apply_clean_shutdown_reset
+
+        state = AIMState(
+            worker=WorkerState(consecutive_failures=0),
+            clean_shutdown=True,
+        )
+
+        applied = _apply_clean_shutdown_reset(state)
+
+        assert applied is True
+        assert state.worker.consecutive_failures == 0
+        assert state.clean_shutdown is False
+
+    def test_reset_persists_across_save_load(self):
+        """End-to-end: simulate clean stop -> startup using real state file."""
+        from aim.manager import _apply_clean_shutdown_reset
+        from aim.state import load_state, save_state
+
+        # Simulate the state left behind by a graceful shutdown
+        prior = AIMState(
+            worker=WorkerState(consecutive_failures=4, pid=None, status="dead"),
+            clean_shutdown=True,
+        )
+        save_state(prior)
+
+        # Simulate next startup: load + apply reset + save
+        startup_state = load_state()
+        assert startup_state.clean_shutdown is True
+        assert startup_state.worker.consecutive_failures == 4
+
+        _apply_clean_shutdown_reset(startup_state)
+        save_state(startup_state)
+
+        # And a subsequent load must see the cleared values
+        next_load = load_state()
+        assert next_load.clean_shutdown is False
+        assert next_load.worker.consecutive_failures == 0
