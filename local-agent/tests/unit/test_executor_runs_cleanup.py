@@ -300,6 +300,32 @@ class TestEdgeCases:
         assert dirs_removed == 0
         assert bytes_freed == 0
 
+    def test_handles_flat_done_files(self, _isolate_db):
+        """Test that flat .done files are properly handled in artifact cleanup.
+        
+        This test validates the behavior with .done files, which are another
+        common flat file type in the system.
+        """
+        logs_dir = _isolate_db
+        started = datetime.now() - timedelta(days=45)
+        run_id = "test-done-file"
+        _seed_run(started, run_id, "TK-1")
+        
+        # Create a flat .done file directly
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        # Verify file exists before cleanup
+        assert done_file.exists()
+        
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, keep_last_n=0
+        )
+
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert not done_file.exists()
+
 
 # =========================================================================
 # Scheduler
