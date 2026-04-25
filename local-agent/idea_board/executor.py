@@ -398,6 +398,18 @@ class ExecutionState:
 # Active executions: idea_id -> ExecutionState
 _active: dict[str, ExecutionState] = {}
 
+# Active A/B orchestrator states: idea_id -> ExecutionState
+#
+# The A/B harness in idea_board/ab_executor.py holds an outer ExecutionState for
+# the whole run while the inner per-model attempts each take a turn occupying
+# ``_active[idea_id]``. We can't store the orchestrator state in ``_active``
+# because the inner ``execute_idea`` call deletes/overwrites that slot during
+# its own lifecycle — leaving ``watch_execution`` (which polls
+# ``get_execution(idea_id)``) seeing ``None`` and giving up. Keeping the
+# orchestrator state in a separate dict lets ``get_execution`` fall back to it
+# whenever the inner slot is transiently empty.
+_ab_orchestrator_active: dict[str, ExecutionState] = {}
+
 
 def _append_execution_log_line(idea_id: str, line: str) -> None:
     """Append ``line + "\\n"`` to ``execution_logs/<idea_id>.log``.
@@ -486,9 +498,20 @@ def get_execution(idea_id: str) -> ExecutionState | None:
         idea_id: The idea ID
 
     Returns:
-        ExecutionState if executing, None otherwise
+        ExecutionState if executing, None otherwise.
+
+    Notes:
+        Falls back to the A/B orchestrator registry when the inner ``_active``
+        slot is empty. During an A/B run the inner per-model attempts churn
+        ``_active[idea_id]`` (set on attempt start, popped on attempt end), so
+        callers polling for the overall run status would otherwise see ``None``
+        between attempts. The orchestrator's own state lives in
+        ``_ab_orchestrator_active`` for the full duration of the A/B run.
     """
-    return _active.get(idea_id)
+    state = _active.get(idea_id)
+    if state is not None:
+        return state
+    return _ab_orchestrator_active.get(idea_id)
 
 
 def is_any_executing() -> bool:

@@ -47,6 +47,7 @@ from typing import Any
 from agent.aiv_schema import SCORE_COLUMNS
 from idea_board.executor import (
     ExecutionState,
+    _ab_orchestrator_active,
     _active,
     execute_idea,
     mark_done,
@@ -416,11 +417,16 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
     if idea is None:
         return None
 
+    # The inner per-attempt runs touch ``_active`` themselves, so we keep the
+    # orchestrator's outer state in a sibling registry. ``get_execution`` falls
+    # back to it when the inner slot is transiently empty between attempts.
+    if idea_id in _ab_orchestrator_active and _ab_orchestrator_active[idea_id].is_alive:
+        return _ab_orchestrator_active[idea_id]
     if idea_id in _active and _active[idea_id].is_alive:
         return _active[idea_id]
 
     state = ExecutionState(idea_id=idea_id)
-    _active[idea_id] = state
+    _ab_orchestrator_active[idea_id] = state
     mark_executing(idea_id)
 
     project_root = (
@@ -646,6 +652,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 state.log(f"[AB] unloading model B ({model_b}) at run end")
                 _unload_ollama_model(model_b)
             _active.pop(idea_id, None)
+            _ab_orchestrator_active.pop(idea_id, None)
 
     thread = threading.Thread(target=_run, daemon=True, name=f"ab-executor-{idea_id}")
     thread.start()

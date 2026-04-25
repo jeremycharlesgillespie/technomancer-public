@@ -247,7 +247,12 @@ class TestExecuteAssignedIdea:
     @patch("aim.state.update_worker_status")
     @patch("aim.worker.time.sleep")
     def test_full_success(self, mock_sleep, mock_status, mock_any, mock_clean,
-                          mock_execute, mock_watch):
+                          mock_execute, mock_watch, monkeypatch):
+        # The worker routes to execute_idea_ab when AIW_AB_TEST is on; this
+        # test pins the non-A/B path so the mock on execute_idea actually fires.
+        from agent import config as _config
+        monkeypatch.setattr(_config.settings, "aiw_ab_test_enabled", False, raising=False)
+
         fake_state = FakeExecutionState()
         mock_execute.return_value = fake_state
         mock_watch.return_value = WatchResult(success=True, summary="Done")
@@ -280,7 +285,12 @@ class TestExecuteAssignedIdea:
     @patch("aim.state.update_worker_status")
     @patch("aim.worker.time.sleep")
     def test_handles_execute_returning_none(self, mock_sleep, mock_status,
-                                            mock_any, mock_clean, mock_execute):
+                                            mock_any, mock_clean, mock_execute,
+                                            monkeypatch):
+        # Pin the non-A/B path so execute_idea (not execute_idea_ab) is called.
+        from agent import config as _config
+        monkeypatch.setattr(_config.settings, "aiw_ab_test_enabled", False, raising=False)
+
         result = execute_assigned_idea("idea-001")
         assert result.success is False
         assert "None" in result.summary

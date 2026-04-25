@@ -373,3 +373,96 @@ def test_unload_helper_swallows_network_errors(monkeypatch) -> None:
 
     monkeypatch.setattr(_requests, "post", boom)
     assert ab_executor._unload_ollama_model("foo:bar") is False
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator state visibility — get_execution must see the A/B state
+# even while the inner per-attempt run is owning ``_active``.
+# ---------------------------------------------------------------------------
+
+def test_get_execution_finds_orchestrator_state_during_run(
+    fake_idea_provider, patch_settings,
+) -> None:
+    """While the orchestrator is mid-run, ``get_execution(idea_id)`` must
+    return the orchestrator's ``ExecutionState`` so callers like
+    ``aim.worker.watch_execution`` don't get ``None`` between inner attempts.
+
+    Why: the inner ``execute_idea`` calls churn ``_active[idea_id]`` (set on
+    start, popped in their own ``finally``). Before the orchestrator fix,
+    that left a window where neither dict held the state and the worker
+    aborted with "No execution state found" within seconds of routing.
+    """
+    from idea_board import executor as _executor
+
+    saw_state_during_run: list[bool] = []
+
+    real_do_attempt = ab_executor._do_attempt
+
+    def spy_do_attempt(idea_id, **kwargs):
+        # During an inner attempt, _active is owned by the inner run; the
+        # orchestrator's state must still be discoverable via the new fallback.
+        seen = _executor.get_execution(idea_id)
+        saw_state_during_run.append(seen is not None)
+        return _make_attempt_mock(success=True, branch="br-a", sha="aaaaaaa")
+
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    patches["_do_attempt"] = patch.object(
+        ab_executor, "_do_attempt", side_effect=spy_do_attempt,
+    )
+
+    state, _mocks = _run_with_patches("TK-STATE-1", patches)
+
+    assert state is not None
+    # Spy ran twice (once per attempt), and both times get_execution
+    # returned a non-None state.
+    assert len(saw_state_during_run) == 2
+    assert all(saw_state_during_run)
+
+
+def test_orchestrator_state_cleaned_up_after_run(
+    fake_idea_provider, patch_settings,
+) -> None:
+    """After the orchestrator's thread joins, the orchestrator registry
+    must be empty for the idea so a subsequent run starts fresh."""
+    from idea_board import executor as _executor
+
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    state, _mocks = _run_with_patches("TK-STATE-2", patches)
+
+    assert state is not None
+    # Both registries should be cleared.
+    assert "TK-STATE-2" not in _executor._ab_orchestrator_active
+    assert "TK-STATE-2" not in _executor._active
+    assert _executor.get_execution("TK-STATE-2") is None
+
+
+def test_orchestrator_uses_ab_registry_not_active(
+    fake_idea_provider, patch_settings,
+) -> None:
+    """The orchestrator must register its state in ``_ab_orchestrator_active``,
+    not in ``_active`` — otherwise the inner ``execute_idea`` call would
+    overwrite it on the dedup-and-set line and the orchestrator's outer
+    state would be silently lost."""
+    from idea_board import executor as _executor
+
+    captured: dict[str, object] = {}
+
+    real_do_attempt = ab_executor._do_attempt
+
+    def spy_do_attempt(idea_id, **kwargs):
+        # Snapshot which dict holds the orchestrator's state when an inner
+        # attempt is about to begin.
+        captured["in_ab_registry"] = idea_id in _executor._ab_orchestrator_active
+        captured["in_active_at_attempt_start"] = idea_id in _executor._active
+        return _make_attempt_mock(success=True, branch="br-a", sha="aaaaaaa")
+
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    patches["_do_attempt"] = patch.object(
+        ab_executor, "_do_attempt", side_effect=spy_do_attempt,
+    )
+
+    _state, _mocks = _run_with_patches("TK-STATE-3", patches)
+
+    assert captured["in_ab_registry"] is True
+    # The inner attempt is mocked, so _active is never touched in this test.
+    assert captured["in_active_at_attempt_start"] is False
