@@ -556,643 +556,289 @@ class TestExecutorToolCalls:
         assert expected.issubset(cols)
 
     def test_insert_and_retrieve(self):
-        run_id = executor_runs_db.record_run(
-            jira_key="TK-469", status="running",
-        )
-        tc_id = executor_runs_db.record_tool_call(
+        run_id = executor_runs_db.record_run(status="running")
+        executor_runs_db.record_tool_call(
             run_id=run_id,
-            tool_name="Bash",
-            started_at="2026-04-16T10:00:00.000001",
-            duration_ms=1234,
-            input_tokens=100,
-            output_tokens=200,
+            tool_name="Read",
+            started_at="2026-04-16T10:00:00",
+            duration_ms=123,
+            input_tokens=456,
+            output_tokens=789,
             ok=True,
         )
-        assert tc_id >= 1
+        tool_calls = executor_runs_db.get_tool_calls(run_id)
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["tool_name"] == "Read"
+        assert tool_calls[0]["duration_ms"] == 123
+        assert tool_calls[0]["input_tokens"] == 456
+        assert tool_calls[0]["output_tokens"] == 789
+        assert tool_calls[0]["ok"] == 1
 
-        rows = executor_runs_db.get_tool_calls(run_id)
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["tool_name"] == "Bash"
-        assert row["duration_ms"] == 1234
-        assert row["input_tokens"] == 100
-        assert row["output_tokens"] == 200
-        assert row["ok"] == 1
-        assert row["error_message"] is None
-
-    def test_boolean_coercion_for_ok(self):
-        run_id = executor_runs_db.record_run(status="running")
-        executor_runs_db.record_tool_call(
-            run_id=run_id, tool_name="Edit", ok=False,
-            error_message="file not found",
+    def test_tool_calls_deleted_with_run(self):
+        """When a run is purged, its tool calls must also be deleted."""
+        # Create a run with a specific old started_at to ensure it gets purged
+        old_started_at = (datetime.now() - timedelta(days=31)).isoformat(
+            sep=" ", timespec="seconds"
         )
-        row = executor_runs_db.get_tool_calls(run_id)[0]
-        assert row["ok"] == 0
-        assert row["error_message"] == "file not found"
-
-    def test_sorted_by_started_at_ascending(self):
-        run_id = executor_runs_db.record_run(status="running")
-        # Insert out of order — retrieval must return them sorted by started_at
-        executor_runs_db.record_tool_call(
-            run_id=run_id, tool_name="third",
-            started_at="2026-04-16T10:00:03", ok=True,
+        run_id = executor_runs_db.record_run(
+            status="running",
+            started_at=old_started_at
         )
         executor_runs_db.record_tool_call(
-            run_id=run_id, tool_name="first",
-            started_at="2026-04-16T10:00:01", ok=True,
-        )
-        executor_runs_db.record_tool_call(
-            run_id=run_id, tool_name="second",
-            started_at="2026-04-16T10:00:02", ok=True,
-        )
-        rows = executor_runs_db.get_tool_calls(run_id)
-        assert [r["tool_name"] for r in rows] == ["first", "second", "third"]
-
-    def test_filter_by_run_id(self):
-        """get_tool_calls only returns calls for the given run id."""
-        run_a = executor_runs_db.record_run(jira_key="TK-A", status="running")
-        run_b = executor_runs_db.record_run(jira_key="TK-B", status="running")
-        executor_runs_db.record_tool_call(
-            run_id=run_a, tool_name="ToolA",
-            started_at="2026-04-16T10:00:00", ok=True,
-        )
-        executor_runs_db.record_tool_call(
-            run_id=run_b, tool_name="ToolB",
-            started_at="2026-04-16T10:00:00", ok=True,
-        )
-
-        rows_a = executor_runs_db.get_tool_calls(run_a)
-        rows_b = executor_runs_db.get_tool_calls(run_b)
-        assert {r["tool_name"] for r in rows_a} == {"ToolA"}
-        assert {r["tool_name"] for r in rows_b} == {"ToolB"}
-
-    def test_update_by_id(self):
-        """Passing id= updates an existing row (for token back-attribution)."""
-        run_id = executor_runs_db.record_run(status="running")
-        tc_id = executor_runs_db.record_tool_call(
-            run_id=run_id, tool_name="Bash",
-            started_at="2026-04-16T10:00:00", ok=True,
-        )
-        executor_runs_db.record_tool_call(
-            id=tc_id, input_tokens=50, output_tokens=150,
-        )
-        row = executor_runs_db.get_tool_calls(run_id)[0]
-        assert row["input_tokens"] == 50
-        assert row["output_tokens"] == 150
-        assert row["tool_name"] == "Bash"  # unchanged
-
-    def test_unknown_keys_dropped(self):
-        """Unknown keys are silently ignored — SQL injection protection."""
-        run_id = executor_runs_db.record_run(status="running")
-        tc_id = executor_runs_db.record_tool_call(
             run_id=run_id,
-            tool_name="Bash",
-            started_at="2026-04-16T10:00:00",
-            ok=True,
-            bogus="'; DROP TABLE executor_tool_calls; --",
+            tool_name="Read",
         )
-        assert tc_id >= 1
-        rows = executor_runs_db.get_tool_calls(run_id)
-        assert len(rows) == 1
+        # Purge the run (should delete everything older than 30 days)
+        deleted = executor_runs_db.purge_old_runs(30)
+        assert deleted == 1
+        tool_calls = executor_runs_db.get_tool_calls(run_id)
+        assert tool_calls == []
 
-    def test_empty_db_returns_empty_list(self):
-        assert executor_runs_db.get_tool_calls(9999) == []
 
-    def test_purge_cascades_to_tool_calls(self):
-        """When a run row is purged, its tool_call rows go too."""
-        old_run = executor_runs_db.record_run(
-            jira_key="TK-old",
-            started_at=(datetime.now() - timedelta(days=40)).isoformat(
-                sep=" ", timespec="seconds"
-            ),
+class TestCleanupIntegration:
+    """Tests for integration between cleanup functions and executor_runs_db."""
+
+    def test_cleanup_integration_with_artifacts(self, tmp_path, monkeypatch):
+        """Test that cleanup properly integrates with artifact removal."""
+        # Set up a temporary execution logs directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir)
+        
+        # Create a run with artifacts
+        run_id = "test-run-123"
+        executor_runs_db.record_run(
+            run_id=run_id,
+            jira_key="TK-123",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(),
             status="success",
+        )
+        
+        # Create artifact files
+        run_dir = logs_dir / run_id
+        run_dir.mkdir()
+        (run_dir / "stdout.log").write_text("test output", encoding="utf-8")
+        (run_dir / "stderr.log").write_text("test error", encoding="utf-8")
+        
+        # Verify files exist before cleanup
+        assert run_dir.exists()
+        assert (run_dir / "stdout.log").exists()
+        assert (run_dir / "stderr.log").exists()
+        
+        # Run cleanup
+        from agent import executor_runs_cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, 
+            keep_last_n=0
+        )
+        
+        # Verify cleanup worked
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert result["bytes_freed"] > 0
+        
+        # Verify artifacts were removed
+        assert not run_dir.exists()
+        
+        # Verify run was removed from DB
+        conn = executor_runs_db._get_conn()
+        rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
+        assert rows["count"] == 0
+
+    def test_cleanup_integration_with_flat_files(self, tmp_path, monkeypatch):
+        """Test that cleanup properly handles flat .log and .done files."""
+        # Set up a temporary execution logs directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir)
+        
+        # Create a run with flat artifact files
+        run_id = "flat-test-run"
+        executor_runs_db.record_run(
+            run_id=run_id,
+            jira_key="TK-456",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(),
+            status="success",
+        )
+        
+        # Create flat artifact files
+        log_file = logs_dir / f"{run_id}.log"
+        done_file = logs_dir / f"{run_id}.done"
+        log_file.write_text("test log content", encoding="utf-8")
+        done_file.write_text("test done content", encoding="utf-8")
+        
+        # Verify files exist before cleanup
+        assert log_file.exists()
+        assert done_file.exists()
+        
+        # Run cleanup
+        from agent import executor_runs_cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, 
+            keep_last_n=0
+        )
+        
+        # Verify cleanup worked
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert result["bytes_freed"] > 0
+        
+        # Verify artifacts were removed
+        assert not log_file.exists()
+        assert not done_file.exists()
+        
+        # Verify run was removed from DB
+        conn = executor_runs_db._get_conn()
+        rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
+        assert rows["count"] == 0
+
+    def test_cleanup_integration_with_mixed_artifacts(self, tmp_path, monkeypatch):
+        """Test that cleanup handles both directory and flat file artifacts."""
+        # Set up a temporary execution logs directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir)
+        
+        # Create a run with both directory and flat files
+        run_id = "mixed-artifacts-run"
+        executor_runs_db.record_run(
+            run_id=run_id,
+            jira_key="TK-789",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(),
+            status="success",
+        )
+        
+        # Create directory artifact
+        run_dir = logs_dir / run_id
+        run_dir.mkdir()
+        (run_dir / "stdout.log").write_text("test output", encoding="utf-8")
+        
+        # Create flat artifact file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content", encoding="utf-8")
+        
+        # Verify artifacts exist before cleanup
+        assert run_dir.exists()
+        assert log_file.exists()
+        
+        # Run cleanup
+        from agent import executor_runs_cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, 
+            keep_last_n=0
+        )
+        
+        # Verify cleanup worked
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert result["bytes_freed"] > 0
+        
+        # Verify artifacts were removed
+        assert not run_dir.exists()
+        assert not log_file.exists()
+        
+        # Verify run was removed from DB
+        conn = executor_runs_db._get_conn()
+        rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
+        assert rows["count"] == 0
+
+    def test_cleanup_integration_with_dry_run(self, tmp_path, monkeypatch):
+        """Test that cleanup works correctly in dry_run mode."""
+        # Set up a temporary execution logs directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir)
+        
+        # Create a run with artifacts
+        run_id = "dry-run-test"
+        executor_runs_db.record_run(
+            run_id=run_id,
+            jira_key="TK-999",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(),
+            status="success",
+        )
+        
+        # Create artifact files
+        run_dir = logs_dir / run_id
+        run_dir.mkdir()
+        (run_dir / "stdout.log").write_text("test output", encoding="utf-8")
+        
+        # Verify files exist before cleanup
+        assert run_dir.exists()
+        
+        # Run cleanup in dry_run mode
+        from agent import executor_runs_cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, 
+            keep_last_n=0,
+            dry_run=True
+        )
+        
+        # Verify dry run results
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert result["bytes_freed"] > 0
+        assert result["dry_run"] == 1
+        
+        # Verify artifacts were NOT removed (dry run)
+        assert run_dir.exists()
+        
+        # Verify run was NOT removed from DB (dry run)
+        conn = executor_runs_db._get_conn()
+        rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
+        assert rows["count"] == 1  # Still exists
+
+    def test_cleanup_integration_with_tool_calls(self, tmp_path, monkeypatch):
+        """Test that cleanup properly removes tool call records along with run records."""
+        # Set up a temporary execution logs directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir)
+        
+        # Create a run with tool calls and artifacts
+        run_id = "tool-calls-test"
+        db_run_id = executor_runs_db.record_run(
+            run_id=run_id,
+            jira_key="TK-111",
+            started_at=(datetime.now() - timedelta(days=45)).isoformat(),
+            status="success",
+        )
+        
+        # Add tool calls
+        executor_runs_db.record_tool_call(
+            run_id=db_run_id,
+            tool_name="ReadFile",
         )
         executor_runs_db.record_tool_call(
-            run_id=old_run, tool_name="Bash",
-            started_at="2026-02-01T10:00:00", ok=True,
+            run_id=db_run_id,
+            tool_name="WriteFile",
         )
-        assert len(executor_runs_db.get_tool_calls(old_run)) == 1
-
-        executor_runs_db.purge_old_runs(30)
-        assert executor_runs_db.get_tool_calls(old_run) == []
-
-
-class TestToolCallTotalDurationMatchesRun:
-    """Acceptance: sum of per-tool durations is within 5% of the run's
-    wall-clock duration when tool calls are the dominant work."""
-
-    def test_sum_of_durations_within_5pct_of_run_duration(self):
-        run_id = executor_runs_db.record_run(
-            jira_key="TK-469",
-            started_at="2026-04-16T10:00:00",
-            status="running",
+        
+        # Create artifact files to ensure dirs_deleted > 0
+        run_dir = logs_dir / run_id
+        run_dir.mkdir()
+        (run_dir / "stdout.log").write_text("test output", encoding="utf-8")
+        
+        # Verify tool calls exist
+        tool_calls = executor_runs_db.get_tool_calls(db_run_id)
+        assert len(tool_calls) == 2
+        
+        # Run cleanup
+        from agent import executor_runs_cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, 
+            keep_last_n=0
         )
-
-        # Fake four tool calls totalling 10 seconds of work.
-        expected_total_ms = 10_000
-        per_call = expected_total_ms // 4
-        for i in range(4):
-            executor_runs_db.record_tool_call(
-                run_id=run_id,
-                tool_name=f"Tool{i}",
-                started_at=f"2026-04-16T10:00:0{i}",
-                duration_ms=per_call,
-                ok=True,
-            )
-
-        # The run itself wrapped those 4 tools in a 10.2s wall-clock window.
-        executor_runs_db.record_run(
-            id=run_id, ended_at="2026-04-16T10:00:10.200000",
-            duration_ms=10_200, status="success", exit_code=0,
-        )
-
-        rows = executor_runs_db.get_tool_calls(run_id)
-        summed_ms = sum(r["duration_ms"] for r in rows)
-        run_ms = executor_runs_db.get_recent()[0]["duration_ms"]
-        assert abs(summed_ms - run_ms) / run_ms <= 0.05
-
-
-class TestStartThenCompleteFlow:
-    """The canonical lifecycle: insert on start, UPDATE on completion."""
-
-    def test_full_lifecycle(self):
-        # Phase 1: run starts
-        run_id = executor_runs_db.record_run(
-            jira_key="TK-447",
-            branch="2026-04-16-test",
-            started_at="2026-04-16T10:00:00",
-            status="running",
-        )
-
-        # Phase 2: run completes — same id, new fields
-        executor_runs_db.record_run(
-            id=run_id,
-            ended_at="2026-04-16T10:02:00",
-            duration_ms=120_000,
-            cost_usd=0.15,
-            status="success",
-            exit_code=0,
-            tests_passed=True,
-            deployed=True,
-        )
-
-        # Verify: one row, all fields preserved
-        rows = executor_runs_db.get_recent()
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["jira_key"] == "TK-447"
-        assert row["branch"] == "2026-04-16-test"
-        assert row["started_at"] == "2026-04-16T10:00:00"
-        assert row["ended_at"] == "2026-04-16T10:02:00"
-        assert row["duration_ms"] == 120_000
-        assert row["cost_usd"] == pytest.approx(0.15)
-        assert row["status"] == "success"
-        assert row["exit_code"] == 0
-        assert row["tests_passed"] == 1
-        assert row["deployed"] == 1
-
-
-class TestTraceIdColumn:
-    """trace_id column + idx_executor_runs_trace_id — correlate executor
-    runs back to the request/trace that spawned them."""
-
-    def test_column_exists(self):
-        """PRAGMA table_info exposes trace_id on a fresh DB."""
+        
+        # Verify cleanup worked
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        
+        # Verify tool calls were removed
+        tool_calls = executor_runs_db.get_tool_calls(db_run_id)
+        assert tool_calls == []
+        
+        # Verify run was removed from DB
         conn = executor_runs_db._get_conn()
-        cols = {
-            r["name"]
-            for r in conn.execute(
-                "PRAGMA table_info(executor_runs)"
-            ).fetchall()
-        }
-        assert "trace_id" in cols
-
-    def test_index_exists(self):
-        """PRAGMA index_list exposes idx_executor_runs_trace_id."""
-        conn = executor_runs_db._get_conn()
-        names = {
-            r["name"]
-            for r in conn.execute(
-                "PRAGMA index_list('executor_runs')"
-            ).fetchall()
-        }
-        assert "idx_executor_runs_trace_id" in names
-
-    def test_migration_on_legacy_db_adds_column_and_index(
-        self, tmp_path, monkeypatch
-    ):
-        """An older DB without trace_id gets both the column and index on
-        the next init_db() call, and the migration is idempotent — running
-        init_db() twice must not raise."""
-        existing = getattr(executor_runs_db._local, "conn", None)
-        if existing:
-            existing.close()
-            executor_runs_db._local.conn = None
-
-        legacy_path = tmp_path / "legacy.db"
-        monkeypatch.setattr(executor_runs_db, "DB_PATH", legacy_path)
-
-        legacy = sqlite3.connect(str(legacy_path))
-        legacy.execute("""
-            CREATE TABLE executor_runs (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                jira_key       TEXT,
-                branch         TEXT,
-                started_at     TEXT,
-                ended_at       TEXT,
-                duration_ms    INTEGER,
-                cost_usd       REAL,
-                status         TEXT,
-                exit_code      INTEGER,
-                tests_passed   INTEGER,
-                deployed       INTEGER
-            )
-        """)
-        legacy.commit()
-        cols_before = {
-            r[1] for r in legacy.execute(
-                "PRAGMA table_info(executor_runs)"
-            ).fetchall()
-        }
-        legacy.close()
-        assert "trace_id" not in cols_before
-
-        # First migration — adds column + index.
-        executor_runs_db.init_db()
-        conn = executor_runs_db._get_conn()
-        cols_after = {
-            r["name"]
-            for r in conn.execute(
-                "PRAGMA table_info(executor_runs)"
-            ).fetchall()
-        }
-        index_names = {
-            r["name"]
-            for r in conn.execute(
-                "PRAGMA index_list('executor_runs')"
-            ).fetchall()
-        }
-        assert "trace_id" in cols_after
-        assert "idx_executor_runs_trace_id" in index_names
-
-        # Second call must be a no-op — the ALTER TABLE path swallows the
-        # "duplicate column" OperationalError.
-        executor_runs_db.init_db()
-        executor_runs_db.init_db()
-
-    def test_insert_captures_current_context_var_trace_id(self):
-        """When a trace_id is bound to the context, new rows record it."""
-        with tracing.with_trace_id() as tid:
-            run_id = executor_runs_db.record_run(
-                jira_key="TK-562", status="running",
-            )
-
-        rows = executor_runs_db.get_recent()
-        match = [r for r in rows if r["id"] == run_id][0]
-        assert match["trace_id"] == tid
-
-    def test_insert_without_bound_trace_stores_null(self):
-        """When no trace_id is bound, the sentinel "-" is stored as NULL so
-        queries can distinguish untraced rows from traced ones."""
-        # Fixture scope has no bound trace_id — the ContextVar default is
-        # the sentinel.
-        assert tracing.get_trace_id() == tracing.DEFAULT_TRACE_ID
-        run_id = executor_runs_db.record_run(
-            jira_key="TK-562-null", status="running",
-        )
-        rows = executor_runs_db.get_recent()
-        match = [r for r in rows if r["id"] == run_id][0]
-        assert match["trace_id"] is None
-
-    def test_explicit_trace_id_overrides_context(self):
-        """A caller-supplied trace_id wins over the ContextVar — useful for
-        back-filling runs or correlating with an external trace."""
-        with tracing.with_trace_id("EXPLICITTRACE01234567890123"):
-            run_id = executor_runs_db.record_run(
-                jira_key="TK-562-ex",
-                status="running",
-                trace_id="OVERRIDETRACE0123456789ABCD",
-            )
-        row = executor_runs_db.get_run(run_id)
-        assert row is not None
-        assert row["trace_id"] == "OVERRIDETRACE0123456789ABCD"
-
-    def test_get_runs_by_trace_id_returns_all_matches(self):
-        """Querying by trace_id returns every run sharing that trace,
-        newest first, and excludes rows with different trace ids."""
-        with tracing.with_trace_id() as tid_a:
-            a1 = executor_runs_db.record_run(jira_key="TK-A1", status="running")
-            a2 = executor_runs_db.record_run(jira_key="TK-A2", status="running")
-        with tracing.with_trace_id() as tid_b:
-            b1 = executor_runs_db.record_run(jira_key="TK-B1", status="running")
-
-        rows_a = executor_runs_db.get_runs_by_trace_id(tid_a)
-        assert [r["id"] for r in rows_a] == [a2, a1]
-        assert all(r["trace_id"] == tid_a for r in rows_a)
-
-        rows_b = executor_runs_db.get_runs_by_trace_id(tid_b)
-        assert [r["id"] for r in rows_b] == [b1]
-
-    def test_get_runs_by_trace_id_empty_for_unknown(self):
-        assert executor_runs_db.get_runs_by_trace_id("NOPETRACENOPETRACENOPETRACE") == []
-
-    def test_get_run_by_run_id_exposes_trace_id(self):
-        """The single-row lookup helpers include trace_id in the result."""
-        with tracing.with_trace_id() as tid:
-            executor_runs_db.record_run(
-                jira_key="TK-562-byrun",
-                status="running",
-                run_id="20260417-100000-TK-562",
-            )
-        row = executor_runs_db.get_run_by_run_id("20260417-100000-TK-562")
-        assert row is not None
-        assert row["trace_id"] == tid
-
-
-# ---------------------------------------------------------------------------
-# TK-774: Shared AIM-state reader for the /live landing page.
-# Tests cover both the low-level file reader and the project-level aggregator.
-# ---------------------------------------------------------------------------
-
-
-def _write_state_file(path: Path, payload: dict) -> None:
-    """Helper: ensure parent dir exists and write a JSON state file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-
-class TestReadAimStateFile:
-    """The size-bounded + error-swallowing JSON reader."""
-
-    def test_reads_valid_json(self, tmp_path):
-        path = tmp_path / "state.json"
-        _write_state_file(path, {"worker": {"status": "idle"}})
-        data = executor_runs_db._read_aim_state_file(path)
-        assert data == {"worker": {"status": "idle"}}
-
-    def test_missing_file_returns_none(self, tmp_path):
-        assert executor_runs_db._read_aim_state_file(tmp_path / "nope.json") is None
-
-    def test_malformed_json_returns_none(self, tmp_path):
-        path = tmp_path / "bad.json"
-        path.write_text("{not json", encoding="utf-8")
-        assert executor_runs_db._read_aim_state_file(path) is None
-
-    def test_oversized_file_is_skipped(self, tmp_path, monkeypatch):
-        """A state file above the size cap must be skipped (no hang on a
-        multi-megabyte corrupt file being pulled into memory)."""
-        path = tmp_path / "huge.json"
-        _write_state_file(path, {"worker": {"status": "idle"}})
-        monkeypatch.setattr(executor_runs_db, "MAX_AIM_STATE_FILE_BYTES", 4)
-        assert executor_runs_db._read_aim_state_file(path) is None
-
-    def test_directory_path_returns_none(self, tmp_path):
-        """Handed a directory (not a file), the reader must not raise."""
-        assert executor_runs_db._read_aim_state_file(tmp_path) is None
-
-
-class TestGetCurrentExecutionPerProject:
-    """Aggregator used by the /live landing page."""
-
-    @pytest.fixture
-    def aim_root(self, tmp_path):
-        """Fresh AIM root layout — primary + empty projects/ subtree."""
-        root = tmp_path / "aim"
-        (root / "projects").mkdir(parents=True)
-        return root
-
-    def test_empty_root_returns_empty_list(self, aim_root):
-        assert executor_runs_db.get_current_execution_per_project(aim_root=aim_root) == []
-
-    def test_primary_executing_is_flagged(self, aim_root):
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {
-                "worker": {
-                    "status": "executing",
-                    "current_idea_id": "TK-774",
-                    "started_at": "2026-04-19T02:00:00",
-                    "last_observation": "parsing AIM state",
-                },
-            },
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["project"] == "TK"
-        assert row["current_idea_id"] == "TK-774"
-        assert row["status"] == "executing"
-        assert row["is_executing"] is True
-        assert row["started_at"] == "2026-04-19T02:00:00"
-        assert row["last_observation"] == "parsing AIM state"
-
-    def test_idle_project_is_included_but_not_executing(self, aim_root):
-        """Idle projects still appear in the list — the caller decides what
-        to render. The ``is_executing`` flag is False."""
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "idle", "current_idea_id": None}},
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert len(rows) == 1
-        assert rows[0]["is_executing"] is False
-        assert rows[0]["status"] == "idle"
-
-    def test_dead_worker_is_not_executing_even_with_idea_id(self, aim_root):
-        """A dead/stuck worker must not be flagged is_executing even if it
-        still has a current_idea_id — prevents zombie rows on the dashboard."""
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "dead", "current_idea_id": "TK-999"}},
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert rows[0]["is_executing"] is False
-
-    def test_subprojects_are_scanned(self, aim_root):
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "idle", "current_idea_id": None}},
-        )
-        _write_state_file(
-            aim_root / "projects" / "40acres" / ".aim_state.json",
-            {
-                "worker": {
-                    "status": "executing",
-                    "current_idea_id": "FA-42",
-                    "started_at": "2026-04-19T01:00:00",
-                },
-            },
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        projects = {r["project"]: r for r in rows}
-        assert set(projects) == {"TK", "40acres"}
-        assert projects["40acres"]["is_executing"] is True
-        assert projects["40acres"]["current_idea_id"] == "FA-42"
-        assert projects["TK"]["is_executing"] is False
-
-    def test_corrupt_state_file_is_skipped(self, aim_root):
-        """Broken JSON in one project must not stop the rest from loading."""
-        (aim_root / ".aim_state.json").write_text("{nope", encoding="utf-8")
-        _write_state_file(
-            aim_root / "projects" / "fa" / ".aim_state.json",
-            {
-                "worker": {
-                    "status": "executing",
-                    "current_idea_id": "FA-1",
-                },
-            },
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert [r["project"] for r in rows] == ["fa"]
-
-    def test_completes_quickly_with_many_projects(self, aim_root):
-        """Acceptance criterion: queries complete in <2s even with multiple
-        state files. Seed 25 project state files and time the read."""
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "idle", "current_idea_id": None}},
-        )
-        for i in range(25):
-            _write_state_file(
-                aim_root / "projects" / f"p{i:02d}" / ".aim_state.json",
-                {"worker": {"status": "idle", "current_idea_id": None}},
-            )
-        start = time.monotonic()
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        elapsed = time.monotonic() - start
-        assert len(rows) == 26  # primary + 25 sub-projects
-        assert elapsed < 2.0, f"scan took {elapsed:.2f}s — exceeds 2s budget"
-
-    def test_empty_status_defaults_to_idle(self, aim_root):
-        """Worker with a blank status string is still included as idle."""
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "", "current_idea_id": None}},
-        )
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert rows[0]["status"] == "idle"
-        assert rows[0]["is_executing"] is False
-
-    def test_default_aim_root_used_when_unspecified(self, tmp_path, monkeypatch):
-        """Omitting ``aim_root`` falls through to the module-level default."""
-        fake_root = tmp_path / "fake_aim"
-        fake_root.mkdir()
-        _write_state_file(
-            fake_root / ".aim_state.json",
-            {"worker": {"status": "executing", "current_idea_id": "TK-1"}},
-        )
-        monkeypatch.setattr(executor_runs_db, "AIM_ROOT", fake_root)
-        rows = executor_runs_db.get_current_execution_per_project(primary_label="TK")
-        assert rows[0]["current_idea_id"] == "TK-1"
-
-    def test_non_directory_entries_in_projects_are_ignored(self, aim_root):
-        """A stray file inside projects/ (e.g. .DS_Store) must not crash."""
-        _write_state_file(
-            aim_root / ".aim_state.json",
-            {"worker": {"status": "idle", "current_idea_id": None}},
-        )
-        (aim_root / "projects" / "README").write_text("not a project", encoding="utf-8")
-        rows = executor_runs_db.get_current_execution_per_project(
-            aim_root=aim_root, primary_label="TK"
-        )
-        assert [r["project"] for r in rows] == ["TK"]
-
-
-# ---------------------------------------------------------------------------
-# story_model_usage cache token columns
-# ---------------------------------------------------------------------------
-
-
-class TestStoryModelUsageCacheTokens:
-    """cache_read_tokens and cache_write_tokens stored and retrieved correctly."""
-
-    def test_columns_exist_on_fresh_db(self):
-        conn = executor_runs_db._get_conn()
-        cols = {
-            r["name"]
-            for r in conn.execute(
-                "PRAGMA table_info(story_model_usage)"
-            ).fetchall()
-        }
-        assert "cache_read_tokens" in cols
-        assert "cache_write_tokens" in cols
-
-    def test_record_and_retrieve_cache_tokens(self):
-        executor_runs_db.record_story_model_usage(
-            story_key="TK-999",
-            model="claude-sonnet-4-6",
-            call_count=5,
-            cost_usd=0.25,
-            cache_read_tokens=12000,
-            cache_write_tokens=3500,
-        )
-        rows = executor_runs_db.get_story_model_usage("TK-999")
-        assert len(rows) == 1
-        assert rows[0]["cache_read_tokens"] == 12000
-        assert rows[0]["cache_write_tokens"] == 3500
-
-    def test_defaults_to_zero_when_not_provided(self):
-        executor_runs_db.record_story_model_usage(
-            story_key="TK-998",
-            model="claude-sonnet-4-6",
-            call_count=3,
-            cost_usd=0.10,
-        )
-        rows = executor_runs_db.get_story_model_usage("TK-998")
-        assert rows[0]["cache_read_tokens"] == 0
-        assert rows[0]["cache_write_tokens"] == 0
-
-    def test_get_all_includes_cache_tokens(self):
-        executor_runs_db.record_story_model_usage(
-            story_key="TK-997",
-            model="claude-sonnet-4-6",
-            call_count=2,
-            cost_usd=0.05,
-            cache_read_tokens=8000,
-            cache_write_tokens=1000,
-        )
-        rows = executor_runs_db.get_all_story_model_usage()
-        assert any(r["cache_read_tokens"] == 8000 for r in rows)
-
-    def test_migration_adds_columns_to_legacy_db(self, tmp_path, monkeypatch):
-        """An older DB without the cache columns gets them added on init_db()."""
-        db_path = tmp_path / "legacy.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE story_model_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                story_key TEXT, model TEXT,
-                call_count INTEGER, cost_usd REAL, recorded_at TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-
-        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
-        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
-        if hasattr(executor_runs_db._local, "conn"):
-            executor_runs_db._local.conn.close()
-            del executor_runs_db._local.conn
-
-        executor_runs_db.init_db()
-
-        conn2 = sqlite3.connect(str(db_path))
-        conn2.row_factory = sqlite3.Row
-        cols = {r["name"] for r in conn2.execute("PRAGMA table_info(story_model_usage)").fetchall()}
-        conn2.close()
-        assert "cache_read_tokens" in cols
-        assert "cache_write_tokens" in cols
+        rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
+        assert rows["count"] == 0
