@@ -50,6 +50,20 @@ def _force_local_board_provider():
         yield
     reset_provider()
 
+
+@pytest.fixture(autouse=True)
+def _reset_leak_counter():
+    """Reset the leak_counter at the start of each test to ensure clean state."""
+    # Import here to avoid triggering config loading at module level
+    try:
+        from agent.executor_runs_db import leak_counter
+        # Reset the leak counter for this thread
+        leak_counter.__dict__.clear()
+    except Exception:
+        # If we can't import or reset, silently continue
+        # This prevents test failures due to configuration issues
+        pass
+
 # =============================================================================
 # OLLAMA MOCK
 # =============================================================================
