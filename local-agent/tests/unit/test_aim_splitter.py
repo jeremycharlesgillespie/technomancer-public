@@ -22,11 +22,14 @@ from aim.splitter import (
     _classify_dedup,
     _collect_done_titles,
     _count_prior_failures,
+    _extract_symbol_refs,
     _get_generation,
     _parse_split_response,
     _pick_relevant_files,
     _propose_splits,
     _should_split,
+    _symbol_exists_in_codebase,
+    _validate_referenced_symbols,
     evaluate_failure,
     scan_and_split,
 )
@@ -1130,3 +1133,211 @@ class TestDedupGuardrailInEvaluateFailure:
         assert not result.fired
         assert result.reason == "dedup_of_done"
         assert call_count["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Symbol-reference guard helpers
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSymbolRefs:
+    def test_extracts_snake_case_with_underscore(self):
+        text = "Add tests for _resolve_flat_artifacts in cleanup module"
+        refs = _extract_symbol_refs(text)
+        assert "_resolve_flat_artifacts" in refs
+
+    def test_extracts_unprefixed_snake_case(self):
+        text = "Refactor verify_git_clean to handle dirty workdir"
+        refs = _extract_symbol_refs(text)
+        assert "verify_git_clean" in refs
+
+    def test_skips_short_identifiers(self):
+        # Under 5 chars — too noisy to be worth checking.
+        text = "Fix x_y handler"
+        refs = _extract_symbol_refs(text)
+        assert "x_y" not in refs
+
+    def test_skips_ignored_generics(self):
+        text = "Convert payload to_dict and is_valid checks"
+        refs = _extract_symbol_refs(text)
+        assert "to_dict" not in refs
+        assert "is_valid" not in refs
+
+    def test_skips_bare_lowercase_words(self):
+        # Single words without underscores would generate way too many
+        # false positives ("test", "fix", "run") — extractor only looks
+        # at multi-segment snake_case.
+        text = "Add tests for cleanup"
+        refs = _extract_symbol_refs(text)
+        assert refs == set()
+
+    def test_handles_empty_text(self):
+        assert _extract_symbol_refs("") == set()
+        assert _extract_symbol_refs(None) == set()
+
+    def test_dedupes_repeated_refs(self):
+        text = "Test verify_git_clean. Then call verify_git_clean again."
+        refs = _extract_symbol_refs(text)
+        # Set semantics: only one entry.
+        assert sum(1 for r in refs if r == "verify_git_clean") == 1
+
+
+class TestSymbolExistsInCodebase:
+    def test_finds_real_function(self, tmp_path):
+        # Set up a fake project structure mirroring _SEARCH_DIRS.
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "real.py").write_text(
+            "def real_function():\n    pass\n", encoding="utf-8",
+        )
+        assert _symbol_exists_in_codebase("real_function", tmp_path) is True
+
+    def test_finds_real_class(self, tmp_path):
+        (tmp_path / "aim").mkdir()
+        (tmp_path / "aim" / "real.py").write_text(
+            "class RealClass:\n    pass\n", encoding="utf-8",
+        )
+        assert _symbol_exists_in_codebase("RealClass", tmp_path) is True
+
+    def test_returns_false_when_missing(self, tmp_path):
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "real.py").write_text(
+            "def real_function():\n    pass\n", encoding="utf-8",
+        )
+        assert _symbol_exists_in_codebase("hallucinated_func", tmp_path) is False
+
+    def test_returns_false_when_search_dirs_missing(self, tmp_path):
+        # No search dirs exist at all — graceful skip, returns False.
+        assert _symbol_exists_in_codebase("anything", tmp_path) is False
+
+    def test_does_not_match_partial_substring(self, tmp_path):
+        # "process_item" should NOT match "process_item_extended" def line.
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "real.py").write_text(
+            "def process_item_extended():\n    pass\n", encoding="utf-8",
+        )
+        # Bare "process_item(" doesn't appear in the file.
+        assert _symbol_exists_in_codebase("process_item", tmp_path) is False
+
+
+class TestValidateReferencedSymbols:
+    def test_passes_when_all_refs_real(self, tmp_path):
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "m.py").write_text(
+            "def helper_func():\n    pass\n", encoding="utf-8",
+        )
+        candidate = ProposedStory(
+            title="Add tests for helper_func",
+            description="Cover edge cases of helper_func",
+        )
+        ok, missing = _validate_referenced_symbols(candidate, tmp_path)
+        assert ok is True
+        assert missing == []
+
+    def test_fails_when_ref_missing(self, tmp_path):
+        (tmp_path / "agent").mkdir()
+        candidate = ProposedStory(
+            title="Add tests for _resolve_flat_artifacts",
+            description="Test the artifact resolver",
+        )
+        ok, missing = _validate_referenced_symbols(candidate, tmp_path)
+        assert ok is False
+        assert "_resolve_flat_artifacts" in missing
+
+    def test_passes_when_no_refs_extracted(self, tmp_path):
+        # Title/description with no qualifying snake_case identifiers.
+        candidate = ProposedStory(
+            title="Refactor for clarity",
+            description="Clean up indentation and docstrings",
+        )
+        ok, missing = _validate_referenced_symbols(candidate, tmp_path)
+        assert ok is True
+        assert missing == []
+
+    def test_partial_misses_listed(self, tmp_path):
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "m.py").write_text(
+            "def real_one():\n    pass\n", encoding="utf-8",
+        )
+        candidate = ProposedStory(
+            title="Add tests for real_one and fake_two",
+            description="Cover both functions",
+        )
+        ok, missing = _validate_referenced_symbols(candidate, tmp_path)
+        assert ok is False
+        assert "fake_two" in missing
+        assert "real_one" not in missing
+
+
+class TestSymbolGuardrailInEvaluateFailure:
+    """Integration: hallucinated symbol refs in a candidate abort the split."""
+
+    def test_hallucinated_symbol_aborts_split(self, provider, monkeypatch, tmp_path):
+        provider.seed(make_item(), comments=failure_comments(1))
+
+        # Empty project root — no symbols exist anywhere.
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {
+                    "title": "Add tests for _resolve_flat_artifacts",
+                    "description": "Cover the resolver edge cases",
+                },
+                {"title": "Other atom", "description": "b"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+        monkeypatch.setattr("aim.splitter._classify_dedup", lambda *a, **kw: (False, "", ""))
+
+        result = evaluate_failure(
+            "TK-100",
+            provider=provider,
+            project_root=tmp_path,
+            claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert not result.fired
+        assert result.reason == "missing_symbol_refs"
+        # Parent kept (veto, not delete).
+        assert provider.get("TK-100") is not None
+        # Veto recorded.
+        assert ("TK-100", "owner", "veto") in provider.votes
+        # Comment names the hallucinated symbol.
+        guard_comments = [
+            c for c in provider.get_comments("TK-100")
+            if "Symbol-ref guard tripped" in c.text
+        ]
+        assert len(guard_comments) == 1
+        assert "_resolve_flat_artifacts" in guard_comments[0].text
+
+    def test_real_symbols_proceed_normally(self, provider, monkeypatch, tmp_path):
+        # Plant a real symbol.
+        (tmp_path / "agent").mkdir()
+        (tmp_path / "agent" / "m.py").write_text(
+            "def real_helper():\n    pass\n", encoding="utf-8",
+        )
+        provider.seed(make_item(), comments=failure_comments(1))
+
+        runner = lambda _p, _t: json.dumps({
+            "splits": [
+                {"title": "Add tests for real_helper", "description": "Cover it"},
+                {"title": "Generic cleanup", "description": "Remove dead code"},
+            ],
+            "rationale": "",
+        })
+        monkeypatch.setattr("aim.splitter._pick_relevant_files", lambda *_a, **_kw: [])
+        monkeypatch.setattr("aim.splitter._classify_dedup", lambda *a, **kw: (False, "", ""))
+
+        result = evaluate_failure(
+            "TK-100",
+            provider=provider,
+            project_root=tmp_path,
+            claude_runner=runner,
+            notifier=lambda *a, **kw: None,
+        )
+
+        assert result.fired
+        assert result.reason == "split_done"
+        # Parent deleted as normal.
+        assert provider.get("TK-100") is None
+        assert ("TK-100", "owner", "veto") not in provider.votes
