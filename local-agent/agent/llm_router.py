@@ -192,6 +192,7 @@ def complete(
     role: Role,
     prompt: str,
     timeout: int = 60,
+    format: str | None = None,
 ) -> str | None:
     """Send ``prompt`` to the LLM configured for this ``role``.
 
@@ -203,18 +204,24 @@ def complete(
     before (optionally) falling back to Claude. This avoids silently
     burning Max-20x quota on transient Ollama hiccups — the backend we
     deliberately chose to offload to.
+
+    Args:
+        format: Optional Ollama ``format`` constraint (e.g. ``"json"``).
+            Only applied when the primary is Ollama; ignored on Claude
+            fallback because Claude doesn't support the same flag and
+            forcing JSON via prompt is the existing convention there.
     """
     primary = _resolve_primary(role)
     fallback = _resolve_fallback()
 
     if primary.startswith("ollama:"):
         tag = primary.split(":", 1)[1]
-        out = ollama_chat(prompt, tag, timeout=timeout)
+        out = ollama_chat(prompt, tag, timeout=timeout, format=format)
         if out is not None:
             return out
         # Retry once before considering this a hard failure.
         logger.info("[llm_router] %s ollama:%s failed, retrying once", role, tag)
-        out = ollama_chat(prompt, tag, timeout=timeout)
+        out = ollama_chat(prompt, tag, timeout=timeout, format=format)
         if out is not None:
             return out
         if not fallback:

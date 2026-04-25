@@ -134,7 +134,7 @@ class TestRoleMapping:
         monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
         captured: list[str] = []
 
-        def fake_ollama(prompt, tag, timeout=60, options=None):
+        def fake_ollama(prompt, tag, timeout=60, options=None, format=None):
             captured.append(tag)
             return f"reply from {tag}"
 
@@ -157,7 +157,7 @@ class TestRoleMapping:
         monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
         captured: list[str] = []
 
-        def fake_ollama(prompt, tag, timeout=60, options=None):
+        def fake_ollama(prompt, tag, timeout=60, options=None, format=None):
             captured.append(tag)
             return "ok"
 
@@ -217,7 +217,7 @@ class TestRoleMapping:
         monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
         captured: list[str] = []
 
-        def fake_ollama(prompt, tag, timeout=60, options=None):
+        def fake_ollama(prompt, tag, timeout=60, options=None, format=None):
             captured.append(tag)
             return "ok"
 
