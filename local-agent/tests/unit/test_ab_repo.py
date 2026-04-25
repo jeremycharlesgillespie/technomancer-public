@@ -200,6 +200,76 @@ def test_record_pair_returns_pair_id_and_persists() -> None:
 
 
 # ---------------------------------------------------------------------------
+# reap_stranded_runs
+# ---------------------------------------------------------------------------
+
+class TestReapStrandedRuns:
+    """Worker startup must close any A/B run rows the previous worker
+    left in 'running' state (daemon-thread orchestrators die silently on
+    SIGTERM, stranding rows and blocking ab_test_pairs)."""
+
+    def test_returns_zero_when_no_stranded_rows(self):
+        ab_schema.init_ab_db()
+        n = ab_repo.reap_stranded_runs()
+        assert n == 0
+
+    def test_marks_running_rows_as_failed(self):
+        ab_repo.record_run_start("r1", "TK-1", "qwen3-coder:30b", "qwen3-coder")
+        ab_repo.record_run_start("r2", "TK-1", "qwen2.5-coder:14b", "qwen2.5-coder")
+
+        n = ab_repo.reap_stranded_runs()
+        assert n == 2
+
+        conn = aiv_schema._get_conn()
+        rows = conn.execute(
+            "SELECT run_id, status, ended_at, failure_log "
+            "FROM ab_test_runs ORDER BY run_id"
+        ).fetchall()
+        assert [r["status"] for r in rows] == ["failed", "failed"]
+        for r in rows:
+            assert r["ended_at"] is not None
+            assert "abandoned" in (r["failure_log"] or "")
+
+    def test_does_not_touch_finished_rows(self):
+        ab_repo.record_run_start("r1", "TK-1", "model-a", "label-a")
+        ab_repo.record_run_end("r1", "success", branch_name="b1", commit_sha="abc")
+
+        ab_repo.record_run_start("r2", "TK-2", "model-a", "label-a")  # stays running
+
+        n = ab_repo.reap_stranded_runs()
+        assert n == 1
+
+        conn = aiv_schema._get_conn()
+        r1 = conn.execute(
+            "SELECT status, branch_name FROM ab_test_runs WHERE run_id = 'r1'"
+        ).fetchone()
+        assert r1["status"] == "success"
+        assert r1["branch_name"] == "b1"
+
+        r2 = conn.execute(
+            "SELECT status FROM ab_test_runs WHERE run_id = 'r2'"
+        ).fetchone()
+        assert r2["status"] == "failed"
+
+    def test_idempotent(self):
+        ab_repo.record_run_start("r1", "TK-1", "model-a", "label-a")
+        first = ab_repo.reap_stranded_runs()
+        second = ab_repo.reap_stranded_runs()
+        assert first == 1
+        assert second == 0
+
+    def test_custom_reason_appears_in_failure_log(self):
+        ab_repo.record_run_start("r1", "TK-1", "model-a", "label-a")
+        ab_repo.reap_stranded_runs(reason="custom test reason")
+
+        conn = aiv_schema._get_conn()
+        row = conn.execute(
+            "SELECT failure_log FROM ab_test_runs WHERE run_id = 'r1'"
+        ).fetchone()
+        assert "custom test reason" in row["failure_log"]
+
+
+# ---------------------------------------------------------------------------
 # push_branch_to_both_repos
 # ---------------------------------------------------------------------------
 

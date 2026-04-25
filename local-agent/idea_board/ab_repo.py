@@ -186,6 +186,39 @@ def record_run_end(
     conn.commit()
 
 
+def reap_stranded_runs(
+    *,
+    reason: str = "abandoned: process killed before completion",
+) -> int:
+    """Mark every ``ab_test_runs`` row stuck in ``running`` as ``failed``.
+
+    Daemon-thread A/B orchestrators die silently when the worker process
+    is killed mid-run (SIGTERM, crash, restart). The two ``running`` rows
+    they wrote at start are then never closed, which leaves
+    ``ab_test_pairs`` empty for that story and the ``/quality`` page never
+    renders the comparison.
+
+    This sweep is idempotent and safe to call at every worker startup —
+    if no rows are stranded it returns 0 and changes nothing. Returns the
+    number of rows updated so the caller can log it.
+    """
+    init_ab_db()
+    conn = _get_conn()
+    cursor = conn.execute(
+        """
+        UPDATE ab_test_runs
+           SET status = 'failed',
+               ended_at = ?,
+               failure_log = COALESCE(failure_log, '') || ?
+         WHERE status = 'running'
+           AND ended_at IS NULL
+        """,
+        (_now_iso(), reason),
+    )
+    conn.commit()
+    return cursor.rowcount or 0
+
+
 def record_pair(
     story_key: str,
     run_a_id: str,
