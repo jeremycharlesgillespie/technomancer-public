@@ -355,6 +355,56 @@ def update_jira_summary(jira_key: str, new_summary: str) -> bool:
         return False
 
 
+def add_jira_label(jira_key: str, label: str) -> bool:
+    """Add a label to an existing Jira issue.
+
+    Args:
+        jira_key: The Jira issue key (e.g., "TK-1077")
+        label: The label to add
+
+    Returns:
+        True if update succeeded, False otherwise
+    """
+    if not is_jira_configured():
+        return False
+
+    try:
+        # First get the existing issue to retrieve current labels
+        resp = _api("get", f"/issue/{jira_key}", jira_key=jira_key)
+        if resp is None or resp.status_code != 200:
+            logger.warning("[JiraSync] Failed to get issue %s for label update", jira_key)
+            return False
+
+        issue_data = resp.json()
+        current_labels = issue_data.get("fields", {}).get("labels", [])
+        
+        # Check if label already exists
+        if label in current_labels:
+            logger.info("[JiraSync] Label '%s' already exists on issue %s", label, jira_key)
+            return True
+
+        # Add the new label
+        current_labels.append(label)
+        
+        resp = _api(
+            "put",
+            f"/issue/{jira_key}",
+            json={"fields": {"labels": current_labels}},
+        )
+        if resp is not None and resp.status_code == 204:
+            logger.info("[JiraSync] Added label '%s' to issue %s", label, jira_key)
+            return True
+        logger.warning(
+            "[JiraSync] Add label failed (%d): %s",
+            resp.status_code if resp else 0,
+            resp.text[:200] if resp else "No response",
+        )
+        return False
+    except Exception as e:
+        logger.warning("[JiraSync] Add label error for %s: %s", jira_key, e)
+        return False
+
+
 def create_jira_issue(
     idea_id: str,
     title: str,
