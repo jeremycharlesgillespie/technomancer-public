@@ -514,6 +514,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
         outcome_a = _RunOutcome(run_id=run_a_id, model=model_a, label=label_a)
         outcome_b = _RunOutcome(run_id=run_b_id, model=model_b, label=label_b)
 
+        # Record start times for each run individually
         ab_repo.record_run_start(run_a_id, idea_id, model_a, label_a)
         ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
 
