@@ -43,9 +43,22 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+# Single source of truth for allowed bash prefixes
 BASH_ALLOWLIST = ("git", "pytest", "python", "python3", "py")
 BASH_BLOCKLIST = ("safe_update", "push origin", "push --force", "merge", "checkout main",
                    "checkout master", "rm -rf", "rmdir /s")
+
+# Mapping of common blocked commands to their proper tool replacements
+_BLOCKED_COMMAND_HINTS = {
+    "ls": "list_files(path=...)",
+    "find": "list_files(path=...)",
+    "cat": "read_file(path=...)",
+    "head": "read_file(path=...)",
+    "tail": "read_file(path=...)",
+    "grep": "search_code(pattern=...)",
+    "curl": "web_fetch(url=...)",
+    "wget": "web_fetch(url=...)",
+}
 
 READ_FILE_MAX_CHARS = 20_000
 LIST_FILES_MAX = 200
@@ -118,8 +131,10 @@ _TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "run_bash",
             "description": (
-                "Run a shell command. Allowed prefixes: git, pytest, python, python3. "
-                "Blocked: safe_update, push origin, push --force, merge, checkout main, rm -rf."
+                "Run a shell command. Allowed prefixes: git, pytest, python, python3, py. "
+                "Blocked: safe_update, push origin, push --force, merge, checkout main, rm -rf. "
+                "Use dedicated tools instead of common blocked alternatives: "
+                "list_files instead of ls/find, search_code instead of grep, read_file instead of cat/head/tail."
             ),
             "parameters": {
                 "type": "object",
@@ -550,6 +565,10 @@ class OllamaCoder:
         # Allowlist check
         allowed = any(cmd_lower.startswith(prefix) for prefix in BASH_ALLOWLIST)
         if not allowed:
+            # Check if command is a common blocked one and provide helpful hint
+            for blocked_cmd, replacement in _BLOCKED_COMMAND_HINTS.items():
+                if blocked_cmd in command.split()[0] if command.split() else False:
+                    return f"BLOCKED: {blocked_cmd} not allowed. Use {replacement} instead."
             return f"BLOCKED: command must start with one of {BASH_ALLOWLIST}"
         try:
             result = subprocess.run(
@@ -1020,3 +1039,38 @@ def _fmt_args(args: dict[str, Any]) -> str:
             s = s[:60] + "..."
         parts.append(f"{k}={s!r}")
     return ", ".join(parts)
+
+
+    def _tool_run_bash(self, command: str) -> str:
+        """Execute a shell command, with allowlist and blocklist enforcement."""
+        # Check if command starts with an allowed prefix
+        if not any(command.startswith(prefix) for prefix in BASH_ALLOWLIST):
+            # Check if command is in blocklist
+            if any(block in command for block in BASH_BLOCKLIST):
+                return f"BLOCKED: command must start with one of {BASH_ALLOWLIST}"
+            # If not in blocklist, check if it's a common blocked command and suggest alternatives
+            for blocked_cmd, replacement in _BLOCKED_COMMAND_HINTS.items():
+                if blocked_cmd in command.split()[0] if command.split() else False:
+                    return f"BLOCKED: {blocked_cmd} not allowed. Use {replacement} instead."
+            # If not a known blocked command, just say it's not allowed
+            return f"BLOCKED: command must start with one of {BASH_ALLOWLIST}"
+        
+        # If we get here, the command is allowed
+        try:
+            # Run the command
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=self.project_root,
+            )
+            if result.returncode == 0:
+                return result.stdout
+            else:
+                return f"ERROR: command failed with return code {result.returncode}\n{result.stderr}"
+        except subprocess.TimeoutExpired:
+            return "ERROR: command timed out"
+        except Exception as exc:
+            return f"ERROR: {exc}"
