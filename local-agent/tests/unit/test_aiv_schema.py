@@ -56,6 +56,8 @@ class TestInitDb:
             "merged_at",
             "diff_paths_json",
             "enqueued_at",
+            "merge_commit_sha",
+            "verification_output",
         }
 
     def test_aiv_pending_primary_key_is_story_key(self):

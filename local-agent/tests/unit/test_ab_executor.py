@@ -466,3 +466,77 @@ def test_orchestrator_uses_ab_registry_not_active(
     assert captured["in_ab_registry"] is True
     # The inner attempt is mocked, so _active is never touched in this test.
     assert captured["in_active_at_attempt_start"] is False
+
+
+# ---------------------------------------------------------------------------
+# AIV hand-off helpers — _diff_paths_from_text + _head_sha
+# ---------------------------------------------------------------------------
+
+
+class TestDiffPathsFromText:
+    def test_extracts_paths_from_unified_diff(self):
+        diff = (
+            "diff --git a/agent/foo.py b/agent/foo.py\n"
+            "index 1234..5678 100644\n"
+            "--- a/agent/foo.py\n"
+            "+++ b/agent/foo.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            "+pass\n"
+            "diff --git a/tests/test_foo.py b/tests/test_foo.py\n"
+            "index abcd..efgh 100644\n"
+            "+def test_x(): pass\n"
+        )
+        assert ab_executor._diff_paths_from_text(diff) == [
+            "agent/foo.py",
+            "tests/test_foo.py",
+        ]
+
+    def test_empty_text_returns_empty_list(self):
+        assert ab_executor._diff_paths_from_text("") == []
+        assert ab_executor._diff_paths_from_text(None) == []  # type: ignore[arg-type]
+
+    def test_dedupes_repeated_paths(self):
+        """A single path appearing twice (rename → rename-back) only
+        shows up once in the output."""
+        diff = (
+            "diff --git a/x.py b/x.py\n"
+            "diff --git a/x.py b/x.py\n"
+        )
+        assert ab_executor._diff_paths_from_text(diff) == ["x.py"]
+
+    def test_skips_malformed_headers(self):
+        """Lines that look like headers but lack the ``b/`` half are skipped."""
+        diff = (
+            "diff --git malformed\n"
+            "diff --git a/ok.py b/ok.py\n"
+        )
+        assert ab_executor._diff_paths_from_text(diff) == ["ok.py"]
+
+
+class TestHeadSha:
+    def test_returns_sha_on_success(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            ab_executor.subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=0, stdout="abc123def\n"),
+        )
+        assert ab_executor._head_sha(tmp_path) == "abc123def"
+
+    def test_returns_none_on_nonzero_exit(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            ab_executor.subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=128, stdout=""),
+        )
+        assert ab_executor._head_sha(tmp_path) is None
+
+    def test_returns_none_on_exception(self, monkeypatch, tmp_path):
+        def _boom(*_a, **_kw):
+            raise OSError("git missing")
+        monkeypatch.setattr(ab_executor.subprocess, "run", _boom)
+        assert ab_executor._head_sha(tmp_path) is None
+
+    def test_returns_none_on_blank_stdout(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            ab_executor.subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=0, stdout="   \n"),
+        )
+        assert ab_executor._head_sha(tmp_path) is None

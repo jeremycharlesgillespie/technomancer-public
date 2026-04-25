@@ -127,7 +127,9 @@ class TestSuccessfulMergeEnqueues:
             enqueue_merged_story("TK-720", _merge_success(), tmp_path)
 
         assert mock_run.called, "subprocess.run should be invoked to compute the diff"
-        cmd = mock_run.call_args[0][0]
+        # First call is ``git diff --name-only``; subsequent calls
+        # (``git rev-parse HEAD``) are the merge-SHA capture.
+        cmd = mock_run.call_args_list[0][0][0]
         assert cmd[:3] == ["git", "diff", "--name-only"], (
             f"Expected git diff --name-only ..., got {cmd[:3]}"
         )
@@ -363,7 +365,7 @@ class TestEnqueueForValidation:
         assert "diff_paths_json" in sql
         assert "enqueued_at" in sql
 
-        story_key, merged_at, diff_paths_json, enqueued_at = params
+        story_key, merged_at, diff_paths_json, enqueued_at, _sha, _verify = params
         assert story_key == "TK-717"
         assert json.loads(diff_paths_json) == [
             "agent/aiv_hook.py",
@@ -384,7 +386,7 @@ class TestEnqueueForValidation:
             aiv_hook.enqueue_for_validation("TK-717", [])
         after = datetime.now(timezone.utc)
 
-        _story, merged_at, _json, _enqueued = conn.execute.call_args[0][1]
+        _story, merged_at, _json, _enqueued, _sha, _verify = conn.execute.call_args[0][1]
         parsed = datetime.fromisoformat(merged_at)
         assert before <= parsed <= after, (
             f"merged_at {merged_at} not within [{before}, {after}]"
@@ -401,7 +403,7 @@ class TestEnqueueForValidation:
                 "TK-717", ["f.py"], merged_at=caller_ts
             )
 
-        _story, merged_at, _json, _enqueued = conn.execute.call_args[0][1]
+        _story, merged_at, _json, _enqueued, _sha, _verify = conn.execute.call_args[0][1]
         assert merged_at == caller_ts
 
     def test_empty_diff_paths_serializes_to_empty_json_array(self):
@@ -411,7 +413,7 @@ class TestEnqueueForValidation:
              patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
             aiv_hook.enqueue_for_validation("TK-717", [])
 
-        _story, _merged, diff_paths_json, _enqueued = conn.execute.call_args[0][1]
+        _story, _merged, diff_paths_json, _enqueued, _sha, _verify = conn.execute.call_args[0][1]
         assert json.loads(diff_paths_json) == []
 
     def test_sqlite_error_is_swallowed_and_logged(self, caplog):
@@ -427,3 +429,151 @@ class TestEnqueueForValidation:
             "enqueue_for_validation" in rec.message and rec.levelname == "WARNING"
             for rec in caplog.records
         ), f"Expected a WARNING log from agent.aiv_hook, got: {caplog.records}"
+
+
+# ---------------------------------------------------------------------------
+# New columns: merge_commit_sha + verification_output
+# ---------------------------------------------------------------------------
+
+
+class TestEnqueueStoresNewColumns:
+    """The hook persists ``merge_commit_sha`` and ``verification_output``
+    so the AIV daemon can build the real diff and grade against real
+    pytest output instead of empty strings."""
+
+    def test_persists_merge_commit_sha_when_provided(self):
+        """``merge_commit_sha`` round-trips into the row."""
+        conn = MagicMock()
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation(
+                "TK-9001",
+                ["a.py"],
+                merge_commit_sha="abc123def456",
+            )
+
+        sql, params = conn.execute.call_args[0]
+        assert "merge_commit_sha" in sql
+        assert params[4] == "abc123def456"
+
+    def test_persists_verification_output_when_provided(self):
+        """The pytest tail captured at merge time round-trips into the row."""
+        conn = MagicMock()
+        captured = "===== 5751 passed in 700s ====="
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation(
+                "TK-9002",
+                ["b.py"],
+                verification_output=captured,
+            )
+
+        sql, params = conn.execute.call_args[0]
+        assert "verification_output" in sql
+        assert params[5] == captured
+
+    def test_new_columns_default_to_none_when_not_provided(self):
+        """Callers that don't have a SHA / verification capture still work."""
+        conn = MagicMock()
+        with patch.object(aiv_hook.aiv_schema, "init_db"), \
+             patch.object(aiv_hook.aiv_schema, "_get_conn", return_value=conn):
+            aiv_hook.enqueue_for_validation("TK-9003", ["c.py"])
+
+        params = conn.execute.call_args[0][1]
+        assert params[4] is None  # merge_commit_sha
+        assert params[5] is None  # verification_output
+
+
+class TestEnqueueMergedStoryPassesVerification:
+    """``enqueue_merged_story`` threads the verification capture through
+    to ``enqueue_for_validation``."""
+
+    def test_verification_output_reaches_enqueue_for_validation(self, tmp_path):
+        """When the executor passes ``verification_output``, the hook
+        forwards it verbatim to ``enqueue_for_validation``."""
+        captured = "===== 5751 passed in 700s ====="
+        with patch.object(aiv_post_merge, "enqueue_for_validation") as mock_enq, \
+             patch.object(aiv_post_merge.subprocess, "run") as mock_run:
+            # Two subprocess calls: get_merged_diff_paths + get_merge_commit_sha.
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="local-agent/agent/foo.py\n"),
+                MagicMock(returncode=0, stdout="abc123def456\n"),
+            ]
+            enqueue_merged_story(
+                "TK-9004",
+                _merge_success(),
+                tmp_path,
+                verification_output=captured,
+            )
+
+        mock_enq.assert_called_once()
+        kwargs = mock_enq.call_args.kwargs
+        assert kwargs.get("verification_output") == captured
+        assert kwargs.get("merge_commit_sha") == "abc123def456"
+
+    def test_no_verification_output_still_enqueues(self, tmp_path):
+        """Caller may omit ``verification_output``; hook still fires."""
+        with patch.object(aiv_post_merge, "enqueue_for_validation") as mock_enq, \
+             patch.object(aiv_post_merge.subprocess, "run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="local-agent/x.py\n"),
+                MagicMock(returncode=0, stdout="deadbeef\n"),
+            ]
+            enqueue_merged_story("TK-9005", _merge_success(), tmp_path)
+
+        mock_enq.assert_called_once()
+        # verification_output may be None or absent — both are fine.
+        kwargs = mock_enq.call_args.kwargs
+        assert kwargs.get("verification_output") in (None, "")
+
+
+class TestSchemaMigration:
+    """``init_db`` adds the new columns to existing databases without
+    blowing up. Covers the in-place upgrade path on real SQLite."""
+
+    def test_init_db_adds_columns_to_legacy_table(self, tmp_path, monkeypatch):
+        """A pre-migration table without the new columns is upgraded
+        in place by ``init_db``."""
+        import sqlite3
+        from agent import aiv_schema as schema
+
+        legacy_db = tmp_path / "aiv.db"
+        # Simulate the pre-migration schema.
+        conn = sqlite3.connect(str(legacy_db))
+        conn.execute(
+            "CREATE TABLE aiv_pending ("
+            " story_key TEXT PRIMARY KEY,"
+            " merged_at TEXT,"
+            " diff_paths_json TEXT,"
+            " enqueued_at TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(schema, "DB_PATH", legacy_db)
+        monkeypatch.setattr(schema, "DB_DIR", tmp_path)
+
+        # Force a fresh per-thread connection so the patched DB_PATH wins.
+        if hasattr(schema._local, "conn"):
+            try:
+                schema._local.conn.close()
+            except Exception:
+                pass
+            del schema._local.conn
+
+        schema.init_db()
+
+        # Verify the new columns now exist.
+        conn = sqlite3.connect(str(legacy_db))
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(aiv_pending)")}
+        conn.close()
+        assert "merge_commit_sha" in cols
+        assert "verification_output" in cols
+
+        # Clean up the per-thread cache so other tests get a fresh conn.
+        if hasattr(schema._local, "conn"):
+            try:
+                schema._local.conn.close()
+            except Exception:
+                pass
+            del schema._local.conn

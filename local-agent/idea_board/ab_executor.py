@@ -157,6 +157,46 @@ def _ollama_has_model(model_tag: str) -> bool:
     return False
 
 
+def _diff_paths_from_text(diff_text: str) -> list[str]:
+    """Extract changed file paths from a unified diff string.
+
+    Used by the A/B AIV hand-off: we already captured the full diff for
+    scoring, so re-extracting paths from it avoids a second ``git diff``
+    subprocess. Looks for ``diff --git a/<path> b/<path>`` headers.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in (diff_text or "").splitlines():
+        if not line.startswith("diff --git "):
+            continue
+        # Format: ``diff --git a/<path> b/<path>``. Take the ``b/`` half
+        # so renames map to the new name.
+        parts = line.split(" b/", 1)
+        if len(parts) != 2:
+            continue
+        path = parts[1].strip()
+        if path and path not in seen:
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _head_sha(project_root: Path) -> str | None:
+    """Return the full SHA of HEAD on the current checkout (post-merge ``main``)."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(project_root),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if result.returncode != 0:
+        return None
+    sha = (result.stdout or "").strip()
+    return sha or None
+
+
 def _capture_diff(project_root: Path, branch: str) -> str:
     """Return ``git diff main...<branch>`` capped at 12 KB."""
     if not branch:
@@ -604,16 +644,43 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             # ----- Pick merge winner (priority rule) -----
             merge_pick = ab_repo.pick_winner(outcome_a.status, outcome_b.status)
             merged_run_id: str | None = None
+            winning_outcome: _RunOutcome | None = None
             if merge_pick == "model_a":
                 ok_merge, msg = _merge_winner(state, outcome_a.branch_name, idea_id, project_root)
                 if ok_merge:
                     merged_run_id = run_a_id
+                    winning_outcome = outcome_a
             elif merge_pick == "model_b":
                 ok_merge, msg = _merge_winner(state, outcome_b.branch_name, idea_id, project_root)
                 if ok_merge:
                     merged_run_id = run_b_id
+                    winning_outcome = outcome_b
             else:
                 state.log("[AB] both runs failed — no merge")
+
+            # Hand the winner off to the AIV validation queue so the
+            # /quality page eventually shows real scores for this story.
+            # Without this, A/B merges would land on main but never get
+            # graded — the regular executor's enqueue is bypassed by the
+            # A/B path. We pass the winner's captured diff and pytest
+            # output so the daemon doesn't need to re-derive them.
+            if merged_run_id and winning_outcome is not None:
+                try:
+                    from agent.aiv_hook import enqueue_for_validation as _enq
+                    diff_paths = _diff_paths_from_text(winning_outcome.diff)
+                    merge_sha = _head_sha(project_root)
+                    _enq(
+                        idea_id,
+                        diff_paths,
+                        merge_commit_sha=merge_sha,
+                        verification_output=(winning_outcome.log_text or "")[-6000:],
+                    )
+                    state.log(
+                        f"[AB] enqueued {idea_id} for AIV validation "
+                        f"(sha={merge_sha[:7] if merge_sha else 'none'})"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    state.log(f"[AB] AIV enqueue failed (non-fatal): {exc}")
 
             ab_repo.record_pair(
                 idea_id,

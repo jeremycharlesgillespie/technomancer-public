@@ -2840,8 +2840,18 @@ def execute_idea(
                 # that didn't actually ship. Helper swallows its own
                 # errors; the outer try/except is belt-and-suspenders
                 # so a queue hiccup can never fail the deploy.
+                #
+                # We pass the tail of the full pytest run as
+                # verification_output so the AIV scorer grades
+                # test_quality against real output instead of "".
                 try:
-                    enqueue_merged_story(idea_id, merge_result, project_root)
+                    pytest_tail = (full_result.stdout or "")[-6000:]
+                    enqueue_merged_story(
+                        idea_id,
+                        merge_result,
+                        project_root,
+                        verification_output=pytest_tail,
+                    )
                 except Exception as hook_err:
                     state.log(f"AIV enqueue error (non-blocking): {hook_err}")
 

@@ -47,8 +47,36 @@ def get_merged_diff_paths(
     return [ln.strip() for ln in result.stdout.split("\n") if ln.strip()]
 
 
+def get_merge_commit_sha(project_root: Path, ref: str = "HEAD") -> str | None:
+    """Return the full SHA of ``ref`` on ``main`` after the merge.
+
+    Used by the AIV daemon to reconstruct the actual unified diff via
+    ``git show <sha>`` at scoring time. Returns ``None`` on any
+    subprocess error so the caller can still enqueue without a SHA —
+    the daemon will fall back to using ``diff_paths_json`` alone.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", ref],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("get_merge_commit_sha failed: %s", exc)
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
 def enqueue_merged_story(
-    idea_id: str, merge_result: Any, project_root: Path
+    idea_id: str,
+    merge_result: Any,
+    project_root: Path,
+    verification_output: str | None = None,
 ) -> None:
     """Enqueue ``idea_id`` for AIV validation if ``merge_result`` succeeded.
 
@@ -58,6 +86,10 @@ def enqueue_merged_story(
             executor's ``git merge`` call. Only inspected for
             ``returncode``; anything truthy non-zero means "skip".
         project_root: Repo root for the ``git diff`` invocation.
+        verification_output: Captured pytest / validate.py output. Passed
+            through to the AIV scorer so it can grade ``test_quality``
+            against the actual test results, not an empty string. May be
+            ``None`` if the caller doesn't have a capture handy.
 
     On a failed merge this function is a deliberate no-op so the executor
     can always call it in a single line without branching.
@@ -66,6 +98,12 @@ def enqueue_merged_story(
         return
     try:
         diff_paths = get_merged_diff_paths(project_root)
-        enqueue_for_validation(idea_id, diff_paths)
+        merge_sha = get_merge_commit_sha(project_root)
+        enqueue_for_validation(
+            idea_id,
+            diff_paths,
+            merge_commit_sha=merge_sha,
+            verification_output=verification_output,
+        )
     except Exception as exc:  # noqa: BLE001
         log.warning("enqueue_merged_story(%r) failed: %s", idea_id, exc)

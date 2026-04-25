@@ -67,6 +67,9 @@ def enqueue_for_validation(
     story_key: str,
     diff_paths: list[str],
     merged_at: str | None = None,
+    *,
+    merge_commit_sha: str | None = None,
+    verification_output: str | None = None,
 ) -> None:
     """Insert an ``aiv_pending`` row for ``story_key``.
 
@@ -77,6 +80,14 @@ def enqueue_for_validation(
             the caller couldn't compute a diff.
         merged_at: ISO-8601 timestamp of when the merge landed on
             ``main``. Defaults to the current UTC time if not provided.
+        merge_commit_sha: Full SHA of the merge commit on ``main``. The
+            AIV daemon uses this to materialise the actual unified diff
+            via ``git show`` at scoring time, so the scorer evaluates
+            real code rather than just file paths.
+        verification_output: Captured pytest / validate.py output that
+            proved the merge was safe. Stored verbatim and replayed to
+            the scorer; the scorer grades ``test_quality`` and
+            ``edge_cases`` against this text.
 
     Uses ``INSERT OR REPLACE`` so re-validation of the same story simply
     refreshes the pending row instead of raising on the primary-key
@@ -88,13 +99,16 @@ def enqueue_for_validation(
         now = datetime.now(timezone.utc).isoformat()
         conn.execute(
             "INSERT OR REPLACE INTO aiv_pending "
-            "(story_key, merged_at, diff_paths_json, enqueued_at) "
-            "VALUES (?, ?, ?, ?)",
+            "(story_key, merged_at, diff_paths_json, enqueued_at, "
+            " merge_commit_sha, verification_output) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
             (
                 story_key,
                 merged_at if merged_at is not None else now,
                 json.dumps(list(diff_paths or [])),
                 now,
+                merge_commit_sha,
+                verification_output,
             ),
         )
         conn.commit()

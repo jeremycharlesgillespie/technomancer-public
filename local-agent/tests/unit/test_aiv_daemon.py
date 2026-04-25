@@ -396,7 +396,9 @@ class TestStopDaemon:
 # ---------------------------------------------------------------------------
 
 class TestVerifyTestsOnly:
-    def test_returns_empty_string(self):
+    def test_returns_empty_when_no_verification_stored(self):
+        """Rows enqueued by older hooks have no ``verification_output``;
+        verifier returns ``""`` so the scorer falls back to diff-only."""
         row = aiv_main.PendingRow(
             story_key="TK-1",
             merged_at="2026-04-18T05:29:00",
@@ -404,3 +406,112 @@ class TestVerifyTestsOnly:
             enqueued_at="2026-04-18T05:30:00",
         )
         assert aiv_main.verify_tests_only(row) == ""
+
+    def test_returns_stored_verification_output(self):
+        """When the executor passed the pytest tail through to the row,
+        the verifier returns it verbatim."""
+        captured = "===== 5751 passed in 700s ====="
+        row = aiv_main.PendingRow(
+            story_key="TK-2",
+            merged_at="2026-04-18T05:29:00",
+            diff_paths=["agent/a.py"],
+            enqueued_at="2026-04-18T05:30:00",
+            verification_output=captured,
+        )
+        assert aiv_main.verify_tests_only(row) == captured
+
+
+# ---------------------------------------------------------------------------
+# _load_diff — materialises the unified diff via ``git show``
+# ---------------------------------------------------------------------------
+
+class TestLoadDiff:
+    def test_returns_empty_when_sha_missing(self):
+        """No SHA means we have nothing to ``git show`` — return empty."""
+        row = aiv_main.PendingRow(
+            story_key="TK-3",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha=None,
+        )
+        assert aiv_main._load_diff(row) == ""
+
+    def test_returns_empty_when_sha_blank(self):
+        """Whitespace-only SHA is treated as missing."""
+        row = aiv_main.PendingRow(
+            story_key="TK-4",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha="   ",
+        )
+        assert aiv_main._load_diff(row) == ""
+
+    def test_calls_git_show_with_sha(self, monkeypatch):
+        """When a SHA is present, the helper invokes ``git show <sha>``."""
+        captured: dict = {}
+
+        def _fake_run(cmd, **_kwargs):
+            captured["cmd"] = cmd
+            return MagicMock(returncode=0, stdout="diff --git a/x.py b/x.py\n+pass\n")
+
+        monkeypatch.setattr(aiv_main.subprocess, "run", _fake_run)
+        row = aiv_main.PendingRow(
+            story_key="TK-5",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha="abc123",
+        )
+        out = aiv_main._load_diff(row)
+        assert captured["cmd"][:2] == ["git", "show"]
+        assert captured["cmd"][2] == "abc123"
+        assert "diff --git" in out
+
+    def test_returns_empty_on_nonzero_exit(self, monkeypatch):
+        """A bad SHA produces an empty string — never raises."""
+        monkeypatch.setattr(
+            aiv_main.subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=128, stdout=""),
+        )
+        row = aiv_main.PendingRow(
+            story_key="TK-6",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha="bad_sha",
+        )
+        assert aiv_main._load_diff(row) == ""
+
+    def test_returns_empty_on_subprocess_exception(self, monkeypatch):
+        """A subprocess explosion is caught and logged — never raises."""
+        def _boom(*_a, **_kw):
+            raise OSError("git not found")
+        monkeypatch.setattr(aiv_main.subprocess, "run", _boom)
+        row = aiv_main.PendingRow(
+            story_key="TK-7",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha="abc",
+        )
+        assert aiv_main._load_diff(row) == ""
+
+    def test_truncates_oversized_diffs(self, monkeypatch):
+        """A monster diff is capped at the load limit + truncation note."""
+        big = "diff --git a/x.py b/x.py\n" + ("+a\n" * 50000)
+        monkeypatch.setattr(
+            aiv_main.subprocess, "run",
+            lambda *a, **kw: MagicMock(returncode=0, stdout=big),
+        )
+        row = aiv_main.PendingRow(
+            story_key="TK-8",
+            merged_at=None,
+            diff_paths=["x.py"],
+            enqueued_at=None,
+            merge_commit_sha="abc",
+        )
+        out = aiv_main._load_diff(row)
+        assert len(out) <= aiv_main._MAX_DIFF_LOAD_CHARS + 200
+        assert "[truncated" in out

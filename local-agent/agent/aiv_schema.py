@@ -68,16 +68,32 @@ def init_db() -> None:
     """Create ``aiv_pending`` and ``story_quality`` if they don't exist.
 
     Idempotent — safe to call on every daemon cycle / before every insert.
+    Also runs additive ``ALTER TABLE`` migrations for columns introduced
+    after the original schema landed (``merge_commit_sha``,
+    ``verification_output``).
     """
     conn = _get_conn()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS aiv_pending (
-            story_key        TEXT PRIMARY KEY,
-            merged_at        TEXT,
-            diff_paths_json  TEXT,
-            enqueued_at      TEXT
+            story_key            TEXT PRIMARY KEY,
+            merged_at            TEXT,
+            diff_paths_json      TEXT,
+            enqueued_at          TEXT,
+            merge_commit_sha     TEXT,
+            verification_output  TEXT
         )
     """)
+    # Additive migration for databases created before merge_commit_sha
+    # and verification_output existed. PRAGMA table_info is the simplest
+    # way to ask "does this column already exist" — sqlite has no
+    # ``ADD COLUMN IF NOT EXISTS``.
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(aiv_pending)")
+    }
+    if "merge_commit_sha" not in existing_cols:
+        conn.execute("ALTER TABLE aiv_pending ADD COLUMN merge_commit_sha TEXT")
+    if "verification_output" not in existing_cols:
+        conn.execute("ALTER TABLE aiv_pending ADD COLUMN verification_output TEXT")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS story_quality (
             story_key            TEXT PRIMARY KEY,
