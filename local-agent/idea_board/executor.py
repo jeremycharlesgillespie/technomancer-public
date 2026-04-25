@@ -58,18 +58,14 @@ def _project_key_for(idea_id: str | None) -> str | None:
         return settings.jira_project_key
     
     # Reject obviously malformed inputs early
-    if not idea_id:
-        return None
-    if idea_id in ('--', '-', '', ' '):
-        return None
-    if not idea_id.strip():
+    if not idea_id or not idea_id.strip() or idea_id in ('--', '-', '', ' '):
         return None
     
     # Must contain at least one digit to be a valid story ID
     if not any(c.isdigit() for c in idea_id):
         return None
         
-    if idea_id and "-" in idea_id:
+    if "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
         # Ensure prefix is alphabetic (contains only letters)
         if prefix.isalpha():
