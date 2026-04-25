@@ -43,12 +43,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .leak_counter import leak_counter, reset
 from .tracing import DEFAULT_TRACE_ID, get_trace_id
 
 log = logging.getLogger(__name__)
-
-# Leak counter for detecting connection leaks
-leak_counter = threading.local()
 
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "executor_runs.db"
