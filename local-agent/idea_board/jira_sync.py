@@ -322,6 +322,39 @@ def find_jira_issue(idea_id: str) -> str | None:
     return None
 
 
+def update_jira_summary(jira_key: str, new_summary: str) -> bool:
+    """Update the summary of an existing Jira issue.
+
+    Args:
+        jira_key: The Jira issue key (e.g., "TK-1077")
+        new_summary: The new summary text
+
+    Returns:
+        True if update succeeded, False otherwise
+    """
+    if not is_jira_configured():
+        return False
+
+    try:
+        resp = _api(
+            "put",
+            f"/issue/{jira_key}",
+            json={"fields": {"summary": new_summary[:255]}},
+        )
+        if resp is not None and resp.status_code == 204:
+            logger.info("[JiraSync] Updated summary for %s to: %s", jira_key, new_summary[:50])
+            return True
+        logger.warning(
+            "[JiraSync] Update summary failed (%d): %s",
+            resp.status_code if resp else 0,
+            resp.text[:200] if resp else "No response",
+        )
+        return False
+    except Exception as e:
+        logger.warning("[JiraSync] Update summary error for %s: %s", jira_key, e)
+        return False
+
+
 def create_jira_issue(
     idea_id: str,
     title: str,
