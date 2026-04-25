@@ -1126,6 +1126,31 @@ def archive_run(
     return target
 
 
+def _discover_artifacts(run_id: str) -> list[Path]:
+    """Discover standard artifact files for a given run ID.
+
+    Scans the ARTIFACTS_DIR for a directory matching the run_id and
+    returns a list of standard artifact files (stdout.log, stderr.log, diff.patch).
+
+    Args:
+        run_id: The run ID to discover artifacts for.
+
+    Returns:
+        List of Path objects pointing to artifact files.
+    """
+    run_dir = ARTIFACTS_DIR / run_id
+    if not run_dir.exists() or not run_dir.is_dir():
+        return []
+    
+    # Only return standard artifact files
+    expected_files = {"stdout.log", "stderr.log", "diff.patch"}
+    artifacts = []
+    for item in run_dir.iterdir():
+        if item.is_file() and item.name in expected_files:
+            artifacts.append(item)
+    return artifacts
+
+
 def prune_old_artifacts(keep: int = MAX_ARTIFACTS) -> int:
     """Delete oldest artifact directories so at most ``keep`` remain.
 
