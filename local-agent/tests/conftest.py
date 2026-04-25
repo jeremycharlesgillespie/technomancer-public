@@ -17,6 +17,9 @@ from agent.anthropic_shim import install_as_anthropic as _install_anthropic_shim
 _install_ollama_shim()
 _install_anthropic_shim()
 
+# Import to access leak_counter for test reset
+import agent.executor_runs_db as executor_runs_db
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -469,6 +472,22 @@ def _isolate_embedding_store(tmp_path, monkeypatch):
     if conn:
         conn.close()
         es_module._local.emb_conn = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_leak_counter():
+    """Reset the leak_counter at the start of each test to ensure clean state."""
+    # Reset the leak_counter for executor_runs_db
+    # Since leak_counter is a threading.local(), we need to clear its attributes
+    # by setting them to None or default values
+    try:
+        # Clear any existing attributes on the threading.local object
+        for attr in dir(executor_runs_db.leak_counter):
+            if not attr.startswith('_'):
+                setattr(executor_runs_db.leak_counter, attr, None)
+    except Exception:
+        # If there's an error, just continue - the fixture should not break tests
+        pass
 
 
 # =============================================================================
