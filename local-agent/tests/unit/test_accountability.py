@@ -5,6 +5,7 @@ Tests for agent/accountability.py - Verification tools.
 from unittest.mock import MagicMock
 
 from agent.accountability import (
+    GitNotInstalledError,
     get_accountability_tools,
     verify_content_contains,
     verify_file_exists,
@@ -221,6 +222,7 @@ class TestVerifyGitClean:
             mock_rev_parse = MagicMock()
             mock_rev_parse.returncode = 1
             mock_rev_parse.stdout = ""
+            mock_rev_parse.stderr = "fatal: not a git repository (or any of the parent directories)"
             
             mock_run.side_effect = [mock_rev_parse]
             
@@ -238,10 +240,59 @@ class TestVerifyGitClean:
             # Mock subprocess.run to raise FileNotFoundError
             mock_run.side_effect = FileNotFoundError("git command not found")
             
+            # Test that GitNotInstalledError is raised
+            with pytest.raises(GitNotInstalledError):
+                verify_git_clean()
+
+    def test_verify_git_clean_raises_git_not_installed_error(self, patched_accountability):
+        """verify_git_clean raises GitNotInstalledError when git is not in PATH."""
+        import subprocess
+        from unittest.mock import patch
+        
+        with patch('subprocess.run') as mock_run:
+            # Mock subprocess.run to raise FileNotFoundError (git not found)
+            mock_run.side_effect = FileNotFoundError("git command not found")
+            
+            # Test that GitNotInstalledError is raised
+            with pytest.raises(GitNotInstalledError):
+                verify_git_clean()
+
+    def test_verify_git_clean_not_in_repo(self, patched_accountability):
+        """verify_git_clean returns NOT FOUND when not in a git repository."""
+        import subprocess
+        from unittest.mock import patch
+        
+        with patch('subprocess.run') as mock_run:
+            # Mock git rev-parse to fail with repository error (not in repo)
+            mock_rev_parse = MagicMock()
+            mock_rev_parse.returncode = 1
+            mock_rev_parse.stdout = ""
+            mock_rev_parse.stderr = "fatal: not a git repository (or any of the parent directories)"
+            
+            mock_run.side_effect = [mock_rev_parse]
+            
             result = verify_git_clean()
             
             assert "NOT FOUND" in result
-            assert "git" in result.lower()
+            assert "repository" in result.lower()
+
+    def test_verify_git_clean_non_zero_exit_code(self, patched_accountability):
+        """verify_git_clean raises GitNotInstalledError when git returns non-zero exit code."""
+        import subprocess
+        from unittest.mock import patch
+        
+        with patch('subprocess.run') as mock_run:
+            # Mock git rev-parse to return non-zero exit code (git not in PATH)
+            mock_rev_parse = MagicMock()
+            mock_rev_parse.returncode = 1
+            mock_rev_parse.stdout = ""
+            mock_rev_parse.stderr = "git: not found"
+            
+            mock_run.side_effect = [mock_rev_parse]
+            
+            # Test that GitNotInstalledError is raised
+            with pytest.raises(GitNotInstalledError):
+                verify_git_clean()
 
 
 class TestGetAccountabilityTools:

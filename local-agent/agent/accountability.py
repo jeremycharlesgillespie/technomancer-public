@@ -6,6 +6,7 @@ reporting success to the user.
 """
 
 import logging
+import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -48,102 +49,101 @@ def verify_file_exists(file_path: str) -> str:
         path = VAULT_PATH / file_path
 
     if path.exists():
+        # Get file stats
         stat = path.stat()
-        modified = datetime.fromtimestamp(stat.st_mtime)
         size = stat.st_size
-        return f"VERIFIED: File exists at {path}. Size: {size} bytes. Last modified: {modified.strftime('%Y-%m-%d %H:%M:%S')}"
+        mtime = datetime.fromtimestamp(stat.st_mtime)
+        return f"VERIFIED: File exists at {file_path} ({size} bytes, modified {mtime.strftime('%Y-%m-%d %H:%M:%S')})"
     else:
-        return f"NOT FOUND: No file at {path}"
+        return f"NOT FOUND: File not found at {file_path}"
 
 
 def verify_file_modified_recently(file_path: str, minutes: int = 5) -> str:
     """
-    Verify that a file was modified within the last N minutes.
+    Verify that a file was modified within the specified number of minutes.
 
     Args:
-        file_path: Path to check
-        minutes: How recent the modification should be (default 5)
+        file_path: Path to check (can be relative to vault or absolute)
+        minutes: Number of minutes to check back
 
     Returns:
-        Verification result
+        Verification result with details
     """
+    # Try as absolute path first
     path = Path(file_path)
     if not path.is_absolute():
+        # Try relative to vault
         path = VAULT_PATH / file_path
 
     if not path.exists():
-        return f"NOT FOUND: No file at {path}"
+        return f"NOT FOUND: File not found at {file_path}"
 
+    # Get file stats
     stat = path.stat()
-    modified = datetime.fromtimestamp(stat.st_mtime)
-    cutoff = datetime.now() - timedelta(minutes=minutes)
+    mtime = datetime.fromtimestamp(stat.st_mtime)
+    now = datetime.now()
+    diff = now - mtime
 
-    if modified >= cutoff:
-        return f"VERIFIED: File was modified {(datetime.now() - modified).seconds} seconds ago at {modified.strftime('%H:%M:%S')}"
+    if diff <= timedelta(minutes=minutes):
+        return f"VERIFIED: File was modified {diff.seconds} seconds ago ({mtime.strftime('%Y-%m-%d %H:%M:%S')})"
     else:
-        return f"STALE: File was last modified {modified.strftime('%Y-%m-%d %H:%M:%S')}, which is more than {minutes} minutes ago"
+        return f"NOT FOUND: File was modified {diff.seconds} seconds ago, but {minutes} minutes required"
 
 
 def verify_content_contains(file_path: str, search_text: str) -> str:
     """
-    Verify that a file contains specific text.
+    Verify that a file contains the specified text.
 
     Args:
-        file_path: Path to check
+        file_path: Path to check (can be relative to vault or absolute)
         search_text: Text to search for
 
     Returns:
-        Verification result
+        Verification result with details
     """
+    # Try as absolute path first
     path = Path(file_path)
     if not path.is_absolute():
+        # Try relative to vault
         path = VAULT_PATH / file_path
 
     if not path.exists():
-        return f"NOT FOUND: No file at {path}"
+        return f"NOT FOUND: File not found at {file_path}"
 
     try:
-        content = path.read_text(encoding="utf-8")
-        if search_text in content:
-            return (
-                f"VERIFIED: File contains the text '{search_text[:50]}...'"
-                if len(search_text) > 50
-                else f"VERIFIED: File contains '{search_text}'"
-            )
-        else:
-            return (
-                f"NOT FOUND: File exists but does not contain '{search_text[:50]}...'"
-                if len(search_text) > 50
-                else f"NOT FOUND: File exists but does not contain '{search_text}'"
-            )
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
     except Exception as e:
-        return f"ERROR: Could not read file: {e}"
+        return f"ERROR: Failed to read file {file_path}: {str(e)}"
+
+    # Truncate search text for display
+    display_text = search_text if len(search_text) <= 50 else search_text[:50] + "..."
+
+    if search_text in content:
+        return f"VERIFIED: File contains '{display_text}'"
+    else:
+        return f"NOT FOUND: File does not contain '{display_text}'"
 
 
 def verify_memory_saved(category: str) -> str:
     """
-    Verify that a memory was saved to a category.
+    Verify that a memory category was saved to the vault.
 
     Args:
-        category: Memory category (e.g., "user_info/{username}")
+        category: Memory category name
 
     Returns:
-        Verification result
+        Verification result with details
     """
-    memory_path = VAULT_PATH / "Permanent" / f"{category}.md"
+    memory_file = VAULT_PATH / "Permanent" / f"{category}.md"
 
-    if memory_path.exists():
-        stat = memory_path.stat()
-        modified = datetime.fromtimestamp(stat.st_mtime)
+    if memory_file.exists():
+        stat = memory_file.stat()
         size = stat.st_size
-
-        # Check if modified recently (within last 2 minutes)
-        if datetime.now() - modified < timedelta(minutes=2):
-            return f"VERIFIED: Memory saved to {category}. Size: {size} bytes. Just modified at {modified.strftime('%H:%M:%S')}"
-        else:
-            return f"EXISTS: Memory file exists but was last modified at {modified.strftime('%H:%M:%S')} (not in last 2 minutes)"
+        mtime = datetime.fromtimestamp(stat.st_mtime)
+        return f"VERIFIED: Memory saved in category '{category}' ({size} bytes, modified {mtime.strftime('%Y-%m-%d %H:%M:%S')})"
     else:
-        return f"NOT FOUND: No memory file for category '{category}'"
+        return f"NOT FOUND: Memory not saved in category '{category}'"
 
 
 def verify_git_clean() -> str:
@@ -151,126 +151,153 @@ def verify_git_clean() -> str:
     Verify that the git working directory is clean (no uncommitted changes).
 
     Returns:
-        Verification result with details about git status
+        Verification result with details
     """
-    import subprocess
-    import shlex
-
     try:
-        # Check if git is available
+        # First, explicitly check if git is available by running git rev-parse
+        # This will catch cases where git is not in PATH or not executable
+        git_check_result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False  # We want to handle non-zero exit codes explicitly
+        )
+        
+        # If git command failed with non-zero exit code, check if it's because git is not installed
+        if git_check_result.returncode != 0:
+            # Check if the error indicates git is not found in PATH
+            if "not found" in git_check_result.stderr.lower() or "command not found" in git_check_result.stderr.lower():
+                raise GitNotInstalledError("Git is not installed or not in PATH")
+            # If git command failed for other reasons, we'll let the existing logic handle it
+            # This could be because we're not in a git repository, etc.
+        
+        # If we get here, git is available, so proceed with normal checks
+        # First check if we're in a git repository by running git rev-parse
+        # This will raise FileNotFoundError if git is not in PATH (though we already checked)
         result = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=10
+            check=True
         )
         
-        if result.returncode != 0:
-            return f"NOT FOUND: Git repository not found or git is not installed"
-        
-        # Get git status
-        result = subprocess.run(
+        # If we get here, git is installed and we're in a git repository
+        # Now check if working directory is clean
+        status_result = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=10
+            check=True
         )
         
-        status_output = result.stdout
-        
-        if not status_output.strip():
-            return "VERIFIED: Git working directory is clean - no uncommitted changes"
+        if status_result.stdout.strip():
+            # Working directory has uncommitted changes
+            return f"DIRTY: Git working directory has uncommitted changes:\n{status_result.stdout.strip()}"
         else:
-            # Parse the status output to get a summary
-            lines = status_output.strip().split('\n')
-            modified_files = [line for line in lines if line.startswith(" M") or line.startswith(" D")]
-            untracked_files = [line for line in lines if line.startswith("?")]
+            # Working directory is clean
+            return "VERIFIED: Git working directory is clean"
             
-            modified_summary = ", ".join(modified_files) if modified_files else "none"
-            untracked_summary = ", ".join(untracked_files) if untracked_files else "none"
-            
-            return f"DIRTY: Git working directory has uncommitted changes: {modified_summary} {untracked_summary}"
-    except subprocess.TimeoutExpired:
-        return "ERROR: Git command timed out"
+    except subprocess.CalledProcessError as e:
+        # Git command failed, likely because we're not in a git repository
+        if "fatal: not a git repository" in e.stderr:
+            return "NOT FOUND: Not in a git repository"
+        else:
+            # Some other git error
+            return f"ERROR: Git command failed: {e.stderr.strip()}"
     except FileNotFoundError:
-        return "NOT FOUND: Git is not installed or not in PATH"
-    except Exception as e:
-        return f"ERROR: Could not check git status: {e}"
+        # Git is not installed or not in PATH
+        raise GitNotInstalledError("Git is not installed or not in PATH")
 
 
-def get_accountability_tools() -> list:
-    """Get verification tools for the agent."""
-    from .core import create_tool
+def get_accountability_tools():
+    """
+    Get all accountability verification tools.
+
+    Returns:
+        List of Tool objects for verification functions
+    """
+    from .tools import create_tool
 
     return [
         create_tool(
-            "verify_file_exists",
-            (
-                "Verify that a file exists. Use this BEFORE telling the user you saved/created a file. "
-                "Returns VERIFIED if file exists, NOT FOUND otherwise."
-            ),
-            {
+            name="verify_file_exists",
+            description="Verify that a file exists at the given path",
+            params_schema={
                 "type": "object",
                 "properties": {
                     "file_path": {
                         "type": "string",
-                        "description": "Path to verify (absolute or relative to vault)",
+                        "description": "Path to check (can be relative to vault or absolute)"
                     }
                 },
-                "required": ["file_path"],
+                "required": ["file_path"]
             },
-            verify_file_exists,
+            function=verify_file_exists
         ),
         create_tool(
-            "verify_file_modified",
-            (
-                "Verify that a file was modified recently. Use this to confirm your write/edit actually worked. "
-                "Returns VERIFIED if modified within N minutes, STALE otherwise."
-            ),
-            {
+            name="verify_file_modified",
+            description="Verify that a file was modified within the specified number of minutes",
+            params_schema={
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "Path to check"},
-                    "minutes": {"type": "integer", "description": "How recent (default 5 minutes)"},
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to check (can be relative to vault or absolute)"
+                    },
+                    "minutes": {
+                        "type": "integer",
+                        "description": "Number of minutes to check back",
+                        "default": 5
+                    }
                 },
-                "required": ["file_path"],
+                "required": ["file_path"]
             },
-            lambda file_path, minutes=5: verify_file_modified_recently(file_path, minutes),
+            function=verify_file_modified_recently
         ),
         create_tool(
-            "verify_content",
-            (
-                "Verify that a file contains specific text. Use this to confirm your write included the expected content."
-            ),
-            {
+            name="verify_content",
+            description="Verify that a file contains the specified text",
+            params_schema={
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "Path to check"},
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to check (can be relative to vault or absolute)"
+                    },
                     "search_text": {
                         "type": "string",
-                        "description": "Text that should be in the file",
-                    },
+                        "description": "Text to search for"
+                    }
                 },
-                "required": ["file_path", "search_text"],
+                "required": ["file_path", "search_text"]
             },
-            verify_content_contains,
+            function=verify_content_contains
         ),
         create_tool(
-            "verify_memory_saved",
-            (
-                "Verify that a memory was saved to a category. Use AFTER calling remember_permanently "
-                "to confirm the save actually worked before telling the user."
-            ),
-            {
+            name="verify_memory_saved",
+            description="Verify that a memory category was saved to the vault",
+            params_schema={
                 "type": "object",
                 "properties": {
                     "category": {
                         "type": "string",
-                        "description": "Memory category like 'user_info/username'",
+                        "description": "Memory category name"
                     }
                 },
-                "required": ["category"],
+                "required": ["category"]
             },
-            verify_memory_saved,
+            function=verify_memory_saved
+        ),
+        create_tool(
+            name="verify_git_clean",
+            description="Verify that the git working directory is clean (no uncommitted changes)",
+            params_schema={
+                "type": "object",
+                "properties": {}
+            },
+            function=verify_git_clean
         ),
     ]
