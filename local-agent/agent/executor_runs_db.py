@@ -1208,9 +1208,9 @@ def _purge_old_artifact_files(cutoff_ts: float) -> int:
     for run_dir in ARTIFACTS_DIR.iterdir():
         if not run_dir.is_dir():
             continue
-        for entry in list(run_dir.iterdir()):
-            if not entry.is_file():
-                continue
+        # Use _discover_artifacts to get the list of artifact files
+        artifact_files = _discover_artifacts(run_dir.name)
+        for entry in artifact_files:
             try:
                 if entry.stat().st_mtime < cutoff_ts:
                     entry.unlink()
@@ -1232,6 +1232,31 @@ def _purge_old_artifact_files(cutoff_ts: float) -> int:
                 )
         except OSError:
             pass
+    return removed
+
+
+def cleanup_run_artifacts(run_id: str, cutoff_ts: float) -> int:
+    """Clean up artifact files for a specific run ID using _discover_artifacts helper.
+
+    Args:
+        run_id: The run ID to clean up artifacts for.
+        cutoff_ts: Timestamp cutoff for artifact files.
+
+    Returns:
+        Number of artifact files that were unlinked.
+    """
+    # Use _discover_artifacts to get the list of artifact files for this run
+    artifact_files = _discover_artifacts(run_id)
+    removed = 0
+    for entry in artifact_files:
+        try:
+            if entry.stat().st_mtime < cutoff_ts:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            log.warning(
+                "Failed to purge artifact file %s", entry, exc_info=True
+            )
     return removed
 
 
