@@ -36,3 +36,20 @@ class TestProjectKeyForComprehensive:
             with patch("idea_board.executor.settings.jira_project_key", "CUSTOM"):
                 assert _project_key_for("any-id") == "CUSTOM"
                 assert _project_key_for("TK-123") == "CUSTOM"  # Should override prefix logic
+
+    def test_whitespace_only_inputs(self):
+        """Test that whitespace-only inputs return None (TK-1194 requirement)."""
+        with patch("idea_board.executor.settings.jira_project_key", None):
+            # These are the exact cases mentioned in the story
+            whitespace_cases = [
+                "   ",      # spaces only
+                "\t\n",     # tabs and newlines  
+                " \t \n ",  # mixed whitespace
+                "",         # empty string
+                " ",        # single space
+                "\t",       # tab only
+                "\n",       # newline only
+            ]
+            
+            for case in whitespace_cases:
+                assert _project_key_for(case) is None, f"Expected None for {repr(case)}"
