@@ -52,6 +52,7 @@ def _project_key_for(idea_id: str | None) -> str | None:
     
     Handles malformed inputs gracefully by returning None instead of crashing.
     Returns ``None`` for inputs lacking digits (e.g., plain text without numbers).
+    Returns ``None`` for inputs with non-alphabetic prefixes (e.g., "123-456" or "123abc-456").
     """
     if settings.jira_project_key:
         return settings.jira_project_key
@@ -70,6 +71,7 @@ def _project_key_for(idea_id: str | None) -> str | None:
         
     if idea_id and "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
+        # Ensure prefix is alphabetic (contains only letters)
         if prefix.isalpha():
             return prefix.upper()
     return None
