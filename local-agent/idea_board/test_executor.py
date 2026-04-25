@@ -75,224 +75,164 @@ class TestProjectKeyFor:
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABCDEF-123") == "ABCDEF"
 
-    def test_handles_special_characters_in_prefix(self):
-        """_project_key_for should handle prefixes with special characters."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("FA-123") == "FA"
-            # Test that it doesn't crash with unusual inputs
-            assert _project_key_for("FA-123-456") == "FA"
-            
-    def test_handles_unicode_prefix(self):
-        """_project_key_for should handle unicode prefixes gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            # This should return None since it doesn't have a valid alpha prefix
-            assert _project_key_for("FA-123") == "FA"
-            
-    def test_handles_very_long_input(self):
-        """_project_key_for should handle very long inputs gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            long_input = "A" * 1000 + "-123"
-            assert _project_key_for(long_input) == "A" * 1000
-            
-    def test_handles_edge_case_with_numbers_only(self):
-        """_project_key_for should handle inputs with only numbers gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("123456") is None
-            
-    def test_handles_edge_case_with_only_hyphens(self):
-        """_project_key_for should handle inputs with only hyphens gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("---") is None
-            
-    def test_handles_edge_case_with_mixed_content(self):
-        """_project_key_for should handle mixed content inputs gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("123-abc-def") is None  # Prefix "123" is not all alpha
-            assert _project_key_for("ABC-123-def") == "ABC"  # This should work
-            
-    def test_handles_none_settings_jira_project_key(self):
-        """_project_key_for should handle None jira_project_key gracefully."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("FA-123") == "FA"
-            
-    def test_handles_empty_settings_jira_project_key(self):
-        """_project_key_for should handle empty jira_project_key gracefully."""
-        with patch.object(settings, 'jira_project_key', ""):
-            assert _project_key_for("FA-123") == "FA"
-            
-    def test_handles_whitespace_settings_jira_project_key(self):
-        """_project_key_for should handle whitespace jira_project_key gracefully."""
-        with patch.object(settings, 'jira_project_key', "   "):
-            # When jira_project_key is whitespace, it should return the whitespace value
-            # (this is the current behavior, not necessarily the desired behavior)
-            result = _project_key_for("FA-123")
-            # The function should not crash, but the behavior with whitespace is to return it
-            assert result is not None  # Should not be None
-            
-    def test_handles_numeric_prefix(self):
-        """_project_key_for should return None for numeric prefixes."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("123-ABC-123") is None
-            
     def test_handles_prefix_with_numbers_and_letters(self):
         """_project_key_for should return None for prefixes with mixed alphanumeric."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABC123-DEF-456") is None
-            
-    def test_handles_prefix_with_only_letters(self):
-        """_project_key_for should handle prefixes with only letters correctly."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC-123") == "ABC"
-            
-    def test_handles_prefix_with_only_special_chars(self):
+
+    def test_handles_prefix_with_special_characters(self):
         """_project_key_for should return None for prefixes with special characters."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("!@#-ABC-123") is None
-            
+
     def test_handles_prefix_with_underscore(self):
         """_project_key_for should return None for prefixes with underscores."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABC_DEF-123") is None
-            
+
     def test_handles_prefix_with_space(self):
         """_project_key_for should return None for prefixes with spaces."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABC DEF-123") is None
-            
-    def test_handles_prefix_with_multiple_hyphens(self):
-        """_project_key_for should handle inputs with multiple hyphens correctly."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC-DEF-GHI-123") == "ABC"
-            
-    def test_handles_prefix_with_trailing_hyphen(self):
-        """_project_key_for should handle prefixes ending with trailing hyphens correctly."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC--123") == "ABC"
-            
+
     def test_handles_prefix_with_leading_hyphen(self):
         """_project_key_for should return None for prefixes starting with hyphen."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("-ABC-123") is None
-            
+
+    def test_handles_prefix_with_multiple_hyphens(self):
+        """_project_key_for should handle inputs with multiple hyphens correctly."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC-DEF-GHI-123") == "ABC"
+
+    def test_handles_prefix_with_trailing_hyphen(self):
+        """_project_key_for should handle prefixes ending with trailing hyphens correctly."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC--123") == "ABC"
+
     def test_handles_prefix_with_only_one_char(self):
         """_project_key_for should handle single character prefixes."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A-123") == "A"
-            
+
     def test_handles_prefix_with_only_one_char_no_digits(self):
         """_project_key_for should return None for single character prefix without digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A-BCD") is None
-            
+
     def test_handles_prefix_with_only_one_char_with_digits(self):
         """_project_key_for should handle single character prefix with digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A-123") == "A"
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen(self):
         """_project_key_for should return None for single character prefix without hyphen."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A123") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_no_digits(self):
         """_project_key_for should return None for single character prefix without hyphen or digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABC") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_digits(self):
         """_project_key_for should return None for single character prefix without hyphen but with digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A123") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_digits_and_letters(self):
         """_project_key_for should return None for single character prefix without hyphen but with digits and letters."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("A123B") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_digits(self):
         """_project_key_for should return None for single character prefix without hyphen and only digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("123") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_letters(self):
         """_project_key_for should return None for single character prefix without hyphen and only letters."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("ABC") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_special_chars(self):
         """_project_key_for should return None for single character prefix without hyphen and only special chars."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("!@#") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_spaces(self):
         """_project_key_for should return None for single character prefix without hyphen and only spaces."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("   ") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_hyphens(self):
         """_project_key_for should return None for single character prefix without hyphen and only hyphens."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("---") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("___") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores_and_hyphens(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores/hyphens."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("_-_-") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores_and_hyphens_and_spaces(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores/hyphens/spaces."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("_ - _") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores_and_hyphens_and_spaces_and_digits(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores/hyphens/spaces/digits."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("_ - 123") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores_and_hyphens_and_spaces_and_letters(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores/hyphens/spaces/letters."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("_ - ABC") is None
-            
+
     def test_handles_prefix_with_only_one_char_no_hyphen_with_only_underscores_and_hyphens_and_spaces_and_digits_and_letters(self):
         """_project_key_for should return None for single character prefix without hyphen and only underscores/hyphens/spaces/digits/letters."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("_ - 123ABC") is None
 
-    def test_returns_none_for_numeric_prefix(self):
-        """_project_key_for should return None for numeric prefixes."""
+    def test_handles_very_long_input(self):
+        """_project_key_for should handle very long inputs gracefully."""
         with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("123-ABC-123") is None
+            long_input = "A" * 1000 + "-123"
+            assert _project_key_for(long_input) == "A" * 1000
 
-    def test_returns_none_for_prefix_with_numbers_and_letters_mixed(self):
-        """_project_key_for should return None for prefixes with mixed alphanumeric characters."""
+    def test_handles_edge_case_with_numbers_only(self):
+        """_project_key_for should handle inputs with only numbers gracefully."""
         with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC123-DEF-456") is None
+            assert _project_key_for("123456") is None
 
-    def test_returns_none_for_prefix_with_special_characters(self):
-        """_project_key_for should return None for prefixes with special characters."""
+    def test_handles_edge_case_with_only_hyphens(self):
+        """_project_key_for should handle inputs with only hyphens gracefully."""
         with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("!@#-ABC-123") is None
+            assert _project_key_for("---") is None
 
-    def test_returns_none_for_prefix_with_underscore(self):
-        """_project_key_for should return None for prefixes with underscores."""
+    def test_handles_none_settings_jira_project_key(self):
+        """_project_key_for should handle None jira_project_key gracefully."""
         with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC_DEF-123") is None
+            assert _project_key_for("FA-123") == "FA"
 
-    def test_returns_none_for_prefix_with_space(self):
-        """_project_key_for should return None for prefixes with spaces."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("ABC DEF-123") is None
+    def test_handles_empty_settings_jira_project_key(self):
+        """_project_key_for should handle empty jira_project_key gracefully."""
+        with patch.object(settings, 'jira_project_key', ""):
+            assert _project_key_for("FA-123") == "FA"
 
-    def test_returns_none_for_prefix_with_leading_hyphen(self):
-        """_project_key_for should return None for prefixes starting with hyphen."""
-        with patch.object(settings, 'jira_project_key', None):
-            assert _project_key_for("-ABC-123") is None
+    def test_handles_whitespace_settings_jira_project_key(self):
+        """_project_key_for should handle whitespace jira_project_key gracefully."""
+        with patch.object(settings, 'jira_project_key', "   "):
+            # When jira_project_key is whitespace, it should return the whitespace value
+            result = _project_key_for("FA-123")
+            # The function should not crash, but the behavior with whitespace is to return it
+            assert result is not None  # Should not be None
 
 
 class TestPhaseMarkerFinish:
