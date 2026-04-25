@@ -120,6 +120,7 @@ def _patch_orchestrator_helpers(
     return {
         "_do_attempt": patch.object(ab_executor, "_do_attempt", do_attempt_mock),
         "_ollama_has_model": patch.object(ab_executor, "_ollama_has_model", return_value=b_model_pulled),
+        "_unload_ollama_model": patch.object(ab_executor, "_unload_ollama_model", return_value=True),
         "_capture_diff": patch.object(ab_executor, "_capture_diff", return_value="diff text"),
         "_reset_to_main": patch.object(ab_executor, "_reset_to_main", return_value=True),
         "_push_branch": patch.object(ab_executor, "_push_branch", return_value=(True, "pushed")),
@@ -266,3 +267,109 @@ def test_run_rows_persisted_with_branch_and_sha(fake_idea_provider, patch_settin
     shas = {r["commit_sha"] for r in rows}
     assert branches == {"br-a", "br-b"}
     assert shas == {"aaaaaaa", "bbbbbbb"}
+
+
+# ---------------------------------------------------------------------------
+# Model-unload between A and B + at end-of-run
+# ---------------------------------------------------------------------------
+
+def test_model_a_unloaded_before_b_starts(fake_idea_provider, patch_settings) -> None:
+    """A's model is evicted (keep_alive=0) before B's run begins.
+
+    Why: both coder runs pin keep_alive=-1, so without an explicit unload
+    the Ollama scheduler may try to keep both 25-30 GB models resident
+    and thrash. The orchestrator must unload A between runs.
+    """
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    state, mocks = _run_with_patches("TK-UNLOAD-1", patches)
+
+    unload = mocks["_unload_ollama_model"]
+    # Called at least twice: once after A (before B), once at end-of-run.
+    assert unload.call_count >= 2
+    # First positional arg of the first call must be model A.
+    first_call = unload.call_args_list[0]
+    assert first_call.args[0] == "model-a:tag"
+
+
+def test_model_b_unloaded_at_run_end(fake_idea_provider, patch_settings) -> None:
+    """The final unload (in the orchestrator's finally block) targets model B
+    so the next AIM cycle starts with clean VRAM."""
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    state, mocks = _run_with_patches("TK-UNLOAD-2", patches)
+
+    unload = mocks["_unload_ollama_model"]
+    # Last call must be model B.
+    last_call = unload.call_args_list[-1]
+    assert last_call.args[0] == "model-b:tag"
+
+
+def test_unload_runs_even_when_both_fail(fake_idea_provider, patch_settings) -> None:
+    """End-of-run unload fires regardless of merge outcome — the finally
+    block must always clean VRAM."""
+    patches = _patch_orchestrator_helpers(a_success=False, b_success=False)
+    state, mocks = _run_with_patches("TK-UNLOAD-3", patches)
+
+    unload = mocks["_unload_ollama_model"]
+    # Even with both failing, the final unload of B fires.
+    final_calls = [c for c in unload.call_args_list if c.args[0] == "model-b:tag"]
+    assert len(final_calls) >= 1
+
+
+def test_no_unload_when_models_identical(fake_idea_provider, monkeypatch) -> None:
+    """When A == B (degenerate config), the unload-between-runs is skipped
+    since there's nothing distinct to evict."""
+    from agent import config as _config
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_a", "same:tag", raising=False)
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_b", "same:tag", raising=False)
+    monkeypatch.setattr(_config.settings, "project_root", "/tmp/fake-root", raising=False)
+
+    patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+    state, mocks = _run_with_patches("TK-UNLOAD-4", patches)
+
+    # No unload call should target the shared tag.
+    unload = mocks["_unload_ollama_model"]
+    same_tag_calls = [c for c in unload.call_args_list if c.args[0] == "same:tag"]
+    assert same_tag_calls == []
+
+
+def test_unload_helper_posts_keep_alive_zero(monkeypatch) -> None:
+    """_unload_ollama_model posts keep_alive=0 to /api/generate with the
+    target tag — that's the Ollama-recommended way to evict a runner."""
+    captured: dict[str, object] = {}
+
+    class _Resp:
+        status_code = 200
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Resp()
+
+    import requests as _requests
+    monkeypatch.setattr(_requests, "post", fake_post)
+
+    ok = ab_executor._unload_ollama_model("foo:bar")
+    assert ok is True
+    assert captured["json"]["model"] == "foo:bar"
+    assert captured["json"]["keep_alive"] == 0
+    assert captured["json"]["stream"] is False
+    assert captured["url"].endswith("/api/generate")
+
+
+def test_unload_helper_returns_false_on_empty_tag() -> None:
+    """Empty / falsy tag → no-op, returns False (don't burn an HTTP call)."""
+    assert ab_executor._unload_ollama_model("") is False
+
+
+def test_unload_helper_swallows_network_errors(monkeypatch) -> None:
+    """Network errors must NOT raise — orchestrator should proceed even if
+    Ollama is briefly unreachable. Worst case Ollama auto-evicts when the
+    next model is requested."""
+    import requests as _requests
+
+    def boom(*a, **kw):
+        raise _requests.RequestException("connection refused")
+
+    monkeypatch.setattr(_requests, "post", boom)
+    assert ab_executor._unload_ollama_model("foo:bar") is False

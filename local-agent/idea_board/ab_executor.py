@@ -91,6 +91,43 @@ class _RunOutcome:
         return out
 
 
+def _unload_ollama_model(model_tag: str) -> bool:
+    """Force-evict ``model_tag`` from Ollama's resident set.
+
+    Posts ``keep_alive=0`` to ``/api/generate`` with an empty prompt,
+    which tells Ollama to drop the runner immediately. This is the
+    Ollama-recommended way to free VRAM without restarting the server.
+
+    Used between A and B runs so we never have BOTH coder models
+    resident at once — on memory-constrained boxes the second load
+    would page-thrash or fail outright.
+
+    Returns True on HTTP 200 (Ollama acknowledged the unload). False on
+    network error, non-200, or missing tag. Caller should log + proceed
+    either way (worst case Ollama auto-evicts when we ask for the next
+    model).
+    """
+    if not model_tag:
+        return False
+    try:
+        from agent.ollama_client import OLLAMA_HOST
+        import requests
+        r = requests.post(
+            f"{OLLAMA_HOST}/api/generate",
+            json={
+                "model": model_tag,
+                "prompt": "",
+                "stream": False,
+                "keep_alive": 0,
+            },
+            timeout=15,
+        )
+        return r.status_code == 200
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AB] unload %s failed: %s", model_tag, exc)
+        return False
+
+
 def _ollama_has_model(model_tag: str) -> bool:
     """Return True if ``ollama list`` reports ``model_tag`` as installed.
 
@@ -440,6 +477,15 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                         outcome_a.failure_log + f"\n[AB-push] {push_msg}"
                     ).strip()
 
+            # Evict model A before B loads — both coder runs pin
+            # ``keep_alive=-1`` in OllamaCoder, so without an explicit
+            # unload the scheduler may try to keep both 25-30 GB models
+            # resident and thrash. We accept the ~6s reload penalty for
+            # the next AIM cycle in exchange for clean single-model VRAM.
+            if model_a != model_b:
+                state.log(f"[AB] unloading model A ({model_a}) before B")
+                _unload_ollama_model(model_a)
+
             # Reset to clean main before B.
             if not _reset_to_main(project_root, state):
                 state.log("[AB] failed to reset to main between runs — aborting")
@@ -593,6 +639,12 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 pass
             mark_failed(idea_id, state.log_text[-5000:])
         finally:
+            # Evict model B at run end — keeps VRAM clean for the next
+            # AIM cycle (which starts with model A again). Skipped when
+            # A == B since there's nothing distinct to unload.
+            if model_b and model_a != model_b:
+                state.log(f"[AB] unloading model B ({model_b}) at run end")
+                _unload_ollama_model(model_b)
             _active.pop(idea_id, None)
 
     thread = threading.Thread(target=_run, daemon=True, name=f"ab-executor-{idea_id}")
