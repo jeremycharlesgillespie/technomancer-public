@@ -26,6 +26,7 @@ from idea_board.executor import (
     _build_story_prompt,
     _classify_rate_limit,
     _clear_execution_artifacts,
+    _detect_uncollected_test_files,
     _find_related_tests,
     _format_injected_epic_context,
     _get_pytest_timeout_warning,
@@ -2188,3 +2189,113 @@ class TestPromptCacheFlag:
             f'Expected --exclude-dynamic-system-prompt-sections in both '
             f'the primary cmd and fix_cmd, found {occurrences} occurrence(s)'
         )
+
+
+# ---------------------------------------------------------------------------
+# _detect_uncollected_test_files
+# ---------------------------------------------------------------------------
+
+
+class TestDetectUncollectedTestFiles:
+    """A story that adds a test file under a non-conforming name (not
+    starting with ``test_`` and not ending with ``_test.py``) is silently
+    skipped by pytest. The executor must detect this and abort deploy.
+    See: TK-1184 incident (2026-04-24).
+    """
+
+    def _fake_diff(self, paths: list[str]):
+        """Return a MagicMock subprocess.run that yields ``paths`` from diff."""
+        result = MagicMock()
+        result.stdout = "\n".join(paths) + ("\n" if paths else "")
+        result.returncode = 0
+        return result
+
+    def test_flags_test_file_with_non_conforming_name(self):
+        """tests/jira_retry_permanent.py — pytest will skip this."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/jira_retry_permanent.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == ["local-agent/tests/jira_retry_permanent.py"]
+
+    def test_allows_conforming_test_file(self):
+        """tests/unit/test_foo.py — pytest collects this normally."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/unit/test_foo.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_allows_underscore_test_suffix(self):
+        """tests/unit/foo_test.py — also collected by default."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/unit/foo_test.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_ignores_conftest(self):
+        """conftest.py is a fixture file, not a test — don't flag."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/conftest.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_ignores_init_py(self):
+        """__init__.py is a package marker, not a test."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/unit/__init__.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_ignores_non_test_directory_files(self):
+        """agent/foo.py is source, not a test — don't flag."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/agent/foo.py"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_ignores_non_python_files(self):
+        """tests/data.json is a fixture, not a test — don't flag."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff(
+                ["local-agent/tests/data.json"]
+            )
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_returns_multiple_offenders(self):
+        """All non-conforming test files are flagged together."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff([
+                "local-agent/tests/foo.py",
+                "local-agent/tests/unit/test_ok.py",
+                "local-agent/tests/jira_retry_permanent.py",
+            ])
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert sorted(uncollected) == [
+                "local-agent/tests/foo.py",
+                "local-agent/tests/jira_retry_permanent.py",
+            ]
+
+    def test_handles_empty_diff(self):
+        """No files changed -> nothing to flag."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = self._fake_diff([])
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []
+
+    def test_handles_subprocess_failure(self):
+        """If git diff blows up, return empty list rather than crash."""
+        with patch("subprocess.run", side_effect=OSError("boom")):
+            uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
+            assert uncollected == []

@@ -12,6 +12,7 @@ import pytest
 from idea_board.ollama_coder import (
     OllamaCoder,
     _classify_error_hint,
+    _find_related_tests_for_files,
     _fmt_args,
     _parse_failing_tests,
     _parse_tool_calls_from_content,
@@ -466,3 +467,90 @@ class TestHelpers:
         result = _fmt_args({"content": "x" * 100})
         assert len(result) < 200
         assert "..." in result
+
+
+# ---------------------------------------------------------------------------
+# _find_related_tests_for_files
+# ---------------------------------------------------------------------------
+
+
+class TestFindRelatedTestsForFiles:
+    """Verify the helper that decides which test files OllamaCoder runs each
+    round. Must include changed test files directly so the Worker validates
+    its OWN test additions, but only when the filename matches pytest's
+    default discovery patterns. Files like ``tests/jira_retry_permanent.py``
+    are intentionally NOT returned here — the executor has a separate
+    pre-suite check that fails them loudly. See: TK-1184 incident.
+    """
+
+    def test_includes_conventional_test_for_changed_source(self, tmp_path: Path) -> None:
+        unit_dir = tmp_path / "local-agent" / "tests" / "unit"
+        unit_dir.mkdir(parents=True)
+        target = unit_dir / "test_foo.py"
+        target.write_text("# test")
+
+        result = _find_related_tests_for_files(
+            [str(tmp_path / "local-agent" / "agent" / "foo.py")],
+            tmp_path,
+        )
+
+        assert str(target) in result
+
+    def test_includes_changed_test_file_directly(self, tmp_path: Path) -> None:
+        """A branch that adds tests/unit/test_new.py should run that file."""
+        unit_dir = tmp_path / "local-agent" / "tests" / "unit"
+        unit_dir.mkdir(parents=True)
+        new_test = unit_dir / "test_new.py"
+        new_test.write_text("# test")
+
+        result = _find_related_tests_for_files([str(new_test)], tmp_path)
+
+        assert str(new_test) in result
+
+    def test_skips_uncollectable_test_filename(self, tmp_path: Path) -> None:
+        """tests/jira_retry_permanent.py is NOT collected by pytest's
+        default discovery, so don't include it. The executor's pre-suite
+        check is responsible for failing this case."""
+        tests_dir = tmp_path / "local-agent" / "tests"
+        tests_dir.mkdir(parents=True)
+        unit_dir = tests_dir / "unit"
+        unit_dir.mkdir()
+        bad = tests_dir / "jira_retry_permanent.py"
+        bad.write_text("# test")
+
+        result = _find_related_tests_for_files([str(bad)], tmp_path)
+
+        assert str(bad) not in result
+
+    def test_skips_conftest(self, tmp_path: Path) -> None:
+        """conftest.py is fixtures, not tests."""
+        unit_dir = tmp_path / "local-agent" / "tests" / "unit"
+        unit_dir.mkdir(parents=True)
+        conftest = unit_dir / "conftest.py"
+        conftest.write_text("# fixtures")
+
+        result = _find_related_tests_for_files([str(conftest)], tmp_path)
+
+        assert str(conftest) not in result
+
+    def test_underscore_test_suffix_collected(self, tmp_path: Path) -> None:
+        """foo_test.py also matches default discovery."""
+        unit_dir = tmp_path / "local-agent" / "tests" / "unit"
+        unit_dir.mkdir(parents=True)
+        target = unit_dir / "foo_test.py"
+        target.write_text("# test")
+
+        result = _find_related_tests_for_files([str(target)], tmp_path)
+
+        assert str(target) in result
+
+    def test_returns_empty_when_no_matches(self, tmp_path: Path) -> None:
+        unit_dir = tmp_path / "local-agent" / "tests" / "unit"
+        unit_dir.mkdir(parents=True)
+
+        result = _find_related_tests_for_files(
+            [str(tmp_path / "local-agent" / "agent" / "nonexistent.py")],
+            tmp_path,
+        )
+
+        assert result == []

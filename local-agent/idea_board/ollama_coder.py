@@ -833,20 +833,52 @@ def _parse_failing_tests(output: str) -> list[str]:
 
 
 def _find_related_tests_for_files(changed_files: list[str], project_root: Path) -> list[str]:
-    """Find test files related to changed source files."""
+    """Find test files relevant to the current branch's changes.
+
+    Includes:
+    1. Conventionally named tests for changed source files
+       (``agent/foo.py`` -> ``tests/unit/test_foo.py``).
+    2. Test files the branch itself changed or added — but only when their
+       filename matches pytest's default discovery patterns (``test_*.py``
+       or ``*_test.py``). Test files written under non-conforming names
+       are skipped here intentionally so the executor's pre-suite check
+       (see ``_detect_uncollected_test_files`` in executor.py) catches and
+       fails them instead of silently no-op'ing.
+    """
     # Tests live in local-agent/tests/unit/
     test_dir = project_root / "local-agent" / "tests" / "unit"
     if not test_dir.is_dir():
         test_dir = project_root / "tests" / "unit"
     if not test_dir.is_dir():
         return []
-    related: list[str] = []
+    related: set[str] = set()
     for src in changed_files:
-        stem = Path(src).stem
+        src_path = Path(src)
+        # 1. Conventional test file for the changed source.
+        stem = src_path.stem
         test_file = test_dir / f"test_{stem}.py"
         if test_file.exists():
-            related.append(str(test_file))
-    return related
+            related.add(str(test_file))
+        # 2. The changed file is itself a test under tests/.
+        try:
+            parts = src_path.parts
+        except Exception:
+            continue
+        if "tests" not in parts:
+            continue
+        name = src_path.name
+        if name in {"conftest.py", "__init__.py"}:
+            continue
+        if not (name.startswith("test_") or name.endswith("_test.py")):
+            # Pytest will skip this file — don't include it.
+            continue
+        if src_path.is_absolute() and src_path.exists():
+            related.add(str(src_path))
+        else:
+            candidate = project_root / src_path
+            if candidate.exists():
+                related.add(str(candidate))
+    return sorted(related)
 
 
 def _parse_tool_calls_from_content(content: str) -> list[dict[str, Any]]:

@@ -751,6 +751,50 @@ def _parse_pytest_failures(output: str) -> set[str]:
     return failures
 
 
+def _detect_uncollected_test_files(project_root: Path) -> list[str]:
+    """Return paths of test files added on this branch that pytest will skip.
+
+    Pytest default discovery matches ``test_*.py`` and ``*_test.py``. A story
+    that adds a test file under another name (e.g. ``tests/jira_retry_permanent.py``)
+    will silently never run — the suite passes, the story merges, and the
+    "tests" only execute when someone points pytest at the file directly.
+
+    Detection runs ``git diff --name-only main...HEAD``, filters added files
+    under ``tests/`` ending in ``.py``, and returns the ones whose basename
+    does not start with ``test_`` and does not end with ``_test.py``.
+    ``conftest.py`` and ``__init__.py`` are excluded — they're not tests.
+
+    Returns paths relative to ``project_root`` (e.g. ``local-agent/tests/foo.py``).
+    """
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", "--diff-filter=A", "main...HEAD"],
+            capture_output=True, text=True, timeout=10,
+            cwd=str(project_root),
+        )
+    except Exception:
+        return []
+    EXCLUDED = {"conftest.py", "__init__.py"}
+    uncollected: list[str] = []
+    for line in diff.stdout.splitlines():
+        path = line.strip()
+        if not path.endswith(".py"):
+            continue
+        if "/tests/" not in path and not path.startswith("tests/") and "tests/" not in path:
+            continue
+        # Must actually be inside a tests/ directory, not just contain "tests/"
+        parts = Path(path).parts
+        if "tests" not in parts:
+            continue
+        name = Path(path).name
+        if name in EXCLUDED:
+            continue
+        if name.startswith("test_") or name.endswith("_test.py"):
+            continue
+        uncollected.append(path)
+    return uncollected
+
+
 def _load_known_failures() -> set[str]:
     """Load known test failures from the last successful full suite run."""
     if KNOWN_FAILURES_FILE.exists():
@@ -2470,6 +2514,32 @@ def execute_idea(
                     )
                     return
 
+            # --- Pre-suite: catch test files pytest will silently skip ---
+            # If the story added a test file under a name pytest doesn't
+            # collect (e.g. tests/jira_retry_permanent.py — must be test_*.py
+            # or *_test.py), the full suite will pass without ever running
+            # those tests and the story will merge with broken tests on disk.
+            # See: TK-1184 incident (2026-04-24).
+            uncollected = _detect_uncollected_test_files(project_root)
+            if uncollected:
+                state.log("")
+                state.log("--- Test discovery check FAILED ---")
+                for path in uncollected:
+                    state.log(
+                        f"  {path}: filename will not be collected by pytest "
+                        f"(must start with test_ or end with _test.py)"
+                    )
+                state.log(
+                    "Aborting deploy — rename or move test files so pytest "
+                    "discovers them, otherwise the assertions never run."
+                )
+                mark_failed(idea_id, state.log_text[-5000:])
+                _notify_discord(
+                    f"Idea {idea_id} aborted — test files not collectable: "
+                    f"{idea.title}"
+                )
+                return
+
             # --- Full test suite (final gate before deploy) ---
             state.log("")
             state.log("--- Full test suite (parallel) ---")
@@ -2501,6 +2571,23 @@ def execute_idea(
             if full_result.returncode != 0:
                 # Check baseline diff
                 full_failures = _parse_pytest_failures(full_result.stdout)
+                # Fail-safe: pytest exited non-zero but the parser found no
+                # FAILED lines. This is a collection error, internal error,
+                # or output we can't interpret — never treat that as
+                # "all pre-existing" and merge anyway. See: TK-1184 incident.
+                if not full_failures:
+                    state.log(
+                        f"Full suite exited rc={full_result.returncode} "
+                        f"with no parseable FAILED lines — likely a "
+                        f"collection/import error. Aborting deploy."
+                    )
+                    state.log(full_result.stdout[-2000:])
+                    mark_failed(idea_id, state.log_text[-5000:])
+                    _notify_discord(
+                        f"Idea {idea_id} full suite errored "
+                        f"(unparseable): {idea.title}"
+                    )
+                    return
                 delta = full_failures - state.baseline_failures
                 if delta:
                     state.log(
