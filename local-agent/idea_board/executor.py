@@ -1825,6 +1825,7 @@ def execute_idea(
     host_override: str | None = None,
     branch_suffix: str | None = None,
     skip_merge: bool = False,
+    project_root_override: Path | None = None,
 ) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -1849,6 +1850,11 @@ def execute_idea(
             (localhost) with the given URL (e.g. ``http://192.168.1.150:11434``).
             Used by the A/B harness to point one model at a remote
             Ollama instance so A and B don't contend for the same GPU.
+        project_root_override: When set, overrides the settings-derived
+            project root for this single execution. Used by the A/B
+            harness to point each inner run at its own per-orchestrator
+            git worktree, so concurrent orchestrators (zombie + fresh)
+            never write to the same checkout.
             ``None`` or empty keeps the default localhost.
         branch_suffix: When set, appends ``-{branch_suffix}`` to the
             generated branch name. Used by the A/B harness so two runs
@@ -1923,8 +1929,13 @@ def execute_idea(
 
         # Multi-project: project_root comes from settings if configured,
         # otherwise auto-detect from this file's location (Technomancer default).
+        # ``project_root_override`` wins over both — used by the A/B harness
+        # to point an inner run at a per-orchestrator git worktree, so two
+        # competing orchestrators never write to the same checkout.
         from agent.config import settings as _settings
-        if _settings.project_root:
+        if project_root_override is not None:
+            project_root = Path(project_root_override)
+        elif _settings.project_root:
             project_root = Path(_settings.project_root)
         else:
             project_root = Path(__file__).parent.parent.parent

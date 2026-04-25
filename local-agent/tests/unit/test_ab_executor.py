@@ -137,6 +137,20 @@ def _patch_orchestrator_helpers(
         "mark_executing": patch("idea_board.ab_executor.mark_executing"),
         "mark_done": patch("idea_board.ab_executor.mark_done"),
         "mark_failed": patch("idea_board.ab_executor.mark_failed"),
+        # Per-orchestrator worktree: mocked by default so existing tests
+        # don't need a real git fixture. The cross-host / decision-tree
+        # tests don't care about worktree shape; new tests in
+        # ``TestWorktreeIsolation`` patch through to assert call shape.
+        "create_worktree": patch.object(
+            ab_executor.ab_worktree, "create_worktree",
+            return_value=Path("/tmp/fake-worktree-abc12345"),
+        ),
+        "remove_worktree": patch.object(
+            ab_executor.ab_worktree, "remove_worktree", return_value=True,
+        ),
+        "short_uuid": patch.object(
+            ab_executor.ab_worktree, "short_uuid", return_value="abc12345",
+        ),
     }
 
 
@@ -809,3 +823,140 @@ class TestOrchestratorCrossHostBehavior:
         assert len(a_calls) >= 1, (
             "model A should be unloaded between runs when both hosts match"
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-orchestrator worktree isolation — every execute_idea_ab run gets a
+# UUID-suffixed sibling git worktree so two orchestrators (e.g. zombie +
+# fresh) never write to the same checkout.
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeIsolation:
+    """``execute_idea_ab`` provisions a fresh git worktree, points the
+    inner runs at it via ``project_root_override``, and tears it down
+    in the orchestrator's ``finally``. The merge step still operates
+    on the main checkout so it can advance ``main`` and push."""
+
+    def test_create_worktree_called_with_short_uuid(
+        self, fake_idea_provider, patch_settings,
+    ):
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-WT-1", patches)
+
+        create = mocks["create_worktree"]
+        assert create.call_count == 1
+        # Slug is the second positional arg.
+        slug_arg = create.call_args.args[1]
+        # UUID is mocked to "abc12345" in _patch_orchestrator_helpers.
+        assert slug_arg == "abc12345"
+
+    def test_remove_worktree_called_after_run(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """The finally block always removes the worktree, regardless of
+        whether the run succeeded or failed."""
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-WT-2", patches)
+
+        remove = mocks["remove_worktree"]
+        assert remove.call_count == 1
+        # Second positional is the worktree path returned by create_worktree.
+        wt_arg = remove.call_args.args[1]
+        assert str(wt_arg) == "/tmp/fake-worktree-abc12345"
+
+    def test_remove_worktree_called_even_when_both_runs_fail(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """The finally block must run even when no merge happens."""
+        patches = _patch_orchestrator_helpers(a_success=False, b_success=False)
+        state, mocks = _run_with_patches("TK-WT-3", patches)
+
+        remove = mocks["remove_worktree"]
+        assert remove.call_count == 1
+
+    def test_inner_runs_receive_worktree_as_project_root(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """Both ``_do_attempt`` calls (A and B) must receive the worktree
+        path as ``project_root``, not the main checkout. Otherwise the
+        whole point of isolation is defeated."""
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-WT-4", patches)
+
+        do_attempt = mocks["_do_attempt"]
+        assert do_attempt.call_count == 2
+        for call in do_attempt.call_args_list:
+            project_root_kwarg = call.kwargs.get("project_root")
+            assert str(project_root_kwarg) == "/tmp/fake-worktree-abc12345", (
+                f"inner run got project_root={project_root_kwarg!r}, "
+                f"expected the worktree path"
+            )
+
+    def test_merge_runs_on_main_checkout_not_worktree(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """``_merge_winner`` must operate on the *main* checkout so it
+        can advance the ``main`` branch and push. If we ran merge from
+        the worktree we'd merge into a detached HEAD."""
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-WT-5", patches)
+
+        merge = mocks["_merge_winner"]
+        assert merge.call_count == 1
+        # 4th positional is project_root (state, branch, idea_id, project_root).
+        project_root_arg = merge.call_args.args[3]
+        # patch_settings sets project_root="/tmp/fake-root", and the
+        # worktree is "/tmp/fake-worktree-abc12345" — they must differ.
+        assert str(project_root_arg) == "/tmp/fake-root", (
+            f"merge got project_root={project_root_arg!r}, expected the "
+            f"main checkout '/tmp/fake-root' (NOT the worktree path)"
+        )
+
+    def test_worktree_creation_failure_falls_back_to_shared_root(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """When ``create_worktree`` raises, the orchestrator logs a loud
+        warning and continues in single-tree mode. This is dangerous (the
+        whole reason worktrees exist) but better than crashing the whole
+        run — the user will see the warning in the log."""
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        # Override create_worktree to raise.
+        patches["create_worktree"] = patch.object(
+            ab_executor.ab_worktree, "create_worktree",
+            side_effect=RuntimeError("git worktree add failed: simulated"),
+        )
+
+        state, mocks = _run_with_patches("TK-WT-6", patches)
+
+        # Inner runs were called with the *shared* project_root, not a
+        # worktree path. The orchestrator did NOT crash.
+        do_attempt = mocks["_do_attempt"]
+        assert do_attempt.call_count == 2
+        for call in do_attempt.call_args_list:
+            project_root_kwarg = call.kwargs.get("project_root")
+            assert str(project_root_kwarg) == "/tmp/fake-root"
+
+        # remove_worktree was NOT called because we never had a worktree.
+        assert mocks["remove_worktree"].call_count == 0
+
+        # Orchestrator log mentions the fallback.
+        assert "WORKTREE FAILED" in state.log_text
+
+    def test_remove_worktree_swallows_exceptions_in_finally(
+        self, fake_idea_provider, patch_settings,
+    ):
+        """Worktree removal must never raise out of the ``finally`` —
+        the worker depends on the orchestrator state being cleared."""
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        patches["remove_worktree"] = patch.object(
+            ab_executor.ab_worktree, "remove_worktree",
+            side_effect=OSError("permission denied"),
+        )
+
+        # Should not raise.
+        state, mocks = _run_with_patches("TK-WT-7", patches)
+
+        from idea_board import executor as _executor
+        # Registry was still cleaned up.
+        assert "TK-WT-7" not in _executor._ab_orchestrator_active

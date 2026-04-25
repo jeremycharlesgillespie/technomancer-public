@@ -55,6 +55,7 @@ from idea_board.executor import (
     mark_failed,
 )
 from idea_board import ab_repo
+from idea_board import ab_worktree
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,7 @@ def _do_attempt(
         host_override=host or None,
         branch_suffix=suffix,
         skip_merge=True,
+        project_root_override=project_root,
     )
     if inner is None or inner.thread is None:
         state.log(f"[AB] inner execute_idea returned None for model={model}")
@@ -515,6 +517,24 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
         ab_repo.record_run_start(run_a_id, idea_id, model_a, label_a)
         ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
 
+        # Per-orchestrator git worktree. UUID-suffixed sibling directory
+        # so two orchestrators (e.g. a stalled-but-not-killed zombie plus
+        # a fresh story) can never write to the same checkout. Falls back
+        # to single-tree mode (project_root) if worktree creation fails —
+        # logged loudly because that's the dangerous path.
+        wt_slug = ab_worktree.short_uuid()
+        worktree_root: Path | None = None
+        try:
+            worktree_root = ab_worktree.create_worktree(project_root, wt_slug)
+            work_root = worktree_root
+            state.log(f"[AB] using isolated worktree: {worktree_root}")
+        except Exception as exc:  # noqa: BLE001
+            state.log(
+                f"[AB] WORKTREE FAILED ({exc}) — falling back to shared "
+                f"project_root={project_root}. CONCURRENT RUNS MAY COLLIDE."
+            )
+            work_root = project_root
+
         try:
             # ----- Run A -----
             state.log(
@@ -525,7 +545,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 model=model_a,
                 suffix=suffix_a,
                 state=state,
-                project_root=project_root,
+                project_root=work_root,
                 inner_timeout=inner_timeout,
                 host=host_a,
             )
@@ -537,8 +557,8 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 outcome_a.failure_log = log_a
 
             if ok_a and branch_a:
-                outcome_a.diff = _capture_diff(project_root, branch_a)
-                push_ok, push_msg = _push_branch(state, branch_a, project_root)
+                outcome_a.diff = _capture_diff(work_root, branch_a)
+                push_ok, push_msg = _push_branch(state, branch_a, work_root)
                 if not push_ok:
                     outcome_a.status = "failed"
                     outcome_a.failure_log = (
@@ -567,8 +587,10 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     f"B on {host_b or 'localhost'} — skipping eviction"
                 )
 
-            # Reset to clean main before B.
-            if not _reset_to_main(project_root, state):
+            # Reset the worktree to clean main before B. We reset the
+            # *worktree*, not the main checkout — the main checkout is
+            # never touched by the inner runs and stays clean throughout.
+            if not _reset_to_main(work_root, state):
                 state.log("[AB] failed to reset to main between runs — aborting")
                 ab_repo.record_run_end(
                     run_a_id,
@@ -606,7 +628,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     model=model_b,
                     suffix=suffix_b,
                     state=state,
-                    project_root=project_root,
+                    project_root=work_root,
                     inner_timeout=inner_timeout,
                     host=host_b,
                 )
@@ -617,8 +639,8 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 if not ok_b:
                     outcome_b.failure_log = log_b
                 if ok_b and branch_b:
-                    outcome_b.diff = _capture_diff(project_root, branch_b)
-                    push_ok, push_msg = _push_branch(state, branch_b, project_root)
+                    outcome_b.diff = _capture_diff(work_root, branch_b)
+                    push_ok, push_msg = _push_branch(state, branch_b, work_root)
                     if not push_ok:
                         outcome_b.status = "failed"
                         outcome_b.failure_log = (
@@ -766,6 +788,19 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     f"{host_b or 'localhost'} at run end"
                 )
                 _unload_ollama_model(model_b, host=host_b)
+
+            # Tear down the per-orchestrator worktree. ``--force`` because
+            # the inner runs may have left uncommitted state we don't care
+            # about (any branch the orchestrator wanted to keep was already
+            # pushed). Failures are logged but never raise — the worker
+            # depends on this finally completing.
+            if worktree_root is not None:
+                try:
+                    ab_worktree.remove_worktree(project_root, worktree_root)
+                    state.log(f"[AB] removed worktree: {worktree_root}")
+                except Exception as exc:  # noqa: BLE001
+                    state.log(f"[AB] worktree removal raised (non-fatal): {exc}")
+
             _active.pop(idea_id, None)
             _ab_orchestrator_active.pop(idea_id, None)
 
