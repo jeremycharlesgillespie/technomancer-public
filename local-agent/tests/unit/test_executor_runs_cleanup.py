@@ -233,6 +233,32 @@ class TestArtifactCleanup:
         ).fetchone()["c"]
         assert tool_rows == 0
 
+    def test_handles_flat_log_file_directly(self, _isolate_db):
+        """Test that flat .log files are properly handled in artifact cleanup.
+        
+        This test validates the behavior that would be expected from a
+        _resolve_flat_artifacts function when processing .log files.
+        """
+        logs_dir = _isolate_db
+        started = datetime.now() - timedelta(days=45)
+        run_id = "test-log-file"
+        _seed_run(started, run_id, "TK-1")
+        
+        # Create a flat .log file directly
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        # Verify file exists before cleanup
+        assert log_file.exists()
+        
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, keep_last_n=0
+        )
+
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert not log_file.exists()
+
 
 # =========================================================================
 # Edge case tests for artifact removal functions
