@@ -18,7 +18,7 @@ import threading
 from typing import Optional
 
 try:
-    from prometheus_client import Counter, Histogram, start_http_server
+    from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
     HAS_PROMETHEUS = True
 except ImportError:
@@ -47,6 +47,9 @@ _llm_input_tokens_total: Optional["Counter"] = None
 _llm_output_tokens_total: Optional["Counter"] = None
 _knowledge_lookup_total: Optional["Counter"] = None
 _knowledge_lookup_duration: Optional["Histogram"] = None
+_ollama_model_loads_total: Optional["Counter"] = None
+_ollama_model_unloads_total: Optional["Counter"] = None
+_ollama_model_resident: Optional["Gauge"] = None
 
 _initialized = False
 _lock = threading.Lock()
@@ -61,6 +64,7 @@ def _ensure_metrics() -> bool:
     global _llm_call_duration, _llm_calls_total, _llm_call_errors_total
     global _llm_input_tokens_total, _llm_output_tokens_total, _initialized
     global _knowledge_lookup_total, _knowledge_lookup_duration
+    global _ollama_model_loads_total, _ollama_model_unloads_total, _ollama_model_resident
 
     if _initialized:
         return HAS_PROMETHEUS
@@ -110,6 +114,21 @@ def _ensure_metrics() -> bool:
             labelnames=["tier"],
             buckets=_KNOWLEDGE_LATENCY_BUCKETS,
         )
+        _ollama_model_loads_total = Counter(
+            "ollama_model_loads_total",
+            "Total number of Ollama model loads",
+            labelnames=["model"],
+        )
+        _ollama_model_unloads_total = Counter(
+            "ollama_model_unloads_total",
+            "Total number of Ollama model unloads",
+            labelnames=["model"],
+        )
+        _ollama_model_resident = Gauge(
+            "ollama_model_resident",
+            "Ollama model residency status (1 = resident, 0 = not resident)",
+            labelnames=["model"],
+        )
 
         _initialized = True
         return True
@@ -155,6 +174,43 @@ def record_knowledge_lookup(source: str, duration: float) -> None:
 
     _knowledge_lookup_total.labels(source=source).inc()
     _knowledge_lookup_duration.labels(tier=source).observe(duration)
+
+
+def record_ollama_model_load(model: str) -> None:
+    """Record an Ollama model load event.
+
+    This function should be called whenever a model is loaded into Ollama.
+    Safe to call even if prometheus_client is not installed (silently no-ops).
+    """
+    if not _ensure_metrics():
+        return
+
+    _ollama_model_loads_total.labels(model=model).inc()
+
+
+def record_ollama_model_unload(model: str) -> None:
+    """Record an Ollama model unload event.
+
+    This function should be called whenever a model is unloaded from Ollama.
+    Safe to call even if prometheus_client is not installed (silently no-ops).
+    """
+    if not _ensure_metrics():
+        return
+
+    _ollama_model_unloads_total.labels(model=model).inc()
+
+
+def set_ollama_model_resident(model: str, resident: bool) -> None:
+    """Set the residency status of an Ollama model.
+
+    This function should be called to update the gauge when a model's
+    residency status changes.
+    Safe to call even if prometheus_client is not installed (silently no-ops).
+    """
+    if not _ensure_metrics():
+        return
+
+    _ollama_model_resident.labels(model=model).set(1 if resident else 0)
 
 
 def start_metrics_server(port: int = DEFAULT_PORT) -> bool:
