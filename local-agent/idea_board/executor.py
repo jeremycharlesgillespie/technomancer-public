@@ -58,7 +58,11 @@ def _project_key_for(idea_id: str | None) -> str | None:
         return settings.jira_project_key
     
     # Reject obviously malformed inputs early
-    if not idea_id or not idea_id.strip() or idea_id in ('--', '-', '', ' '):
+    if not idea_id or not idea_id.strip():
+        return None
+    
+    # Explicitly check for empty string and whitespace-only inputs
+    if idea_id in ('--', '-', '', ' '):
         return None
     
     # Must contain at least one digit to be a valid story ID
