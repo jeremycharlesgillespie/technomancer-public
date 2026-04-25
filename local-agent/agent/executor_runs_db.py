@@ -50,6 +50,17 @@ log = logging.getLogger(__name__)
 # Leak counter for detecting connection leaks
 leak_counter = threading.local()
 
+
+def reset_leak_counter() -> None:
+    """Reset the leak counter to zero for clean test state.
+
+    This function clears any accumulated counter values from the thread-local
+    storage, ensuring tests start with a clean state. It's primarily used in
+    test fixtures to prevent counter pollution between test cases.
+    """
+    # Clear all attributes from the thread-local storage
+    leak_counter.__dict__.clear()
+
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "executor_runs.db"
 

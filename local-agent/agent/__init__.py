@@ -26,6 +26,7 @@ _install_anthropic_shim()
 
 from .claude_bridge import ClaudeBridge
 from .core import Agent, AgentConfig, Tool, create_tool
+from .leak_counter import reset as leak_counter_reset, get_count, increment
 from .notifications import discord_send
 from .tools import (
     get_all_tools,
@@ -45,5 +46,8 @@ __all__ = [
     "get_system_tools",
     "ClaudeBridge",
     "discord_send",
+    "leak_counter_reset",
+    "get_count",
+    "increment",
     "__version__",
 ]
