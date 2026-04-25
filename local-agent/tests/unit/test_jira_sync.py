@@ -506,6 +506,21 @@ class TestPostWithRetry:
         assert exc_info.value.attempts == 2
         assert mock_api.call_count == 2
 
+    @patch("idea_board.jira_sync._api")
+    def test_exception_message_includes_attempt_count(self, mock_api):
+        """Test that JiraRetryExhausted message includes the attempt count."""
+        mock_api.side_effect = [_resp(500)] * 5
+        sleeps: list[float] = []
+
+        with pytest.raises(JiraRetryExhausted) as exc_info:
+            _post_with_retry("/issue", {}, sleep=sleeps.append)
+
+        # Verify the message includes the attempt count
+        error_message = str(exc_info.value)
+        assert "failed after 5 attempts" in error_message
+        assert "last status=500" in error_message
+        assert error_message == "Jira POST /issue failed after 5 attempts (last status=500)"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
