@@ -412,27 +412,39 @@ def _append_execution_log_line(idea_id: str, line: str) -> None:
 
 def _prune_stale_execution_logs() -> None:
     """Delete ``execution_logs/*.log`` and ``*.done`` files whose stem is not
-    in ``_active``.
+    in ``_active`` AND that haven't been touched in the last 5 minutes.
 
     Called once at module import so the directory doesn't grow unboundedly
-    across executor restarts. At import time ``_active`` is empty, so this
-    effectively clears every leftover file — correct, because reaching module
-    load means no execution from a prior process can still be running here.
+    across executor restarts. The recency guard is critical: AIM, the worker,
+    and the hub web server all import this module independently, and a fresh
+    import in one process must NOT wipe the in-flight log/done files of a
+    concurrent worker. 5 minutes is well past the median story duration but
+    short enough that truly stale leftovers from crashed runs still get cleaned.
     """
     try:
         if not EXECUTION_LOGS_DIR.exists():
             return
+        recency_threshold_sec = 300
+        now = time.time()
         for artifact in EXECUTION_LOGS_DIR.iterdir():
             if artifact.suffix not in (".log", ".done"):
                 continue
-            if artifact.stem not in _active:
-                try:
-                    artifact.unlink()
-                except OSError as exc:
-                    logger.debug(
-                        "[Executor] Could not remove stale artifact %s: %s",
-                        artifact, exc,
-                    )
+            if artifact.stem in _active:
+                continue
+            try:
+                age = now - artifact.stat().st_mtime
+            except OSError:
+                continue
+            if age < recency_threshold_sec:
+                # Possibly belongs to a concurrent worker process — skip.
+                continue
+            try:
+                artifact.unlink()
+            except OSError as exc:
+                logger.debug(
+                    "[Executor] Could not remove stale artifact %s: %s",
+                    artifact, exc,
+                )
     except Exception as exc:
         logger.debug("[Executor] Failed to prune execution logs: %s", exc)
 

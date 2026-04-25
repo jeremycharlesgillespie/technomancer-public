@@ -1,9 +1,11 @@
 """Tests for idea_board.executor — pytest baseline, failure diffing, test targeting, and epic execution."""
 
 import logging
+import os
 import re
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1507,28 +1509,68 @@ class TestExecutionStateLogWritesFile:
 
 
 class TestPruneStaleExecutionLogs:
-    """_prune_stale_execution_logs: delete .log files not in _active."""
+    """_prune_stale_execution_logs: delete old .log files not in _active.
 
-    def test_removes_all_logs_when_active_empty(self, tmp_path, monkeypatch):
+    The recency guard (5 minutes) is critical: AIM, the worker, and the hub
+    web server all import idea_board.executor independently. A fresh import
+    in one process must NOT wipe a concurrent worker's in-flight log/done
+    files. So tests must backdate mtimes to simulate truly stale files.
+    """
+
+    @staticmethod
+    def _backdate(path: Path, seconds: int) -> None:
+        """Set path's mtime to ``seconds`` ago so the prune sees it as old."""
+        old = time.time() - seconds
+        os.utime(path, (old, old))
+
+    def test_removes_old_logs_when_active_empty(self, tmp_path, monkeypatch):
         logs_dir = tmp_path / "execution_logs"
         logs_dir.mkdir()
-        (logs_dir / "TK-100.log").write_text("stale a")
-        (logs_dir / "TK-200.log").write_text("stale b")
+        log_a = logs_dir / "TK-100.log"
+        log_b = logs_dir / "TK-200.log"
+        log_a.write_text("stale a")
+        log_b.write_text("stale b")
+        # Backdate so they're past the recency guard
+        self._backdate(log_a, 600)
+        self._backdate(log_b, 600)
 
         monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
         monkeypatch.setattr("idea_board.executor._active", {})
 
         _prune_stale_execution_logs()
 
-        assert not (logs_dir / "TK-100.log").exists()
-        assert not (logs_dir / "TK-200.log").exists()
+        assert not log_a.exists()
+        assert not log_b.exists()
+
+    def test_keeps_recent_logs_even_when_inactive(self, tmp_path, monkeypatch):
+        """Critical concurrency guard: a freshly-touched log must survive
+        pruning even when its idea isn't in _active — it likely belongs to a
+        concurrent worker process whose _active set we can't see."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        log_recent = logs_dir / "TK-500.log"
+        log_recent.write_text("written by other worker")
+        # No backdating — file is fresh
+
+        monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
+        monkeypatch.setattr("idea_board.executor._active", {})
+
+        _prune_stale_execution_logs()
+
+        assert log_recent.exists(), \
+            "Recent log was pruned — would clobber concurrent worker output"
 
     def test_keeps_active_logs(self, tmp_path, monkeypatch):
         logs_dir = tmp_path / "execution_logs"
         logs_dir.mkdir()
-        (logs_dir / "TK-100.log").write_text("active")
-        (logs_dir / "TK-200.log").write_text("stale")
-        (logs_dir / "TK-300.log").write_text("stale")
+        log_active = logs_dir / "TK-100.log"
+        log_old_a = logs_dir / "TK-200.log"
+        log_old_b = logs_dir / "TK-300.log"
+        log_active.write_text("active")
+        log_old_a.write_text("stale")
+        log_old_b.write_text("stale")
+        self._backdate(log_old_a, 600)
+        self._backdate(log_old_b, 600)
 
         monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
         monkeypatch.setattr(
@@ -1538,9 +1580,9 @@ class TestPruneStaleExecutionLogs:
 
         _prune_stale_execution_logs()
 
-        assert (logs_dir / "TK-100.log").exists()
-        assert not (logs_dir / "TK-200.log").exists()
-        assert not (logs_dir / "TK-300.log").exists()
+        assert log_active.exists()
+        assert not log_old_a.exists()
+        assert not log_old_b.exists()
 
     def test_no_dir_is_not_an_error(self, tmp_path, monkeypatch):
         missing = tmp_path / "does_not_exist"
@@ -1553,16 +1595,20 @@ class TestPruneStaleExecutionLogs:
     def test_ignores_non_log_files(self, tmp_path, monkeypatch):
         logs_dir = tmp_path / "execution_logs"
         logs_dir.mkdir()
-        (logs_dir / "TK-100.log").write_text("stale")
-        (logs_dir / "README.md").write_text("keep me")
+        log_old = logs_dir / "TK-100.log"
+        readme = logs_dir / "README.md"
+        log_old.write_text("stale")
+        readme.write_text("keep me")
+        self._backdate(log_old, 600)
+        self._backdate(readme, 600)  # README is old too — but wrong suffix
 
         monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
         monkeypatch.setattr("idea_board.executor._active", {})
 
         _prune_stale_execution_logs()
 
-        assert not (logs_dir / "TK-100.log").exists()
-        assert (logs_dir / "README.md").exists()
+        assert not log_old.exists()
+        assert readme.exists()
 
     def test_file_persists_after_execution_completes(self, tmp_path, monkeypatch):
         """AC: on completion, the file remains — the reader uses it.
@@ -1595,18 +1641,23 @@ class TestPruneStaleExecutionLogs:
         """Stale .done files are pruned alongside .log files on module load."""
         logs_dir = tmp_path / "execution_logs"
         logs_dir.mkdir()
-        (logs_dir / "TK-100.log").write_text("stale")
-        (logs_dir / "TK-100.done").write_text("done")
-        (logs_dir / "TK-200.done").write_text("failed")
+        log_a = logs_dir / "TK-100.log"
+        done_a = logs_dir / "TK-100.done"
+        done_b = logs_dir / "TK-200.done"
+        log_a.write_text("stale")
+        done_a.write_text("done")
+        done_b.write_text("failed")
+        for p in (log_a, done_a, done_b):
+            self._backdate(p, 600)
 
         monkeypatch.setattr("idea_board.executor.EXECUTION_LOGS_DIR", logs_dir)
         monkeypatch.setattr("idea_board.executor._active", {})
 
         _prune_stale_execution_logs()
 
-        assert not (logs_dir / "TK-100.log").exists()
-        assert not (logs_dir / "TK-100.done").exists()
-        assert not (logs_dir / "TK-200.done").exists()
+        assert not log_a.exists()
+        assert not done_a.exists()
+        assert not done_b.exists()
 
 
 class TestWriteDoneSentinel:

@@ -159,6 +159,21 @@ class TestToolExecution:
         result = coder._tool_run_bash("rm -rf /")
         assert "BLOCKED" in result
 
+    def test_run_bash_strips_leading_cd(self, tmp_path: Path) -> None:
+        """Model habitually prefixes commands with `cd <root> && X` — strip it."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash(f"cd {tmp_path} && python --version")
+        # Should NOT be blocked — the `cd ... && ` should be stripped
+        assert "BLOCKED" not in result
+        # Should have run python --version
+        assert "Python" in result or "python" in result.lower()
+
+    def test_run_bash_strips_cd_preserves_blocklist(self, tmp_path: Path) -> None:
+        """cd-stripping must not bypass the blocklist (e.g. git push)."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash(f"cd {tmp_path} && git push origin main")
+        assert "BLOCKED" in result
+
     def test_list_files(self, tmp_path: Path) -> None:
         (tmp_path / "a.py").write_text("", encoding="utf-8")
         (tmp_path / "b.py").write_text("", encoding="utf-8")

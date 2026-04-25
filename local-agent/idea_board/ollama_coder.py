@@ -475,6 +475,14 @@ class OllamaCoder:
         return f"Edited {path}"
 
     def _tool_run_bash(self, command: str) -> str:
+        # The model habitually prefixes commands with `cd <project_root> && `
+        # even though the subprocess already runs there. Strip that prefix
+        # before allowlist checks so we don't reject otherwise-valid commands.
+        # Only handle the simple `cd <path> && rest` shape — anything more
+        # exotic still gets rejected by the allowlist.
+        cd_prefix_match = re.match(r"\s*cd\s+\S+\s*&&\s*(.+)", command, re.DOTALL)
+        if cd_prefix_match:
+            command = cd_prefix_match.group(1).strip()
         cmd_lower = command.lower().strip()
         # Blocklist check
         for blocked in BASH_BLOCKLIST:
@@ -658,6 +666,12 @@ class OllamaCoder:
             "- Run tests with pytest to verify your implementation\n"
             "- Call finish() only after committing all changes\n"
             "- Do not modify test files unless the story explicitly asks you to\n"
+            "- Test files MUST live under local-agent/tests/unit/ and start "
+            "with `test_` (e.g. tests/unit/test_jira_retry.py). pytest will "
+            "not collect any other filename.\n"
+            "- run_bash already runs in the project root. Do NOT prefix commands "
+            "with `cd <path> && ...`. Just call `pytest tests/unit/test_foo.py`, "
+            "`git status`, etc. directly.\n"
             "- Make minimal, focused changes that solve the task\n"
             f"- Story ID: {self.idea_id}\n"
         )
