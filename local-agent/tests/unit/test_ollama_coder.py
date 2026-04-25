@@ -138,6 +138,46 @@ class TestToolExecution:
         result = coder._execute_tool("nonexistent", {})
         assert "ERROR" in result or "unknown" in result.lower()
 
+    def test_search_code_finds_pattern(self, tmp_path: Path) -> None:
+        """search_code must actually find existing patterns.
+
+        Regression: previous implementation invoked ``python -m grep`` (non-
+        existent module) which returned rc=1 with empty stdout, causing every
+        search to return "(no matches)" regardless of file contents. This
+        cascaded into OllamaCoder concluding that work was already complete
+        and producing 0 commits.
+        """
+        (tmp_path / "src.py").write_text(
+            "class JiraRetryExhausted(Exception):\n    pass\n", encoding="utf-8"
+        )
+        coder = _make_coder(tmp_path)
+        result = coder._tool_search_code("JiraRetryExhausted", path=".")
+        assert "JiraRetryExhausted" in result
+        assert "(no matches)" not in result
+
+    def test_search_code_no_matches(self, tmp_path: Path) -> None:
+        (tmp_path / "src.py").write_text("x = 1\n", encoding="utf-8")
+        coder = _make_coder(tmp_path)
+        result = coder._tool_search_code("DefinitelyNotInThisFile", path=".")
+        assert result == "(no matches)"
+
+    def test_search_code_missing_path(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_search_code("anything", path="does/not/exist")
+        assert "ERROR" in result
+        assert "does not exist" in result
+
+    def test_search_code_recurses_subdirectories(self, tmp_path: Path) -> None:
+        sub = tmp_path / "deep" / "nested"
+        sub.mkdir(parents=True)
+        (sub / "buried.py").write_text(
+            "def needle(): pass\n", encoding="utf-8"
+        )
+        coder = _make_coder(tmp_path)
+        result = coder._tool_search_code("needle", path=".")
+        assert "needle" in result
+        assert "buried.py" in result
+
 
 # ---------------------------------------------------------------------------
 # TestOllamaCoderRun

@@ -498,18 +498,26 @@ class OllamaCoder:
 
     def _tool_search_code(self, pattern: str, path: str = ".", file_pattern: str = "*.py") -> str:
         search_dir = self._resolve_path(path)
+        if not search_dir.exists():
+            return f"ERROR: search path does not exist: {path}"
+        # Prefer ripgrep if available (fast, multi-file). Fall back to native
+        # rglob+regex when not present. Previous implementation invoked
+        # ``python -m grep`` which always fails (no such module), then short-
+        # circuited at returncode==1 with empty stdout — meaning every search
+        # returned "(no matches)" regardless of whether the symbol existed.
         try:
             result = subprocess.run(
-                ["python", "-m", "grep", "-rn", pattern, "--include", file_pattern, str(search_dir)],
+                ["rg", "-n", pattern, "--glob", file_pattern, str(search_dir)],
                 capture_output=True, text=True, cwd=str(self.project_root), timeout=30,
             )
-            # Use ripgrep if available, else fall back to manual search
             if result.returncode in (0, 1):
                 out = result.stdout[:4000]
                 return out or "(no matches)"
+        except FileNotFoundError:
+            pass
         except Exception:
             pass
-        # Manual fallback
+        # Manual fallback — used when rg is not installed.
         matches: list[str] = []
         try:
             for f in search_dir.rglob(file_pattern):
