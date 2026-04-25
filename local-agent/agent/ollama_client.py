@@ -54,7 +54,7 @@ _inflight_count: int = 0
 # GPU exclusivity gate — held by OllamaCoder during story implementation
 # ---------------------------------------------------------------------------
 
-#: Set while OllamaCoder owns the GPU. Other callers wait up to 60s then
+#: Set while OllamaCoder owns the GPU. Other callers wait up to 30s then
 #: proceed anyway so the bot stays responsive if the coder stalls.
 _coder_active = threading.Event()
 
@@ -87,10 +87,55 @@ def _notify_monitor_degraded(reason: str) -> None:
         pass
 
 
+def _unload_competing_models(coder_model: str) -> None:
+    """Unload any models that are not the coder model from Ollama.
+
+    This is called when a timeout occurs during the GPU gate to prevent
+    competing models from occupying VRAM when the waiting caller proceeds.
+    """
+    try:
+        # Get list of running models
+        ps_response = requests.post(
+            f"{OLLAMA_HOST}/api/ps",
+            timeout=10,
+        )
+        if ps_response.status_code != 200:
+            logger.warning("[ollama_client] Failed to get model list: HTTP %d", ps_response.status_code)
+            return
+            
+        try:
+            ps_data = ps_response.json()
+        except ValueError:
+            logger.warning("[ollama_client] Failed to parse model list JSON")
+            return
+            
+        # Unload any models that are not the coder model
+        for model_info in ps_data.get("models", []):
+            model_name = model_info.get("name", "")
+            if model_name != coder_model:
+                logger.debug("[ollama_client] Unloading competing model: %s", model_name)
+                try:
+                    # Send keep_alive=0 to unload the model
+                    requests.post(
+                        f"{OLLAMA_HOST}/api/generate",
+                        json={
+                            "model": model_name,
+                            "prompt": "",  # Empty prompt
+                            "stream": False,
+                            "keep_alive": 0,
+                        },
+                        timeout=10,
+                    )
+                except Exception as e:
+                    logger.warning("[ollama_client] Failed to unload model %s: %s", model_name, e)
+    except Exception as e:
+        logger.warning("[ollama_client] Error in _unload_competing_models: %s", e)
+
+
 def chat(
     prompt: str,
     model: str,
-    timeout: int = 60,
+    timeout: int = 30,
     options: dict[str, Any] | None = None,
     keep_alive: str | int = 0,
     format: str | None = None,
@@ -100,7 +145,7 @@ def chat(
     Args:
         prompt: Full prompt text (user message content; no role structure).
         model: Ollama model tag (e.g. ``"qwen3.5:latest"``, ``"llama3.2"``).
-        timeout: Seconds to wait before giving up. Default 60.
+        timeout: Seconds to wait before giving up. Default 30.
         options: Optional ollama generation options (temperature, seed,
             num_ctx, etc.). Passed through verbatim. If ``num_ctx`` is
             not set, we default to :data:`DEFAULT_NUM_CTX` (8192) so the
@@ -120,11 +165,14 @@ def chat(
     """
     global _inflight_count
 
-    # GPU gate: yield to OllamaCoder if it's actively coding. Wait up to 60s
+    # GPU gate: yield to OllamaCoder if it's actively coding. Wait up to 30s
     # then proceed anyway so the bot never hard-blocks on a stalled coder.
     if _coder_active.is_set():
-        logger.debug("[ollama_client] coder active — waiting up to 60s for GPU slot")
-        _coder_active.wait(timeout=60)
+        logger.debug("[ollama_client] coder active — waiting up to 30s for GPU slot")
+        if not _coder_active.wait(timeout=30):
+            # Timeout occurred - unload competing models before proceeding
+            logger.debug("[ollama_client] GPU gate timeout - unloading competing models")
+            _unload_competing_models(model)
 
     # Backpressure: shed load before we can fill Ollama's internal queue.
     with _inflight_lock:
