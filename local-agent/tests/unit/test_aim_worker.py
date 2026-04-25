@@ -462,6 +462,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("idea_board.executor.mark_done", mock_mark_done), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 3
             result = execute_assigned_idea("TK-410")
 
@@ -492,6 +493,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("idea_board.executor.mark_failed", mock_mark_failed), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 2
             result = execute_assigned_idea("TK-410")
 
@@ -521,6 +523,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("idea_board.executor.mark_failed"), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 3
             result = execute_assigned_idea("TK-410")
 
@@ -555,6 +558,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("idea_board.executor.mark_failed"), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 5
             result = execute_assigned_idea("TK-410")
 
@@ -595,6 +599,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("board.get_provider", return_value=mock_provider), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 3
             result = execute_assigned_idea("TK-567")
 
@@ -631,6 +636,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("board.get_provider", return_value=mock_provider), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 3
             result = execute_assigned_idea("TK-567")
 
@@ -658,6 +664,7 @@ class TestExecuteAssignedIdeaRateLimitRetry:
              patch("idea_board.executor.mark_failed"), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.rate_limit_wait_minutes = 15
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.rate_limit_max_retries = 3
             execute_assigned_idea("TK-410")
 

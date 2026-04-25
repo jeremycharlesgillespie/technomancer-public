@@ -358,6 +358,12 @@ class ExecutionState:
     rate_limited: bool = False
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     elapsed_seconds: float | None = None
+    # Populated by the executor's git steps so callers (esp. the A/B
+    # orchestrator) can read the branch and head SHA without parsing
+    # the log buffer. ``deploy_sha`` is short (7-char) on merge, full
+    # 40-char on skip_merge feature pushes — callers truncate as needed.
+    branch_name: str = ""
+    deploy_sha: str = ""
 
     def log(self, msg: str) -> None:
         """Append a timestamped message to the execution log."""
@@ -1791,6 +1797,10 @@ def execute_idea(
     epic_context: str = "",
     previous_results: list[dict[str, str]] | None = None,
     run_id: str | None = None,
+    *,
+    model_override: str | None = None,
+    branch_suffix: str | None = None,
+    skip_merge: bool = False,
 ) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -1807,6 +1817,19 @@ def execute_idea(
             timing row across brain/worker/executor shares the same run.
             When ``None`` (e.g. ad-hoc execution without a worker) the
             ExecutionState default_factory assigns a fresh uuid.
+        model_override: When set, replaces ``settings.aiw_ollama_coder_model``
+            for this single execution. Used by the A/B harness to give
+            two competing models the same story. ``None`` keeps the
+            default model.
+        branch_suffix: When set, appends ``-{branch_suffix}`` to the
+            generated branch name. Used by the A/B harness so two runs
+            on the same story land on distinct branches.
+        skip_merge: When True, the executor commits any uncommitted
+            work and pushes the feature branch to private origin only —
+            no merge to main, no public sync, no Jira deploy comment.
+            The orchestrator (``ab_executor.py``) reads
+            ``state.branch_name`` / ``state.deploy_sha`` and handles
+            those steps itself based on the comparison verdict.
 
     Returns:
         ExecutionState for tracking, or None if idea not found
@@ -1930,6 +1953,11 @@ def execute_idea(
             short_name = idea.id.replace("idea-", "")
             timestamp = time.strftime("%Y-%m-%d-%H%M%S")
             branch_name = f"{timestamp}-{short_name}"
+            if branch_suffix:
+                # The A/B harness passes a sanitized model-tag suffix so
+                # two runs on the same story land on distinct branches.
+                branch_name = f"{branch_name}-{branch_suffix}"
+            state.branch_name = branch_name
 
             def _git(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
                 return subprocess.run(
@@ -2047,7 +2075,7 @@ def execute_idea(
                         project_root=coder_root,
                         idea_id=idea_id,
                         state=state,
-                        model=settings.aiw_ollama_coder_model,
+                        model=model_override or settings.aiw_ollama_coder_model,
                         max_turns=settings.aiw_ollama_coder_max_turns,
                         max_rounds=settings.aiw_ollama_coder_max_rounds,
                         num_ctx=settings.aiw_ollama_coder_num_ctx,
@@ -2632,6 +2660,47 @@ def execute_idea(
             state.log("--- Phase 3: Deploy ---")
 
             try:
+                if skip_merge:
+                    # A/B mode: the orchestrator owns merge / push-main /
+                    # publish / Jira-deploy AND the final mark_done /
+                    # mark_failed call on the outer idea. We just commit
+                    # any uncommitted work, push the feature branch to
+                    # private origin so the orchestrator and reviewers
+                    # can see it, capture the head SHA, and return — no
+                    # board state writes.
+                    state.log("skip_merge=True — feature-only push, no merge")
+                    _auto_commit_uncommitted(project_root, idea_id, state, idea.title)
+                    branch = subprocess.run(
+                        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                        capture_output=True, text=True, cwd=str(project_root),
+                    ).stdout.strip()
+                    sha_result = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True, cwd=str(project_root),
+                    )
+                    if sha_result.returncode == 0:
+                        state.deploy_sha = sha_result.stdout.strip()
+                    push_result = subprocess.run(
+                        ["git", "push", "origin", branch],
+                        capture_output=True, text=True, timeout=60,
+                        cwd=str(project_root),
+                    )
+                    if push_result.returncode != 0:
+                        state.log(
+                            f"Feature push failed: "
+                            f"{(push_result.stderr or push_result.stdout)[:300]}"
+                        )
+                        # Don't write board state — leave that to the
+                        # orchestrator. Reset deploy_sha so the caller
+                        # can detect the failure unambiguously.
+                        state.deploy_sha = ""
+                        return
+                    state.log(
+                        f"Feature branch {branch} pushed to private origin "
+                        f"({state.deploy_sha[:7]}); merge handled by caller."
+                    )
+                    return
+
                 # Merge to main
                 state.log("Merging to main...")
                 # Stay in the resolved project_root from earlier (40Acres,
@@ -2727,6 +2796,7 @@ def execute_idea(
                 deploy_sha = ""
                 if sha_result.returncode == 0:
                     deploy_sha = sha_result.stdout.strip()[:7]
+                    state.deploy_sha = sha_result.stdout.strip()
 
                 # Step 3c: Delete branch
                 subprocess.run(

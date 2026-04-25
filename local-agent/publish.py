@@ -6,9 +6,11 @@ public repo, runs safety checks (no secrets, no personal data), commits,
 and pushes.
 
 Usage:
-    python publish.py                  # Preview what would be synced
-    python publish.py --push           # Sync and push to GitHub
-    python publish.py --push --force   # Skip confirmation prompt
+    python publish.py                          # Preview what would be synced
+    python publish.py --push                   # Sync and push to GitHub
+    python publish.py --push --force           # Skip confirmation prompt
+    python publish.py --branch <name> --push   # Mirror a feature branch
+                                               # (used by the A/B harness)
 
 The system:
 1. Copies all code files (.py, .toml, .yaml, .md, .html, etc.)
@@ -16,6 +18,11 @@ The system:
 3. Scans for secrets and personal data before committing
 4. Commits with a descriptive message
 5. Pushes to the public repo
+
+`--branch <name>` mode mirrors the named feature branch from private to
+a like-named branch on `technomancer-public`. The same `local-agent/**`
+filter and secret gate apply, so only the publishable subset reaches
+the public branch. The public repo is left on `main` after the push.
 """
 
 from __future__ import annotations
@@ -293,9 +300,159 @@ def git_commit_and_push(repo: Path, message: str) -> bool:
         return False
 
 
+def _public_remote_branch_exists(branch: str) -> bool:
+    """Return True if origin/<branch> exists on the public remote."""
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", branch],
+            cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", f"origin/{branch}"],
+            cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def _public_repo_clean() -> bool:
+    """Return True if the public working tree has no uncommitted changes."""
+    return git_status(PUBLIC_REPO) == ""
+
+
+def _checkout_public_branch(branch: str) -> bool:
+    """Switch the public repo to ``branch`` (creating from main if needed)."""
+    if _public_remote_branch_exists(branch):
+        result = subprocess.run(
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=30,
+        )
+    else:
+        # Branch doesn't exist on public — create it from main.
+        subprocess.run(
+            ["git", "fetch", "origin", "main"],
+            cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "checkout", "-B", branch, "origin/main"],
+            cwd=PUBLIC_REPO, capture_output=True, text=True, timeout=30,
+        )
+    if result.returncode != 0:
+        print(f"  ERROR: checkout {branch} failed: {(result.stderr or result.stdout)[:300]}")
+        return False
+    return True
+
+
+def _publish_branch(branch: str, force: bool) -> int:
+    """Mirror feature ``branch`` from private to public. Returns exit code.
+
+    Steps:
+      1. Verify public working tree clean.
+      2. Check out / create the public-side branch.
+      3. Run sync_files() — same `local-agent/**` filter as main mode.
+      4. Run scan_for_secrets() — same gate.
+      5. Commit + push origin <branch>.
+      6. Restore public to main.
+
+    Skips the commit + push when sync produced no changes (exit 0). Any
+    secret detection or push failure exits non-zero so callers
+    (the A/B harness, ad-hoc operators) can surface it.
+    """
+    print(f"Mode: --branch {branch}")
+    print()
+
+    if not _public_repo_clean():
+        print("  ERROR: public working tree is dirty — refusing to mirror.")
+        print("  Resolve uncommitted changes in technomancer-public first.")
+        return 1
+
+    print(f"Step 1: Checkout public branch '{branch}'...")
+    if not _checkout_public_branch(branch):
+        return 1
+    print(f"  On {branch}")
+    print()
+
+    print("Step 2: Syncing files...")
+    copied, skipped, deleted = sync_files()
+    print(f"  Copied: {copied} files")
+    print(f"  Skipped: {skipped} (excluded)")
+    print(f"  Deleted: {deleted} (stale)")
+    print()
+
+    print("Step 3: Scanning for secrets...")
+    findings = scan_for_secrets(PUBLIC_REPO)
+    if findings:
+        print("  BLOCKED — secrets found in public repo:")
+        for f in findings:
+            print(f)
+        # Reset to main so we don't leave a half-mirrored branch checked out.
+        subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=PUBLIC_REPO, capture_output=True, timeout=15,
+        )
+        return 1
+    print("  Clean — no secrets found")
+    print()
+
+    status = git_status(PUBLIC_REPO)
+    if not status:
+        print("Step 4: No public-visible changes for this branch — skipping commit.")
+        subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=PUBLIC_REPO, capture_output=True, timeout=15,
+        )
+        return 0
+
+    print(f"Step 4: Committing and pushing branch '{branch}'...")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    message = f"[A/B run] {branch} ({timestamp})"
+    try:
+        subprocess.run(
+            ["git", "add", "-A"], cwd=PUBLIC_REPO, check=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=PUBLIC_REPO, check=True, timeout=10,
+        )
+        subprocess.run(
+            ["git", "push", "origin", branch],
+            cwd=PUBLIC_REPO, check=True, timeout=60,
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"  ERROR: git operation failed: {e}")
+        # Best-effort: leave repo on main even if push failed.
+        subprocess.run(
+            ["git", "checkout", "main"],
+            cwd=PUBLIC_REPO, capture_output=True, timeout=15,
+        )
+        return 1
+
+    print(f"  Pushed origin/{branch}")
+    print()
+
+    # Restore main so the next non-branch publish run has the expected state.
+    subprocess.run(
+        ["git", "checkout", "main"],
+        cwd=PUBLIC_REPO, capture_output=True, timeout=15,
+    )
+    return 0
+
+
+def _parse_branch_arg(argv: list[str]) -> str | None:
+    """Return the value following ``--branch`` in ``argv`` or None."""
+    for i, arg in enumerate(argv):
+        if arg == "--branch" and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith("--branch="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def main() -> None:
     push = "--push" in sys.argv
     force = "--force" in sys.argv
+    branch = _parse_branch_arg(sys.argv)
 
     print("=" * 60)
     print("TECHNOMANCER PUBLISH SYSTEM")
@@ -308,6 +465,15 @@ def main() -> None:
         print(f"ERROR: Public repo not found at {PUBLIC_REPO}")
         print("Clone it first: git clone <url> technomancer-public")
         sys.exit(1)
+
+    if branch:
+        # --branch mode: mirror a feature branch instead of main. We
+        # ignore --force here (commits are auto-named from the branch)
+        # and require --push (no preview mode for branch mirroring).
+        if not push:
+            print("--branch requires --push (no dry-run mode for branch mirrors).")
+            sys.exit(1)
+        sys.exit(_publish_branch(branch, force))
 
     # Step 1: Sync files
     print("Step 1: Syncing files...")

@@ -104,3 +104,9 @@ def init_db() -> None:
         ON story_quality (validated_at DESC)
     """)
     conn.commit()
+
+    # The A/B model-comparison harness reuses this database. Importing
+    # here (not at module top) avoids a circular import — agent.ab_schema
+    # imports _get_conn from this module.
+    from agent.ab_schema import init_ab_db
+    init_ab_db()

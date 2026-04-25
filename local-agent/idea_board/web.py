@@ -5670,6 +5670,83 @@ def _aiv_fetch_quality_rows(
     return out, total
 
 
+def _aiv_fetch_ab_pairs_by_story(
+    story_keys: list[str],
+) -> dict[str, dict[str, Any]]:
+    """Return ``{story_key: {pair, run_a, run_b}}`` for stories with A/B data.
+
+    Only returns the **most recent** pair per story_key (one A/B comparison
+    per story is the common case; if the harness ran twice we surface the
+    latest). Missing AIV DB or absent ``ab_test_pairs`` table collapses to
+    an empty dict so the dashboard keeps rendering.
+    """
+    if not story_keys or not aiv_schema.DB_PATH.exists():
+        return {}
+    try:
+        aiv_schema.init_db()
+        conn = aiv_schema._get_conn()
+        # Newest pair per story_key.
+        placeholders = ",".join("?" * len(story_keys))
+        pair_rows = conn.execute(
+            f"""
+            SELECT p.*
+            FROM ab_test_pairs p
+            INNER JOIN (
+                SELECT story_key, MAX(created_at) AS m
+                FROM ab_test_pairs
+                WHERE story_key IN ({placeholders})
+                GROUP BY story_key
+            ) latest
+              ON latest.story_key = p.story_key
+             AND latest.m         = p.created_at
+            """,
+            story_keys,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    run_ids: list[str] = []
+    pair_by_story: dict[str, dict[str, Any]] = {}
+    for pr in pair_rows:
+        sk = str(pr["story_key"])
+        pair_dict = {k: pr[k] for k in pr.keys()}
+        pair_by_story[sk] = pair_dict
+        run_ids.append(str(pr["model_a_run_id"]))
+        run_ids.append(str(pr["model_b_run_id"]))
+
+    if not run_ids:
+        return {}
+
+    try:
+        run_placeholders = ",".join("?" * len(run_ids))
+        run_rows = conn.execute(
+            f"SELECT * FROM ab_test_runs WHERE run_id IN ({run_placeholders})",
+            run_ids,
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+
+    runs_by_id: dict[str, dict[str, Any]] = {
+        str(r["run_id"]): {k: r[k] for k in r.keys()} for r in run_rows
+    }
+
+    for sk, pair in pair_by_story.items():
+        run_a = runs_by_id.get(str(pair["model_a_run_id"]))
+        run_b = runs_by_id.get(str(pair["model_b_run_id"]))
+        if run_a is None or run_b is None:
+            continue
+        out[sk] = {"pair": pair, "run_a": run_a, "run_b": run_b}
+    return out
+
+
+def _aiv_fetch_ab_detail(story_key: str) -> dict[str, Any] | None:
+    """Return ``{pair, run_a, run_b}`` for the most recent A/B pair, or None."""
+    if not story_key:
+        return None
+    return _aiv_fetch_ab_pairs_by_story([story_key]).get(story_key)
+
+
 def _aiv_distinct_projects() -> list[str]:
     """Return the sorted list of project prefixes present in story_quality."""
     if not aiv_schema.DB_PATH.exists():
@@ -5965,6 +6042,128 @@ def _aiv_fmt_validated_at(raw: Any) -> str:
         return text[:16]
 
 
+def _aiv_render_quality_row(row: dict[str, Any]) -> str:
+    """Render the standard single-row form used by non-A/B stories."""
+    flagged = bool(row["red_flags"])
+    row_class = "flagged" if flagged else ""
+    score_cells = "".join(
+        f"<td class='score'>{_aiv_fmt_score(row[axis])}</td>"
+        for axis in _AIV_SCORE_AXES
+    )
+    flags_cell = (
+        ", ".join(html.escape(f) for f in row["red_flags"])
+        if row["red_flags"]
+        else "&mdash;"
+    )
+    title_text = row["story_title"] or ""
+    return (
+        f"<tr class='{row_class}'>"
+        f"<td class='key'>{html.escape(str(row['story_key'] or ''))}</td>"
+        f"<td class='title'>{html.escape(str(title_text))}</td>"
+        f"{score_cells}"
+        f"<td class='overall'>{_aiv_fmt_overall(row['overall_score'])}</td>"
+        f"<td class='flags'>{flags_cell}</td>"
+        f"<td class='when'>{html.escape(_aiv_fmt_validated_at(row['validated_at']))}</td>"
+        f"</tr>"
+    )
+
+
+def _aiv_render_ab_run_row(
+    *,
+    story_key: str,
+    story_title: str,
+    run: dict[str, Any],
+    is_winner: bool,
+    show_story_cells: bool,
+) -> str:
+    """Render one of the two paired rows for an A/B story."""
+    score_cells = "".join(
+        f"<td class='score'>{_aiv_fmt_score(run.get(axis))}</td>"
+        for axis in _AIV_SCORE_AXES
+    )
+    label = str(run.get("model_label") or "")
+    win_marker = " &#9733;" if is_winner else ""
+    label_html = (
+        f"<span class='ab-label'>{html.escape(label)}{win_marker}</span>"
+    )
+    if show_story_cells:
+        key_cell = (
+            f"<td class='key' rowspan='2'>"
+            f"{html.escape(str(story_key or ''))}</td>"
+        )
+        title_cell = (
+            f"<td class='title' rowspan='2'>"
+            f"{html.escape(str(story_title or ''))}</td>"
+        )
+        prefix = key_cell + title_cell
+    else:
+        prefix = ""
+    overall = run.get("overall_score")
+    started = run.get("started_at") or ""
+    row_class = "ab-row ab-winner" if is_winner else "ab-row"
+    return (
+        f"<tr class='{row_class}'>"
+        f"{prefix}"
+        f"{score_cells}"
+        f"<td class='overall'>{label_html}<br/>"
+        f"{_aiv_fmt_overall(overall)}</td>"
+        f"<td class='flags'>{html.escape(str(run.get('status') or ''))}</td>"
+        f"<td class='when'>{html.escape(_aiv_fmt_validated_at(started))}</td>"
+        f"</tr>"
+    )
+
+
+def _aiv_render_ab_pair_block(
+    row: dict[str, Any],
+    ab: dict[str, Any],
+) -> str:
+    """Render a 3-row block: run A, run B, comparison footer."""
+    pair = ab["pair"]
+    run_a = ab["run_a"]
+    run_b = ab["run_b"]
+    merged_run_id = pair.get("merged_run_id") or ""
+    a_is_winner = bool(merged_run_id) and merged_run_id == run_a.get("run_id")
+    b_is_winner = bool(merged_run_id) and merged_run_id == run_b.get("run_id")
+
+    story_key = str(row["story_key"] or "")
+    story_title = str(row["story_title"] or "")
+
+    row_a = _aiv_render_ab_run_row(
+        story_key=story_key,
+        story_title=story_title,
+        run=run_a,
+        is_winner=a_is_winner,
+        show_story_cells=True,
+    )
+    row_b = _aiv_render_ab_run_row(
+        story_key=story_key,
+        story_title=story_title,
+        run=run_b,
+        is_winner=b_is_winner,
+        show_story_cells=False,
+    )
+
+    winner_label = str(pair.get("comparison_winner") or "")
+    reasoning = str(pair.get("comparison_reasoning") or "")
+    teaser = reasoning.strip().splitlines()[0] if reasoning.strip() else ""
+    if len(teaser) > 220:
+        teaser = teaser[:217] + "..."
+    detail_href = f"/quality/ab/{html.escape(story_key)}"
+    footer = (
+        f"<tr class='ab-footer'>"
+        f"<td colspan='11' class='ab-footer-cell'>"
+        f"<span class='ab-winner-label'>Winner: "
+        f"{html.escape(winner_label) or '&mdash;'}</span> "
+        f"<span class='ab-teaser'>{html.escape(teaser)}</span> "
+        f"<a class='ab-detail-link' href='{detail_href}'>details &rsaquo;</a>"
+        f"</td>"
+        f"</tr>"
+    )
+    return (
+        f"<tbody class='ab-pair'>\n{row_a}\n{row_b}\n{footer}\n</tbody>"
+    )
+
+
 def _render_quality(
     *,
     project: str | None = None,
@@ -5988,6 +6187,9 @@ def _render_quality(
     rows, total = _aiv_fetch_quality_rows(
         project=project, sort=sort, limit=page_size, offset=offset,
     )
+    ab_pairs_by_story = _aiv_fetch_ab_pairs_by_story(
+        [str(r["story_key"]) for r in rows if r.get("story_key")]
+    )
     available_projects = _aiv_distinct_projects()
     flag_summary = _aiv_flag_counts(24)
     total_pages = max(1, (total + page_size - 1) // page_size)
@@ -6006,28 +6208,12 @@ def _render_quality(
     else:
         body_rows_list: list[str] = []
         for row in rows:
-            flagged = bool(row["red_flags"])
-            row_class = "flagged" if flagged else ""
-            score_cells = "".join(
-                f"<td class='score'>{_aiv_fmt_score(row[axis])}</td>"
-                for axis in _AIV_SCORE_AXES
-            )
-            flags_cell = (
-                ", ".join(html.escape(f) for f in row["red_flags"])
-                if row["red_flags"]
-                else "&mdash;"
-            )
-            title_text = row["story_title"] or ""
-            body_rows_list.append(
-                f"<tr class='{row_class}'>"
-                f"<td class='key'>{html.escape(str(row['story_key'] or ''))}</td>"
-                f"<td class='title'>{html.escape(str(title_text))}</td>"
-                f"{score_cells}"
-                f"<td class='overall'>{_aiv_fmt_overall(row['overall_score'])}</td>"
-                f"<td class='flags'>{flags_cell}</td>"
-                f"<td class='when'>{html.escape(_aiv_fmt_validated_at(row['validated_at']))}</td>"
-                f"</tr>"
-            )
+            sk = str(row["story_key"] or "")
+            ab = ab_pairs_by_story.get(sk)
+            if ab is not None:
+                body_rows_list.append(_aiv_render_ab_pair_block(row, ab))
+            else:
+                body_rows_list.append(_aiv_render_quality_row(row))
         body_rows = "\n".join(body_rows_list)
 
     if flag_summary["counts"]:
@@ -6165,6 +6351,21 @@ td.empty {{ text-align: center; color: var(--muted); padding: 2rem;
                             border: 1px solid var(--border); border-radius: 4px;
                             opacity: 0.5; }}
 .pagination .pg-info {{ color: var(--muted); }}
+tbody.ab-pair {{ border-top: 2px solid var(--accent);
+                 border-bottom: 2px solid var(--accent);
+                 background: rgba(102, 179, 255, 0.04); }}
+tbody.ab-pair tr.ab-row td {{ border-bottom: 1px dashed var(--border); }}
+tbody.ab-pair tr.ab-winner td.overall {{ color: var(--green); font-weight: 700; }}
+tbody.ab-pair tr.ab-footer td.ab-footer-cell {{ background: #2a2a2a;
+                                                color: var(--muted);
+                                                font-size: 0.78rem;
+                                                padding: 6px 10px; }}
+.ab-label {{ display: inline-block; font-size: 0.72rem;
+             color: var(--accent); font-weight: 600;
+             font-family: monospace; }}
+.ab-winner-label {{ color: var(--green); font-weight: 600; }}
+.ab-teaser {{ color: var(--text); }}
+.ab-detail-link {{ color: var(--accent); margin-left: 8px; }}
 .trend-section {{ background: var(--surface); border-radius: 8px;
                   padding: 1rem 1.25rem; margin-bottom: 1.5rem;
                   border-left: 4px solid var(--accent); }}
@@ -6767,6 +6968,170 @@ def quality_detail_page(story_key: str) -> tuple[str, int] | str:
         )
         return body, 404
     return _render_quality_detail(entry)
+
+
+def _render_ab_detail(story_key: str, ab: dict[str, Any]) -> str:
+    """Render the /quality/ab/<story_key> detail page.
+
+    Shows winner, full reasoning, the per-axis delta (run A − run B), and
+    links back to the per-run detail in the standard /quality/<key> page
+    plus links to the private and public branch diffs.
+    """
+    pair = ab["pair"]
+    run_a = ab["run_a"]
+    run_b = ab["run_b"]
+    winner = str(pair.get("comparison_winner") or "")
+    reasoning = str(pair.get("comparison_reasoning") or "")
+    error = str(pair.get("comparison_error") or "")
+
+    try:
+        delta_axes_raw = pair.get("delta_axes_json") or "{}"
+        delta_axes = json.loads(delta_axes_raw)
+        if not isinstance(delta_axes, dict):
+            delta_axes = {}
+    except (json.JSONDecodeError, TypeError):
+        delta_axes = {}
+
+    def _run_block(run: dict[str, Any], side: str) -> str:
+        label = str(run.get("model_label") or "")
+        model = str(run.get("model") or "")
+        status = str(run.get("status") or "")
+        branch = str(run.get("branch_name") or "")
+        commit = str(run.get("commit_sha") or "")
+        overall = run.get("overall_score")
+        score_rows = "".join(
+            f"<tr><td>{html.escape(axis)}</td>"
+            f"<td class='num'>{_aiv_fmt_score(run.get(axis))}</td></tr>"
+            for axis in _AIV_SCORE_AXES
+        )
+        branch_links: list[str] = []
+        if branch:
+            branch_links.append(
+                f"<code>{html.escape(branch)}</code>"
+            )
+        if commit:
+            branch_links.append(
+                f"<code>{html.escape(commit[:12])}</code>"
+            )
+        links_html = " &middot; ".join(branch_links) if branch_links else "&mdash;"
+        return (
+            f"<div class='ab-side'>"
+            f"<h3>{html.escape(side)} &mdash; {html.escape(label)}</h3>"
+            f"<p class='muted'>{html.escape(model)}</p>"
+            f"<p>Status: <strong>{html.escape(status)}</strong> &middot; "
+            f"Overall: <strong>{_aiv_fmt_overall(overall)}</strong></p>"
+            f"<p class='muted'>{links_html}</p>"
+            f"<table class='axis-table'>"
+            f"<thead><tr><th>Axis</th><th class='num'>Score</th></tr></thead>"
+            f"<tbody>{score_rows}</tbody></table>"
+            f"</div>"
+        )
+
+    delta_rows = "".join(
+        f"<tr><td>{html.escape(axis)}</td>"
+        f"<td class='num'>{html.escape(str(delta_axes.get(axis, '—')))}</td></tr>"
+        for axis in _AIV_SCORE_AXES
+    )
+
+    error_block = (
+        f"<div class='ab-error'><strong>Comparison error:</strong> "
+        f"{html.escape(error)}</div>"
+        if error
+        else ""
+    )
+
+    reasoning_html = (
+        f"<pre class='ab-reasoning'>{html.escape(reasoning)}</pre>"
+        if reasoning
+        else "<p class='muted'>No reasoning recorded.</p>"
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{html.escape(story_key)} A/B &mdash; Technomancer Quality</title>
+<style>
+body {{ font-family: -apple-system, sans-serif; background: #1a1a1a; color: #e0e0e0;
+       padding: 20px; line-height: 1.5; max-width: 1100px; margin: 0 auto; }}
+h1 {{ color: #66b3ff; }}
+h2, h3 {{ color: #66b3ff; margin-top: 1.5rem; }}
+a {{ color: #66b3ff; }}
+.muted {{ color: #888; font-size: 0.85rem; }}
+.subtitle {{ color: #888; margin-bottom: 1rem; }}
+.ab-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+            margin-top: 1rem; }}
+.ab-side {{ background: #252525; border-radius: 8px; padding: 1rem;
+            border-left: 4px solid #66b3ff; }}
+.axis-table {{ width: 100%; margin-top: 0.5rem; border-collapse: collapse; }}
+.axis-table th, .axis-table td {{ padding: 4px 8px; border-bottom: 1px solid #333;
+                                  text-align: left; }}
+.axis-table td.num, .axis-table th.num {{ text-align: right;
+                                          font-variant-numeric: tabular-nums; }}
+.winner {{ background: #252525; border-radius: 8px; padding: 1rem 1.25rem;
+           border-left: 4px solid #4caf50; margin-bottom: 1rem; }}
+.ab-reasoning {{ background: #1a1a1a; border: 1px solid #333; border-radius: 4px;
+                 padding: 0.75rem; white-space: pre-wrap; word-wrap: break-word;
+                 font-size: 0.85rem; line-height: 1.5; }}
+.ab-error {{ background: rgba(244,67,54,0.18); border-radius: 4px;
+             padding: 0.5rem 0.75rem; margin: 0.5rem 0; }}
+@media (max-width: 720px) {{
+    .ab-grid {{ grid-template-columns: 1fr; }}
+}}
+</style>
+</head>
+<body>
+<h1>{html.escape(story_key)} &mdash; A/B comparison</h1>
+<p class="subtitle">
+    <a href="/quality/{html.escape(story_key)}">&larr; Story detail</a> &middot;
+    <a href="/quality">All validations</a> &middot;
+    <a href="/">Hub</a>
+</p>
+
+<div class="winner">
+    <h2>Winner: {html.escape(winner) or '&mdash;'}</h2>
+    {reasoning_html}
+    {error_block}
+</div>
+
+<div class="ab-grid">
+    {_run_block(run_a, "Run A")}
+    {_run_block(run_b, "Run B")}
+</div>
+
+<h2>Per-axis delta (A &minus; B)</h2>
+<table class="axis-table">
+    <thead><tr><th>Axis</th><th class="num">Delta</th></tr></thead>
+    <tbody>{delta_rows}</tbody>
+</table>
+</body>
+</html>"""
+
+
+@app.route("/quality/ab/<story_key>")
+def quality_ab_detail_page(story_key: str) -> tuple[str, int] | str:
+    """GET /quality/ab/<story_key> — full A/B pair detail.
+
+    Renders winner, comparison reasoning, both run summaries, and the
+    per-axis delta. 404 if no ``ab_test_pairs`` row exists for the key.
+    """
+    key = (story_key or "").strip()
+    ab = _aiv_fetch_ab_detail(key) if key else None
+    if ab is None:
+        body = (
+            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+            f"<title>{html.escape(key) or 'Unknown'} &mdash; no A/B data</title>"
+            "<style>body{font-family:sans-serif;background:#1a1a1a;color:#e0e0e0;"
+            "padding:2rem;line-height:1.6}a{color:#66b3ff}</style></head><body>"
+            f"<h1>No A/B comparison for {html.escape(key) or 'this story'}</h1>"
+            "<p>This story has not been run through the A/B harness "
+            "(<code>AIW_AB_TEST</code> flag).</p>"
+            "<p><a href='/quality'>&larr; Back to recent validations</a></p>"
+            "</body></html>"
+        )
+        return body, 404
+    return _render_ab_detail(key, ab)
 
 
 # ============================================================================

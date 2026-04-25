@@ -364,6 +364,16 @@ class Settings(BaseSettings):
             "rubric tasks."
         ),
     )
+    aiv_ab_compare_model: str = Field(
+        default="claude-haiku-4-5",
+        description=(
+            "Model that judges A vs. B in the A/B model comparison harness. "
+            "Defaults to Claude Haiku because the comparison is the whole "
+            "point of the experiment — we need a model the user trusts to "
+            "stay outside the experiment loop. Override to Sonnet for "
+            "higher-stakes runs."
+        ),
+    )
     dev_learning_model: str = Field(
         default="ollama:qwen3.5:latest",
         description=(
@@ -457,6 +467,32 @@ class Settings(BaseSettings):
     aiw_ollama_coder_model: str = Field(
         default="qwen3.5:27b",
         description="Ollama model tag used by OllamaCoder for story implementation.",
+    )
+    aiw_ab_test_enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, every assigned story is run through both "
+            "aiw_ab_model_a AND aiw_ab_model_b on separate branches, both "
+            "branches are pushed to private+public, and Claude scores both "
+            "diffs to pick a winner. Only the winner's branch is merged to "
+            "main. See aim/worker.py and idea_board/ab_executor.py."
+        ),
+    )
+    aiw_ab_model_a: str = Field(
+        default="qwen3-coder:30b-a3b-q4_K_M",
+        description=(
+            "Model A (incumbent) for A/B comparison. Wins by default unless "
+            "it fails and B succeeded. Display label is derived from the tag "
+            "by stripping the size suffix."
+        ),
+    )
+    aiw_ab_model_b: str = Field(
+        default="qwen2.5-coder:32b-instruct-q5_K_M",
+        description=(
+            "Model B (challenger) for A/B comparison. Only merges when A "
+            "fails and B succeeds. Must be pulled via `ollama pull` before "
+            "enabling AIW_AB_TEST."
+        ),
     )
     aiw_ollama_coder_max_turns: int = Field(
         default=40,

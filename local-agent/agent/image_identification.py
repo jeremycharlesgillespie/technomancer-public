@@ -50,7 +50,7 @@ Be specific - if you recognize a character, name them confidently."""
             model=VISION_MODEL,
             messages=[{"role": "user", "content": prompt, "images": image_bytes_list}],
             options={"temperature": 0.3},
-            keep_alive=-1,
+            keep_alive=0,  # One-shot vision analysis - unload immediately to prevent VRAM thrashing
         )
         duration = _time.perf_counter() - start
         content = response.get("message", {}).get("content", "Could not analyze image")

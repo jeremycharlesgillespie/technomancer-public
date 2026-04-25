@@ -43,6 +43,7 @@ Role = Literal[
     "evergreen_generator",
     "aiv_classifier",
     "aiv_scorer",
+    "aiv_ab_compare",
     "dev_learning",
 ]
 
@@ -119,6 +120,7 @@ _ROLE_TO_SETTING: dict[Role, str] = {
     "evergreen_generator": "evergreen_generator_model",
     "aiv_classifier": "aiv_classifier_model",
     "aiv_scorer": "aiv_scorer_model",
+    "aiv_ab_compare": "aiv_ab_compare_model",
     "dev_learning": "dev_learning_model",
 }
 

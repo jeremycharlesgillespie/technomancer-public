@@ -266,6 +266,30 @@ Use `settings.bot_owner` instead of hardcoded usernames. Use `settings.vault_pat
 
 After every successful `safe_update.py continue`, run `python publish.py --push --force` to sync changes to the public repo. Or type `publish` in Discord.
 
+**Feature branches.** `publish.py --branch <name> --push` mirrors a feature branch from the private repo to a like-named branch on `technomancer-public`. The mirror is one-way and only includes the `local-agent/**` subset (same filter and secret gate as the main-mode publish). The A/B harness (`AIW_AB_TEST=true`) uses this so the public repo can see both attempts on a story.
+
+### A/B Model Comparison (AIW_AB_TEST)
+
+When `AIW_AB_TEST=true` is set in `local-agent/.env`, every story assigned by AIM is run through both `aiw_ab_model_a` and `aiw_ab_model_b` on separate branches. Defaults: `aiw_ab_model_a=qwen3-coder:30b-a3b-q4_K_M` (current incumbent) and `aiw_ab_model_b=qwen2.5-coder:32b-instruct-q5_K_M` (challenger). Run `ollama pull qwen2.5-coder:32b-instruct-q5_K_M` before enabling — if model B isn't pulled, B's run records `failure_log: model not pulled` and A merges if it succeeded.
+
+Two SQLite tables in `data/aiv.db` capture the data:
+- `ab_test_runs` — one row per attempt (run_id, model, branch_name, commit_sha, status, AIV scores).
+- `ab_test_pairs` — one row per story (model_a_run_id, model_b_run_id, comparison_winner, delta_axes_json, merged_run_id).
+
+Branch naming: `<timestamp>-TK-NNN-<model_suffix>`, where `model_suffix` is the model tag with `:` and `.` replaced by `_`. Both branches are pushed to private origin AND mirrored to `technomancer-public` via `publish.py --branch`.
+
+Winner rule (priority — model A is incumbent):
+- A succeeded, B succeeded → A wins (incumbent priority).
+- A succeeded, B failed    → A wins.
+- A failed,    B succeeded → B wins.
+- A failed,    B failed    → no merge, story marked failed.
+
+Claude separately judges qualitative winner via the `aiv_ab_compare` LLM role; that judgement appears on `/quality/ab/<story_key>` but does not override the priority rule for the actual merge.
+
+UI: the `/quality` page shows two grouped rows + a comparison footer for any story with an A/B pair. `/quality/ab/<story_key>` shows the full pair detail (winner, reasoning, per-axis delta, branch links).
+
+To disable: set `AIW_AB_TEST=false` (or unset it) and restart AIM. `aim/worker.py:493` is the single switch.
+
 ### MANDATORY: Use safe_update.py for ALL Code Changes
 **NEVER edit code directly on main. ALWAYS use the safe_update workflow for ANY code change.**
 

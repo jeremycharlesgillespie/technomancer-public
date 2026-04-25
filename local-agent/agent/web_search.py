@@ -322,7 +322,7 @@ def _rewrite_query_with_llm(user_query: str) -> str:
                 {"role": "user", "content": user_query},
             ],
             options={"temperature": 0.3, "num_ctx": 2048},
-            keep_alive=-1,
+            keep_alive=0,  # One-shot query rewrite - unload immediately to prevent VRAM thrashing
         )
         rewritten = (response.get("message", {}).get("content", "") or "").strip()
         # Strip thinking tags if present

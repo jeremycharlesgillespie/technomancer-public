@@ -301,7 +301,7 @@ class TestNoOtherImports:
     file is the legitimate downstream importer — guard that nothing else
     sneaks in."""
 
-    ALLOWED_IMPORTERS: frozenset[str] = frozenset({"aiv_hook.py"})
+    ALLOWED_IMPORTERS: frozenset[str] = frozenset({"aiv_hook.py", "ab_schema.py"})
 
     def test_agent_package_has_no_unexpected_aiv_schema_importers(self):
         import pathlib

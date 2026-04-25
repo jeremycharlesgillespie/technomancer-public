@@ -34,6 +34,7 @@ def _fake_settings(**overrides):
         "evergreen_generator_model": "ollama:qwen3.5:27b",
         "aiv_classifier_model": "ollama:qwen3.5:27b",
         "aiv_scorer_model": "ollama:qwen3.5:27b",
+        "aiv_ab_compare_model": "ollama:qwen3.5:27b",
         "dev_learning_model": "ollama:qwen3.5:27b",
         "llm_fallback_model": "claude-haiku-4-5",
         "llm_experiment_mode": "",
@@ -205,7 +206,7 @@ class TestRoleMapping:
         assert set(routing) == {
             "aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester",
             "splitter_decomposer", "evergreen_generator",
-            "aiv_classifier", "aiv_scorer", "dev_learning",
+            "aiv_classifier", "aiv_scorer", "aiv_ab_compare", "dev_learning",
         }
 
     def test_new_roles_route_to_their_own_settings(self, monkeypatch):
