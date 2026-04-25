@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 
-from idea_board.executor import _project_key_for
+from idea_board.executor import _project_key_for, _PhaseMarker, ExecutionState
 from agent.config import settings
 
 
@@ -128,3 +128,73 @@ class TestProjectKeyFor:
             result = _project_key_for("FA-123")
             # The function should not crash, but the behavior with whitespace is to return it
             assert result is not None  # Should not be None
+
+
+class TestPhaseMarkerFinish:
+    """Test _PhaseMarker.finish() method with NULL project keys."""
+
+    def test_finish_handles_none_project_key(self):
+        """_PhaseMarker.finish() should handle None project keys without raising exceptions."""
+        # Create a mock execution state with None idea_id (which leads to None project key)
+        state = ExecutionState(idea_id=None)
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
+        
+    def test_finish_handles_empty_string_project_key(self):
+        """_PhaseMarker.finish() should handle empty string project keys without raising exceptions."""
+        # Create a mock execution state with empty string idea_id (which leads to None project key)
+        state = ExecutionState(idea_id="")
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
+        
+    def test_finish_handles_whitespace_project_key(self):
+        """_PhaseMarker.finish() should handle whitespace-only project keys without raising exceptions."""
+        # Create a mock execution state with whitespace idea_id (which leads to None project key)
+        state = ExecutionState(idea_id="   ")
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
+        
+    def test_finish_handles_invalid_project_key_format(self):
+        """_PhaseMarker.finish() should handle invalid project key formats without raising exceptions."""
+        # Create a mock execution state with invalid idea_id format (no digits)
+        state = ExecutionState(idea_id="invalid-format")
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
+        
+    def test_finish_handles_dash_only_project_key(self):
+        """_PhaseMarker.finish() should handle dash-only project keys without raising exceptions."""
+        # Create a mock execution state with dash-only idea_id (which leads to None project key)
+        state = ExecutionState(idea_id="-")
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
+        
+    def test_finish_handles_double_dash_project_key(self):
+        """_PhaseMarker.finish() should handle double-dash project keys without raising exceptions."""
+        # Create a mock execution state with double-dash idea_id (which leads to None project key)
+        state = ExecutionState(idea_id="--")
+        
+        # Create a phase marker
+        marker = _PhaseMarker(state, "test_phase")
+        
+        # This should not raise any exceptions
+        marker.finish()
