@@ -515,8 +515,19 @@ def get_execution(idea_id: str) -> ExecutionState | None:
 
 
 def is_any_executing() -> bool:
-    """Check if any idea is currently being executed."""
-    return any(state.is_alive for state in _active.values())
+    """Check if any idea is currently being executed.
+
+    Covers both the per-attempt slot (``_active``) and the A/B
+    orchestrator slot (``_ab_orchestrator_active``).  Without the
+    orchestrator check, the worker can race past a still-running A/B
+    thread between inner attempts and stack a second orchestrator on
+    top of it.
+    """
+    if any(state.is_alive for state in _active.values()):
+        return True
+    if any(state.is_alive for state in _ab_orchestrator_active.values()):
+        return True
+    return False
 
 
 def get_active_execution_ids() -> list[str]:
@@ -3048,6 +3059,98 @@ def cancel_execution(idea_id: str) -> bool:
             pass
 
     return True
+
+
+def force_cancel_all_active(timeout: float = 30.0) -> bool:
+    """Cancel every entry in ``_active`` and ``_ab_orchestrator_active``
+    and wait for their threads to actually die.
+
+    The worker calls this between assignments. The previous behaviour
+    (``_active.clear()``) only removed bookkeeping — daemon threads
+    kept running and the next assignment stacked a second orchestrator
+    on top of the first. That manifested as multiple In-Progress rows
+    for the same story, races over the shared worktree, and merge
+    chaos.
+
+    Args:
+        timeout: Seconds to wait for each thread to exit after the
+            cancellation flag is set. Threads that ignore the flag
+            (e.g. a wedged Ollama HTTP call) will exceed this; the
+            function returns ``False`` so the caller can refuse to
+            start new work rather than racing the zombie.
+
+    Returns:
+        True if every thread observed the cancel and exited within
+        ``timeout`` (or there was nothing to cancel). False if any
+        thread is still alive after the join — the caller MUST NOT
+        start a new execution in that state.
+    """
+    # Snapshot both dicts under the GIL — the threads we're cancelling
+    # may pop themselves while we iterate.
+    pending: list[tuple[str, ExecutionState, str]] = []
+    for eid, st in list(_active.items()):
+        pending.append((eid, st, "active"))
+    for eid, st in list(_ab_orchestrator_active.items()):
+        pending.append((eid, st, "ab"))
+
+    if not pending:
+        return True
+
+    # Phase 1: flag everything for cancellation and SIGTERM any
+    # subprocesses we know about.
+    for eid, st, source in pending:
+        st.cancelled = True
+        logger.info(
+            "[Executor] force_cancel_all_active: flagging %s (source=%s, "
+            "alive=%s, pid=%s)",
+            eid, source, st.is_alive, st.pid,
+        )
+        if st.pid:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(st.pid)],
+                        capture_output=True,
+                        timeout=10,
+                    )
+                else:
+                    os.kill(st.pid, signal.SIGTERM)
+            except (OSError, ProcessLookupError, subprocess.TimeoutExpired):
+                pass
+
+    # Phase 2: wait for each thread to die.  We share ``timeout`` across
+    # all threads — they're cancelled in parallel, so the worst case is
+    # the slowest one.
+    deadline = time.time() + timeout
+    all_dead = True
+    for eid, st, source in pending:
+        if st.thread is None:
+            continue
+        remaining = max(0.1, deadline - time.time())
+        st.thread.join(timeout=remaining)
+        if st.thread.is_alive():
+            all_dead = False
+            logger.error(
+                "[Executor] force_cancel_all_active: thread for %s "
+                "(source=%s) is STILL ALIVE after %.1fs — refusing to "
+                "start new work to avoid orchestrator stacking",
+                eid, source, timeout,
+            )
+
+    # Phase 3: only clear bookkeeping for entries whose threads are
+    # actually gone.  Leaving live threads in the dicts means the next
+    # ``is_any_executing()`` check correctly returns True and the worker
+    # will keep waiting instead of starting a new run.
+    for eid, st, source in pending:
+        thread_dead = st.thread is None or not st.thread.is_alive()
+        if not thread_dead:
+            continue
+        if source == "active":
+            _active.pop(eid, None)
+        else:
+            _ab_orchestrator_active.pop(eid, None)
+
+    return all_dead
 
 
 def execute_epic(epic_id: str) -> ExecutionState | None:

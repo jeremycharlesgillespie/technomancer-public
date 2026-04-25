@@ -269,11 +269,19 @@ def _wait_for_inner_state(
     to let the orchestrator drive sequential runs from inside its own
     background thread without re-entering the worker's heartbeat / stall
     machinery (which is owned by the outer worker run).
+
+    Also propagates ``state.cancelled`` to the inner state so an
+    orchestrator-level cancel (worker stall, force_cancel_all_active)
+    promptly aborts the inner run instead of waiting out its own
+    timeout.
     """
     if inner_state.thread is None:
         return
     deadline = time.time() + timeout
     while inner_state.thread.is_alive():
+        if state.cancelled and not inner_state.cancelled:
+            state.log(f"[AB] orchestrator cancelled — propagating to {label}")
+            inner_state.cancelled = True
         if time.time() > deadline:
             state.log(f"[AB] {label} run hit hard timeout ({timeout}s)")
             return
@@ -608,6 +616,25 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 mark_failed(idea_id, state.log_text[-5000:])
                 return
 
+            # Cancellation check: if the worker force-cancelled us
+            # between attempts (stall, retry, shutdown), don't start B.
+            if state.cancelled:
+                state.log("[AB] cancelled before Run B — aborting")
+                ab_repo.record_run_end(
+                    run_a_id,
+                    outcome_a.status,
+                    branch_name=outcome_a.branch_name or None,
+                    commit_sha=outcome_a.commit_sha or None,
+                    failure_log=outcome_a.failure_log or None,
+                )
+                ab_repo.record_run_end(
+                    run_b_id,
+                    "failed",
+                    failure_log="orchestrator cancelled before Run B",
+                )
+                mark_failed(idea_id, state.log_text[-5000:])
+                return
+
             # ----- Run B -----
             state.log(
                 f"=== A/B Run B: {model_b} @ {host_b or 'localhost'} ==="
@@ -705,6 +732,13 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 f"[AB] comparison: winner={comparison.winner!r} "
                 f"err={comparison.error!r}"
             )
+
+            # Cancellation check: don't merge a winner if we were
+            # cancelled — the worker will retry the story fresh.
+            if state.cancelled:
+                state.log("[AB] cancelled before merge — skipping winner merge")
+                mark_failed(idea_id, state.log_text[-5000:])
+                return
 
             # ----- Pick merge winner (priority rule) -----
             merge_pick = ab_repo.pick_winner(outcome_a.status, outcome_b.status)

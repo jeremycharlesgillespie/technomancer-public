@@ -225,7 +225,7 @@ def get_accountability_tools():
         create_tool(
             name="verify_file_exists",
             description="Verify that a file exists at the given path",
-            params_schema={
+            parameters={
                 "type": "object",
                 "properties": {
                     "file_path": {
@@ -240,7 +240,7 @@ def get_accountability_tools():
         create_tool(
             name="verify_file_modified",
             description="Verify that a file was modified within the specified number of minutes",
-            params_schema={
+            parameters={
                 "type": "object",
                 "properties": {
                     "file_path": {
@@ -260,7 +260,7 @@ def get_accountability_tools():
         create_tool(
             name="verify_content",
             description="Verify that a file contains the specified text",
-            params_schema={
+            parameters={
                 "type": "object",
                 "properties": {
                     "file_path": {
@@ -279,7 +279,7 @@ def get_accountability_tools():
         create_tool(
             name="verify_memory_saved",
             description="Verify that a memory category was saved to the vault",
-            params_schema={
+            parameters={
                 "type": "object",
                 "properties": {
                     "category": {
@@ -294,7 +294,7 @@ def get_accountability_tools():
         create_tool(
             name="verify_git_clean",
             description="Verify that the git working directory is clean (no uncommitted changes)",
-            params_schema={
+            parameters={
                 "type": "object",
                 "properties": {}
             },
