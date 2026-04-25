@@ -412,18 +412,70 @@ class OllamaCoder:
         except Exception as exc:
             return f"ERROR: {exc}"
 
+    # Project subdirectories that we recognize as legitimate re-anchor points
+    # when the model emits an absolute path with a typo'd or wrong project prefix.
+    # Order matters: deeper / more specific anchors first.
+    _REANCHOR_SEGMENTS = (
+        "local-agent",
+        "docs",
+        "tests",
+        "agent",
+        "idea_board",
+        "aim",
+        "aiv",
+    )
+
     def _resolve_path(self, path: str) -> Path:
-        """Return absolute Path within project_root. Rejects traversal outside project_root."""
+        """Return absolute Path within project_root.
+
+        Path repair strategy (in order):
+        1. Relative path → join with project_root (normal case).
+        2. Absolute path inside project_root → use as-is.
+        3. Absolute path *outside* project_root but containing a recognizable
+           project segment (e.g. ``/Users/gman/code/typo-path/local-agent/...``)
+           → re-anchor at that segment under project_root. This handles the case
+           where the model typo's the worktree path but the suffix is correct.
+        4. Otherwise → reject by clamping to project_root/<basename>.
+
+        Step 3 exists because UUID-suffixed worktree paths (``technomancer-aiw-<uuid>``)
+        are too long for the model to retype reliably across many turns, and the
+        sandbox would otherwise reject every tool call after the first typo.
+        """
         p = Path(path)
-        resolved = (p if p.is_absolute() else self.project_root / p).resolve()
         project_root_resolved = self.project_root.resolve()
+
+        if not p.is_absolute():
+            return (self.project_root / p).resolve()
+
+        resolved = p.resolve()
         try:
             resolved.relative_to(project_root_resolved)
+            return resolved
         except ValueError:
-            # Path escapes project_root — clamp to project_root to prevent writing outside
-            logger.warning("[OllamaCoder] Path %s escapes project_root, rejected", path)
-            return project_root_resolved / Path(path).name
-        return resolved
+            pass
+
+        # Try to re-anchor: find a known project segment in the path and rebuild
+        # the suffix under project_root.
+        parts = p.parts
+        for anchor in self._REANCHOR_SEGMENTS:
+            if anchor in parts:
+                idx = parts.index(anchor)
+                tail = Path(*parts[idx:])
+                repaired = (project_root_resolved / tail).resolve()
+                # Defense-in-depth: ensure the repaired path is still inside project_root.
+                try:
+                    repaired.relative_to(project_root_resolved)
+                except ValueError:
+                    continue
+                logger.info(
+                    "[OllamaCoder] Path %s re-anchored to %s (anchor=%s)",
+                    path, repaired, anchor,
+                )
+                return repaired
+
+        # Could not repair — clamp to project_root/<basename> as a last resort.
+        logger.warning("[OllamaCoder] Path %s escapes project_root, rejected", path)
+        return project_root_resolved / Path(path).name
 
     def _tool_read_file(self, path: str) -> str:
         full = self._resolve_path(path)
@@ -665,10 +717,14 @@ class OllamaCoder:
             "list files, and search code.\n\n"
             f"Project root: {self.project_root.as_posix()}\n"
             "All tool paths (read_file, write_file, edit_file, list_files, search_code) "
-            "accept absolute paths. Always use absolute paths when referencing files.\n\n"
+            "accept either relative or absolute paths. Prefer RELATIVE paths "
+            "anchored at the project root (e.g. `local-agent/agent/foo.py`) — "
+            "they are shorter, less error-prone, and unaffected by the project "
+            "root's exact location on disk.\n\n"
             "Rules:\n"
             "- Always read relevant files before editing them\n"
-            "- Use absolute paths for all file operations\n"
+            "- Prefer relative paths (e.g. `local-agent/tests/unit/test_foo.py`) "
+            "over absolute paths when referencing files\n"
             "- Run `git add <file1> <file2> ... && git commit -m '[<idea_id>] <description>'` after each meaningful change. Only add files you explicitly modified — never use `git add -A` or `git add .`\n"
             "- Run tests with pytest to verify your implementation\n"
             "- Call finish() only after committing all changes\n"

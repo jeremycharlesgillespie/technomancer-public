@@ -643,3 +643,89 @@ class TestFindRelatedTestsForFiles:
         )
 
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# TestResolvePath
+# ---------------------------------------------------------------------------
+# These tests cover the path-repair behavior that lets OllamaCoder survive
+# the model emitting a typo'd absolute path. This matters in particular for
+# A/B runs where each run gets a UUID-suffixed worktree
+# (e.g. /Users/gman/code/technomancer-aiw-cde0c3cb), which the model has been
+# observed dropping a character from across long tool-calling sessions.
+
+class TestResolvePath:
+    def test_relative_path_joins_project_root(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        resolved = coder._resolve_path("local-agent/agent/foo.py")
+        assert resolved == (tmp_path / "local-agent" / "agent" / "foo.py").resolve()
+
+    def test_absolute_path_inside_project_root_unchanged(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        target = tmp_path / "local-agent" / "agent" / "foo.py"
+        resolved = coder._resolve_path(str(target))
+        assert resolved == target.resolve()
+
+    def test_typoed_worktree_prefix_reanchors_via_local_agent(self, tmp_path: Path) -> None:
+        """Regression test: when the model emits an absolute path with a typo'd
+        worktree prefix (e.g. cde03cb instead of cde0c3cb), we should re-anchor
+        at `local-agent/` and rebuild the path under the real project_root.
+        """
+        coder = _make_coder(tmp_path)
+        typoed = "/Users/gman/code/technomancer-aiw-cde03cb/local-agent/agent/foo.py"
+        resolved = coder._resolve_path(typoed)
+        expected = (tmp_path / "local-agent" / "agent" / "foo.py").resolve()
+        assert resolved == expected
+
+    def test_completely_wrong_prefix_reanchors_via_local_agent(self, tmp_path: Path) -> None:
+        """Even an absolute path under /tmp or anywhere else gets re-anchored
+        if it contains a recognizable project segment."""
+        coder = _make_coder(tmp_path)
+        weird = "/tmp/somewhere/local-agent/tests/unit/test_x.py"
+        resolved = coder._resolve_path(weird)
+        expected = (tmp_path / "local-agent" / "tests" / "unit" / "test_x.py").resolve()
+        assert resolved == expected
+
+    def test_reanchor_via_docs_segment(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        resolved = coder._resolve_path("/wrong/prefix/docs/architecture.md")
+        expected = (tmp_path / "docs" / "architecture.md").resolve()
+        assert resolved == expected
+
+    def test_no_recognizable_segment_clamps_to_basename(self, tmp_path: Path) -> None:
+        """When the path can't be repaired, fall back to clamping to project_root/<basename>
+        so we never silently write outside the sandbox."""
+        coder = _make_coder(tmp_path)
+        resolved = coder._resolve_path("/etc/passwd")
+        assert resolved == (tmp_path / "passwd").resolve()
+
+    def test_reanchor_prefers_first_known_segment(self, tmp_path: Path) -> None:
+        """If multiple known segments appear, the first match in the path wins
+        (giving us the deepest legitimate root)."""
+        coder = _make_coder(tmp_path)
+        # local-agent appears before tests, so re-anchor at local-agent
+        path = "/wrong/local-agent/tests/unit/test_foo.py"
+        resolved = coder._resolve_path(path)
+        expected = (tmp_path / "local-agent" / "tests" / "unit" / "test_foo.py").resolve()
+        assert resolved == expected
+
+    def test_reanchor_does_not_escape_project_root(self, tmp_path: Path) -> None:
+        """Defense-in-depth: even after re-anchoring, the result must be inside project_root.
+        A path like /wrong/local-agent/../../../etc/passwd would re-anchor to
+        local-agent/../../../etc/passwd which resolves outside — should be rejected.
+        """
+        coder = _make_coder(tmp_path)
+        evil = "/wrong/local-agent/../../etc/passwd"
+        resolved = coder._resolve_path(evil)
+        # Should NOT resolve to /etc/passwd; should clamp to basename inside project_root.
+        assert str(resolved).startswith(str(tmp_path.resolve()))
+
+    def test_reanchor_inside_existing_project_root_path_is_passthrough(
+        self, tmp_path: Path
+    ) -> None:
+        """If the absolute path is already inside project_root, no re-anchoring needed
+        even though it contains a known segment."""
+        coder = _make_coder(tmp_path)
+        target = tmp_path / "local-agent" / "agent" / "bar.py"
+        resolved = coder._resolve_path(str(target))
+        assert resolved == target.resolve()
