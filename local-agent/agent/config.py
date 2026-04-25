@@ -494,6 +494,23 @@ class Settings(BaseSettings):
             "enabling AIW_AB_TEST."
         ),
     )
+    aiw_ab_model_a_host: str = Field(
+        default="",
+        description=(
+            "Optional Ollama base URL for model A (e.g. 'http://127.0.0.1:11434'). "
+            "Empty string means use the default OLLAMA_HOST. Set this to point "
+            "model A at a remote Ollama instance for cross-host A/B runs."
+        ),
+    )
+    aiw_ab_model_b_host: str = Field(
+        default="",
+        description=(
+            "Optional Ollama base URL for model B (e.g. 'http://192.168.1.150:11434'). "
+            "Empty string means use the default OLLAMA_HOST (localhost). Set this "
+            "to point model B at a remote Ollama instance — useful when A and B "
+            "would otherwise contend for the same GPU."
+        ),
+    )
     aiw_ollama_coder_max_turns: int = Field(
         default=40,
         description="Max tool-call turns per fix round in OllamaCoder's inner loop.",

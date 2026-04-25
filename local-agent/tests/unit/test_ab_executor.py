@@ -69,10 +69,17 @@ def fake_idea_provider(monkeypatch):
 
 @pytest.fixture
 def patch_settings(monkeypatch):
-    """Force the A/B model settings to known values + a tmp project root."""
+    """Force the A/B model settings to known values + a tmp project root.
+
+    Both host fields default to ``""`` (same-box, localhost) so existing
+    eviction tests stay on the same-host code path. The cross-host tests
+    in ``TestOrchestratorCrossHostBehavior`` re-patch host_b to a remote
+    URL via their own monkeypatch."""
     from agent import config as _config
     monkeypatch.setattr(_config.settings, "aiw_ab_model_a", "model-a:tag", raising=False)
     monkeypatch.setattr(_config.settings, "aiw_ab_model_b", "model-b:tag", raising=False)
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_a_host", "", raising=False)
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_b_host", "", raising=False)
     monkeypatch.setattr(_config.settings, "project_root", "/tmp/fake-root", raising=False)
 
 
@@ -321,6 +328,8 @@ def test_no_unload_when_models_identical(fake_idea_provider, monkeypatch) -> Non
     from agent import config as _config
     monkeypatch.setattr(_config.settings, "aiw_ab_model_a", "same:tag", raising=False)
     monkeypatch.setattr(_config.settings, "aiw_ab_model_b", "same:tag", raising=False)
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_a_host", "", raising=False)
+    monkeypatch.setattr(_config.settings, "aiw_ab_model_b_host", "", raising=False)
     monkeypatch.setattr(_config.settings, "project_root", "/tmp/fake-root", raising=False)
 
     patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
@@ -540,3 +549,263 @@ class TestHeadSha:
             lambda *a, **kw: MagicMock(returncode=0, stdout="   \n"),
         )
         assert ab_executor._head_sha(tmp_path) is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-host plumbing — _ollama_has_model, _unload_ollama_model accept a host
+# argument so model A and model B can run on different Ollama instances
+# (e.g. local Mac for A, remote 5090 box for B). The orchestrator passes
+# settings.aiw_ab_model_a_host / aiw_ab_model_b_host through both helpers
+# and through _do_attempt -> execute_idea(host_override=...).
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaHasModelOverHttp:
+    """``_ollama_has_model`` queries ``GET /api/tags`` over HTTP so the same
+    code path works for local + remote Ollama instances."""
+
+    def test_returns_true_when_model_listed(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"models": [
+                    {"name": "qwen3-coder:30b-a3b-q4_K_M"},
+                    {"name": "glm-4.7-flash:q4_K_M"},
+                ]}
+
+        def fake_get(url, timeout=None):
+            captured["url"] = url
+            captured["timeout"] = timeout
+            return _Resp()
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "get", fake_get)
+
+        assert ab_executor._ollama_has_model(
+            "glm-4.7-flash:q4_K_M",
+            host="http://192.168.1.150:11434",
+        ) is True
+        assert captured["url"] == "http://192.168.1.150:11434/api/tags"
+
+    def test_returns_false_when_model_missing(self, monkeypatch):
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"models": [{"name": "other:tag"}]}
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "get", lambda url, timeout=None: _Resp())
+
+        assert ab_executor._ollama_has_model(
+            "missing:tag",
+            host="http://192.168.1.150:11434",
+        ) is False
+
+    def test_returns_false_on_network_error(self, monkeypatch):
+        """Remote box unreachable → False so orchestrator short-circuits B
+        with a clear ``failure_log`` rather than hanging on the model load."""
+        import requests as _requests
+
+        def boom(url, timeout=None):
+            raise _requests.ConnectionError("no route to host")
+
+        monkeypatch.setattr(_requests, "get", boom)
+        assert ab_executor._ollama_has_model(
+            "any:tag", host="http://192.168.1.150:11434"
+        ) is False
+
+    def test_returns_false_on_non_200(self, monkeypatch):
+        class _Resp:
+            status_code = 500
+            def json(self):
+                return {}
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "get", lambda url, timeout=None: _Resp())
+
+        assert ab_executor._ollama_has_model("any:tag", host="http://x:11434") is False
+
+    def test_exact_match_only_no_substring_collision(self, monkeypatch):
+        """``qwen2.5-coder:32b`` must NOT match ``qwen2.5-coder:7b``."""
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"models": [{"name": "qwen2.5-coder:7b"}]}
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "get", lambda url, timeout=None: _Resp())
+
+        assert ab_executor._ollama_has_model(
+            "qwen2.5-coder:32b", host="",
+        ) is False
+
+    def test_empty_host_falls_back_to_default(self, monkeypatch):
+        """Empty host → uses ``OLLAMA_HOST`` from ``agent.ollama_client``."""
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            status_code = 200
+            def json(self):
+                return {"models": []}
+
+        def fake_get(url, timeout=None):
+            captured["url"] = url
+            return _Resp()
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "get", fake_get)
+
+        ab_executor._ollama_has_model("anything:tag", host="")
+        # URL must include /api/tags and start with a real http(s) scheme,
+        # not an empty string.
+        url = captured["url"]
+        assert url.endswith("/api/tags")
+        assert url.startswith("http")
+
+
+class TestUnloadOllamaModelWithHost:
+    """``_unload_ollama_model`` accepts a host so we can evict a model on
+    a remote Ollama box, not just localhost."""
+
+    def test_remote_host_targets_remote_url(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            status_code = 200
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _Resp()
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "post", fake_post)
+
+        ok = ab_executor._unload_ollama_model(
+            "glm-4.7-flash:q4_K_M",
+            host="http://192.168.1.150:11434",
+        )
+        assert ok is True
+        assert captured["url"] == "http://192.168.1.150:11434/api/generate"
+        assert captured["json"]["model"] == "glm-4.7-flash:q4_K_M"
+        assert captured["json"]["keep_alive"] == 0
+
+    def test_empty_host_falls_back_to_default(self, monkeypatch):
+        """Empty host → still posts to the default OLLAMA_HOST. Verifies
+        existing localhost callers keep working."""
+        captured: dict[str, object] = {}
+
+        class _Resp:
+            status_code = 200
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            return _Resp()
+
+        import requests as _requests
+        monkeypatch.setattr(_requests, "post", fake_post)
+
+        ab_executor._unload_ollama_model("foo:bar", host="")
+        assert captured["url"].endswith("/api/generate")
+        assert captured["url"].startswith("http")
+
+
+class TestOrchestratorCrossHostBehavior:
+    """When ``host_a != host_b``, the orchestrator skips the
+    between-runs eviction (no GPU contention to resolve) and threads
+    each host through the matching ``_do_attempt`` call."""
+
+    def test_skips_eviction_when_hosts_differ(
+        self, fake_idea_provider, patch_settings, monkeypatch,
+    ):
+        from agent import config as _config
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_a_host", "", raising=False,
+        )
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_b_host",
+            "http://192.168.1.150:11434", raising=False,
+        )
+
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-HOST-1", patches)
+
+        # Eviction call between A and B is skipped on cross-host runs.
+        # The end-of-run unload of B may still fire.
+        unload = mocks["_unload_ollama_model"]
+        # No call should target model A — the only legitimate unload is the
+        # final unload of B.
+        a_calls = [c for c in unload.call_args_list if c.args[0] == "model-a:tag"]
+        assert a_calls == [], (
+            "model A should not be unloaded when A and B run on different hosts"
+        )
+
+    def test_passes_host_a_and_host_b_to_do_attempt(
+        self, fake_idea_provider, patch_settings, monkeypatch,
+    ):
+        from agent import config as _config
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_a_host", "", raising=False,
+        )
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_b_host",
+            "http://192.168.1.150:11434", raising=False,
+        )
+
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-HOST-2", patches)
+
+        do_attempt = mocks["_do_attempt"]
+        assert do_attempt.call_count == 2
+        # Call 1 is A; host kwarg must be "" (local).
+        first_kwargs = do_attempt.call_args_list[0].kwargs
+        assert first_kwargs.get("host") == ""
+        # Call 2 is B; host kwarg must be the remote URL.
+        second_kwargs = do_attempt.call_args_list[1].kwargs
+        assert second_kwargs.get("host") == "http://192.168.1.150:11434"
+
+    def test_passes_host_b_to_ollama_has_model_check(
+        self, fake_idea_provider, patch_settings, monkeypatch,
+    ):
+        """The pre-flight ``_ollama_has_model`` check for B must target
+        host B, not localhost — otherwise we'd false-positive on a local
+        model name that doesn't exist on the remote box (or vice-versa)."""
+        from agent import config as _config
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_b_host",
+            "http://192.168.1.150:11434", raising=False,
+        )
+
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-HOST-3", patches)
+
+        has_model = mocks["_ollama_has_model"]
+        # Find the call for model B (model name == "model-b:tag").
+        b_calls = [c for c in has_model.call_args_list
+                   if c.args and c.args[0] == "model-b:tag"]
+        assert len(b_calls) == 1
+        assert b_calls[0].kwargs.get("host") == "http://192.168.1.150:11434"
+
+    def test_evicts_when_hosts_match(
+        self, fake_idea_provider, patch_settings, monkeypatch,
+    ):
+        """Sanity: when both hosts are blank (the default same-box config),
+        the between-runs eviction still fires for model A."""
+        from agent import config as _config
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_a_host", "", raising=False,
+        )
+        monkeypatch.setattr(
+            _config.settings, "aiw_ab_model_b_host", "", raising=False,
+        )
+
+        patches = _patch_orchestrator_helpers(a_success=True, b_success=True)
+        state, mocks = _run_with_patches("TK-HOST-4", patches)
+
+        unload = mocks["_unload_ollama_model"]
+        a_calls = [c for c in unload.call_args_list if c.args[0] == "model-a:tag"]
+        assert len(a_calls) >= 1, (
+            "model A should be unloaded between runs when both hosts match"
+        )

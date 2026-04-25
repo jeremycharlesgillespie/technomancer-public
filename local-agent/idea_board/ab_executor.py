@@ -92,29 +92,30 @@ class _RunOutcome:
         return out
 
 
-def _unload_ollama_model(model_tag: str) -> bool:
-    """Force-evict ``model_tag`` from Ollama's resident set.
+def _unload_ollama_model(model_tag: str, host: str = "") -> bool:
+    """Force-evict ``model_tag`` from Ollama's resident set on ``host``.
 
     Posts ``keep_alive=0`` to ``/api/generate`` with an empty prompt,
     which tells Ollama to drop the runner immediately. This is the
     Ollama-recommended way to free VRAM without restarting the server.
 
     Used between A and B runs so we never have BOTH coder models
-    resident at once — on memory-constrained boxes the second load
-    would page-thrash or fail outright.
+    resident at once on the same GPU — on memory-constrained boxes the
+    second load would page-thrash or fail outright. When A and B run
+    on *different* hosts there is no contention to resolve, so the
+    orchestrator skips this call.
 
-    Returns True on HTTP 200 (Ollama acknowledged the unload). False on
-    network error, non-200, or missing tag. Caller should log + proceed
-    either way (worst case Ollama auto-evicts when we ask for the next
-    model).
+    ``host`` is the Ollama base URL. Empty string falls back to the
+    module-level OLLAMA_HOST (localhost). Returns True on HTTP 200.
     """
     if not model_tag:
         return False
     try:
         from agent.ollama_client import OLLAMA_HOST
         import requests
+        target_host = host or OLLAMA_HOST
         r = requests.post(
-            f"{OLLAMA_HOST}/api/generate",
+            f"{target_host}/api/generate",
             json={
                 "model": model_tag,
                 "prompt": "",
@@ -129,30 +130,37 @@ def _unload_ollama_model(model_tag: str) -> bool:
         return False
 
 
-def _ollama_has_model(model_tag: str) -> bool:
-    """Return True if ``ollama list`` reports ``model_tag`` as installed.
+def _ollama_has_model(model_tag: str, host: str = "") -> bool:
+    """Return True if Ollama on ``host`` has ``model_tag`` installed.
 
-    Uses the local CLI rather than the HTTP API so the check matches
-    what the user would see when they run ``ollama list`` themselves.
-    Failures (binary missing, timeout) return False so the orchestrator
-    short-circuits B's run with a clear failure_log.
+    Queries ``GET /api/tags`` over HTTP so the same code works whether
+    the target is the local Ollama or a remote one (e.g. the 5090 box
+    over Tailscale/LAN). The earlier implementation used the local
+    ``ollama list`` CLI — that couldn't see a remote machine.
+
+    ``host`` is the Ollama base URL. Empty string falls back to the
+    module-level OLLAMA_HOST (localhost). Failures (network, timeout,
+    non-200) return False so the orchestrator short-circuits B's run
+    with a clear failure_log instead of hanging on the model load.
     """
     try:
-        result = subprocess.run(
-            ["ollama", "list"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
-        logger.warning("[AB] ollama list failed: %s", exc)
+        from agent.ollama_client import OLLAMA_HOST
+        import requests
+        target_host = host or OLLAMA_HOST
+        r = requests.get(f"{target_host}/api/tags", timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[AB] /api/tags on %s failed: %s", host or "localhost", exc)
         return False
-    if result.returncode != 0:
+    if r.status_code != 200:
         return False
-    # ``ollama list`` prints the tag in the first column. Match the
-    # exact tag (no substring) so qwen2.5-coder:32b doesn't false-match
-    # qwen2.5-coder:7b.
-    for line in (result.stdout or "").splitlines():
-        first = line.split()[:1]
-        if first and first[0] == model_tag:
+    try:
+        data = r.json()
+    except ValueError:
+        return False
+    # /api/tags returns {"models": [{"name": "qwen2.5-coder:32b", ...}, ...]}.
+    # Exact match so qwen2.5-coder:32b doesn't false-match qwen2.5-coder:7b.
+    for m in data.get("models", []) or []:
+        if isinstance(m, dict) and m.get("name") == model_tag:
             return True
     return False
 
@@ -308,6 +316,7 @@ def _do_attempt(
     state: ExecutionState,
     project_root: Path,
     inner_timeout: int,
+    host: str = "",
 ) -> tuple[bool, str, str, str]:
     """Run a single inner :func:`execute_idea` with skip_merge=True.
 
@@ -315,8 +324,15 @@ def _do_attempt(
     success means the inner run committed to a feature branch and pushed
     it to private origin. The orchestrator turns that triplet into an
     :class:`_RunOutcome`.
+
+    ``host`` is the Ollama base URL for this attempt. Empty string
+    falls back to the default localhost. Used by the A/B harness to
+    point one model at a remote Ollama instance.
     """
-    state.log(f"[AB] starting attempt: model={model} suffix={suffix}")
+    state.log(
+        f"[AB] starting attempt: model={model} suffix={suffix} "
+        f"host={host or 'localhost'}"
+    )
 
     # Pop any leftover _active entry so the dedup guard at
     # idea_board.executor:1819 doesn't bounce us. The previous run's
@@ -326,6 +342,7 @@ def _do_attempt(
     inner = execute_idea(
         idea_id,
         model_override=model,
+        host_override=host or None,
         branch_suffix=suffix,
         skip_merge=True,
     )
@@ -477,6 +494,8 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
 
     model_a = settings.aiw_ab_model_a
     model_b = settings.aiw_ab_model_b
+    host_a = settings.aiw_ab_model_a_host or ""
+    host_b = settings.aiw_ab_model_b_host or ""
     label_a = ab_repo.model_label(model_a)
     label_b = ab_repo.model_label(model_b)
     suffix_a = ab_repo.branch_suffix(model_a)
@@ -498,7 +517,9 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
 
         try:
             # ----- Run A -----
-            state.log(f"=== A/B Run A: {model_a} ===")
+            state.log(
+                f"=== A/B Run A: {model_a} @ {host_a or 'localhost'} ==="
+            )
             ok_a, branch_a, sha_a, log_a = _do_attempt(
                 idea_id,
                 model=model_a,
@@ -506,6 +527,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 state=state,
                 project_root=project_root,
                 inner_timeout=inner_timeout,
+                host=host_a,
             )
             outcome_a.status = "success" if ok_a else "failed"
             outcome_a.branch_name = branch_a
@@ -528,9 +550,22 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             # unload the scheduler may try to keep both 25-30 GB models
             # resident and thrash. We accept the ~6s reload penalty for
             # the next AIM cycle in exchange for clean single-model VRAM.
-            if model_a != model_b:
-                state.log(f"[AB] unloading model A ({model_a}) before B")
-                _unload_ollama_model(model_a)
+            #
+            # When A and B target *different* hosts there is no shared
+            # VRAM to thrash — model A's runner stays loaded on its host
+            # while B loads on the other. Skip the eviction in that case
+            # so we don't need a no-op round-trip to the wrong host.
+            if model_a != model_b and host_a == host_b:
+                state.log(
+                    f"[AB] unloading model A ({model_a}) on "
+                    f"{host_a or 'localhost'} before B"
+                )
+                _unload_ollama_model(model_a, host=host_a)
+            elif host_a != host_b:
+                state.log(
+                    f"[AB] cross-host run: A on {host_a or 'localhost'}, "
+                    f"B on {host_b or 'localhost'} — skipping eviction"
+                )
 
             # Reset to clean main before B.
             if not _reset_to_main(project_root, state):
@@ -551,12 +586,18 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                 return
 
             # ----- Run B -----
-            state.log(f"=== A/B Run B: {model_b} ===")
-            if not _ollama_has_model(model_b):
-                state.log(f"[AB] model {model_b} not pulled — short-circuit failure")
+            state.log(
+                f"=== A/B Run B: {model_b} @ {host_b or 'localhost'} ==="
+            )
+            if not _ollama_has_model(model_b, host=host_b):
+                state.log(
+                    f"[AB] model {model_b} not pulled on "
+                    f"{host_b or 'localhost'} — short-circuit failure"
+                )
                 outcome_b.status = "failed"
                 outcome_b.failure_log = (
-                    f"model not pulled: run `ollama pull {model_b}` "
+                    f"model not pulled on {host_b or 'localhost'}: "
+                    f"run `ollama pull {model_b}` there "
                     f"before enabling AIW_AB_TEST"
                 )
             else:
@@ -567,6 +608,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     state=state,
                     project_root=project_root,
                     inner_timeout=inner_timeout,
+                    host=host_b,
                 )
                 outcome_b.status = "success" if ok_b else "failed"
                 outcome_b.branch_name = branch_b
@@ -714,10 +756,16 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
         finally:
             # Evict model B at run end — keeps VRAM clean for the next
             # AIM cycle (which starts with model A again). Skipped when
-            # A == B since there's nothing distinct to unload.
+            # A == B since there's nothing distinct to unload. Also a
+            # courtesy unload on the *remote* host when B is on a
+            # different machine — frees the 5090's VRAM for whatever
+            # else the user is doing on it.
             if model_b and model_a != model_b:
-                state.log(f"[AB] unloading model B ({model_b}) at run end")
-                _unload_ollama_model(model_b)
+                state.log(
+                    f"[AB] unloading model B ({model_b}) on "
+                    f"{host_b or 'localhost'} at run end"
+                )
+                _unload_ollama_model(model_b, host=host_b)
             _active.pop(idea_id, None)
             _ab_orchestrator_active.pop(idea_id, None)
 

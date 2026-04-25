@@ -195,6 +195,7 @@ class OllamaCoder:
         max_turns: int = 40,
         max_rounds: int = 20,
         num_ctx: int = 16384,
+        host: str = "",
     ) -> None:
         self.prompt = prompt
         self.project_root = Path(project_root)
@@ -204,6 +205,11 @@ class OllamaCoder:
         self.max_turns = max_turns
         self.max_rounds = max_rounds
         self.num_ctx = num_ctx
+        # Ollama base URL for *this* coder instance. Empty string falls
+        # back to the module-level OLLAMA_HOST (localhost) so existing
+        # callers are unaffected. The A/B harness sets this to point
+        # model B at a remote Ollama (e.g. http://192.168.1.150:11434).
+        self.host = host or OLLAMA_HOST
         self._log = state.log if hasattr(state, "log") else lambda m: None
 
     # ------------------------------------------------------------------
@@ -222,6 +228,7 @@ class OllamaCoder:
         acquire_coder_priority()
         try:
             self._log(f"[OllamaCoder] Starting with model={self.model}, "
+                      f"host={self.host}, "
                       f"max_rounds={self.max_rounds}, max_turns={self.max_turns}")
             self._run_rounds()
         finally:
@@ -588,7 +595,7 @@ class OllamaCoder:
         for attempt in range(4):  # 1 initial + 3 retries
             try:
                 r = requests.post(
-                    f"{OLLAMA_HOST}/api/chat",
+                    f"{self.host}/api/chat",
                     json=body,
                     timeout=900,
                 )
