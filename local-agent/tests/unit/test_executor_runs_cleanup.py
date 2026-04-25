@@ -235,6 +235,47 @@ class TestArtifactCleanup:
 
 
 # =========================================================================
+# Edge case tests for artifact removal functions
+# =========================================================================
+
+
+class TestEdgeCases:
+    def test_remove_artifacts_with_none_run_id(self, _isolate_db):
+        """Test _remove_artifacts with None run_id - should handle gracefully."""
+        # This tests the _remove_artifacts function directly
+        dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+            run_id=None, dry_run=False
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_remove_artifacts_with_missing_files(self, _isolate_db):
+        """Test _remove_artifacts with run_id that has no matching files."""
+        # This tests the _remove_artifacts function directly with a non-existent run_id
+        dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+            run_id="nonexistent-run-id", dry_run=False
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_remove_artifacts_with_dry_run_none(self, _isolate_db):
+        """Test _remove_artifacts with None run_id in dry_run mode."""
+        dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+            run_id=None, dry_run=True
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_remove_artifacts_with_dry_run_missing(self, _isolate_db):
+        """Test _remove_artifacts with missing files in dry_run mode."""
+        dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+            run_id="nonexistent-run-id", dry_run=True
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+
+# =========================================================================
 # Scheduler
 # =========================================================================
 
