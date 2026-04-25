@@ -85,6 +85,40 @@ class TestToolExecution:
         assert "Wrote" in result
         assert (tmp_path / "new.py").read_text(encoding="utf-8") == "x = 1"
 
+    def test_write_file_rejects_test_file_without_test_prefix(self, tmp_path: Path) -> None:
+        """Files under tests/ that don't start with test_ won't be collected by pytest."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_write_file("tests/jira_retry_backoff.py", "def test_foo(): pass")
+        assert "ERROR" in result
+        assert "test_jira_retry_backoff.py" in result
+        assert not (tmp_path / "tests" / "jira_retry_backoff.py").exists()
+
+    def test_write_file_rejects_test_shaped_content_outside_tests(self, tmp_path: Path) -> None:
+        """A file containing def test_* anywhere — even outside tests/ — should be flagged."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_write_file("foo.py", "def test_something():\n    assert True")
+        assert "ERROR" in result
+        assert "test_foo.py" in result
+
+    def test_write_file_allows_test_prefixed_file(self, tmp_path: Path) -> None:
+        """test_*.py files under tests/ should be allowed."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_write_file("tests/unit/test_thing.py", "def test_x(): pass")
+        assert "Wrote" in result
+        assert (tmp_path / "tests" / "unit" / "test_thing.py").exists()
+
+    def test_write_file_allows_underscore_test_suffix(self, tmp_path: Path) -> None:
+        """foo_test.py is a valid pytest filename too."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_write_file("tests/foo_test.py", "def test_x(): pass")
+        assert "Wrote" in result
+
+    def test_write_file_allows_conftest_under_tests(self, tmp_path: Path) -> None:
+        """conftest.py under tests/ is fine — pytest treats it specially."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_write_file("tests/conftest.py", "import pytest")
+        assert "Wrote" in result
+
     def test_edit_file_replaces_string(self, tmp_path: Path) -> None:
         f = tmp_path / "src.py"
         f.write_text("def old(): pass", encoding="utf-8")

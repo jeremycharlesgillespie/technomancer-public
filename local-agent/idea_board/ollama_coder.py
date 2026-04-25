@@ -432,6 +432,22 @@ class OllamaCoder:
 
     def _tool_write_file(self, path: str, content: str) -> str:
         full = self._resolve_path(path)
+        # Guard: pytest only collects files starting with test_ or ending _test.py.
+        # If the file is under a tests/ dir or contains def test_* functions,
+        # require it to follow that naming so the work isn't silently invisible.
+        path_str = str(full).replace("\\", "/")
+        is_under_tests = "/tests/" in path_str
+        looks_like_tests = bool(re.search(r"^def test_\w+", content, re.MULTILINE))
+        if (is_under_tests or looks_like_tests) and full.name.endswith(".py"):
+            allowed_test_names = {"conftest.py", "__init__.py"}
+            is_pytest_named = full.name.startswith("test_") or full.name.endswith("_test.py")
+            is_helper = full.name in allowed_test_names
+            if not is_pytest_named and not is_helper:
+                return (
+                    f"ERROR: refusing to write test-shaped file '{full.name}' — "
+                    f"pytest will not collect it. Rename to test_{full.name} "
+                    f"(or {full.stem}_test.py) and try again."
+                )
         try:
             full.parent.mkdir(parents=True, exist_ok=True)
             full.write_text(content, encoding="utf-8")

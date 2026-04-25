@@ -1,6 +1,6 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-5706-brightgreen) ![coverage](https://img.shields.io/badge/coverage-0%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-101-blue) ![lines](https://img.shields.io/badge/lines-41k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-5711-brightgreen) ![coverage](https://img.shields.io/badge/coverage-0%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-101-blue) ![lines](https://img.shields.io/badge/lines-41k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 Technomancer is a **fully autonomous AI dev team** that ships production code
 the way humans do — from ranked Jira tickets, through feature branches, with
@@ -117,7 +117,7 @@ While a Worker is running, anyone with the link can watch in real time:
 
 ## Highlights
 
-- **5706 automated tests** with 0% code coverage
+- **5711 automated tests** with 0% code coverage
 - **101 Python modules** across 41,967 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
@@ -219,7 +219,7 @@ python safe_update.py continue          # test, merge, restart, publish
 Every code change passes through multiple quality gates before deployment:
 
 ```bash
-pytest                        # Run all 5706 tests
+pytest                        # Run all 5711 tests
 pytest --cov=agent            # With coverage report
 pytest tests/unit/            # Unit tests only
 python validate.py startup    # Full pre-commit validation (5 levels)
@@ -245,7 +245,7 @@ Every change follows the same branch → test → merge → restart flow:
 safe_update.py <name>      →  Create isolated branch
 validate.py startup        →  5-level validation (mandatory before commit)
 git commit                 →  Pre-commit hooks (black, ruff, trailing whitespace)
-safe_update.py continue    →  pytest (all 5706 tests) → mypy → merge → restart bot → quality tests → publish
+safe_update.py continue    →  pytest (all 5711 tests) → mypy → merge → restart bot → quality tests → publish
 ```
 
 No code reaches `main` without passing **all** of: pre-commit hooks, 5-level validation, the full test suite, type checking, and post-deploy quality tests.
@@ -296,7 +296,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 
 | Metric | Value |
 |--------|-------|
-| Test count | 5706 |
+| Test count | 5711 |
 | Code coverage | 0% |
 | Python modules | 101 |
 | Lines of code | 41,967 |
