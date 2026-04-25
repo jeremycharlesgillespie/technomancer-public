@@ -1,4 +1,4 @@
-.PHONY: test lint format start stop status update install clean secrets-audit help
+.PHONY: test lint format start stop status update install clean secrets-audit hub help
 
 # Default target
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "  make start      - Start the Discord bot"
 	@echo "  make stop       - Stop the Discord bot"
 	@echo "  make status     - Show bot status"
+	@echo "  make hub        - Run the Technomancer Hub (idea board + REST API) standalone"
 	@echo "  make update     - Start safe_update workflow (use: make update name=fix-bug)"
 	@echo "  make secrets-audit - Review findings in .secrets.baseline"
 	@echo "  make clean      - Remove build artifacts"
@@ -51,6 +52,10 @@ status:
 
 restart:
 	python bot_service.py start
+
+# Standalone hub (no Discord bot, no AI daemons)
+hub:
+	python run_hub.py
 
 # Safe update workflow
 update:

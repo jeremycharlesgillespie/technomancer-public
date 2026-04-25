@@ -16,8 +16,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and .env file."""
 
+    # Pydantic loads env_file in order; later files override earlier ones.
+    # `.env` holds the shared/committed defaults; `.env.local` (gitignored)
+    # holds per-machine overrides so the same checkout runs on Mac and
+    # Windows without editing tracked files.
     model_config = SettingsConfigDict(
-        env_file=Path(__file__).parent.parent / ".env",
+        env_file=(
+            Path(__file__).parent.parent / ".env",
+            Path(__file__).parent.parent / ".env.local",
+        ),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -193,6 +200,14 @@ class Settings(BaseSettings):
     server_host: str = Field(
         default="localhost",
         description="Hostname/IP for service URLs in hub page and Discord messages",
+    )
+
+    # Hub (idea board) Flask port. Configurable so a developer machine can
+    # run the hub on a non-default port without colliding with another
+    # instance on the same network.
+    board_port: int = Field(
+        default=8322,
+        description="Port the Technomancer Hub Flask app binds to (0.0.0.0:<port>).",
     )
 
     # API cost alerting

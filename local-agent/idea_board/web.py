@@ -147,7 +147,7 @@ def get_execution_detail_href(idea_id) -> str:
 
 logger = logging.getLogger(__name__)
 
-BOARD_PORT: int = 8322
+BOARD_PORT: int = settings.board_port
 
 app = Flask(__name__)
 
