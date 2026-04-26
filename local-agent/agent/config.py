@@ -285,6 +285,14 @@ class Settings(BaseSettings):
     aim_execution_timeout: int = Field(
         default=2700, description="Seconds before Worker considers an execution stuck (45 min)"
     )
+    aim_ab_execution_timeout: int = Field(
+        default=5400,
+        description=(
+            "Seconds before Worker considers an A/B orchestrated execution stuck. "
+            "A/B mode runs two model attempts back-to-back, so the orchestrator "
+            "needs roughly 2x the single-run budget. Default 90 min."
+        ),
+    )
     aim_max_worker_failures: int = Field(
         default=3, description="Consecutive Worker failures before Discord escalation"
     )

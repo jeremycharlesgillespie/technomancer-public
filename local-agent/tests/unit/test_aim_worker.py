@@ -227,12 +227,96 @@ class TestWatchExecution:
              patch("aim.state.update_worker_heartbeat"), \
              patch("aim.state.update_worker_status"), \
              patch("agent.config.settings") as mock_settings:
+            mock_settings.aiw_ab_test_enabled = False
             mock_settings.aim_execution_timeout = 100
             result = watch_execution("idea-001")
 
         assert result.success is False
         assert "timed out" in result.summary.lower()
         mock_cancel.assert_called_once_with("idea-001")
+
+    @patch("aim.worker.time.sleep")
+    @patch("aim.worker.WATCH_INTERVAL", 0)
+    def test_ab_mode_uses_longer_timeout_budget(self, mock_sleep):
+        """When AIW_AB_TEST is on, watch_execution must compare elapsed
+        against aim_ab_execution_timeout, not aim_execution_timeout."""
+        cancel_called = [False]
+
+        class AlwaysAliveState(FakeExecutionState):
+            @property
+            def is_alive(self):
+                return not cancel_called[0]
+
+        # Elapsed sits between the single-run budget (100) and the A/B
+        # budget (200). Without the A/B branch, this run would be cancelled
+        # immediately. With it, the run is allowed to continue.
+        fake_state = AlwaysAliveState(
+            idea_id="idea-ab", log_lines=["Line"], elapsed=150,
+        )
+
+        def fake_cancel(idea_id):
+            cancel_called[0] = True
+            return True
+
+        # Force is_alive to flip false after one poll so the loop exits.
+        original_alive = fake_state.is_alive
+        polls = [0]
+
+        def alive_then_dead(self):
+            polls[0] += 1
+            if polls[0] > 1:
+                return False
+            return not cancel_called[0]
+
+        type(fake_state).is_alive = property(alive_then_dead)
+
+        with patch("idea_board.executor.get_execution", return_value=fake_state), \
+             patch("idea_board.executor.cancel_execution", side_effect=fake_cancel) as mock_cancel, \
+             patch("aim.state.update_worker_heartbeat"), \
+             patch("aim.state.update_worker_status"), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.aiw_ab_test_enabled = True
+            mock_settings.aim_execution_timeout = 100
+            mock_settings.aim_ab_execution_timeout = 200
+            result = watch_execution("idea-ab")
+
+        # Run was below A/B threshold so timeout should NOT have fired.
+        mock_cancel.assert_not_called()
+        assert "timed out" not in result.summary.lower()
+
+    @patch("aim.worker.time.sleep")
+    @patch("aim.worker.WATCH_INTERVAL", 0)
+    def test_ab_mode_still_cancels_at_ab_threshold(self, mock_sleep):
+        """A/B mode still cancels — just at the larger budget."""
+        cancel_called = [False]
+
+        class AlwaysAliveState(FakeExecutionState):
+            @property
+            def is_alive(self):
+                return not cancel_called[0]
+
+        # Elapsed exceeds even the A/B budget — must cancel.
+        fake_state = AlwaysAliveState(
+            idea_id="idea-ab", log_lines=["Line"], elapsed=99999,
+        )
+
+        def fake_cancel(idea_id):
+            cancel_called[0] = True
+            return True
+
+        with patch("idea_board.executor.get_execution", return_value=fake_state), \
+             patch("idea_board.executor.cancel_execution", side_effect=fake_cancel) as mock_cancel, \
+             patch("aim.state.update_worker_heartbeat"), \
+             patch("aim.state.update_worker_status"), \
+             patch("agent.config.settings") as mock_settings:
+            mock_settings.aiw_ab_test_enabled = True
+            mock_settings.aim_execution_timeout = 100
+            mock_settings.aim_ab_execution_timeout = 200
+            result = watch_execution("idea-ab")
+
+        assert result.success is False
+        assert "timed out" in result.summary.lower()
+        mock_cancel.assert_called_once_with("idea-ab")
 
 
 # ---------------------------------------------------------------------------
