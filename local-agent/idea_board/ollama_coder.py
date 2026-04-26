@@ -36,6 +36,7 @@ from agent.ollama_client import (
     acquire_coder_priority,
     release_coder_priority,
 )
+from agent.accountability import GitNotInstalledError, GitDirtyError
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +379,19 @@ class OllamaCoder:
                 args = raw_args if isinstance(raw_args, dict) else _safe_json(raw_args)
 
                 self._log(f"[OllamaCoder] → {name}({_fmt_args(args)})")
-                result = self._execute_tool(name, args)
+                try:
+                    result = self._execute_tool(name, args)
+                except (GitNotInstalledError, GitDirtyError) as exc:
+                    # Git-related exceptions should stop processing immediately
+                    logger.error(f"[OllamaCoder] Aborted due to git exception: {exc}")
+                    return False  # Break the inner loop and stop processing
+                except Exception as exc:
+                    # Check if this is a git-related error that should stop processing
+                    exc_str = str(exc)
+                    if "git" in exc_str.lower() and ("not found" in exc_str.lower() or "command not found" in exc_str.lower()):
+                        logger.error(f"[OllamaCoder] Aborted due to git exception: {exc_str}")
+                        return False  # Break the inner loop and stop processing
+                    raise  # Re-raise if it's not a git-related error
                 self._log(f"[OllamaCoder] ← {str(result)[:300]}")
 
                 # Append tool result
@@ -448,6 +461,13 @@ class OllamaCoder:
             else:
                 return f"ERROR: unknown tool '{name}'"
         except Exception as exc:
+            # Check if this is a Git-related exception that should stop processing
+            exc_str = str(exc)
+            if "git" in exc_str.lower() and ("not found" in exc_str.lower() or "command not found" in exc_str.lower()):
+                # Log the git exception and return a special error that will stop processing
+                logger.error(f"[OllamaCoder] Aborted due to git exception: {exc_str}")
+                # This will cause the inner loop to break and stop processing
+                raise exc
             return f"ERROR: {exc}"
 
     # Project subdirectories that we recognize as legitimate re-anchor points
