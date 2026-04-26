@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agent.accountability import (
+    GitDirtyError,
     GitNotInstalledError,
     get_accountability_tools,
     verify_content_contains,
@@ -198,7 +199,7 @@ class TestVerifyGitClean:
             assert "clean" in result.lower()
 
     def test_verify_git_clean_dirty_repo(self, patched_accountability):
-        """verify_git_clean returns DIRTY for repository with changes."""
+        """verify_git_clean raises GitDirtyError for repository with changes."""
         import subprocess
         from unittest.mock import patch
 
@@ -219,10 +220,9 @@ class TestVerifyGitClean:
 
             mock_run.side_effect = [mock_check, mock_rev_parse, mock_status]
 
-            result = verify_git_clean()
-
-            assert "DIRTY" in result
-            assert "uncommitted changes" in result.lower()
+            # Test that GitDirtyError is raised
+            with pytest.raises(GitDirtyError):
+                verify_git_clean()
 
     def test_verify_git_clean_no_git(self, patched_accountability):
         """verify_git_clean returns NOT FOUND when not in a git repository."""
@@ -320,6 +320,85 @@ class TestVerifyGitClean:
             # Test that GitNotInstalledError is raised
             with pytest.raises(GitNotInstalledError):
                 verify_git_clean()
+
+    def test_verify_git_clean_dirty_raises_error(self, patched_accountability):
+        """verify_git_clean raises GitDirtyError for repository with uncommitted changes."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_check = MagicMock()
+            mock_check.returncode = 0
+            mock_check.stdout = ""
+            mock_check.stderr = ""
+
+            mock_rev_parse = MagicMock()
+            mock_rev_parse.returncode = 0
+            mock_rev_parse.stdout = ""
+
+            # Mock git status to return output (dirty working directory)
+            mock_status = MagicMock()
+            mock_status.returncode = 0
+            mock_status.stdout = " M file1.py\n D file2.md\n"
+
+            mock_run.side_effect = [mock_check, mock_rev_parse, mock_status]
+
+            # Test that GitDirtyError is raised
+            with pytest.raises(GitDirtyError):
+                verify_git_clean()
+
+    def test_verify_git_clean_non_empty_status_raises_error(self, patched_accountability):
+        """verify_git_clean raises GitDirtyError when git status returns non-empty output."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_check = MagicMock()
+            mock_check.returncode = 0
+            mock_check.stdout = ""
+            mock_check.stderr = ""
+
+            mock_rev_parse = MagicMock()
+            mock_rev_parse.returncode = 0
+            mock_rev_parse.stdout = ""
+
+            # Mock git status to return non-empty output (dirty state)
+            mock_status = MagicMock()
+            mock_status.returncode = 0
+            mock_status.stdout = " M modified_file.py\n?? new_file.md\n"
+
+            mock_run.side_effect = [mock_check, mock_rev_parse, mock_status]
+
+            # Test that GitDirtyError is raised when status output is non-empty
+            with pytest.raises(GitDirtyError):
+                verify_git_clean()
+
+    def test_verify_git_clean_empty_status_returns_verified(self, patched_accountability):
+        """verify_git_clean returns VERIFIED when git status returns empty output."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_check = MagicMock()
+            mock_check.returncode = 0
+            mock_check.stdout = ""
+            mock_check.stderr = ""
+
+            mock_rev_parse = MagicMock()
+            mock_rev_parse.returncode = 0
+            mock_rev_parse.stdout = ""
+
+            # Mock git status to return empty output (clean state)
+            mock_status = MagicMock()
+            mock_status.returncode = 0
+            mock_status.stdout = ""
+
+            mock_run.side_effect = [mock_check, mock_rev_parse, mock_status]
+
+            result = verify_git_clean()
+
+            assert "VERIFIED" in result
+            assert "clean" in result.lower()
 
 
 class TestGetAccountabilityTools:
