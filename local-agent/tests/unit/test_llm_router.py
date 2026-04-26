@@ -34,6 +34,7 @@ def _fake_settings(**overrides):
         "evergreen_generator_model": "ollama:qwen3.5:27b",
         "aiv_classifier_model": "ollama:qwen3.5:27b",
         "aiv_scorer_model": "ollama:qwen3.5:27b",
+        "aiv_scorer_fallback_model": "",
         "aiv_ab_compare_model": "ollama:qwen3.5:27b",
         "dev_learning_model": "ollama:qwen3.5:27b",
         "llm_fallback_model": "claude-haiku-4-5",
@@ -242,3 +243,93 @@ class TestRoleMapping:
         mock_ollama.assert_not_called()
         args, _ = mock_claude.call_args
         assert args[1] == "claude-haiku-4-5"
+
+
+# ---------------------------------------------------------------------------
+# Per-role fallback override
+# ---------------------------------------------------------------------------
+
+
+class TestPerRoleFallback:
+    def test_per_role_fallback_overrides_global(self, monkeypatch):
+        """aiv_scorer_fallback_model takes precedence over llm_fallback_model
+        for the aiv_scorer role only."""
+        settings = _fake_settings(
+            aiv_scorer_fallback_model="claude-sonnet-4-6",
+            llm_fallback_model="claude-haiku-4-5",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        with patch.object(llm_router, "ollama_chat", return_value=None):
+            with patch.object(
+                llm_router, "_claude_chat", return_value="scored"
+            ) as mock_claude:
+                out = llm_router.complete("aiv_scorer", "x")
+        assert out == "scored"
+        args, _ = mock_claude.call_args
+        # Per-role override should win.
+        assert args[1] == "claude-sonnet-4-6"
+
+    def test_per_role_fallback_does_not_leak_to_other_roles(self, monkeypatch):
+        """Setting aiv_scorer_fallback_model must not change splitter
+        behaviour — other roles still inherit the global fallback."""
+        settings = _fake_settings(
+            aiv_scorer_fallback_model="claude-sonnet-4-6",
+            llm_fallback_model="claude-haiku-4-5",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        with patch.object(llm_router, "ollama_chat", return_value=None):
+            with patch.object(
+                llm_router, "_claude_chat", return_value="r"
+            ) as mock_claude:
+                llm_router.complete("splitter_decomposer", "x")
+        args, _ = mock_claude.call_args
+        assert args[1] == "claude-haiku-4-5"
+
+    def test_empty_per_role_fallback_inherits_global(self, monkeypatch):
+        """Default '' for the per-role override means: use the global
+        llm_fallback_model. This preserves the prior behaviour for
+        every role that doesn't explicitly set a per-role fallback."""
+        settings = _fake_settings(
+            aiv_scorer_fallback_model="",
+            llm_fallback_model="claude-haiku-4-5",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        with patch.object(llm_router, "ollama_chat", return_value=None):
+            with patch.object(
+                llm_router, "_claude_chat", return_value="r"
+            ) as mock_claude:
+                llm_router.complete("aiv_scorer", "x")
+        args, _ = mock_claude.call_args
+        assert args[1] == "claude-haiku-4-5"
+
+    def test_per_role_fallback_with_empty_global_still_fires(self, monkeypatch):
+        """Even when the global fallback is '' (the production default for
+        most setups), a per-role override must still trigger the Claude
+        fallback for that one role."""
+        settings = _fake_settings(
+            aiv_scorer_fallback_model="claude-haiku-4-5",
+            llm_fallback_model="",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        with patch.object(llm_router, "ollama_chat", return_value=None):
+            with patch.object(
+                llm_router, "_claude_chat", return_value="r"
+            ) as mock_claude:
+                out = llm_router.complete("aiv_scorer", "x")
+        assert out == "r"
+        args, _ = mock_claude.call_args
+        assert args[1] == "claude-haiku-4-5"
+
+    def test_per_role_fallback_only_consulted_after_ollama_retry(self, monkeypatch):
+        """Per-role fallback shouldn't change the retry-once behaviour."""
+        settings = _fake_settings(
+            aiv_scorer_fallback_model="claude-haiku-4-5",
+        )
+        monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
+        with patch.object(
+            llm_router, "ollama_chat", return_value=None,
+        ) as mock_ollama:
+            with patch.object(llm_router, "_claude_chat", return_value="r"):
+                llm_router.complete("aiv_scorer", "x")
+        # Ollama tried twice (initial + retry) before falling back.
+        assert mock_ollama.call_count == 2

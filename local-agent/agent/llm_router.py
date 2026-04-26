@@ -179,14 +179,24 @@ def _cli() -> int:
     return 0
 
 
-def _resolve_fallback() -> str:
+def _resolve_fallback(role: Role | None = None) -> str:
     """Return the claude fallback model, or empty string for no-fallback.
 
-    Default is "" — an intentional choice to keep classification roles
-    pure-Ollama and avoid silent Claude quota burn from transient Ollama
-    errors. Callers already handle None gracefully.
+    Resolution order:
+      1. ``settings.<role>_fallback_model`` — per-role override. Used to
+         enable Claude fallback for a single role (e.g. ``aiv_scorer``)
+         without flipping every classification role onto Claude quota.
+      2. ``settings.llm_fallback_model`` — global default. Default is
+         "" — an intentional choice to keep classification roles
+         pure-Ollama and avoid silent Claude quota burn from transient
+         Ollama errors. Callers already handle None gracefully.
     """
     s = get_settings()
+    if role is not None:
+        per_role_attr = f"{role}_fallback_model"
+        per_role = getattr(s, per_role_attr, None)
+        if per_role:
+            return per_role
     return getattr(s, "llm_fallback_model", None) or ""
 
 
@@ -214,7 +224,7 @@ def complete(
             forcing JSON via prompt is the existing convention there.
     """
     primary = _resolve_primary(role)
-    fallback = _resolve_fallback()
+    fallback = _resolve_fallback(role)
 
     if primary.startswith("ollama:"):
         tag = primary.split(":", 1)[1]

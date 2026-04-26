@@ -374,6 +374,19 @@ class Settings(BaseSettings):
             "rubric tasks."
         ),
     )
+    aiv_scorer_fallback_model: str = Field(
+        default="claude-haiku-4-5",
+        description=(
+            "Per-role Claude fallback for AIV scoring. Takes precedence over "
+            "the global ``llm_fallback_model`` for the aiv_scorer role only. "
+            "Defaults to claude-haiku-4-5 because (a) AIV scoring is the "
+            "quality-data input the user makes hardware/model decisions from, "
+            "so silent llm_error on every score is high-cost, and (b) the "
+            "prompt is small structured-JSON — Haiku turns it around in a few "
+            "seconds for fractions of a cent. Set to '' to opt out and inherit "
+            "the global llm_fallback_model behaviour instead."
+        ),
+    )
     aiv_ab_compare_model: str = Field(
         default="claude-haiku-4-5",
         description=(
