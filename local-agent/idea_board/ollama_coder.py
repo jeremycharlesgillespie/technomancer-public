@@ -382,6 +382,9 @@ class OllamaCoder:
 
             if test_result["passed"]:
                 self._log(f"[OllamaCoder] Round {round_num}: tests PASSED ✓")
+                # Only commit if tests pass
+                if changed_files:
+                    self._commit_changes(round_num)
                 return
 
             self._log(
@@ -1148,6 +1151,7 @@ class OllamaCoder:
         if test_files:
             cmd = [sys.executable, "-m", "pytest"] + test_files + ["-x", "--tb=short", "-q"]
         else:
+            # When no test files are found, run a basic pytest to check if it's working
             cmd = [sys.executable, "-m", "pytest", "--tb=short", "-q"]
 
         # Write output to a temp file to avoid Windows pipe-deadlock when pytest
@@ -1206,6 +1210,31 @@ class OllamaCoder:
             return result.stdout.strip() or "(no changes yet)"
         except Exception:
             return "(could not get diff)"
+
+    def _commit_changes(self, round_num: int) -> None:
+        """Commit all changed files with a descriptive message."""
+        try:
+            # Get changed files
+            changed_files = self._get_changed_files()
+            if not changed_files:
+                return
+                
+            # Add all changed files
+            subprocess.run(
+                ["git", "add"] + changed_files,
+                capture_output=True, cwd=str(self.project_root),
+            )
+            
+            # Commit with descriptive message
+            commit_msg = f"[{self.idea_id}] Round {round_num} changes"
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                capture_output=True, cwd=str(self.project_root),
+            )
+            self._log(f"[OllamaCoder] Round {round_num}: committed changes")
+            
+        except Exception as exc:
+            self._log(f"[OllamaCoder] Warning: Failed to commit changes: {exc}")
 
     def _tag_round_commits(self, round_num: int) -> None:
         """Amend the latest commit message to include round tag if on a story branch."""
