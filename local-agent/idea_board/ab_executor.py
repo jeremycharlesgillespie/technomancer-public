@@ -538,9 +538,13 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
         outcome_a = _RunOutcome(run_id=run_a_id, model=model_a, label=label_a)
         outcome_b = _RunOutcome(run_id=run_b_id, model=model_b, label=label_b)
 
-        # Record start times for each run individually
-        ab_repo.record_run_start(run_a_id, idea_id, model_a, label_a)
-        ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
+        # NOTE: each run's record_run_start fires immediately before
+        # that run's attempt actually begins, and record_run_end fires
+        # immediately after it finishes — so started_at/ended_at on each
+        # ab_test_runs row reflect the wall-clock window of THAT run, not
+        # the wall-clock window of the orchestrator. Score data is
+        # attached later via update_run_scores so we don't clobber
+        # ended_at when the AIV scoring pass closes the loop.
 
         # Per-orchestrator git worktree. UUID-suffixed sibling directory
         # so two orchestrators (e.g. a stalled-but-not-killed zombie plus
@@ -565,6 +569,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             state.log(
                 f"=== A/B Run A: {model_a} @ {host_a or 'localhost'} ==="
             )
+            ab_repo.record_run_start(run_a_id, idea_id, model_a, label_a)
             ok_a, branch_a, sha_a, log_a = _do_attempt(
                 idea_id,
                 model=model_a,
@@ -589,6 +594,17 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     outcome_a.failure_log = (
                         outcome_a.failure_log + f"\n[AB-push] {push_msg}"
                     ).strip()
+
+            # Close out Run A's wall-clock window now — score data is
+            # attached later by update_run_scores so we don't clobber
+            # ended_at when the AIV pass runs.
+            ab_repo.record_run_end(
+                run_a_id,
+                outcome_a.status,
+                branch_name=outcome_a.branch_name or None,
+                commit_sha=outcome_a.commit_sha or None,
+                failure_log=outcome_a.failure_log or None,
+            )
 
             # Evict model A before B loads — both coder runs pin
             # ``keep_alive=-1`` in OllamaCoder, so without an explicit
@@ -617,13 +633,10 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             # never touched by the inner runs and stays clean throughout.
             if not _reset_to_main(work_root, state):
                 state.log("[AB] failed to reset to main between runs — aborting")
-                ab_repo.record_run_end(
-                    run_a_id,
-                    outcome_a.status,
-                    branch_name=outcome_a.branch_name or None,
-                    commit_sha=outcome_a.commit_sha or None,
-                    failure_log=outcome_a.failure_log or None,
-                )
+                # Run A's end was already recorded above. Run B never
+                # started — record a zero-duration failed row so the
+                # pair has a valid referent.
+                ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
                 ab_repo.record_run_end(
                     run_b_id,
                     "failed",
@@ -636,13 +649,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             # between attempts (stall, retry, shutdown), don't start B.
             if state.cancelled:
                 state.log("[AB] cancelled before Run B — aborting")
-                ab_repo.record_run_end(
-                    run_a_id,
-                    outcome_a.status,
-                    branch_name=outcome_a.branch_name or None,
-                    commit_sha=outcome_a.commit_sha or None,
-                    failure_log=outcome_a.failure_log or None,
-                )
+                ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
                 ab_repo.record_run_end(
                     run_b_id,
                     "failed",
@@ -655,6 +662,7 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
             state.log(
                 f"=== A/B Run B: {model_b} @ {host_b or 'localhost'} ==="
             )
+            ab_repo.record_run_start(run_b_id, idea_id, model_b, label_b)
             if not _ollama_has_model(model_b, host=host_b):
                 state.log(
                     f"[AB] model {model_b} not pulled on "
@@ -691,6 +699,18 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                             outcome_b.failure_log + f"\n[AB-push] {push_msg}"
                         ).strip()
 
+            # Close out Run B's wall-clock window before AIV scoring
+            # (which can take its own minutes if the scorer falls back to
+            # Claude). Score data is attached separately via
+            # update_run_scores so we don't clobber ended_at.
+            ab_repo.record_run_end(
+                run_b_id,
+                outcome_b.status,
+                branch_name=outcome_b.branch_name or None,
+                commit_sha=outcome_b.commit_sha or None,
+                failure_log=outcome_b.failure_log or None,
+            )
+
             # ----- Score both -----
             from aiv.scorer import score as _aiv_score
 
@@ -712,23 +732,11 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     state.log(f"[AB] scoring {outcome.label} raised: {exc}")
                     outcome.scores = None
 
-            # ----- Persist run rows with scores -----
-            ab_repo.record_run_end(
-                run_a_id,
-                outcome_a.status,
-                branch_name=outcome_a.branch_name or None,
-                commit_sha=outcome_a.commit_sha or None,
-                failure_log=outcome_a.failure_log or None,
-                scores=_scores_to_dict(outcome_a.scores),
-            )
-            ab_repo.record_run_end(
-                run_b_id,
-                outcome_b.status,
-                branch_name=outcome_b.branch_name or None,
-                commit_sha=outcome_b.commit_sha or None,
-                failure_log=outcome_b.failure_log or None,
-                scores=_scores_to_dict(outcome_b.scores),
-            )
+            # ----- Persist scores to existing run rows -----
+            # ended_at is already set on each run; only the score
+            # columns get touched here.
+            ab_repo.update_run_scores(run_a_id, _scores_to_dict(outcome_a.scores))
+            ab_repo.update_run_scores(run_b_id, _scores_to_dict(outcome_b.scores))
 
             # ----- Compare -----
             from aiv.ab_compare import compare as _ab_compare
@@ -818,11 +826,19 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
 
         except Exception as exc:  # noqa: BLE001
             state.log(f"[AB] orchestrator raised: {exc}")
+            # Only close out runs that haven't already been ended — the
+            # happy-path flow ends each run as soon as its attempt
+            # finishes, and we don't want to clobber an already-correct
+            # ended_at with this exception's timestamp.
             try:
-                ab_repo.record_run_end(run_a_id, outcome_a.status or "failed",
-                                       failure_log=str(exc)[:1000])
-                ab_repo.record_run_end(run_b_id, outcome_b.status or "failed",
-                                       failure_log=str(exc)[:1000])
+                ab_repo.end_if_running(
+                    run_a_id, outcome_a.status or "failed",
+                    failure_log=str(exc)[:1000],
+                )
+                ab_repo.end_if_running(
+                    run_b_id, outcome_b.status or "failed",
+                    failure_log=str(exc)[:1000],
+                )
             except Exception:
                 pass
             mark_failed(idea_id, state.log_text[-5000:])

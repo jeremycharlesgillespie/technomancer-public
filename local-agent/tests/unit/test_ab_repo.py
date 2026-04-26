@@ -171,6 +171,76 @@ def test_record_run_end_truncates_long_failure_log() -> None:
     assert len(row["failure_log"]) == 5000  # last 5000 chars only
 
 
+def test_update_run_scores_does_not_touch_ended_at() -> None:
+    """Score persistence must leave ended_at alone — that's the whole
+    point of having a separate update_run_scores helper."""
+    ab_repo.record_run_start("rs1", "TK-S1", "m", "label")
+    ab_repo.record_run_end("rs1", "success", branch_name="b", commit_sha="c")
+    conn = aiv_schema._get_conn()
+    ended_before = conn.execute(
+        "SELECT ended_at FROM ab_test_runs WHERE run_id = 'rs1'"
+    ).fetchone()["ended_at"]
+
+    ab_repo.update_run_scores("rs1", {
+        "meets_requirements": 9,
+        "code_quality": 8,
+        "test_quality": 7,
+        "security_safety": 10,
+        "scope_discipline": 9,
+        "edge_cases": 6,
+        "product_impact": 8,
+        "overall_score": 8.1,
+    })
+    row = conn.execute(
+        "SELECT ended_at, meets_requirements, overall_score FROM ab_test_runs WHERE run_id = 'rs1'"
+    ).fetchone()
+    assert row["ended_at"] == ended_before
+    assert row["meets_requirements"] == 9
+    assert row["overall_score"] == 8.1
+
+
+def test_update_run_scores_no_op_on_empty_scores() -> None:
+    ab_repo.record_run_start("rs2", "TK-S2", "m", "label")
+    ab_repo.record_run_end("rs2", "failed")
+    # Should not raise; should not touch the row.
+    ab_repo.update_run_scores("rs2", None)
+    ab_repo.update_run_scores("rs2", {})
+
+
+def test_end_if_running_updates_running_row() -> None:
+    ab_repo.record_run_start("re1", "TK-E1", "m", "label")
+    ab_repo.end_if_running("re1", "failed", failure_log="boom")
+    conn = aiv_schema._get_conn()
+    row = conn.execute(
+        "SELECT status, ended_at, failure_log FROM ab_test_runs WHERE run_id = 're1'"
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["ended_at"] is not None
+    assert row["failure_log"] == "boom"
+
+
+def test_end_if_running_skips_already_terminal_row() -> None:
+    """Safety-net call must NOT clobber a row that already ended."""
+    ab_repo.record_run_start("re2", "TK-E2", "m", "label")
+    ab_repo.record_run_end("re2", "success", branch_name="b", commit_sha="c")
+    conn = aiv_schema._get_conn()
+    before = conn.execute(
+        "SELECT status, ended_at FROM ab_test_runs WHERE run_id = 're2'"
+    ).fetchone()
+    ab_repo.end_if_running("re2", "failed", failure_log="exception")
+    after = conn.execute(
+        "SELECT status, ended_at, failure_log FROM ab_test_runs WHERE run_id = 're2'"
+    ).fetchone()
+    assert after["status"] == before["status"] == "success"
+    assert after["ended_at"] == before["ended_at"]
+    assert after["failure_log"] is None
+
+
+def test_end_if_running_silent_on_missing_row() -> None:
+    # No-op, no exception.
+    ab_repo.end_if_running("no-such-run", "failed")
+
+
 def test_record_pair_returns_pair_id_and_persists() -> None:
     ab_repo.record_run_start("ra", "TK-5", "m", "a")
     ab_repo.record_run_start("rb", "TK-5", "m", "b")

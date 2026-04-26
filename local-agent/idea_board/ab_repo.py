@@ -186,6 +186,84 @@ def record_run_end(
     conn.commit()
 
 
+def end_if_running(
+    run_id: str,
+    status: str,
+    *,
+    failure_log: str | None = None,
+) -> None:
+    """Same as :func:`record_run_end` but a no-op if the row is no
+    longer in the ``running`` state.
+
+    Used by orchestrator safety-net paths so they don't clobber an
+    ``ended_at`` that the happy-path flow already wrote correctly.
+    Status, ``ended_at``, and (optionally) ``failure_log`` only.
+    """
+    init_ab_db()
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT status FROM ab_test_runs WHERE run_id = ?", (run_id,)
+    ).fetchone()
+    if row is None or row["status"] != "running":
+        return
+    set_clauses = ["status = ?", "ended_at = ?"]
+    params: list[Any] = [status, _now_iso()]
+    if failure_log is not None:
+        set_clauses.append("failure_log = ?")
+        params.append(failure_log[-5000:])
+    params.append(run_id)
+    conn.execute(
+        f"UPDATE ab_test_runs SET {', '.join(set_clauses)} WHERE run_id = ?",
+        params,
+    )
+    conn.commit()
+
+
+def update_run_scores(
+    run_id: str,
+    scores: dict[str, Any] | None,
+) -> None:
+    """UPDATE only the score-related columns on an existing run row.
+
+    Used when the run's terminal time was already recorded (so we
+    don't want to clobber ``ended_at``) and the AIV scoring pass
+    runs later — e.g. orchestrators that close out Run A before
+    starting Run B and only score after both runs finish.
+    """
+    if not scores:
+        return
+    init_ab_db()
+    conn = _get_conn()
+    set_clauses: list[str] = []
+    params: list[Any] = []
+    for axis in SCORE_COLUMNS:
+        v = scores.get(axis)
+        if isinstance(v, int):
+            set_clauses.append(f"{axis} = ?")
+            params.append(v)
+    if "overall_score" in scores and scores["overall_score"] is not None:
+        set_clauses.append("overall_score = ?")
+        params.append(float(scores["overall_score"]))
+    if "red_flags" in scores and scores["red_flags"] is not None:
+        set_clauses.append("red_flags_json = ?")
+        params.append(json.dumps(scores["red_flags"]))
+    if "reasoning_map" in scores and scores["reasoning_map"] is not None:
+        set_clauses.append("reasoning_json = ?")
+        params.append(json.dumps(scores["reasoning_map"]))
+    if scores.get("error"):
+        set_clauses.append("scoring_error = ?")
+        params.append(str(scores["error"]))
+
+    if not set_clauses:
+        return
+    params.append(run_id)
+    conn.execute(
+        f"UPDATE ab_test_runs SET {', '.join(set_clauses)} WHERE run_id = ?",
+        params,
+    )
+    conn.commit()
+
+
 def reap_stranded_runs(
     *,
     reason: str = "abandoned: process killed before completion",
