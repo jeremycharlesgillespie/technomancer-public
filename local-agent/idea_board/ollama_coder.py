@@ -1022,6 +1022,12 @@ class OllamaCoder:
                     capture_output=True, cwd=str(self.project_root),
                 )
         except Exception as exc:
+            # Check if this is a Git-related exception that should stop processing
+            from agent.accountability import GitNotInstalledError, GitDirtyError
+            if isinstance(exc, (GitNotInstalledError, GitDirtyError)):
+                logger.error(f"[OllamaCoder] Aborted due to git exception: {exc}")
+                # Re-raise to stop the execution loop
+                raise
             logger.warning("git status failed or dirty repo detected: %s", exc)
 
 
