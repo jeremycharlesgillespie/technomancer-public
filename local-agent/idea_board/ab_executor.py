@@ -278,6 +278,15 @@ def _wait_for_inner_state(
     if inner_state.thread is None:
         return
     deadline = time.time() + timeout
+    # Heartbeat: write a line into the *orchestrator's* state.log_lines
+    # every ~5 minutes so the outer worker's stall detector
+    # (STALE_THRESHOLD=900s on state.log_lines) doesn't decide we're
+    # frozen just because all the inner activity is going into the
+    # inner state's log buffer instead of ours. Without this, every A/B
+    # run that takes >15 min on Run A gets cancelled between attempts
+    # and Run B is skipped — so the harness never produces a comparison.
+    HEARTBEAT_INTERVAL = 300  # 5 min — well under STALE_THRESHOLD/3
+    next_heartbeat = time.time() + HEARTBEAT_INTERVAL
     while inner_state.thread.is_alive():
         if state.cancelled and not inner_state.cancelled:
             state.log(f"[AB] orchestrator cancelled — propagating to {label}")
@@ -285,6 +294,13 @@ def _wait_for_inner_state(
         if time.time() > deadline:
             state.log(f"[AB] {label} run hit hard timeout ({timeout}s)")
             return
+        if time.time() >= next_heartbeat:
+            inner_lines = len(inner_state.log_lines)
+            state.log(
+                f"[AB] heartbeat: {label} still running "
+                f"(inner_log_lines={inner_lines}, elapsed={int(time.time() - (deadline - timeout))}s)"
+            )
+            next_heartbeat = time.time() + HEARTBEAT_INTERVAL
         time.sleep(2)
 
 

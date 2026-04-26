@@ -492,6 +492,165 @@ def test_orchestrator_uses_ab_registry_not_active(
 
 
 # ---------------------------------------------------------------------------
+# _wait_for_inner_state — heartbeat into orchestrator state.log_lines
+# ---------------------------------------------------------------------------
+# Regression: the outer worker's stall detector watches ``state.log_lines``
+# on the orchestrator state and force-cancels at STALE_THRESHOLD (15 min)
+# of no growth. During Run A the inner attempt logs to its OWN
+# log_lines, leaving the orchestrator state quiet for the entire run.
+# Once Run A passes 15 min the watcher cancels, ``state.cancelled``
+# flips True, and the orchestrator skips Run B with
+# "[AB] cancelled before Run B — aborting". To prevent that, the wait
+# helper must keep the orchestrator's log_lines fresh.
+
+
+class TestWaitForInnerStateHeartbeat:
+    def test_writes_periodic_heartbeat_into_orchestrator_state(self, monkeypatch):
+        """While the inner thread runs, the wait helper must append heartbeat
+        lines to the orchestrator's state.log_lines so the outer stall
+        detector sees activity."""
+        # Speed up by collapsing the 5-min interval to ~0 — we patch the
+        # constant via monkeypatch on the source if possible, else just
+        # rely on a short-lived thread that finishes before the real
+        # 5-minute interval would matter. Instead, we inject a fake
+        # ``time.time`` clock that jumps forward.
+
+        orchestrator_state = ExecutionState(idea_id="TK-9001")
+        inner_state = ExecutionState(idea_id="TK-9001")
+
+        # Inner thread that sleeps until told to stop.
+        stop_event = threading.Event()
+
+        def _inner_loop() -> None:
+            while not stop_event.is_set():
+                # Inner activity goes to inner_state.log_lines, NOT to
+                # orchestrator. This mirrors production.
+                inner_state.log("[Inner] tick")
+                if stop_event.wait(0.01):
+                    return
+
+        inner_state.thread = threading.Thread(target=_inner_loop, daemon=True)
+        inner_state.thread.start()
+
+        # Fake clock: advance 600s per call so heartbeat fires after the
+        # very first iteration.
+        clock = {"now": 1000.0}
+
+        def _fake_time():
+            return clock["now"]
+
+        # Patch time.time used inside ab_executor (module-level import).
+        monkeypatch.setattr(ab_executor.time, "time", _fake_time)
+        # Make sleep effectively instant + advance clock so we don't
+        # actually wait.
+        original_sleep = ab_executor.time.sleep
+
+        def _fake_sleep(_secs):
+            clock["now"] += 350  # > HEARTBEAT_INTERVAL=300
+            # After two iterations stop the inner thread so the outer
+            # while-loop can exit.
+            if clock["now"] > 1000.0 + 700:
+                stop_event.set()
+
+        monkeypatch.setattr(ab_executor.time, "sleep", _fake_sleep)
+
+        try:
+            ab_executor._wait_for_inner_state(
+                inner_state,
+                orchestrator_state,
+                timeout=10_000,  # not the path we're testing
+                label="test-model",
+            )
+        finally:
+            stop_event.set()
+            inner_state.thread.join(timeout=2)
+            monkeypatch.setattr(ab_executor.time, "sleep", original_sleep)
+
+        # The orchestrator should have at least one heartbeat line.
+        heartbeats = [
+            line for line in orchestrator_state.log_lines
+            if "heartbeat" in line and "test-model" in line
+        ]
+        assert len(heartbeats) >= 1, (
+            f"expected at least 1 heartbeat in orchestrator log; "
+            f"got log_lines={orchestrator_state.log_lines!r}"
+        )
+
+    def test_no_heartbeat_when_inner_finishes_quickly(self, monkeypatch):
+        """If the inner thread completes before HEARTBEAT_INTERVAL elapses,
+        no heartbeat lines should appear (nothing to report)."""
+        orchestrator_state = ExecutionState(idea_id="TK-9002")
+        inner_state = ExecutionState(idea_id="TK-9002")
+
+        # Already-dead thread — wait helper exits on first check.
+        def _noop() -> None:
+            return
+
+        inner_state.thread = threading.Thread(target=_noop, daemon=True)
+        inner_state.thread.start()
+        inner_state.thread.join()  # ensure dead before we call wait
+
+        ab_executor._wait_for_inner_state(
+            inner_state,
+            orchestrator_state,
+            timeout=60,
+            label="quick-model",
+        )
+        heartbeats = [
+            line for line in orchestrator_state.log_lines
+            if "heartbeat" in line
+        ]
+        assert heartbeats == []
+
+    def test_cancellation_still_propagates_with_heartbeat_in_place(
+        self, monkeypatch
+    ):
+        """The new heartbeat code must not break the existing cancellation
+        propagation: if orchestrator state is cancelled, the inner state
+        gets cancelled=True and a propagation log line appears."""
+        orchestrator_state = ExecutionState(idea_id="TK-9003")
+        inner_state = ExecutionState(idea_id="TK-9003")
+
+        stop_event = threading.Event()
+
+        def _inner_loop() -> None:
+            while not stop_event.is_set():
+                if stop_event.wait(0.01):
+                    return
+
+        inner_state.thread = threading.Thread(target=_inner_loop, daemon=True)
+        inner_state.thread.start()
+
+        # Cancel the orchestrator so the wait loop hits the cancellation
+        # branch on its first iteration.
+        orchestrator_state.cancelled = True
+
+        # Stop the inner thread quickly so the wait loop returns.
+        def _fake_sleep(_secs):
+            stop_event.set()
+
+        monkeypatch.setattr(ab_executor.time, "sleep", _fake_sleep)
+
+        try:
+            ab_executor._wait_for_inner_state(
+                inner_state,
+                orchestrator_state,
+                timeout=10,
+                label="cancel-model",
+            )
+        finally:
+            stop_event.set()
+            inner_state.thread.join(timeout=2)
+
+        assert inner_state.cancelled is True
+        propagations = [
+            line for line in orchestrator_state.log_lines
+            if "propagating to cancel-model" in line
+        ]
+        assert len(propagations) == 1
+
+
+# ---------------------------------------------------------------------------
 # AIV hand-off helpers — _diff_paths_from_text + _head_sha
 # ---------------------------------------------------------------------------
 
