@@ -445,6 +445,19 @@ class OllamaCoder:
         project_root_resolved = self.project_root.resolve()
 
         if not p.is_absolute():
+            # Repair the common "double-prefix" bug:  ``project_root`` is
+            # already ``.../local-agent``, but the model habitually writes
+            # paths like ``local-agent/agent/foo.py`` because that's how the
+            # files appear in the repo and in the prompt context.  Joining
+            # those naively produces ``local-agent/local-agent/agent/foo.py``
+            # which never exists.  Detect that case and strip the redundant
+            # leading ``local-agent`` segment.
+            if (
+                project_root_resolved.name == "local-agent"
+                and p.parts
+                and p.parts[0] == "local-agent"
+            ):
+                p = Path(*p.parts[1:]) if len(p.parts) > 1 else Path(".")
             return (self.project_root / p).resolve()
 
         resolved = p.resolve()
@@ -491,10 +504,22 @@ class OllamaCoder:
 
     def _tool_write_file(self, path: str, content: str) -> str:
         full = self._resolve_path(path)
+        # Defense-in-depth against the "double-prefix" path bug: refuse to
+        # write into ``.../local-agent/local-agent/...``.  ``_resolve_path``
+        # now strips a leading ``local-agent/`` from relative inputs when
+        # ``project_root`` already ends in ``local-agent``, but earlier
+        # versions of this code created phantom nested trees that were then
+        # committed.  Keep the guard so future regressions surface loudly.
+        path_str = str(full).replace("\\", "/")
+        if "/local-agent/local-agent/" in path_str:
+            return (
+                f"ERROR: refusing to write nested phantom path '{path}' — "
+                f"resolved to {full}.  Drop the leading 'local-agent/' prefix "
+                f"(project_root is already inside local-agent)."
+            )
         # Guard: pytest only collects files starting with test_ or ending _test.py.
         # If the file is under a tests/ dir or contains def test_* functions,
         # require it to follow that naming so the work isn't silently invisible.
-        path_str = str(full).replace("\\", "/")
         is_under_tests = "/tests/" in path_str
         looks_like_tests = bool(re.search(r"^def test_\w+", content, re.MULTILINE))
         if (is_under_tests or looks_like_tests) and full.name.endswith(".py"):

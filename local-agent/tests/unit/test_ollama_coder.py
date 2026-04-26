@@ -729,3 +729,80 @@ class TestResolvePath:
         target = tmp_path / "local-agent" / "agent" / "bar.py"
         resolved = coder._resolve_path(str(target))
         assert resolved == target.resolve()
+
+
+# ---------------------------------------------------------------------------
+# TestDoublePrefixRepair
+# ---------------------------------------------------------------------------
+# Regression: in production, ``project_root`` for ``OllamaCoder`` is the
+# worktree's ``local-agent/`` subdirectory.  The model habitually emits
+# relative paths like ``local-agent/agent/foo.py`` (the way they appear in
+# the repo and in the prompt context).  Naive joining produces
+# ``.../local-agent/local-agent/agent/foo.py`` which never exists and led
+# to phantom directories being created on every A/B run for hours.
+
+class TestDoublePrefixRepair:
+    def _make_coder_in_local_agent(self, tmp_path: Path) -> OllamaCoder:
+        """Build a coder whose project_root ends in ``local-agent`` —
+        exactly the production layout."""
+        la = tmp_path / "local-agent"
+        la.mkdir()
+        state = MagicMock()
+        state.log = lambda m: None
+        state.cancelled = False
+        return OllamaCoder(
+            prompt="x",
+            project_root=la,
+            idea_id="TK-999",
+            state=state,
+            model="qwen3.5:27b",
+            max_turns=5,
+            max_rounds=3,
+            num_ctx=4096,
+        )
+
+    def test_strips_redundant_local_agent_prefix(self, tmp_path: Path) -> None:
+        coder = self._make_coder_in_local_agent(tmp_path)
+        resolved = coder._resolve_path("local-agent/agent/foo.py")
+        expected = (tmp_path / "local-agent" / "agent" / "foo.py").resolve()
+        assert resolved == expected, f"expected {expected}, got {resolved}"
+
+    def test_does_not_strip_when_project_root_basename_differs(
+        self, tmp_path: Path
+    ) -> None:
+        """Backward compatibility: when project_root is NOT named
+        ``local-agent``, treat ``local-agent/...`` as a literal subdir."""
+        # tmp_path.name is some random pytest-* name, not "local-agent"
+        coder = _make_coder(tmp_path)
+        resolved = coder._resolve_path("local-agent/agent/foo.py")
+        expected = (tmp_path / "local-agent" / "agent" / "foo.py").resolve()
+        assert resolved == expected
+
+    def test_path_without_local_agent_prefix_unchanged(self, tmp_path: Path) -> None:
+        coder = self._make_coder_in_local_agent(tmp_path)
+        resolved = coder._resolve_path("agent/foo.py")
+        expected = (tmp_path / "local-agent" / "agent" / "foo.py").resolve()
+        assert resolved == expected
+
+    def test_bare_local_agent_resolves_to_project_root(self, tmp_path: Path) -> None:
+        """``list_files(path='local-agent')`` should resolve to project_root
+        itself, not to ``project_root/local-agent``."""
+        coder = self._make_coder_in_local_agent(tmp_path)
+        resolved = coder._resolve_path("local-agent")
+        expected = (tmp_path / "local-agent").resolve()
+        assert resolved == expected
+
+    def test_write_file_refuses_nested_phantom_path(self, tmp_path: Path) -> None:
+        """Defense-in-depth: even if path resolution were ever bypassed,
+        ``write_file`` must refuse to write into the phantom nested tree."""
+        # Build a coder whose project_root is the OUTER tmp_path so
+        # ``_resolve_path`` does NOT strip; the resolved path will end up
+        # in the nested-phantom shape and the guard must trigger.
+        coder = _make_coder(tmp_path)
+        # Force-create a path that resolves to .../local-agent/local-agent/...
+        # by passing an absolute path directly inside project_root.
+        nested = tmp_path / "local-agent" / "local-agent" / "agent" / "x.py"
+        result = coder._tool_write_file(str(nested), "print('phantom')\n")
+        assert "ERROR" in result
+        assert "nested phantom" in result.lower()
+        assert not nested.exists()
