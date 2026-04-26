@@ -55,6 +55,40 @@ BASH_ALLOWLIST = ("git", "pytest", "python", "python3", "py")
 BASH_BLOCKLIST = ("safe_update", "push origin", "push --force", "merge", "checkout main",
                    "checkout master", "rm -rf", "rmdir /s")
 
+# Map of common bash shapes the model tries → structured-tool guidance.
+# When a command is rejected by the allowlist, we look up the first token
+# here and append a "Better tool:" hint to the error so the model can
+# self-correct on its next turn instead of retrying the same shape. This
+# is intentionally a hand-curated dict — the goal is teaching, not parsing.
+BASH_SHAPE_GUIDANCE: dict[str, str] = {
+    "cat":   "Use the `read_file` tool — give it the path you want to inspect.",
+    "head":  "Use the `read_file` tool — pass `offset` and `length` for a slice.",
+    "tail":  "Use the `read_file` tool — pass `offset` past the end of the file.",
+    "ls":    "Use the `list_files` tool — give it a directory path (or omit for cwd).",
+    "find":  "Use the `list_files` tool, or `search_code` for content search.",
+    "grep":  "Use the `search_code` tool — give it a regex pattern and an optional path.",
+    "rg":    "Use the `search_code` tool — same idea, regex-based.",
+    "cp":    "Don't copy files for backup — git already tracks history. Use `git stash` if you need a quick rollback point.",
+    "mv":    "Use the `edit_file` tool to rewrite the file at its new path, then delete the old one in a second `edit_file` call.",
+    "wc":    "Use the `read_file` tool and count lines yourself, or `grep -c` via `search_code`.",
+    "tree":  "Use `list_files` recursively, or pass a glob pattern to enumerate the tree.",
+    "file":  "Inspect the first ~100 bytes via `read_file` — file-type guessing is rarely necessary in this codebase.",
+    "echo":  "If you're trying to write a file, use `edit_file`. Don't pipe `echo` to a file.",
+    "touch": "Use the `edit_file` tool with empty `new_string` to create an empty file.",
+    "rm":    "Don't delete files manually. If you need to remove a file from a commit, use `git rm` (the `git` allowlist permits it).",
+}
+
+# Drift detection: number of rounds we look back for "no progress" check.
+# 4 = one bad round + one wrong-turn round + two confirmation rounds. Less
+# aggressive than 3 — user explicitly asked not to fail out the LLMs too
+# quickly because some stories ARE genuinely hard.
+DRIFT_WINDOW = 4
+# For the "empty shop" condition, require at least this many rounds in the
+# window to have hit the inner-loop max-turn exhaustion. A model that's
+# slowly thinking through a hard problem won't usually exhaust the inner
+# loop — flailing models will.
+DRIFT_EMPTY_EXHAUSTION_THRESHOLD = 2
+
 READ_FILE_MAX_CHARS = 20_000
 LIST_FILES_MAX = 200
 
@@ -308,6 +342,12 @@ class OllamaCoder:
         failing_tests: list[str] = []
         changed_files: list[str] = []
 
+        # Drift detection: track the last DRIFT_WINDOW rounds. We compare
+        # had_commit / failing_set / changed_set across rounds to decide
+        # whether the model is making forward progress. See _check_drift.
+        drift_history: list[dict[str, Any]] = []
+        prev_commit_count = self._count_branch_commits()
+
         for round_num in range(self.max_rounds):
             if self._is_cancelled():
                 self._log("[OllamaCoder] Cancelled — stopping")
@@ -326,7 +366,8 @@ class OllamaCoder:
             messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
             finished = self._run_inner_loop(system_prompt, messages, round_num)
 
-            if not finished:
+            inner_exhausted = not finished
+            if inner_exhausted:
                 self._log(f"[OllamaCoder] Round {round_num}: inner loop exhausted max turns")
 
             # Checkpoint commit tag
@@ -351,7 +392,92 @@ class OllamaCoder:
                 if hint:
                     self._log(f"[OllamaCoder] Hint: {hint}")
 
+            # Drift detection: record this round's signals and check whether
+            # the last DRIFT_WINDOW rounds together meet an abort condition.
+            new_commit_count = self._count_branch_commits()
+            had_commit = new_commit_count > prev_commit_count
+            prev_commit_count = new_commit_count
+
+            drift_history.append({
+                "round_num": round_num,
+                "had_commit": had_commit,
+                "failing_set": frozenset(failing_tests),
+                "changed_set": frozenset(changed_files),
+                "changed_count": len(changed_files),
+                "inner_exhausted": inner_exhausted,
+            })
+            if len(drift_history) > DRIFT_WINDOW:
+                drift_history = drift_history[-DRIFT_WINDOW:]
+
+            drift_reason = self._check_drift(drift_history)
+            if drift_reason is not None:
+                self._log(
+                    f"[OllamaCoder] Drift detected — aborting after round "
+                    f"{round_num} (4-round window, no progress)"
+                )
+                self._log(f"[OllamaCoder] Drift reason: {drift_reason}")
+                break
+
         self._log(f"[OllamaCoder] Exhausted {self.max_rounds} rounds — story will be marked failed")
+
+    def _count_branch_commits(self) -> int:
+        """Count commits on the current branch ahead of main.
+
+        Returns 0 on any error (no git, detached HEAD, etc.) — drift detection
+        will treat that as "no commit" which is the safe default.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "rev-list", "--count", "main..HEAD"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            return int((result.stdout or "0").strip() or "0")
+        except Exception:
+            return 0
+
+    def _check_drift(self, history: list[dict[str, Any]]) -> str | None:
+        """Return a short reason string if drift fires, else None.
+
+        Only fires once we have a full DRIFT_WINDOW of rounds. Two conditions:
+
+        A) No-progress drift: every round in the window had no commit AND the
+           failing-test set stayed identical AND the changed-file set stayed
+           identical. The model is grinding the same broken state.
+
+        B) Empty-shop drift: every round in the window had no commit AND zero
+           changed files AND at least DRIFT_EMPTY_EXHAUSTION_THRESHOLD rounds
+           also exhausted the inner loop. Model is flailing without producing
+           anything.
+        """
+        if len(history) < DRIFT_WINDOW:
+            return None
+
+        all_no_commit = all(not r["had_commit"] for r in history)
+        if not all_no_commit:
+            return None
+
+        # Condition A
+        first_failing = history[0]["failing_set"]
+        first_changed = history[0]["changed_set"]
+        same_failing = all(r["failing_set"] == first_failing for r in history)
+        same_changed = all(r["changed_set"] == first_changed for r in history)
+        if same_failing and same_changed:
+            return (
+                f"no_progress: {DRIFT_WINDOW} rounds with no commit, constant "
+                f"failing-set ({len(first_failing)} tests), constant changed-set "
+                f"({len(first_changed)} files)"
+            )
+
+        # Condition B
+        all_empty = all(r["changed_count"] == 0 for r in history)
+        exhaustion_count = sum(1 for r in history if r["inner_exhausted"])
+        if all_empty and exhaustion_count >= DRIFT_EMPTY_EXHAUSTION_THRESHOLD:
+            return (
+                f"empty_shop: {DRIFT_WINDOW} rounds with no commit, zero changed "
+                f"files, {exhaustion_count} inner-loop exhaustions"
+            )
+
+        return None
 
     # ------------------------------------------------------------------
     # Inner tool-calling loop
@@ -719,10 +845,29 @@ class OllamaCoder:
         for blocked in BASH_BLOCKLIST:
             if blocked in cmd_lower:
                 return f"BLOCKED: command contains '{blocked}'"
-        # Allowlist check
-        allowed = any(cmd_lower.startswith(prefix) for prefix in BASH_ALLOWLIST)
+        # Allowlist check — require word boundary so e.g. `pythonista` doesn't
+        # match `python`. A bare command (`git`) and a command with arguments
+        # (`git status`) both qualify; nothing else does.
+        allowed = any(
+            cmd_lower == prefix or cmd_lower.startswith(prefix + " ")
+            for prefix in BASH_ALLOWLIST
+        )
         if not allowed:
-            return f"BLOCKED: command must start with one of {BASH_ALLOWLIST}"
+            first_token = cmd_lower.split(maxsplit=1)[0] if cmd_lower else ""
+            guidance = BASH_SHAPE_GUIDANCE.get(first_token)
+            msg_lines = [
+                f"BLOCKED: '{command[:80]}'",
+                f"  Reason: bash commands must start with one of {BASH_ALLOWLIST}.",
+            ]
+            if guidance:
+                msg_lines.append(f"  Better tool: {guidance}")
+            else:
+                msg_lines.append(
+                    "  Better tool: read/write file ops belong to the structured "
+                    "tools (`read_file`, `edit_file`, `list_files`, `search_code`). "
+                    "Bash is for `git`, `pytest`, and `python` only."
+                )
+            return "\n".join(msg_lines)
         try:
             result = subprocess.run(
                 command,

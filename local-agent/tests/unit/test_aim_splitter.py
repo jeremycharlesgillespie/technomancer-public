@@ -18,6 +18,7 @@ from aim.splitter import (
     _apply_split,
     _build_context,
     _build_dedup_prompt,
+    _build_new_story_prompt,
     _build_prompt,
     _classify_dedup,
     _collect_done_titles,
@@ -31,6 +32,8 @@ from aim.splitter import (
     _symbol_exists_in_codebase,
     _validate_referenced_symbols,
     evaluate_failure,
+    evaluate_new_story,
+    scan_and_decompose,
     scan_and_split,
 )
 from agent.story_format import ATOMIC_LABEL
@@ -170,8 +173,11 @@ class FakeProvider:
 
 @pytest.fixture(autouse=True)
 def _isolate_seen_state(tmp_path, monkeypatch):
-    """Redirect the persisted seen-state file to a temp path per-test."""
+    """Redirect the persisted seen-state files to temp paths per-test."""
     monkeypatch.setattr("aim.splitter._STATE_FILE", tmp_path / "seen.json")
+    monkeypatch.setattr(
+        "aim.splitter._PROPOSED_STATE_FILE", tmp_path / "seen_proposed.json"
+    )
 
 
 @pytest.fixture
@@ -350,14 +356,15 @@ class TestProposeSplits:
         assert "parse_failed" in rationale
 
     def test_hard_cap_truncates(self):
+        from aim.splitter import MAX_SPLITS
         many = {
-            "splits": [{"title": f"t{i}", "description": f"d{i}"} for i in range(10)],
+            "splits": [{"title": f"t{i}", "description": f"d{i}"} for i in range(MAX_SPLITS + 5)],
             "rationale": "too many",
         }
         splits, _ = _propose_splits(
             self._ctx(), claude_runner=lambda _p, _t: json.dumps(many),
         )
-        assert len(splits) == 5  # MAX_SPLITS
+        assert len(splits) == MAX_SPLITS
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +582,7 @@ class TestRecursiveSplitting:
             "splits": [
                 {"title": "tinier1", "description": "one atom"},
                 {"title": "tinier2", "description": "another atom"},
+                {"title": "tinier3", "description": "third atom"},
             ],
             "rationale": "smaller still",
         })
@@ -588,7 +596,7 @@ class TestRecursiveSplitting:
 
         assert result.fired
         assert result.reason == "split_done"
-        assert len(result.new_keys) == 2
+        assert len(result.new_keys) == 3
         # Auto-veto no longer happens for splitter-children.
         assert ("TK-100", "owner", "veto") not in provider.votes
         # Each new child should carry a gen-2 marker (parent was gen 1).
@@ -638,6 +646,7 @@ class TestRecursiveSplitting:
             "splits": [
                 {"title": "a", "description": "x"},
                 {"title": "b", "description": "y"},
+                {"title": "c", "description": "z"},
             ],
             "rationale": "",
         })
@@ -728,12 +737,13 @@ class TestApplySplitStampsGeneration:
         splits = [
             ProposedStory(title="A", description="da"),
             ProposedStory(title="B", description="db"),
+            ProposedStory(title="C", description="dc"),
         ]
         new_keys, err = _apply_split(
             parent, splits, provider, child_generation=3,
         )
         assert err is None
-        assert len(new_keys) == 2
+        assert len(new_keys) == 3
         for key in new_keys:
             gen_markers = [
                 c for c in provider.get_comments(key)
@@ -1010,6 +1020,7 @@ class TestDedupGuardrailInEvaluateFailure:
             "splits": [
                 {"title": "Add verify_git_clean function", "description": "dup"},
                 {"title": "Unique other work", "description": "also"},
+                {"title": "Third unique thing", "description": "more"},
             ],
             "rationale": "",
         })
@@ -1054,6 +1065,7 @@ class TestDedupGuardrailInEvaluateFailure:
             "splits": [
                 {"title": "Fresh atom one", "description": "a"},
                 {"title": "Fresh atom two", "description": "b"},
+                {"title": "Fresh atom three", "description": "c"},
             ],
             "rationale": "",
         })
@@ -1070,7 +1082,7 @@ class TestDedupGuardrailInEvaluateFailure:
 
         assert result.fired
         assert result.reason == "split_done"
-        assert len(result.new_keys) == 2
+        assert len(result.new_keys) == 3
         # Parent was deleted as normal (not vetoed).
         assert provider.get("TK-100") is None
         assert ("TK-100", "owner", "veto") not in provider.votes
@@ -1083,6 +1095,7 @@ class TestDedupGuardrailInEvaluateFailure:
             "splits": [
                 {"title": "Atom A", "description": "a"},
                 {"title": "Atom B", "description": "b"},
+                {"title": "Atom C", "description": "c"},
             ],
             "rationale": "",
         })
@@ -1282,6 +1295,7 @@ class TestSymbolGuardrailInEvaluateFailure:
                     "description": "Cover the resolver edge cases",
                 },
                 {"title": "Other atom", "description": "b"},
+                {"title": "Third atom", "description": "c"},
             ],
             "rationale": "",
         })
@@ -1322,6 +1336,7 @@ class TestSymbolGuardrailInEvaluateFailure:
             "splits": [
                 {"title": "Add tests for real_helper", "description": "Cover it"},
                 {"title": "Generic cleanup", "description": "Remove dead code"},
+                {"title": "Add a comment", "description": "Label real_helper"},
             ],
             "rationale": "",
         })
@@ -1341,3 +1356,244 @@ class TestSymbolGuardrailInEvaluateFailure:
         # Parent deleted as normal.
         assert provider.get("TK-100") is None
         assert ("TK-100", "owner", "veto") not in provider.votes
+
+
+# ---------------------------------------------------------------------------
+# evaluate_new_story — auto-decompose at creation
+# ---------------------------------------------------------------------------
+
+
+def _three_split_runner():
+    """Common runner that returns 3 valid splits for an oversized story."""
+    return lambda _p, _t: json.dumps({
+        "splits": [
+            {"title": "step1", "description": "do first part"},
+            {"title": "step2", "description": "do second part"},
+            {"title": "step3", "description": "do third part"},
+        ],
+        "rationale": "story touches three files",
+    })
+
+
+class TestBuildNewStoryPrompt:
+    def test_contains_one_file_language_and_story_fields(self, provider):
+        item = make_item(state="proposed")
+        provider.seed(item)
+        prompt = _build_new_story_prompt(item, provider)
+        # The hand-curated rules must include the strict ONE-file language.
+        assert "exactly ONE" in prompt
+        assert "100 small stories" in prompt
+        # Story identity is included.
+        assert "TK-100" in prompt
+        assert item.title in prompt
+
+    def test_includes_parent_epic_and_siblings(self, provider):
+        epic = make_item(item_id="TK-99", title="Big Epic", idea_type="epic", state="proposed")
+        provider.seed(epic)
+        sibling = make_item(
+            item_id="TK-101", title="A sibling story", state="proposed",
+            parent_id="TK-99",
+        )
+        provider.seed(sibling)
+        candidate = make_item(state="proposed", parent_id="TK-99")
+        provider.seed(candidate)
+
+        prompt = _build_new_story_prompt(candidate, provider)
+        assert "Big Epic" in prompt
+        assert "A sibling story" in prompt
+
+
+class TestEvaluateNewStory:
+    def test_not_proposed_short_circuits(self, provider):
+        provider.seed(make_item(state="failed"))
+        result = evaluate_new_story("TK-100", provider=provider)
+        assert not result.fired
+        assert result.reason == "not_proposed"
+
+    def test_missing_item(self, provider):
+        result = evaluate_new_story("TK-404", provider=provider)
+        assert not result.fired
+        assert result.reason == "not_found"
+
+    def test_epic_exempt(self, provider):
+        provider.seed(make_item(state="proposed", idea_type="epic"))
+        result = evaluate_new_story("TK-100", provider=provider)
+        assert not result.fired
+        assert result.reason == "exempt_epic"
+
+    def test_llm_unavailable_preserves_parent(self, provider):
+        provider.seed(make_item(state="proposed"))
+        runner = lambda _p, _t: None
+        result = evaluate_new_story(
+            "TK-100", provider=provider, claude_runner=runner,
+        )
+        assert not result.fired
+        assert result.reason == "llm_unavailable"
+        # Parent preserved.
+        assert provider.get("TK-100") is not None
+
+    def test_llm_declined_preserves_parent(self, provider):
+        # Empty splits = LLM thinks story is fine as-is.
+        provider.seed(make_item(state="proposed"))
+        runner = lambda _p, _t: json.dumps({"splits": [], "rationale": "1-point"})
+        result = evaluate_new_story(
+            "TK-100", provider=provider, claude_runner=runner,
+        )
+        assert not result.fired
+        assert result.reason == "llm_declined"
+        assert provider.get("TK-100") is not None
+
+    def test_too_few_splits_preserves_parent(self, provider):
+        provider.seed(make_item(state="proposed"))
+        runner = lambda _p, _t: json.dumps({
+            "splits": [{"title": "only", "description": "solo"}],
+            "rationale": "",
+        })
+        result = evaluate_new_story(
+            "TK-100", provider=provider, claude_runner=runner,
+        )
+        assert not result.fired
+        assert result.reason == "too_few_splits"
+        assert provider.get("TK-100") is not None
+
+    def test_full_flow_decomposes_oversized_story(self, provider, tmp_path):
+        # Parent epic preserved on the children via _apply_split.
+        epic = make_item(item_id="TK-99", title="Big epic", idea_type="epic", state="proposed")
+        provider.seed(epic)
+        candidate = make_item(state="proposed", parent_id="TK-99")
+        provider.seed(candidate)
+
+        notify = MagicMock()
+        result = evaluate_new_story(
+            "TK-100",
+            provider=provider,
+            project_root=tmp_path,
+            claude_runner=_three_split_runner(),
+            notifier=notify,
+        )
+        assert result.fired
+        assert result.reason == "auto_decomposed"
+        assert len(result.new_keys) == 3
+        # Parent removed by _apply_split.
+        assert provider.get("TK-100") is None
+        # Children inherited the parent_id (TK-99) of the original story.
+        for key in result.new_keys:
+            child = provider.get(key)
+            assert child is not None
+            assert child.parent_id == "TK-99"
+        notify.assert_called_once()
+
+    def test_depth_cap_reached_blocks_further_split(self, provider, tmp_path):
+        # A splitter-child at MAX generation must not be re-decomposed.
+        candidate = make_item(state="proposed", source=SPLITTER_SOURCE)
+        provider.seed(
+            candidate,
+            comments=[
+                Comment(
+                    author="splitter",
+                    text=f"{GENERATION_MARKER} {MAX_SPLITTER_GENERATION}",
+                    created="2026-04-26T00:00:00",
+                    marker=GENERATION_MARKER,
+                )
+            ],
+        )
+
+        def explode_runner(_p, _t):
+            raise AssertionError("claude_runner must not run at depth cap")
+
+        result = evaluate_new_story(
+            "TK-100",
+            provider=provider,
+            project_root=tmp_path,
+            claude_runner=explode_runner,
+        )
+        assert not result.fired
+        assert result.reason == "depth_cap_reached"
+        # Parent intact.
+        assert provider.get("TK-100") is not None
+
+
+class TestScanAndDecompose:
+    def test_skips_already_seen(self, provider, tmp_path, monkeypatch):
+        state_file = tmp_path / "seen_proposed.json"
+        state_file.write_text(json.dumps(["TK-100"]))
+        monkeypatch.setattr("aim.splitter._PROPOSED_STATE_FILE", state_file)
+        provider.seed(make_item(state="proposed"))
+
+        called: list = []
+        monkeypatch.setattr(
+            "aim.splitter.evaluate_new_story",
+            lambda *a, **k: called.append(a) or SplitResult(True, "auto_decomposed"),
+        )
+        scan_and_decompose(provider=provider)
+        assert called == []
+
+    def test_skips_epics_and_marks_them_seen(self, provider, tmp_path, monkeypatch):
+        state_file = tmp_path / "seen_proposed.json"
+        monkeypatch.setattr("aim.splitter._PROPOSED_STATE_FILE", state_file)
+        provider.seed(
+            make_item(item_id="TK-50", state="proposed", idea_type="epic")
+        )
+
+        called: list = []
+        monkeypatch.setattr(
+            "aim.splitter.evaluate_new_story",
+            lambda *a, **k: called.append(a) or SplitResult(True, "auto_decomposed"),
+        )
+        scan_and_decompose(provider=provider)
+        # Epic skipped — evaluate_new_story not called.
+        assert called == []
+        # But epic was added to seen so we don't re-check next tick.
+        assert state_file.exists()
+        assert "TK-50" in json.loads(state_file.read_text())
+
+    def test_evaluates_each_proposed_story_once(self, provider, tmp_path, monkeypatch):
+        state_file = tmp_path / "seen_proposed.json"
+        monkeypatch.setattr("aim.splitter._PROPOSED_STATE_FILE", state_file)
+        provider.seed(make_item(item_id="TK-100", state="proposed"))
+        provider.seed(make_item(item_id="TK-101", state="proposed"))
+
+        seen_calls: list[str] = []
+        monkeypatch.setattr(
+            "aim.splitter.evaluate_new_story",
+            lambda idea_id, **k: (
+                seen_calls.append(idea_id)
+                or SplitResult(False, "llm_declined", parent_key=idea_id)
+            ),
+        )
+        scan_and_decompose(provider=provider)
+        assert sorted(seen_calls) == ["TK-100", "TK-101"]
+        # Both IDs persisted.
+        persisted = set(json.loads(state_file.read_text()))
+        assert {"TK-100", "TK-101"} <= persisted
+
+    def test_handles_provider_exception(self, provider, monkeypatch):
+        def boom(_state):
+            raise RuntimeError("jira down")
+        provider.list_by_state = boom  # type: ignore
+        # Must not raise.
+        scan_and_decompose(provider=provider)
+
+    def test_uses_separate_state_file_from_failure_path(
+        self, provider, tmp_path, monkeypatch
+    ):
+        # Pre-existing failure-path state should NOT mark a proposed story as seen.
+        failure_state = tmp_path / "seen.json"
+        failure_state.write_text(json.dumps(["TK-100"]))
+        proposed_state = tmp_path / "seen_proposed.json"
+        monkeypatch.setattr("aim.splitter._STATE_FILE", failure_state)
+        monkeypatch.setattr("aim.splitter._PROPOSED_STATE_FILE", proposed_state)
+
+        provider.seed(make_item(item_id="TK-100", state="proposed"))
+
+        seen_calls: list[str] = []
+        monkeypatch.setattr(
+            "aim.splitter.evaluate_new_story",
+            lambda idea_id, **k: (
+                seen_calls.append(idea_id)
+                or SplitResult(False, "llm_declined", parent_key=idea_id)
+            ),
+        )
+        scan_and_decompose(provider=provider)
+        # The proposed-path ignored the failure-path state file.
+        assert seen_calls == ["TK-100"]

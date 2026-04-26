@@ -911,3 +911,259 @@ class TestDoublePrefixRepair:
         assert "ERROR" in result
         assert "nested phantom" in result.lower()
         assert not nested.exists()
+
+
+# ---------------------------------------------------------------------------
+# TestDriftDetection
+# ---------------------------------------------------------------------------
+
+class TestDriftDetection:
+    """The outer round loop should abort early when the model is making zero
+    forward progress for DRIFT_WINDOW (=4) rounds straight. See
+    ``OllamaCoder._check_drift`` for the rules."""
+
+    def _wire_drift_test(
+        self,
+        coder: OllamaCoder,
+        *,
+        failing_per_round: list[list[str]],
+        changed_per_round: list[list[str]],
+        commit_count_per_call: list[int],
+        inner_finished_per_round: list[bool],
+    ) -> None:
+        """Helper: wire deterministic per-round signals onto the coder.
+
+        ``commit_count_per_call`` is consumed by ``_count_branch_commits`` —
+        which is called once before the loop (baseline) and once per round
+        (after that round's work), so the list must be at least
+        len(rounds)+1.
+        """
+        finish_response = _response([_tool_call("finish", summary="done")])
+        coder._chat_with_tools = lambda sys, msgs: finish_response  # type: ignore[method-assign]
+
+        round_idx = [0]
+        def mock_pytest():
+            i = min(round_idx[0], len(failing_per_round) - 1)
+            failing = failing_per_round[i]
+            return {
+                "passed": False,
+                "failing": list(failing),
+                "output": "FAILED stuff\n",
+            }
+        coder._run_pytest = mock_pytest  # type: ignore[method-assign]
+
+        def mock_changed():
+            i = min(round_idx[0], len(changed_per_round) - 1)
+            return list(changed_per_round[i])
+        coder._get_changed_files = mock_changed  # type: ignore[method-assign]
+
+        commit_iter = iter(commit_count_per_call)
+        coder._count_branch_commits = lambda: next(  # type: ignore[method-assign]
+            commit_iter, commit_count_per_call[-1] if commit_count_per_call else 0
+        )
+
+        # _run_inner_loop returns True when finish was called, False on
+        # max-turn exhaustion. Drive that directly via per-round list.
+        inner_iter = iter(inner_finished_per_round)
+        def mock_inner(sys, msgs, rn):
+            round_idx[0] = rn
+            return next(inner_iter, True)
+        coder._run_inner_loop = mock_inner  # type: ignore[method-assign]
+
+        coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+
+    def _run_with_logger(self, coder: OllamaCoder) -> list[str]:
+        log_lines: list[str] = []
+        coder._log = lambda m: log_lines.append(m)  # type: ignore[method-assign]
+        with patch("agent.ollama_client.acquire_coder_priority"), \
+             patch("agent.ollama_client.release_coder_priority"):
+            coder.run()
+        return log_lines
+
+    def test_four_rounds_no_progress_aborts(self, tmp_path: Path) -> None:
+        """Condition A: 4 rounds, same failing-set, same changed-set, no commits → abort."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 10
+        same_failing = ["test_a", "test_b"]
+        same_changed = ["a.py", "b.py"]
+        self._wire_drift_test(
+            coder,
+            failing_per_round=[same_failing] * 10,
+            changed_per_round=[same_changed] * 10,
+            commit_count_per_call=[0] * 11,
+            inner_finished_per_round=[True] * 10,
+        )
+        log_lines = self._run_with_logger(coder)
+
+        round_log_lines = [m for m in log_lines if "--- Round " in m]
+        # Started rounds 0,1,2,3 — drift fires at end of round 3 (index 3).
+        assert len(round_log_lines) == 4, (
+            f"Expected exactly 4 rounds before drift abort, got {len(round_log_lines)}"
+        )
+        assert any("Drift detected" in m for m in log_lines)
+        assert any("no_progress" in m for m in log_lines)
+
+    def test_four_rounds_with_commits_does_not_abort(self, tmp_path: Path) -> None:
+        """Commits in every round → no drift, run all 10 rounds."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 10
+        self._wire_drift_test(
+            coder,
+            failing_per_round=[["t1"]] * 10,
+            changed_per_round=[["a.py"]] * 10,
+            # Baseline 0, then 1,2,3,4,5,6,7,8,9,10 — increases each round.
+            commit_count_per_call=list(range(11)),
+            inner_finished_per_round=[True] * 10,
+        )
+        log_lines = self._run_with_logger(coder)
+
+        round_log_lines = [m for m in log_lines if "--- Round " in m]
+        assert len(round_log_lines) == 10
+        assert not any("Drift detected" in m for m in log_lines)
+
+    def test_three_rounds_no_progress_does_not_abort(self, tmp_path: Path) -> None:
+        """History not yet full (only 3 rounds collected) → no drift."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 3  # forces only 3 rounds to run
+        self._wire_drift_test(
+            coder,
+            failing_per_round=[["t1"]] * 3,
+            changed_per_round=[[]] * 3,
+            commit_count_per_call=[0] * 4,
+            inner_finished_per_round=[True] * 3,
+        )
+        log_lines = self._run_with_logger(coder)
+        # 3 rounds < DRIFT_WINDOW=4, so drift should NOT fire.
+        assert not any("Drift detected" in m for m in log_lines)
+
+    def test_failing_set_changes_does_not_abort(self, tmp_path: Path) -> None:
+        """Failing-set shifts each round → not drift (model making progress)."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 5
+        self._wire_drift_test(
+            coder,
+            # Different failing set each round — looks like progress, even
+            # without commits, until condition B kicks in. We deliberately
+            # provide non-empty changed_files so condition B can't fire.
+            failing_per_round=[["t1"], ["t2"], ["t3"], ["t4"], ["t5"]],
+            changed_per_round=[["a.py"]] * 5,
+            commit_count_per_call=[0] * 6,
+            inner_finished_per_round=[True] * 5,
+        )
+        log_lines = self._run_with_logger(coder)
+        assert not any("Drift detected" in m for m in log_lines), (
+            f"Drift should NOT fire when failing-set varies. Logs:\n"
+            + "\n".join(log_lines[-15:])
+        )
+
+    def test_empty_shop_requires_two_exhaustions(self, tmp_path: Path) -> None:
+        """Condition B requires >= 2 inner-loop exhaustions in the window.
+        Only 1 exhaustion → no drift, even with all-empty changed-files."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 4  # exactly the window
+        self._wire_drift_test(
+            coder,
+            # Failing-set varies → condition A blocked.
+            failing_per_round=[["t1"], ["t2"], ["t3"], ["t4"]],
+            changed_per_round=[[]] * 4,
+            commit_count_per_call=[0] * 5,
+            # Only 1 round exhausted (round 0). Threshold is 2.
+            inner_finished_per_round=[False, True, True, True],
+        )
+        log_lines = self._run_with_logger(coder)
+        assert not any("Drift detected" in m for m in log_lines)
+
+    def test_empty_shop_with_two_exhaustions_aborts(self, tmp_path: Path) -> None:
+        """Condition B: 4 rounds, all empty changed-files, 2 inner-loop exhaustions → abort."""
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 10
+        self._wire_drift_test(
+            coder,
+            # Vary failing-set so condition A is blocked — only B can fire.
+            failing_per_round=[["t1"], ["t2"], ["t3"], ["t4"]],
+            changed_per_round=[[]] * 4,
+            commit_count_per_call=[0] * 5,
+            inner_finished_per_round=[False, False, True, True],
+        )
+        log_lines = self._run_with_logger(coder)
+        round_log_lines = [m for m in log_lines if "--- Round " in m]
+        assert len(round_log_lines) == 4
+        assert any("Drift detected" in m for m in log_lines)
+        assert any("empty_shop" in m for m in log_lines)
+
+
+# ---------------------------------------------------------------------------
+# TestBashSandbox
+# ---------------------------------------------------------------------------
+
+class TestBashSandbox:
+    """The bash sandbox should tutor the model when it picks the wrong tool —
+    not just say BLOCKED. See BASH_SHAPE_GUIDANCE in ollama_coder.py."""
+
+    def test_blocked_cat_suggests_read_file(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("cat /etc/hosts")
+        assert "BLOCKED" in result
+        assert "read_file" in result
+
+    def test_blocked_find_suggests_list_files_or_search_code(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("find . -name '*.py'")
+        assert "BLOCKED" in result
+        assert ("list_files" in result) or ("search_code" in result)
+
+    def test_blocked_ls_suggests_list_files(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("ls -la")
+        assert "BLOCKED" in result
+        assert "list_files" in result
+
+    def test_blocked_grep_suggests_search_code(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("grep -r 'foo' .")
+        assert "BLOCKED" in result
+        assert "search_code" in result
+
+    def test_blocked_unknown_command_falls_back_to_generic_message(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("xyzzy --help")
+        assert "BLOCKED" in result
+        # Generic guidance lists the structured tool family.
+        assert "structured" in result.lower() or "read_file" in result
+
+    def test_blocklist_still_overrides(self, tmp_path: Path) -> None:
+        """Blocklist runs before the new guidance layer — git push must still block."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("git push origin main")
+        assert "BLOCKED" in result
+        assert "push origin" in result
+
+    def test_pythonista_does_not_match_python(self, tmp_path: Path) -> None:
+        """Word-boundary tightening: a command that *starts with* 'python' but
+        is a different word entirely must be rejected."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("pythonista --version")
+        assert "BLOCKED" in result
+
+    def test_existing_allowlist_still_passes(self, tmp_path: Path) -> None:
+        """Regression: `git status` (well-formed allowed command) still runs.
+        We can't easily run subprocess in the test env, so just verify it
+        DOESN'T return a BLOCKED message — the subprocess.run call may
+        fail, which is fine."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("git status")
+        assert "BLOCKED" not in result
+
+    def test_bare_allowed_command_passes(self, tmp_path: Path) -> None:
+        """Word-boundary check: bare `git` (no args) should also be allowed."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("git")
+        assert "BLOCKED" not in result
+
+    def test_blocked_message_includes_truncated_command(self, tmp_path: Path) -> None:
+        """The error should echo back what the model tried (so it can see
+        what was rejected and self-correct)."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("cat some_file.py")
+        # The first 80 chars of the original command should appear.
+        assert "cat some_file.py" in result
