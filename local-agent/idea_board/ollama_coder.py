@@ -27,7 +27,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import requests
 
@@ -626,9 +626,16 @@ class OllamaCoder:
         except Exception:
             pass
         # Manual fallback — used when rg is not installed.
+        # ``search_dir`` may be a file (when the model passes a specific file
+        # path) or a directory.  ``Path.rglob`` returns nothing on a file, so
+        # we have to iterate explicitly.
         matches: list[str] = []
+        if search_dir.is_file():
+            files_iter: Iterable[Path] = [search_dir]
+        else:
+            files_iter = search_dir.rglob(file_pattern)
         try:
-            for f in search_dir.rglob(file_pattern):
+            for f in files_iter:
                 try:
                     text = f.read_text(encoding="utf-8", errors="replace")
                     for i, line in enumerate(text.splitlines(), 1):

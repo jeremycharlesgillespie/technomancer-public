@@ -227,6 +227,26 @@ class TestToolExecution:
         assert "needle" in result
         assert "buried.py" in result
 
+    def test_search_code_in_specific_file(self, tmp_path: Path) -> None:
+        """Regression: when ``path`` points at a single file (not a dir), the
+        manual fallback used ``rglob`` which returns nothing on a file —
+        every search returned ``(no matches)`` even when the pattern
+        clearly existed.  The fix special-cases ``is_file()``."""
+        f = tmp_path / "target.py"
+        f.write_text(
+            "import subprocess\n"
+            "subprocess.run(['ls'])\n"
+            "x = 1\n",
+            encoding="utf-8",
+        )
+        coder = _make_coder(tmp_path)
+        result = coder._tool_search_code("subprocess", path="target.py")
+        assert "subprocess" in result
+        assert "target.py" in result
+        # Both lines must be reported.
+        assert "import subprocess" in result
+        assert "subprocess.run" in result
+
 
 # ---------------------------------------------------------------------------
 # TestOllamaCoderRun
