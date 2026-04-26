@@ -1,5 +1,6 @@
 # Runtime state files (bot-generated, not source code)
 *.log
+*.log.*
 *.pid
 *.db
 .auto_improve_report.json
