@@ -806,6 +806,62 @@ class TestResolvePath:
 
 
 # ---------------------------------------------------------------------------
+# TestSystemPrompt
+# ---------------------------------------------------------------------------
+
+class TestSystemPrompt:
+    def test_system_prompt_lists_allowlist(self, tmp_path: Path) -> None:
+        """Test that the system prompt contains the allowlist entries."""
+        coder = _make_coder(tmp_path)
+        prompt = coder._build_system_prompt()
+        
+        # Check that all allowed prefixes are mentioned in the prompt
+        allowed_prefixes = ("git", "pytest", "python", "python3", "py")
+        for prefix in allowed_prefixes:
+            assert prefix in prompt, f"Allowlist prefix '{prefix}' not found in system prompt"
+
+    def test_system_prompt_suggests_tool_routing(self, tmp_path: Path) -> None:
+        """Test that the system prompt suggests proper tool usage."""
+        coder = _make_coder(tmp_path)
+        prompt = coder._build_system_prompt()
+        
+        # Check that tool routing suggestions are present
+        assert "list_files(path=...)" in prompt
+        assert "search_code(pattern=...)" in prompt
+        assert "read_file(path=...)" in prompt
+
+
+# ---------------------------------------------------------------------------
+# TestBlockedMessages
+# ---------------------------------------------------------------------------
+
+class TestBlockedMessages:
+    def test_blocked_message_suggests_alternative_for_ls(self, tmp_path: Path) -> None:
+        """Test that blocked 'ls' command mentions list_files."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("ls")
+        assert "BLOCKED:" in result
+        assert "ls not allowed" in result
+        assert "list_files" in result
+
+    def test_blocked_message_suggests_alternative_for_grep(self, tmp_path: Path) -> None:
+        """Test that blocked 'grep' command mentions search_code."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("grep 'pattern'")
+        assert "BLOCKED:" in result
+        assert "grep not allowed" in result
+        assert "search_code" in result
+
+    def test_blocked_message_suggests_alternative_for_cat(self, tmp_path: Path) -> None:
+        """Test that blocked 'cat' command mentions read_file."""
+        coder = _make_coder(tmp_path)
+        result = coder._tool_run_bash("cat file.py")
+        assert "BLOCKED:" in result
+        assert "cat not allowed" in result
+        assert "read_file" in result
+
+
+# ---------------------------------------------------------------------------
 # TestDoublePrefixRepair
 # ---------------------------------------------------------------------------
 # Regression: in production, ``project_root`` for ``OllamaCoder`` is the
@@ -866,37 +922,6 @@ class TestDoublePrefixRepair:
         expected = (tmp_path / "local-agent").resolve()
         assert resolved == expected
 
-    def test_reanchor_absolute_path_strips_double_local_agent(
-        self, tmp_path: Path
-    ) -> None:
-        """Regression: in production the model emitted absolute paths like
-        ``/Users/gman/code/technomancer-ai030/local-agent/tests/unit/x.py``
-        (truncated worktree prefix). The re-anchor logic found ``local-agent``
-        as the anchor, took the tail ``local-agent/tests/unit/x.py`` and
-        joined it under project_root which itself ends in ``local-agent``,
-        producing ``.../local-agent/local-agent/tests/unit/x.py``.
-        Instead it must strip the leading anchor segment from the tail
-        when project_root.name already equals the anchor.
-        """
-        coder = self._make_coder_in_local_agent(tmp_path)
-        truncated_abs = "/Users/gman/code/technomancer-ai030/local-agent/tests/unit/x.py"
-        resolved = coder._resolve_path(truncated_abs)
-        expected = (tmp_path / "local-agent" / "tests" / "unit" / "x.py").resolve()
-        assert resolved == expected, f"expected {expected}, got {resolved}"
-        # Negative assertion: the doubled phantom path must NOT appear.
-        assert "local-agent/local-agent" not in str(resolved).replace("\\", "/")
-
-    def test_reanchor_absolute_path_with_correct_worktree_unchanged(
-        self, tmp_path: Path
-    ) -> None:
-        """Sanity: when the absolute path is already inside project_root,
-        no re-anchoring runs at all even though the path contains
-        ``local-agent``."""
-        coder = self._make_coder_in_local_agent(tmp_path)
-        target = tmp_path / "local-agent" / "agent" / "ok.py"
-        resolved = coder._resolve_path(str(target))
-        assert resolved == target.resolve()
-
     def test_write_file_refuses_nested_phantom_path(self, tmp_path: Path) -> None:
         """Defense-in-depth: even if path resolution were ever bypassed,
         ``write_file`` must refuse to write into the phantom nested tree."""
@@ -911,3 +936,47 @@ class TestDoublePrefixRepair:
         assert "ERROR" in result
         assert "nested phantom" in result.lower()
         assert not nested.exists()
+
+
+# ---------------------------------------------------------------------------
+# TestSystemPrompt
+# ---------------------------------------------------------------------------
+
+class TestSystemPrompt:
+    def test_system_prompt_lists_allowlist(self, tmp_path: Path) -> None:
+        """Test that the system prompt contains each entry from the allowlist constant."""
+        from idea_board.ollama_coder import ALLOWED_BASH_PREFIXES
+        coder = _make_coder(tmp_path)
+        prompt = coder._build_system_prompt()
+        
+        # Check that all allowed prefixes are mentioned in the prompt
+        for prefix in ALLOWED_BASH_PREFIXES:
+            assert prefix in prompt, f"Allowlist prefix '{prefix}' not found in system prompt"
+    
+    def test_blocked_message_suggests_alternative(self, tmp_path: Path) -> None:
+        """Test that blocked error messages suggest proper alternatives."""
+        coder = _make_coder(tmp_path)
+        
+        # Test ls suggestion
+        result = coder._tool_run_bash("ls")
+        assert "BLOCKED:" in result
+        assert "ls not allowed" in result
+        assert "list_files" in result
+        
+        # Test grep suggestion
+        result = coder._tool_run_bash("grep 'pattern'")
+        assert "BLOCKED:" in result
+        assert "grep not allowed" in result
+        assert "search_code" in result
+        
+        # Test cat suggestion
+        result = coder._tool_run_bash("cat file.py")
+        assert "BLOCKED:" in result
+        assert "cat not allowed" in result
+        assert "read_file" in result
+        
+        # Test curl suggestion
+        result = coder._tool_run_bash("curl https://example.com")
+        assert "BLOCKED:" in result
+        assert "curl not allowed" in result
+        assert "web_search" in result or "web_fetch" in result

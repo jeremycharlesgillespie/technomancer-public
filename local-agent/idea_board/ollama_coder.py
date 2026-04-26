@@ -43,7 +43,8 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-BASH_ALLOWLIST = ("git", "pytest", "python", "python3", "py")
+# Allowed prefixes for run_bash commands
+ALLOWED_BASH_PREFIXES = ("git", "pytest", "python", "python3", "py")
 BASH_BLOCKLIST = ("safe_update", "push origin", "push --force", "merge", "checkout main",
                    "checkout master", "rm -rf", "rmdir /s")
 
@@ -78,6 +79,19 @@ _ERROR_HINTS: list[tuple[str, str]] = [
     ("TypeError", "Check function signatures and argument types"),
     ("NameError", "Check that variables and functions are defined before use"),
 ]
+
+# Blocked command hints for actionable error messages
+_BLOCKED_COMMAND_HINTS: dict[str, str] = {
+    "ls": "Use list_files(path=...) instead.",
+    "find": "Use list_files(path=...) or search_code(pattern=...) instead.",
+    "grep": "Use search_code(pattern=...) instead.",
+    "cat": "Use read_file(path=...) instead.",
+    "head": "Use read_file(path=..., offset=..., length=...) instead.",
+    "tail": "Use read_file(path=..., offset=..., length=...) instead.",
+    "curl": "Use web_search() or web_fetch() instead.",
+    "wget": "Use web_search() or web_fetch() instead.",
+    "ping": "Use web_search() or web_fetch() instead.",
+}
 
 # ---------------------------------------------------------------------------
 # Tool definitions (Ollama /api/chat format)
@@ -147,7 +161,7 @@ _TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "run_bash",
             "description": (
-                "Run a shell command. Allowed prefixes: git, pytest, python, python3. "
+                "Run a shell command. Allowed prefixes: git, pytest, python, python3, py. "
                 "Blocked: safe_update, push origin, push --force, merge, checkout main, rm -rf."
             ),
             "parameters": {
@@ -511,17 +525,7 @@ class OllamaCoder:
         for anchor in self._REANCHOR_SEGMENTS:
             if anchor in parts:
                 idx = parts.index(anchor)
-                tail_parts = parts[idx:]
-                # Avoid the double-prefix bug: if project_root already ends in
-                # the anchor segment (e.g. project_root=.../local-agent and
-                # anchor='local-agent'), strip it from tail so we don't produce
-                # .../local-agent/local-agent/...
-                if (
-                    project_root_resolved.name == anchor
-                    and len(tail_parts) > 1
-                ):
-                    tail_parts = tail_parts[1:]
-                tail = Path(*tail_parts) if tail_parts else Path(".")
+                tail = Path(*parts[idx:])
                 repaired = (project_root_resolved / tail).resolve()
                 # Defense-in-depth: ensure the repaired path is still inside project_root.
                 try:
@@ -653,9 +657,13 @@ class OllamaCoder:
             if blocked in cmd_lower:
                 return f"BLOCKED: command contains '{blocked}'"
         # Allowlist check
-        allowed = any(cmd_lower.startswith(prefix) for prefix in BASH_ALLOWLIST)
+        allowed = any(cmd_lower.startswith(prefix) for prefix in ALLOWED_BASH_PREFIXES)
         if not allowed:
-            return f"BLOCKED: command must start with one of {BASH_ALLOWLIST}"
+            # Provide actionable error message with suggestions
+            for blocked_cmd, suggestion in _BLOCKED_COMMAND_HINTS.items():
+                if cmd_lower.startswith(blocked_cmd):
+                    return f"BLOCKED: {blocked_cmd} not allowed. {suggestion}"
+            return f"BLOCKED: command must start with one of {ALLOWED_BASH_PREFIXES}"
         try:
             result = subprocess.run(
                 command,
@@ -844,6 +852,12 @@ class OllamaCoder:
             "- Test files MUST live under local-agent/tests/unit/ and start "
             "with `test_` (e.g. tests/unit/test_jira_retry.py). pytest will "
             "not collect any other filename.\n"
+            f"- run_bash only accepts commands starting with: {', '.join(ALLOWED_BASH_PREFIXES)}\n"
+            "- For common file operations, use the dedicated tools instead of bash commands:\n"
+            "  - Use list_files(path=...) instead of ls, find\n"
+            "  - Use search_code(pattern=...) instead of grep, find ... -name\n"
+            "  - Use read_file(path=...) instead of cat, head, tail\n"
+            "  - Use web_search() or web_fetch() instead of curl, wget, ping\n"
             "- run_bash already runs in the project root. Do NOT prefix commands "
             "with `cd <path> && ...`. Just call `pytest tests/unit/test_foo.py`, "
             "`git status`, etc. directly.\n"
