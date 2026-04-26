@@ -102,4 +102,16 @@ def init_ab_db() -> None:
         ON ab_test_pairs (story_key, created_at DESC)
         """
     )
+    # Create the aiv_enqueue_failures table for tracking failed AIV enqueues
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS aiv_enqueue_failures (
+            story_key           TEXT NOT NULL,
+            attempted_at        TEXT NOT NULL,
+            error               TEXT NOT NULL,
+            merge_commit_sha    TEXT,
+            PRIMARY KEY (story_key, attempted_at)
+        )
+        """
+    )
     conn.commit()

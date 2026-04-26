@@ -41,6 +41,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -768,16 +769,65 @@ def execute_idea_ab(idea_id: str) -> ExecutionState | None:
                     from agent.aiv_hook import enqueue_for_validation as _enq
                     diff_paths = _diff_paths_from_text(winning_outcome.diff)
                     merge_sha = _head_sha(project_root)
-                    _enq(
-                        idea_id,
-                        diff_paths,
-                        merge_commit_sha=merge_sha,
-                        verification_output=(winning_outcome.log_text or "")[-6000:],
-                    )
-                    state.log(
-                        f"[AB] enqueued {idea_id} for AIV validation "
-                        f"(sha={merge_sha[:7] if merge_sha else 'none'})"
-                    )
+                    
+                    # Retry logic for AIV enqueue with exponential backoff
+                    max_retries = 3
+                    backoff_times = [1, 3, 7]  # seconds
+                    retry_count = 0
+                    
+                    while retry_count < max_retries:
+                        try:
+                            _enq(
+                                idea_id,
+                                diff_paths,
+                                merge_commit_sha=merge_sha,
+                                verification_output=(winning_outcome.log_text or "")[-6000:],
+                            )
+                            state.log(
+                                f"[AB] enqueued {idea_id} for AIV validation "
+                                f"(sha={merge_sha[:7] if merge_sha else 'none'})"
+                            )
+                            break  # Success, exit retry loop
+                        except Exception as exc:  # noqa: BLE001
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                backoff_time = backoff_times[retry_count - 1]
+                                state.log(
+                                    f"[AB] AIV enqueue failed (attempt {retry_count}/{max_retries}), "
+                                    f"retrying in {backoff_time}s: {exc}"
+                                )
+                                time.sleep(backoff_time)
+                            else:
+                                # All retries exhausted, log to AIV daemon logger and record failure
+                                from agent import aiv_schema
+                                from agent.aiv_hook import log as aiv_hook_log
+                                aiv_hook_log.warning(
+                                    "AIV enqueue failed after %d attempts for story %s: %s",
+                                    max_retries, idea_id, exc
+                                )
+                                # Record the failure in the new table for manual retry
+                                try:
+                                    conn = aiv_schema._get_conn()
+                                    conn.execute(
+                                        "INSERT INTO aiv_enqueue_failures "
+                                        "(story_key, attempted_at, error, merge_commit_sha) "
+                                        "VALUES (?, ?, ?, ?)",
+                                        (
+                                            idea_id,
+                                            datetime.now(timezone.utc).isoformat(),
+                                            str(exc),
+                                            merge_sha,
+                                        ),
+                                    )
+                                    conn.commit()
+                                except Exception as db_exc:  # noqa: BLE001
+                                    aiv_hook_log.error(
+                                        "Failed to record enqueue failure for %s in aiv_enqueue_failures: %s",
+                                        idea_id, db_exc
+                                    )
+                                state.log(
+                                    f"[AB] AIV enqueue failed after {max_retries} attempts for {idea_id}: {exc}"
+                                )
                 except Exception as exc:  # noqa: BLE001
                     state.log(f"[AB] AIV enqueue failed (non-fatal): {exc}")
 
