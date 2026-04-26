@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     )
 
     # Discord settings
-    discord_bot_token: str = Field(description="Discord bot token for authentication")
+    discord_bot_token: str = Field(
+        default="", description="Discord bot token for authentication"
+    )
     discord_webhook_url: Optional[str] = Field(
         default=None, description="Discord webhook URL for bot lifecycle notifications"
     )

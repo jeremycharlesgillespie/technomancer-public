@@ -93,6 +93,38 @@ While a Worker is running, anyone with the link can watch in real time:
 - Lifecycle transitions (spawned / succeeded / failed) land in
   `aim/events.jsonl` and surface on the `/aim` dashboard.
 
+## Platform Interfaces
+
+Technomancer provides multiple interfaces for interaction and monitoring:
+
+### Discord Bot
+- **Chat and Commands** — Full conversation memory, image/file processing
+- **Command Handlers** — Rich set of commands for learning, news, performance, and more
+- **Reaction Tracking** — Context-aware command suggestions and feedback
+
+### Web Dashboard
+- **Idea Board** — Access at `http://localhost:8322` for managing improvement ideas
+- **Epics & Stories** — Group related stories into full value chains
+- **LLM Discussion Threads** — Collaborative idea development
+- **Archived View** — Hides completed work while keeping it for deduplication
+- **Live Execution View** — Real-time monitoring of running tasks
+
+### Monitoring & Analytics
+- **Grafana Dashboards** — Real-time metrics visualization
+- **Prometheus Metrics Collection** — Internal performance monitoring
+- **Performance Monitor** — Track latency, token counts, and success/failure rates
+- **Infrastructure Reliability Monitor** — Vault backup, GPU health, API key monitoring
+
+### Remote Access
+- **Tailscale** — Secure remote access to the system
+- **Local-first Architecture** — Ollama for primary inference, Claude API for escalation only
+
+### Jira Integration
+- **External Project Tracking** — Full integration with Jira for story management
+- **BoardProvider Abstraction** — Switch between Jira and local JSON store seamlessly
+- **Metadata Labels** — Category (`cat:quality`), source (`src:llm_analysis`), and other labels
+- **JQL Pagination** — Works correctly on large boards, not just the first page
+
 ## Recent highlights
 
 - **Jira-first refactor** with the `BoardProvider` abstraction — same code
@@ -118,46 +150,17 @@ While a Worker is running, anyone with the link can watch in real time:
 ## Highlights
 
 - **5947 automated tests** with 0% code coverage
-- **102 Python modules** across 42,359 lines of code
+- **102 Python modules** across 42,367 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
 - **Discord-native** — all interaction through Discord with reaction tracking
+- **Web dashboard** — Idea board, backlog, and live execution view at `http://localhost:8322`
+- **Monitoring stack** — Grafana dashboards and Prometheus metrics collection
+- **Remote access** — Tailscale integration for secure remote access
+- **Jira integration** — Full external project tracking with BoardProvider abstraction
 
 ## Architecture
-
-```
-Discord Bot (discord_memory_bot.py)
-    |
-    +-- Ollama LLM (local, tool-calling loop)
-    |       |-- 50+ registered tools
-    |       |-- Factual auto-search before answering
-    |       |-- Knowledge gap detection + auto-enrichment
-    |
-    +-- Claude API (escalation for complex tasks)
-    |       |-- Vault context with prompt caching (84% token savings)
-    |       |-- Fallback orchestrator (auto-switches to Ollama on failure)
-    |
-    +-- Obsidian Vault (persistent memory)
-    |       |-- Conversation context + summaries
-    |       |-- Knowledge gap notes
-    |       |-- Reference articles
-    |       |-- Write-ahead logging for data safety
-    |
-    +-- Idea Board (Flask, port 8322)
-    |       |-- Epic/Story/Task hierarchy
-    |       |-- LLM-powered discussion threads
-    |       |-- Copy Epic for Claude Code (sequential implementation)
-    |
-    +-- Background Tasks
-            |-- News digest (hourly, 9am-9pm)
-            |-- Developer learning articles (daily, 8am)
-            |-- Knowledge enrichment (every 6 hours)
-            |-- Gap frequency analysis (weekly)
-            |-- Infrastructure monitoring (every 30 min)
-            |-- Idea generation (hourly)
-            |-- Learning newsletter (weekly, Sunday 9am)
-```
 
 ## Modules
 
@@ -170,7 +173,7 @@ Discord Bot (discord_memory_bot.py)
 | News & Learning | `news_digest`, `news_engagement`, `dev_learning`, `learning_newsletter` |
 | Monitoring & Performance | `perf_monitor`, `metrics_db`, `prometheus_metrics`, `profiler`, `api_usage_anomaly`, `llm_optimizer`, `infra_monitor` |
 | Content & Publishing | `github_pages`, `html_generator`, `pdf_tools`, `enhancements`, `ref_enrichment` |
-| Idea Board | `idea_board/web.py`, `idea_board/models.py`, `idea_board/executor.py` |
+| Idea Board | `idea_board/web.py`, `idea_board/models.py`, `idea_board/executor.py`, `idea_board/jira_sync.py`, `idea_board/jira_sync_dlq.py` |
 
 ## Quick Start
 
@@ -180,6 +183,8 @@ Discord Bot (discord_memory_bot.py)
 - [Ollama](https://ollama.ai/) running locally with `qwen3.5:27b` (or configure via `.env`)
 - Discord bot token
 - (Optional) Anthropic API key for Claude escalation
+- (Optional) Grafana for metrics visualization
+- (Optional) Tailscale for remote access
 
 ### Installation
 
@@ -199,6 +204,8 @@ VAULT_PATH=C:\Users\you\Documents\ObsidianVault
 OLLAMA_MODEL=qwen3.5:27b
 ```
 
+The web dashboard runs on port 8322 by default. You can configure this in the `.env` file if needed.
+
 ### Running
 
 ```bash
@@ -207,6 +214,9 @@ python -m agent.discord_memory_bot
 
 # Or via bot service (with crash recovery)
 python bot_service.py start
+
+# Start web dashboard (idea board) at http://localhost:8322
+python run_hub.py
 
 # Safe deployment workflow
 python safe_update.py my-feature       # create branch
@@ -246,7 +256,7 @@ safe_update.py <name>      →  Create isolated branch
 validate.py startup        →  5-level validation (mandatory before commit)
 git commit                 →  Pre-commit hooks (black, ruff, trailing whitespace)
 safe_update.py continue    →  pytest (all 5947 tests) → mypy → merge → restart bot → quality tests → publish
-```
+````
 
 No code reaches `main` without passing **all** of: pre-commit hooks, 5-level validation, the full test suite, type checking, and post-deploy quality tests.
 
@@ -272,6 +282,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 - **Copy Epic for Claude Code** implements all stories sequentially
 - **LLM discussion threads** on each idea
 - **Archived view** hides completed work while keeping it for deduplication
+- **Live execution view** — monitor running tasks in real-time
 
 ## Key Design Decisions
 
@@ -299,7 +310,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Test count | 5947 |
 | Code coverage | 0% |
 | Python modules | 102 |
-| Lines of code | 42,359 |
+| Lines of code | 42,367 |
 | Test files | 243 |
 
 ## License
