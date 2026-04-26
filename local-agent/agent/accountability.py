@@ -6,6 +6,7 @@ reporting success to the user.
 """
 
 import logging
+import os
 import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -146,14 +147,23 @@ def verify_memory_saved(category: str) -> str:
         return f"NOT FOUND: Memory not saved in category '{category}'"
 
 
-def verify_git_clean() -> str:
+def verify_git_clean(path: str = ".") -> str:
     """
     Verify that the git working directory is clean (no uncommitted changes).
+
+    Args:
+        path: Path to git repository (default: current directory)
 
     Returns:
         Verification result with details
     """
     try:
+        # Change to the specified directory if provided
+        original_dir = Path.cwd()
+        if path != ".":
+            Path(path).mkdir(parents=True, exist_ok=True)
+            os.chdir(path)
+
         # First, explicitly check if git is available by running git rev-parse
         # This will catch cases where git is not in PATH or not executable
         git_check_result = subprocess.run(
@@ -163,7 +173,7 @@ def verify_git_clean() -> str:
             text=True,
             check=False  # We want to handle non-zero exit codes explicitly
         )
-        
+
         # If git command failed with non-zero exit code, check if it's because git is not installed
         if git_check_result.returncode != 0:
             # Check if the error indicates git is not found in PATH
@@ -171,7 +181,7 @@ def verify_git_clean() -> str:
                 raise GitNotInstalledError("Git is not installed or not in PATH")
             # If git command failed for other reasons, we'll let the existing logic handle it
             # This could be because we're not in a git repository, etc.
-        
+
         # If we get here, git is available, so proceed with normal checks
         # First check if we're in a git repository by running git rev-parse
         # This will raise FileNotFoundError if git is not in PATH (though we already checked)
@@ -182,7 +192,7 @@ def verify_git_clean() -> str:
             text=True,
             check=True
         )
-        
+
         # If we get here, git is installed and we're in a git repository
         # Now check if working directory is clean using our new helper
         try:
@@ -196,7 +206,7 @@ def verify_git_clean() -> str:
         except subprocess.CalledProcessError:
             # If git status fails, we can't determine if it's clean
             return "ERROR: Failed to check git status"
-            
+
     except subprocess.CalledProcessError as e:
         # Git command failed, likely because we're not in a git repository
         if "fatal: not a git repository" in e.stderr:
@@ -207,46 +217,74 @@ def verify_git_clean() -> str:
     except FileNotFoundError:
         # Git is not installed or not in PATH
         raise GitNotInstalledError("Git is not installed or not in PATH")
+    finally:
+        # Restore original directory
+        os.chdir(original_dir)
 
 
-def create_branch(branch_name: str) -> str:
+def create_branch(path: str = ".", name: str = "", message: str = "") -> str:
     """
     Create a new git branch with the given name.
-    
+
     Args:
-        branch_name: Name of the branch to create
-        
+        path: Path to git repository (default: current directory)
+        name: Name of the branch to create
+        message: Message to include in commit
+
     Returns:
         Verification result with details
     """
     try:
+        # Change to the specified directory if provided
+        original_dir = Path.cwd()
+        if path != ".":
+            Path(path).mkdir(parents=True, exist_ok=True)
+            os.chdir(path)
+
+        # If name is not provided, use a default name
+        if not name:
+            name = "feature-branch"
+
         # Check if branch already exists
         result = subprocess.run(
-            ["git", "rev-parse", "--verify", branch_name],
+            ["git", "rev-parse", "--verify", name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=False
         )
-        
+
         if result.returncode == 0:
-            return f"BRANCH ALREADY EXISTS: Branch '{branch_name}' already exists"
-        
+            return f"BRANCH ALREADY EXISTS: Branch '{name}' already exists"
+
         # Create the branch
         result = subprocess.run(
-            ["git", "checkout", "-b", branch_name],
+            ["git", "checkout", "-b", name],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=True
         )
-        
-        return f"SUCCESS: Created branch '{branch_name}'"
-        
+
+        # If message is provided, create a commit with the message
+        if message:
+            subprocess.run(
+                ["git", "commit", "--allow-empty", "-m", message],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False
+            )
+
+        return f"SUCCESS: Created branch '{name}'"
+
     except subprocess.CalledProcessError as e:
-        return f"ERROR: Failed to create branch '{branch_name}': {e.stderr.strip()}"
+        return f"ERROR: Failed to create branch '{name}': {e.stderr.strip()}"
     except Exception as e:
-        return f"ERROR: Failed to create branch '{branch_name}': {str(e)}"
+        return f"ERROR: Failed to create branch '{name}': {str(e)}"
+    finally:
+        # Restore original directory
+        os.chdir(original_dir)
 
 
 def get_accountability_tools():
@@ -333,7 +371,18 @@ def get_accountability_tools():
             description="Verify that the git working directory is clean (no uncommitted changes)",
             parameters={
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to git repository (default: repo root)",
+                        "default": "."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Verification message to include in response"
+                    }
+                },
+                "required": ["path"]
             },
             function=verify_git_clean
         ),
@@ -343,12 +392,21 @@ def get_accountability_tools():
             parameters={
                 "type": "object",
                 "properties": {
-                    "branch_name": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to git repository (default: repo root)",
+                        "default": "."
+                    },
+                    "name": {
                         "type": "string",
                         "description": "Name of the branch to create"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Message to include in commit"
                     }
                 },
-                "required": ["branch_name"]
+                "required": ["path", "name"]
             },
             function=create_branch
         ),

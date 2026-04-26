@@ -201,6 +201,54 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "verify_git_clean",
+            "description": "Verify that the git working directory is clean (no uncommitted changes).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to git repository (default: repo root)",
+                        "default": "."
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Verification message to include in response"
+                    }
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_branch",
+            "description": "Create a new git branch with the given name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to git repository (default: repo root)",
+                        "default": "."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the branch to create"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Message to include in commit"
+                    }
+                },
+                "required": ["path", "name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish",
             "description": "Signal that implementation is complete. Call only after committing all changes.",
             "parameters": {
@@ -455,6 +503,17 @@ class OllamaCoder:
                     args.get("path", "."),
                     args.get("file_pattern", "*.py"),
                 )
+            elif name == "verify_git_clean":
+                return verify_git_clean(
+                    path=args.get("path", "."),
+                    message=args.get("message")
+                )
+            elif name == "create_branch":
+                return create_branch(
+                    path=args.get("path", "."),
+                    name=args.get("name", args.get("branch_name", "")),
+                    message=args.get("message")
+                )
             elif name == "finish":
                 return f"Finished: {args.get('summary', '')}"
             else:
@@ -476,15 +535,15 @@ class OllamaCoder:
             EnvironmentReadyError: If either check fails.
         """
         # Check 1: Verify git is clean
-        git_clean_result = verify_git_clean()
+        git_clean_result = verify_git_clean(path=str(self.project_root))
         if "VERIFIED" not in git_clean_result:
             # If git is not clean, raise EnvironmentReadyError
             raise EnvironmentReadyError("Git repository is not clean")
-        
+
         # Check 2: Try to create a branch for this work
         # We'll use a branch name based on the idea ID
         branch_name = f"TK-{self.idea_id}"
-        branch_result = create_branch(branch_name)
+        branch_result = create_branch(path=str(self.project_root), name=branch_name)
         if "ERROR" in branch_result:
             # If branch creation fails, raise EnvironmentReadyError
             raise EnvironmentReadyError("Failed to create branch")
