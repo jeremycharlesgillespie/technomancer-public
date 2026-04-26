@@ -240,6 +240,7 @@ class OllamaCoder:
         # model B at a remote Ollama (e.g. http://192.168.1.150:11434).
         self.host = host or OLLAMA_HOST
         self._log = state.log if hasattr(state, "log") else lambda m: None
+        self._abort = False  # Flag to indicate if we should abort further execution
 
     # ------------------------------------------------------------------
     # Cancellation
@@ -259,6 +260,10 @@ class OllamaCoder:
             self._log(f"[OllamaCoder] Starting with model={self.model}, "
                       f"host={self.host}, "
                       f"max_rounds={self.max_rounds}, max_turns={self.max_turns}")
+            # Check if we should abort from the start
+            if self._abort:
+                self._log("[OllamaCoder] Aborted due to fatal error — stopping")
+                return
             self._run_rounds()
         finally:
             release_coder_priority()
@@ -275,6 +280,9 @@ class OllamaCoder:
         for round_num in range(self.max_rounds):
             if self._is_cancelled():
                 self._log("[OllamaCoder] Cancelled — stopping")
+                return
+            if self._abort:
+                self._log("[OllamaCoder] Aborted due to fatal error — stopping")
                 return
             self._log(f"[OllamaCoder] --- Round {round_num} ---")
 
@@ -294,7 +302,19 @@ class OllamaCoder:
                 self._log(f"[OllamaCoder] Round {round_num}: inner loop exhausted max turns")
 
             # Checkpoint commit tag
-            self._tag_round_commits(round_num)
+            try:
+                self._tag_round_commits(round_num)
+            except Exception as exc:
+                # Check if this is a Git-related exception that should stop processing
+                from agent.accountability import GitNotInstalledError, GitDirtyError
+                if isinstance(exc, (GitNotInstalledError, GitDirtyError)):
+                    self._log(f"[OllamaCoder] Aborted due to git exception: {exc}")
+                    # Set abort flag to prevent further execution
+                    self._abort = True
+                    # Re-raise to stop the execution loop
+                    raise
+                # For other exceptions, continue with normal processing
+                self._log(f"[OllamaCoder] Non-Git exception in tag_round_commits: {exc}")
 
             # Run tests
             self._log(f"[OllamaCoder] Round {round_num}: running tests...")
@@ -334,6 +354,9 @@ class OllamaCoder:
             if self._is_cancelled():
                 self._log("[OllamaCoder] Cancelled — stopping inner loop")
                 return False
+            if self._abort:
+                self._log("[OllamaCoder] Aborted due to fatal error — stopping inner loop")
+                return False
             messages = self._trim_context(messages)
             response = self._chat_with_tools(system_prompt, messages)
             if self._is_cancelled():
@@ -341,6 +364,7 @@ class OllamaCoder:
                 return False
             if response is None:
                 self._log(f"[OllamaCoder] Round {round_num} turn {turn}: Ollama returned None, aborting")
+                self._abort = True
                 return False
 
             # Extract think content and strip
@@ -377,6 +401,11 @@ class OllamaCoder:
                 raw_args = fn.get("arguments", {})
                 args = raw_args if isinstance(raw_args, dict) else _safe_json(raw_args)
 
+                # Check abort flag before executing tool
+                if self._abort:
+                    self._log("[OllamaCoder] Aborted due to fatal error — skipping tool execution")
+                    return False
+                    
                 self._log(f"[OllamaCoder] → {name}({_fmt_args(args)})")
                 result = self._execute_tool(name, args)
                 self._log(f"[OllamaCoder] ← {str(result)[:300]}")
@@ -413,6 +442,10 @@ class OllamaCoder:
     # ------------------------------------------------------------------
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
+        # If we're in abort state, don't execute any more tools
+        if self._abort:
+            return "ERROR: Execution aborted due to fatal error"
+            
         try:
             if name == "read_file":
                 # The model frequently passes ``offset`` and ``length`` even
@@ -448,6 +481,11 @@ class OllamaCoder:
             else:
                 return f"ERROR: unknown tool '{name}'"
         except Exception as exc:
+            # If an exception occurs during tool execution, set abort flag
+            # This ensures no further code generation after fatal exceptions
+            if not self._abort:
+                self._abort = True
+                self._log(f"[OllamaCoder] Aborted due to tool execution error: {exc}")
             return f"ERROR: {exc}"
 
     # Project subdirectories that we recognize as legitimate re-anchor points
@@ -1026,6 +1064,7 @@ class OllamaCoder:
             from agent.accountability import GitNotInstalledError, GitDirtyError
             if isinstance(exc, (GitNotInstalledError, GitDirtyError)):
                 logger.error(f"[OllamaCoder] Aborted due to git exception: {exc}")
+                self._abort = True  # Set abort flag to prevent further execution
                 # Re-raise to stop the execution loop
                 raise
             logger.warning("git status failed or dirty repo detected: %s", exc)
