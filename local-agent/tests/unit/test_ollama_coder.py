@@ -79,6 +79,60 @@ class TestToolExecution:
         result = coder._tool_read_file("nonexistent.py")
         assert "ERROR" in result
 
+    def test_read_file_with_offset_and_length(self, tmp_path: Path) -> None:
+        """When the model passes offset+length, paginate by lines."""
+        f = tmp_path / "many.py"
+        f.write_text(
+            "\n".join(f"line_{i}" for i in range(1, 21)) + "\n",
+            encoding="utf-8",
+        )
+        coder = _make_coder(tmp_path)
+        # Lines 5..7 (1-indexed offset=5, length=3)
+        result = coder._tool_read_file("many.py", offset=5, length=3)
+        assert "line_5" in result
+        assert "line_6" in result
+        assert "line_7" in result
+        assert "line_4" not in result
+        assert "line_8" not in result
+        # Header should reflect the slice
+        assert "lines 5-7" in result
+
+    def test_read_file_offset_as_string(self, tmp_path: Path) -> None:
+        """The model habitually sends offset as a JSON string ('5');
+        the tool must coerce instead of dropping the arg silently."""
+        f = tmp_path / "many.py"
+        f.write_text(
+            "\n".join(f"line_{i}" for i in range(1, 11)) + "\n",
+            encoding="utf-8",
+        )
+        coder = _make_coder(tmp_path)
+        result = coder._tool_read_file("many.py", offset="3", length="2")
+        assert "line_3" in result
+        assert "line_4" in result
+        assert "line_2" not in result
+        assert "line_5" not in result
+
+    def test_read_file_offset_past_eof(self, tmp_path: Path) -> None:
+        """Offset past EOF gets a clear "past end" message instead of
+        silently returning the start of the file."""
+        f = tmp_path / "short.py"
+        f.write_text("a\nb\nc\n", encoding="utf-8")
+        coder = _make_coder(tmp_path)
+        result = coder._tool_read_file("short.py", offset=100)
+        assert "past end" in result
+        assert "3 lines" in result
+
+    def test_read_file_no_offset_unchanged_behavior(self, tmp_path: Path) -> None:
+        """Backward compatibility: no offset/length → whole-file read."""
+        f = tmp_path / "small.py"
+        f.write_text("hello\nworld\n", encoding="utf-8")
+        coder = _make_coder(tmp_path)
+        result = coder._tool_read_file("small.py")
+        assert "hello" in result
+        assert "world" in result
+        # No paginated header when no slicing.
+        assert "lines 1-" not in result
+
     def test_write_file_creates_file(self, tmp_path: Path) -> None:
         coder = _make_coder(tmp_path)
         result = coder._tool_write_file("new.py", "x = 1")

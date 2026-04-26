@@ -50,6 +50,22 @@ BASH_BLOCKLIST = ("safe_update", "push origin", "push --force", "merge", "checko
 READ_FILE_MAX_CHARS = 20_000
 LIST_FILES_MAX = 200
 
+
+def _coerce_int(value: Any) -> int | None:
+    """Coerce a value (often a JSON-string from the model) to int.
+
+    Returns None for None / empty / unparseable.  The model habitually
+    sends ``offset='100'`` even when the schema declares an integer; the
+    Ollama JSON path doesn't always coerce.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 # Error → hint mapping for re-injection
@@ -72,11 +88,24 @@ _TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read the contents of a file. Returns file content or error message.",
+            "description": (
+                "Read the contents of a file. By default returns the whole "
+                "file (truncated if very large). Pass ``offset`` (1-indexed "
+                "line number) and/or ``length`` (number of lines) to page "
+                "through large files."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Absolute file path"}
+                    "path": {"type": "string", "description": "Absolute file path"},
+                    "offset": {
+                        "type": "integer",
+                        "description": "1-indexed starting line (optional)",
+                    },
+                    "length": {
+                        "type": "integer",
+                        "description": "Number of lines to read from offset (optional)",
+                    },
                 },
                 "required": ["path"],
             },
@@ -386,7 +415,16 @@ class OllamaCoder:
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
         try:
             if name == "read_file":
-                return self._tool_read_file(args.get("path", ""))
+                # The model frequently passes ``offset`` and ``length`` even
+                # when the schema doesn't declare them, expecting Read-tool-
+                # like pagination.  Honor those args (line-based) instead of
+                # silently dropping them — pre-fix the model wasted entire
+                # rounds re-reading the same head of a file.
+                return self._tool_read_file(
+                    args.get("path", ""),
+                    offset=args.get("offset"),
+                    length=args.get("length") or args.get("limit"),
+                )
             elif name == "write_file":
                 return self._tool_write_file(args.get("path", ""), args.get("content", ""))
             elif name == "edit_file":
@@ -490,7 +528,20 @@ class OllamaCoder:
         logger.warning("[OllamaCoder] Path %s escapes project_root, rejected", path)
         return project_root_resolved / Path(path).name
 
-    def _tool_read_file(self, path: str) -> str:
+    def _tool_read_file(
+        self,
+        path: str,
+        offset: Any = None,
+        length: Any = None,
+    ) -> str:
+        """Read a file, with optional line-based pagination.
+
+        ``offset`` is a 1-indexed line number (matching the Read tool the
+        model is familiar with from Claude Code).  ``length`` is the number
+        of lines to return.  Both may arrive as strings — coerce safely.
+        When neither is provided, behavior matches the original
+        whole-file-with-truncation read.
+        """
         full = self._resolve_path(path)
         if not full.exists():
             return f"ERROR: file not found: {path}"
@@ -498,6 +549,25 @@ class OllamaCoder:
             content = full.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
             return f"ERROR: {exc}"
+
+        offset_int = _coerce_int(offset)
+        length_int = _coerce_int(length)
+
+        if offset_int is not None or length_int is not None:
+            lines = content.splitlines(keepends=True)
+            start = max((offset_int or 1) - 1, 0)
+            if start >= len(lines):
+                return (
+                    f"(offset {offset_int} past end of file; "
+                    f"file has {len(lines)} lines)"
+                )
+            end = start + length_int if length_int is not None else len(lines)
+            sliced = "".join(lines[start:end])
+            if len(sliced) > READ_FILE_MAX_CHARS:
+                sliced = sliced[:READ_FILE_MAX_CHARS] + f"\n... [truncated at {READ_FILE_MAX_CHARS} chars]"
+            header = f"(lines {start + 1}-{min(end, len(lines))} of {len(lines)})\n"
+            return header + sliced
+
         if len(content) > READ_FILE_MAX_CHARS:
             content = content[:READ_FILE_MAX_CHARS] + f"\n... [truncated at {READ_FILE_MAX_CHARS} chars]"
         return content
