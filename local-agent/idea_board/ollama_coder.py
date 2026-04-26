@@ -201,6 +201,34 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "verify_git_clean",
+            "description": "Verify that the git working directory is clean (no uncommitted changes).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_branch",
+            "description": "Create a new git branch with the given name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Name of the branch to create"
+                    }
+                },
+                "required": ["branch_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "finish",
             "description": "Signal that implementation is complete. Call only after committing all changes.",
             "parameters": {
