@@ -982,7 +982,8 @@ class OllamaCoder:
                 str(self.project_root / f)
                 for f in result.stdout.strip().splitlines() if f
             ]
-        except Exception:
+        except Exception as exc:
+            logger.warning("git status failed or dirty repo detected: %s", exc)
             return []
 
     def _git_diff_stat(self) -> str:
@@ -992,7 +993,8 @@ class OllamaCoder:
                 capture_output=True, text=True, cwd=str(self.project_root),
             )
             return result.stdout.strip() or "(no changes yet)"
-        except Exception:
+        except Exception as exc:
+            logger.warning("git status failed or dirty repo detected: %s", exc)
             return "(could not get diff)"
 
     def _tag_round_commits(self, round_num: int) -> None:
@@ -1021,8 +1023,8 @@ class OllamaCoder:
                      f"{msg} [r{round_num}]"],
                     capture_output=True, cwd=str(self.project_root),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("git status failed or dirty repo detected: %s", exc)
 
 
 # ---------------------------------------------------------------------------

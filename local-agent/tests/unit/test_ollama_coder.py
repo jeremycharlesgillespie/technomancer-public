@@ -631,6 +631,24 @@ class TestHelpers:
         assert len(result) < 200
         assert "..." in result
 
+    def test_get_changed_files_logs_on_git_failure(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify that _get_changed_files logs a warning when git fails."""
+        coder = _make_coder(tmp_path)
+        # Mock subprocess.run to raise an exception
+        with patch("idea_board.ollama_coder.subprocess.run", side_effect=Exception("git not found")):
+            result = coder._get_changed_files()
+        assert result == []
+        assert "git status failed or dirty repo detected" in caplog.text
+
+    def test_git_diff_stat_logs_on_git_failure(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Verify that _git_diff_stat logs a warning when git fails."""
+        coder = _make_coder(tmp_path)
+        # Mock subprocess.run to raise an exception
+        with patch("idea_board.ollama_coder.subprocess.run", side_effect=Exception("git not found")):
+            result = coder._git_diff_stat()
+        assert result == "(could not get diff)"
+        assert "git status failed or dirty repo detected" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # _find_related_tests_for_files
