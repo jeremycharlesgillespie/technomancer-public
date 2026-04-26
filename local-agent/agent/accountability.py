@@ -209,6 +209,46 @@ def verify_git_clean() -> str:
         raise GitNotInstalledError("Git is not installed or not in PATH")
 
 
+def create_branch(branch_name: str) -> str:
+    """
+    Create a new git branch with the given name.
+    
+    Args:
+        branch_name: Name of the branch to create
+        
+    Returns:
+        Verification result with details
+    """
+    try:
+        # Check if branch already exists
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", branch_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode == 0:
+            return f"BRANCH ALREADY EXISTS: Branch '{branch_name}' already exists"
+        
+        # Create the branch
+        result = subprocess.run(
+            ["git", "checkout", "-b", branch_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True
+        )
+        
+        return f"SUCCESS: Created branch '{branch_name}'"
+        
+    except subprocess.CalledProcessError as e:
+        return f"ERROR: Failed to create branch '{branch_name}': {e.stderr.strip()}"
+    except Exception as e:
+        return f"ERROR: Failed to create branch '{branch_name}': {str(e)}"
+
+
 def get_accountability_tools():
     """
     Get all accountability verification tools.
@@ -296,6 +336,21 @@ def get_accountability_tools():
                 "properties": {}
             },
             function=verify_git_clean
+        ),
+        create_tool(
+            name="create_branch",
+            description="Create a new git branch with the given name",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "branch_name": {
+                        "type": "string",
+                        "description": "Name of the branch to create"
+                    }
+                },
+                "required": ["branch_name"]
+            },
+            function=create_branch
         ),
     ]
 
