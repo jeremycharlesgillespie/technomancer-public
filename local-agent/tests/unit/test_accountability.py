@@ -9,6 +9,7 @@ import pytest
 from agent.accountability import (
     GitDirtyError,
     GitNotInstalledError,
+    _run_git,
     get_accountability_tools,
     verify_content_contains,
     verify_file_exists,
@@ -346,6 +347,136 @@ class TestVerifyGitClean:
             # Test that GitDirtyError is raised
             with pytest.raises(GitDirtyError):
                 verify_git_clean()
+
+
+class TestRunGit:
+    """Tests for _run_git helper function."""
+
+    def test_run_git_clean_status(self, patched_accountability):
+        """_run_git returns clean status output."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            mock_run.return_value = mock_result
+
+            result = _run_git(["status", "--porcelain"])
+
+            assert result == ""
+            mock_run.assert_called_once_with(
+                ["git", "status", "--porcelain"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=10
+            )
+
+    def test_run_git_dirty_status(self, patched_accountability):
+        """_run_git returns dirty status output."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.stdout = " M file1.py\n D file2.md"
+            mock_result.stderr = ""
+            mock_run.return_value = mock_result
+
+            result = _run_git(["status", "--porcelain"])
+
+            assert result == " M file1.py\n D file2.md"
+            mock_run.assert_called_once_with(
+                ["git", "status", "--porcelain"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=10
+            )
+
+    def test_run_git_timeout(self, patched_accountability):
+        """_run_git raises subprocess.TimeoutExpired on timeout."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as patch_run:
+            # Simulate timeout
+            patch_run.side_effect = subprocess.TimeoutExpired(
+                ["git", "status", "--porcelain"],
+                timeout=10
+            )
+
+            with pytest.raises(subprocess.TimeoutExpired):
+                _run_git(["status", "--porcelain"])
+
+    def test_run_git_called_process_error(self, patched_accountability):
+        """_run_git raises subprocess.CalledProcessError on non-zero exit."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as patch_run:
+            # Simulate CalledProcessError
+            err = subprocess.CalledProcessError(
+                returncode=1,
+                cmd=["git", "status", "--porcelain"],
+                output="",
+                stderr="error: invalid option"
+            )
+            patch_run.side_effect = err
+
+            with pytest.raises(subprocess.CalledProcessError) as exc_info:
+                _run_git(["status", "--porcelain"])
+
+            assert exc_info.value.returncode == 1
+            assert "invalid option" in exc_info.value.stderr
+
+    def test_run_git_default_timeout(self, patched_accountability):
+        """_run_git uses default timeout of 10 seconds."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            mock_run.return_value = mock_result
+
+            _run_git(["status", "--porcelain"])
+
+            mock_run.assert_called_once_with(
+                ["git", "status", "--porcelain"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=10
+            )
+
+    def test_run_git_custom_timeout(self, patched_accountability):
+        """_run_git accepts custom timeout parameter."""
+        import subprocess
+        from unittest.mock import patch
+
+        with patch('subprocess.run') as mock_run:
+            mock_result = MagicMock()
+            mock_result.stdout = ""
+            mock_result.stderr = ""
+            mock_run.return_value = mock_result
+
+            _run_git(["status", "--porcelain"], timeout=5)
+
+            mock_run.assert_called_once_with(
+                ["git", "status", "--porcelain"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+                timeout=5
+            )
 
 
 class TestGetAccountabilityTools:

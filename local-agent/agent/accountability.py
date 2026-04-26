@@ -146,6 +146,38 @@ def verify_memory_saved(category: str) -> str:
         return f"NOT FOUND: Memory not saved in category '{category}'"
 
 
+def _run_git(args: list[str], timeout: int = 10) -> str:
+    """
+    Execute a git command and return its output.
+    
+    Args:
+        args: List of git command arguments
+        timeout: Timeout in seconds (default: 10)
+        
+    Returns:
+        Output string from the git command
+        
+    Raises:
+        subprocess.TimeoutExpired: If command takes longer than timeout
+        subprocess.CalledProcessError: If command fails with non-zero exit code
+    """
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=timeout
+        )
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise  # Re-raise timeout errors
+    except subprocess.CalledProcessError as e:
+        # Re-raise CalledProcessError for better error handling
+        raise e
+
+
 def verify_git_clean() -> str:
     """
     Verify that the git working directory is clean (no uncommitted changes).
@@ -184,21 +216,18 @@ def verify_git_clean() -> str:
         )
         
         # If we get here, git is installed and we're in a git repository
-        # Now check if working directory is clean
-        status_result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
-        )
-        
-        if status_result.stdout.strip():
-            # Working directory has uncommitted changes - raise GitDirtyError
-            raise GitDirtyError("Git working directory has uncommitted changes")
-        else:
-            # Working directory is clean
-            return "VERIFIED: Git working directory is clean"
+        # Now check if working directory is clean using our new helper
+        try:
+            status_output = _run_git(["status", "--porcelain"])
+            if status_output.strip():
+                # Working directory has uncommitted changes - raise GitDirtyError
+                raise GitDirtyError("Git working directory has uncommitted changes")
+            else:
+                # Working directory is clean
+                return "VERIFIED: Git working directory is clean"
+        except subprocess.CalledProcessError:
+            # If git status fails, we can't determine if it's clean
+            return "ERROR: Failed to check git status"
             
     except subprocess.CalledProcessError as e:
         # Git command failed, likely because we're not in a git repository
@@ -301,3 +330,35 @@ def get_accountability_tools():
             function=verify_git_clean
         ),
     ]
+
+
+def _run_git(args: list[str], timeout: int = 10) -> str:
+    """
+    Execute a git command and return its output.
+    
+    Args:
+        args: List of git command arguments
+        timeout: Timeout in seconds (default: 10)
+        
+    Returns:
+        Output string from the git command
+        
+    Raises:
+        subprocess.TimeoutExpired: If command takes longer than timeout
+        subprocess.CalledProcessError: If command fails with non-zero exit code
+    """
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=timeout
+        )
+        return result.stdout
+    except subprocess.TimeoutExpired:
+        raise  # Re-raise timeout errors
+    except subprocess.CalledProcessError as e:
+        # Re-raise CalledProcessError for better error handling
+        raise e
