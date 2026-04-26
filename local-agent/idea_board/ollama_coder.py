@@ -341,6 +341,8 @@ class OllamaCoder:
 
             if test_result["passed"]:
                 self._log(f"[OllamaCoder] Round {round_num}: tests PASSED ✓")
+                # Create a commit if tests pass
+                self._create_commit_if_needed(round_num)
                 return
 
             self._log(
@@ -1096,6 +1098,32 @@ class OllamaCoder:
                 # Re-raise to stop the execution loop
                 raise
             logger.warning("git status failed or dirty repo detected: %s", exc)
+
+    def _create_commit_if_needed(self, round_num: int) -> None:
+        """Create a commit if there are changes and tests pass."""
+        try:
+            # Check if there are any changes
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "main...HEAD"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            changed_files = result.stdout.strip().splitlines()
+            
+            # Only create commit if there are actual changes
+            if changed_files and any(changed_files):
+                # There are changes, create a commit
+                commit_msg = f"TK-{self.idea_id}: implemented story (round {round_num})"
+                subprocess.run(
+                    ["git", "add", "."],
+                    capture_output=True, cwd=str(self.project_root),
+                )
+                subprocess.run(
+                    ["git", "commit", "-m", commit_msg],
+                    capture_output=True, cwd=str(self.project_root),
+                )
+                self._log(f"[OllamaCoder] Created commit for round {round_num}")
+        except Exception as exc:
+            logger.warning("Failed to create commit: %s", exc)
 
 
 # ---------------------------------------------------------------------------

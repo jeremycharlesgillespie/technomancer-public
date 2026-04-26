@@ -332,6 +332,7 @@ class TestOllamaCoderRun:
         self._mock_pytest_pass(coder)
         coder._get_changed_files = lambda: []  # type: ignore[method-assign]
         coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+        coder._create_commit_if_needed = lambda r: None  # type: ignore[method-assign]
 
         with patch("agent.ollama_client.acquire_coder_priority"), \
              patch("agent.ollama_client.release_coder_priority"):
@@ -354,6 +355,7 @@ class TestOllamaCoderRun:
         coder._run_pytest = mock_pytest  # type: ignore[method-assign]
         coder._get_changed_files = lambda: []  # type: ignore[method-assign]
         coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+        coder._create_commit_if_needed = lambda r: None  # type: ignore[method-assign]
 
         with patch("agent.ollama_client.acquire_coder_priority"), \
              patch("agent.ollama_client.release_coder_priority"):
@@ -369,6 +371,7 @@ class TestOllamaCoderRun:
         self._mock_pytest_fail(coder)
         coder._get_changed_files = lambda: []  # type: ignore[method-assign]
         coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+        coder._create_commit_if_needed = lambda r: None  # type: ignore[method-assign]
 
         with patch("agent.ollama_client.acquire_coder_priority"), \
              patch("agent.ollama_client.release_coder_priority"):
@@ -381,6 +384,7 @@ class TestOllamaCoderRun:
         self._mock_pytest_pass(coder)
         coder._get_changed_files = lambda: []  # type: ignore[method-assign]
         coder._tag_round_commits = lambda r: None  # type: ignore[method-assign]
+        coder._create_commit_if_needed = lambda r: None  # type: ignore[method-assign]
 
         with patch("agent.ollama_client.acquire_coder_priority"), \
              patch("agent.ollama_client.release_coder_priority"):
