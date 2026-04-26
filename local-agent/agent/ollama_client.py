@@ -77,6 +77,16 @@ def get_inflight_count() -> int:
         return _inflight_count
 
 
+def is_coder_active() -> bool:
+    """Return True iff OllamaCoder currently owns the GPU.
+
+    Callers that should defer (splitter, dedup classifier, idea generator)
+    can use this to skip a tick instead of queueing behind a 30-90 minute
+    coder run. Cheap — just an Event.is_set() check.
+    """
+    return _coder_active.is_set()
+
+
 def _notify_monitor_degraded(reason: str) -> None:
     """Push a degraded signal to the health monitor without importing at module level."""
     try:

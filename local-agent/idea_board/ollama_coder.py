@@ -318,6 +318,20 @@ class OllamaCoder:
     def _is_cancelled(self) -> bool:
         return bool(getattr(self.state, "cancelled", False))
 
+    def _is_graceful_stop_requested(self) -> bool:
+        """Check the AIM graceful-stop flag.
+
+        Imported lazily so tests that don't have the aim package on the path
+        (or that want to mock the file system) don't pay an import cost.
+        Returns False on any error — better to keep working than to bail
+        on a transient filesystem hiccup.
+        """
+        try:
+            from aim.graceful_stop import is_stop_requested
+            return is_stop_requested()
+        except Exception:
+            return False
+
     # ------------------------------------------------------------------
     # Public entry point
     # ------------------------------------------------------------------
@@ -351,6 +365,15 @@ class OllamaCoder:
         for round_num in range(self.max_rounds):
             if self._is_cancelled():
                 self._log("[OllamaCoder] Cancelled — stopping")
+                return
+            # Graceful stop check between rounds — bail out at a clean
+            # boundary before kicking off the next inner loop. Story
+            # stays in "executing" so the worker's post-handler resets it.
+            if self._is_graceful_stop_requested():
+                self._log(
+                    f"[OllamaCoder] Graceful stop detected before round {round_num} — "
+                    f"breaking out of round loop"
+                )
                 return
             self._log(f"[OllamaCoder] --- Round {round_num} ---")
 
