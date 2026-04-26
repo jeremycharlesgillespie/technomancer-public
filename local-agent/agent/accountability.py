@@ -194,8 +194,8 @@ def verify_git_clean() -> str:
         )
         
         if status_result.stdout.strip():
-            # Working directory has uncommitted changes
-            return f"DIRTY: Git working directory has uncommitted changes:\n{status_result.stdout.strip()}"
+            # Working directory has uncommitted changes - raise GitDirtyError
+            raise GitDirtyError("Git working directory has uncommitted changes")
         else:
             # Working directory is clean
             return "VERIFIED: Git working directory is clean"
