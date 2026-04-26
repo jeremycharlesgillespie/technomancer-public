@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 import pytest
 
 from agent import aiv_schema, ab_schema
-from idea_board.web import app
+from idea_board.web import (
+    _aiv_fmt_duration_minutes,
+    app,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -194,3 +197,131 @@ def test_ab_detail_renders_branch_and_commit(client) -> None:
     assert "br-b" in body
     assert "aaaa1234" in body
     assert "bbbb5678" in body
+
+
+# ---------------------------------------------------------------------------
+# Duration formatting
+# ---------------------------------------------------------------------------
+
+def test_fmt_duration_returns_minutes_for_valid_pair() -> None:
+    started = "2026-04-26T03:00:00+00:00"
+    ended = "2026-04-26T03:23:30+00:00"
+    assert _aiv_fmt_duration_minutes(started, ended) == "24 min"
+
+
+def test_fmt_duration_empty_when_ended_missing() -> None:
+    assert _aiv_fmt_duration_minutes("2026-04-26T03:00:00+00:00", None) == ""
+    assert _aiv_fmt_duration_minutes("2026-04-26T03:00:00+00:00", "") == ""
+
+
+def test_fmt_duration_empty_on_unparseable() -> None:
+    assert _aiv_fmt_duration_minutes("nope", "also-nope") == ""
+
+
+def test_fmt_duration_empty_when_negative() -> None:
+    started = "2026-04-26T03:30:00+00:00"
+    ended = "2026-04-26T03:00:00+00:00"
+    assert _aiv_fmt_duration_minutes(started, ended) == ""
+
+
+def test_ab_paired_rows_show_duration(client) -> None:
+    """A pair where the runs have non-zero duration shows ``N min`` in the row."""
+    _insert_quality_row("TK-8")
+    ab_schema.init_ab_db()
+    conn = aiv_schema._get_conn()
+    started_a = "2026-04-26T03:00:00+00:00"
+    ended_a = "2026-04-26T03:45:00+00:00"
+    started_b = "2026-04-26T03:46:00+00:00"
+    ended_b = "2026-04-26T04:09:00+00:00"
+    conn.execute(
+        """
+        INSERT INTO ab_test_runs
+            (run_id, story_key, model, model_label, branch_name, commit_sha,
+             started_at, ended_at, status, overall_score,
+             meets_requirements, code_quality, test_quality, security_safety,
+             scope_discipline, edge_cases, product_impact)
+        VALUES ('ra8', 'TK-8', 'qwen3-coder:30b', 'qwen3-coder',
+                'br-a', 'aa', ?, ?, 'success', 8.0, 9, 8, 7, 10, 9, 6, 8)
+        """,
+        (started_a, ended_a),
+    )
+    conn.execute(
+        """
+        INSERT INTO ab_test_runs
+            (run_id, story_key, model, model_label, branch_name, commit_sha,
+             started_at, ended_at, status, overall_score,
+             meets_requirements, code_quality, test_quality, security_safety,
+             scope_discipline, edge_cases, product_impact)
+        VALUES ('rb8', 'TK-8', 'glm-4.7-flash:q4_K_M', 'glm-4.7-flash',
+                'br-b', 'bb', ?, ?, 'success', 7.5, 8, 7, 6, 10, 8, 5, 7)
+        """,
+        (started_b, ended_b),
+    )
+    conn.execute(
+        """
+        INSERT INTO ab_test_pairs
+            (story_key, model_a_run_id, model_b_run_id,
+             comparison_winner, comparison_reasoning, delta_axes_json,
+             merged_run_id, comparison_error, created_at)
+        VALUES ('TK-8', 'ra8', 'rb8', 'model_a', 'better', '{}',
+                'ra8', '', ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    conn.commit()
+
+    body = client.get("/quality").get_data(as_text=True)
+    assert "45 min" in body
+    assert "23 min" in body
+    assert "ab-duration" in body
+
+
+def test_ab_detail_renders_duration_per_run(client) -> None:
+    _insert_quality_row("TK-9")
+    ab_schema.init_ab_db()
+    conn = aiv_schema._get_conn()
+    started_a = "2026-04-26T03:00:00+00:00"
+    ended_a = "2026-04-26T03:30:00+00:00"
+    started_b = "2026-04-26T03:31:00+00:00"
+    ended_b = "2026-04-26T03:46:00+00:00"
+    conn.execute(
+        """
+        INSERT INTO ab_test_runs
+            (run_id, story_key, model, model_label, branch_name, commit_sha,
+             started_at, ended_at, status, overall_score,
+             meets_requirements, code_quality, test_quality, security_safety,
+             scope_discipline, edge_cases, product_impact)
+        VALUES ('ra9', 'TK-9', 'qwen3-coder:30b', 'qwen3-coder',
+                'br-a', 'aa', ?, ?, 'success', 8.0, 9, 8, 7, 10, 9, 6, 8)
+        """,
+        (started_a, ended_a),
+    )
+    conn.execute(
+        """
+        INSERT INTO ab_test_runs
+            (run_id, story_key, model, model_label, branch_name, commit_sha,
+             started_at, ended_at, status, overall_score,
+             meets_requirements, code_quality, test_quality, security_safety,
+             scope_discipline, edge_cases, product_impact)
+        VALUES ('rb9', 'TK-9', 'glm-4.7-flash:q4_K_M', 'glm-4.7-flash',
+                'br-b', 'bb', ?, ?, 'success', 7.5, 8, 7, 6, 10, 8, 5, 7)
+        """,
+        (started_b, ended_b),
+    )
+    conn.execute(
+        """
+        INSERT INTO ab_test_pairs
+            (story_key, model_a_run_id, model_b_run_id,
+             comparison_winner, comparison_reasoning, delta_axes_json,
+             merged_run_id, comparison_error, created_at)
+        VALUES ('TK-9', 'ra9', 'rb9', 'model_a', 'good', '{}',
+                'ra9', '', ?)
+        """,
+        (datetime.now(timezone.utc).isoformat(),),
+    )
+    conn.commit()
+
+    body = client.get("/quality/ab/TK-9").get_data(as_text=True)
+    assert "30 min" in body
+    assert "15 min" in body
+    assert "Duration" in body

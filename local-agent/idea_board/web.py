@@ -6042,6 +6042,28 @@ def _aiv_fmt_validated_at(raw: Any) -> str:
         return text[:16]
 
 
+def _aiv_fmt_duration_minutes(started_at: Any, ended_at: Any) -> str:
+    """Return ``"23 min"`` for a started/ended ISO-8601 pair, or ``""``.
+
+    Used by the /quality A/B paired-row rendering so the user can see at
+    a glance how long each model took on the same story. Returns the
+    empty string if either value is missing or unparseable, or if the run
+    is still in flight (``ended_at`` not yet written).
+    """
+    if not started_at or not ended_at:
+        return ""
+    try:
+        start = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(ended_at).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    delta_seconds = (end - start).total_seconds()
+    if delta_seconds < 0:
+        return ""
+    minutes = int(round(delta_seconds / 60))
+    return f"{minutes} min"
+
+
 def _aiv_render_quality_row(row: dict[str, Any]) -> str:
     """Render the standard single-row form used by non-A/B stories."""
     flagged = bool(row["red_flags"])
@@ -6100,6 +6122,16 @@ def _aiv_render_ab_run_row(
         prefix = ""
     overall = run.get("overall_score")
     started = run.get("started_at") or ""
+    ended = run.get("ended_at") or ""
+    started_text = html.escape(_aiv_fmt_validated_at(started))
+    duration_text = _aiv_fmt_duration_minutes(started, ended)
+    if duration_text:
+        when_cell = (
+            f"{started_text}<br/>"
+            f"<span class='ab-duration'>{html.escape(duration_text)}</span>"
+        )
+    else:
+        when_cell = started_text
     row_class = "ab-row ab-winner" if is_winner else "ab-row"
     return (
         f"<tr class='{row_class}'>"
@@ -6108,7 +6140,7 @@ def _aiv_render_ab_run_row(
         f"<td class='overall'>{label_html}<br/>"
         f"{_aiv_fmt_overall(overall)}</td>"
         f"<td class='flags'>{html.escape(str(run.get('status') or ''))}</td>"
-        f"<td class='when'>{html.escape(_aiv_fmt_validated_at(started))}</td>"
+        f"<td class='when'>{when_cell}</td>"
         f"</tr>"
     )
 
@@ -6363,6 +6395,8 @@ tbody.ab-pair tr.ab-footer td.ab-footer-cell {{ background: #2a2a2a;
 .ab-label {{ display: inline-block; font-size: 0.72rem;
              color: var(--accent); font-weight: 600;
              font-family: monospace; }}
+.ab-duration {{ display: inline-block; font-size: 0.72rem;
+                color: var(--muted); font-variant-numeric: tabular-nums; }}
 .ab-winner-label {{ color: var(--green); font-weight: 600; }}
 .ab-teaser {{ color: var(--text); }}
 .ab-detail-link {{ color: var(--accent); margin-left: 8px; }}
@@ -6999,6 +7033,9 @@ def _render_ab_detail(story_key: str, ab: dict[str, Any]) -> str:
         branch = str(run.get("branch_name") or "")
         commit = str(run.get("commit_sha") or "")
         overall = run.get("overall_score")
+        duration = _aiv_fmt_duration_minutes(
+            run.get("started_at"), run.get("ended_at")
+        )
         score_rows = "".join(
             f"<tr><td>{html.escape(axis)}</td>"
             f"<td class='num'>{_aiv_fmt_score(run.get(axis))}</td></tr>"
@@ -7019,7 +7056,8 @@ def _render_ab_detail(story_key: str, ab: dict[str, Any]) -> str:
             f"<h3>{html.escape(side)} &mdash; {html.escape(label)}</h3>"
             f"<p class='muted'>{html.escape(model)}</p>"
             f"<p>Status: <strong>{html.escape(status)}</strong> &middot; "
-            f"Overall: <strong>{_aiv_fmt_overall(overall)}</strong></p>"
+            f"Overall: <strong>{_aiv_fmt_overall(overall)}</strong> &middot; "
+            f"Duration: <strong>{html.escape(duration) or '&mdash;'}</strong></p>"
             f"<p class='muted'>{links_html}</p>"
             f"<table class='axis-table'>"
             f"<thead><tr><th>Axis</th><th class='num'>Score</th></tr></thead>"
