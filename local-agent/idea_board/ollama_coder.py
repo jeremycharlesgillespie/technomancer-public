@@ -1021,8 +1021,8 @@ class OllamaCoder:
                      f"{msg} [r{round_num}]"],
                     capture_output=True, cwd=str(self.project_root),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("git status failed or dirty repo detected: %s", exc)
 
 
 # ---------------------------------------------------------------------------
