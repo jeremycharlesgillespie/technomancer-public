@@ -511,7 +511,17 @@ class OllamaCoder:
         for anchor in self._REANCHOR_SEGMENTS:
             if anchor in parts:
                 idx = parts.index(anchor)
-                tail = Path(*parts[idx:])
+                tail_parts = parts[idx:]
+                # Avoid the double-prefix bug: if project_root already ends in
+                # the anchor segment (e.g. project_root=.../local-agent and
+                # anchor='local-agent'), strip it from tail so we don't produce
+                # .../local-agent/local-agent/...
+                if (
+                    project_root_resolved.name == anchor
+                    and len(tail_parts) > 1
+                ):
+                    tail_parts = tail_parts[1:]
+                tail = Path(*tail_parts) if tail_parts else Path(".")
                 repaired = (project_root_resolved / tail).resolve()
                 # Defense-in-depth: ensure the repaired path is still inside project_root.
                 try:

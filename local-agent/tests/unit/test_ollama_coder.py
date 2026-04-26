@@ -866,6 +866,37 @@ class TestDoublePrefixRepair:
         expected = (tmp_path / "local-agent").resolve()
         assert resolved == expected
 
+    def test_reanchor_absolute_path_strips_double_local_agent(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: in production the model emitted absolute paths like
+        ``/Users/gman/code/technomancer-ai030/local-agent/tests/unit/x.py``
+        (truncated worktree prefix). The re-anchor logic found ``local-agent``
+        as the anchor, took the tail ``local-agent/tests/unit/x.py`` and
+        joined it under project_root which itself ends in ``local-agent``,
+        producing ``.../local-agent/local-agent/tests/unit/x.py``.
+        Instead it must strip the leading anchor segment from the tail
+        when project_root.name already equals the anchor.
+        """
+        coder = self._make_coder_in_local_agent(tmp_path)
+        truncated_abs = "/Users/gman/code/technomancer-ai030/local-agent/tests/unit/x.py"
+        resolved = coder._resolve_path(truncated_abs)
+        expected = (tmp_path / "local-agent" / "tests" / "unit" / "x.py").resolve()
+        assert resolved == expected, f"expected {expected}, got {resolved}"
+        # Negative assertion: the doubled phantom path must NOT appear.
+        assert "local-agent/local-agent" not in str(resolved).replace("\\", "/")
+
+    def test_reanchor_absolute_path_with_correct_worktree_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """Sanity: when the absolute path is already inside project_root,
+        no re-anchoring runs at all even though the path contains
+        ``local-agent``."""
+        coder = self._make_coder_in_local_agent(tmp_path)
+        target = tmp_path / "local-agent" / "agent" / "ok.py"
+        resolved = coder._resolve_path(str(target))
+        assert resolved == target.resolve()
+
     def test_write_file_refuses_nested_phantom_path(self, tmp_path: Path) -> None:
         """Defense-in-depth: even if path resolution were ever bypassed,
         ``write_file`` must refuse to write into the phantom nested tree."""
