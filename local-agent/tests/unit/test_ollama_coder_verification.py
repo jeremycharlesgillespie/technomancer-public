@@ -48,42 +48,42 @@ class TestOllamaCoderVerification:
     """Test the test verification and commit logic in OllamaCoder."""
 
     def test_commit_changes_called_when_tests_pass(self, tmp_path):
-        """Test that commit changes is called when tests pass."""
+        """Test that commit changes is called when tests pass.
+
+        Note: the gate now uses ``_files_to_stage`` (working-tree state)
+        rather than ``_get_changed_files`` (main...HEAD), so the mock
+        target moved. See test_ollama_coder_split.py for the regression
+        that pins this distinction.
+        """
         coder = _make_coder(tmp_path)
-        
-        # Mock the necessary methods
+
         with patch.object(coder, '_run_pytest', return_value={"passed": True, "failing": [], "output": "All tests passed"}), \
+             patch.object(coder, '_files_to_stage', return_value=["test_file.py"]), \
              patch.object(coder, '_get_changed_files', return_value=["test_file.py"]), \
+             patch.object(coder, '_git_branch_files_or_empty', return_value=[]), \
+             patch.object(coder, '_tag_round_commits'), \
+             patch.object(coder, '_count_branch_commits', return_value=0), \
+             patch.object(coder, '_run_inner_loop', return_value=True), \
              patch.object(coder, '_commit_changes') as mock_commit:
-            
-            # Mock git commands to avoid actual git operations
-            with patch('subprocess.run') as mock_subprocess:
-                mock_subprocess.return_value = MagicMock(returncode=0)
-                
-                # Run the rounds logic
-                coder._run_rounds()
-                
-                # Verify that commit_changes was called
-                mock_commit.assert_called_once()
+            coder._run_rounds()
+
+            mock_commit.assert_called_once()
 
     def test_commit_changes_not_called_when_tests_fail(self, tmp_path):
         """Test that commit changes is NOT called when tests fail."""
         coder = _make_coder(tmp_path)
-        
-        # Mock the necessary methods
+
         with patch.object(coder, '_run_pytest', return_value={"passed": False, "failing": ["test_foo.py"], "output": "Some tests failed"}), \
+             patch.object(coder, '_files_to_stage', return_value=["test_file.py"]), \
              patch.object(coder, '_get_changed_files', return_value=["test_file.py"]), \
+             patch.object(coder, '_git_branch_files_or_empty', return_value=[]), \
+             patch.object(coder, '_tag_round_commits'), \
+             patch.object(coder, '_count_branch_commits', return_value=0), \
+             patch.object(coder, '_run_inner_loop', return_value=True), \
              patch.object(coder, '_commit_changes') as mock_commit:
-            
-            # Mock git commands to avoid actual git operations
-            with patch('subprocess.run') as mock_subprocess:
-                mock_subprocess.return_value = MagicMock(returncode=0)
-                
-                # Run the rounds logic
-                coder._run_rounds()
-                
-                # Verify that commit_changes was NOT called
-                mock_commit.assert_not_called()
+            coder._run_rounds()
+
+            mock_commit.assert_not_called()
 
     def test_commit_changes_method(self, tmp_path):
         """Test the _commit_changes method directly."""

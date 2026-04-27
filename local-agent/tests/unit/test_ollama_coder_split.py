@@ -169,6 +169,41 @@ class TestOuterLoopOwnsTestAndCommit:
             "outer loop must commit exactly once for a passing round"
         )
 
+    def test_outer_loop_commits_on_round_zero_with_no_prior_commits(self, tmp_path):
+        """Regression for the 'silent fallthrough to auto_commit_uncommitted' bug.
+
+        On round 0 nothing is committed on the branch yet, so
+        ``_get_changed_files`` (which checks ``main...HEAD``) returns [].
+        But the model HAS edited files — they're in the working tree as
+        modified/untracked. The gate must use ``_files_to_stage`` (the
+        working-tree query), not ``_get_changed_files``, otherwise
+        ``_commit_changes`` is silently skipped and the post-coder.run()
+        safety net commits with the old message format.
+
+        Live evidence of the bug: TK-1050 run on 2026-04-26 produced commit
+        ``[TK-1050] Add exception handling test for missing key`` (old format)
+        instead of ``[TK-1050] <title> <model> r0: edit <file>`` (new format).
+        """
+        coder = _make_coder(project_root=tmp_path)
+
+        with patch.object(coder, "_run_inner_loop", return_value=True), \
+             patch.object(coder, "_run_pytest", return_value={
+                 "passed": True, "failing": [], "output": "",
+             }), \
+             patch.object(coder, "_commit_changes") as mock_commit, \
+             patch.object(coder, "_get_changed_files", return_value=[]), \
+             patch.object(coder, "_files_to_stage",
+                          return_value=[str(tmp_path / "agent/edited.py")]), \
+             patch.object(coder, "_git_branch_files_or_empty", return_value=[]), \
+             patch.object(coder, "_tag_round_commits"), \
+             patch.object(coder, "_count_branch_commits", return_value=0):
+            coder._run_rounds()
+
+        assert mock_commit.call_count == 1, (
+            "outer loop MUST commit on round 0 when the working tree has edits, "
+            "even though main...HEAD is empty (no commits yet on the branch)"
+        )
+
     def test_outer_loop_does_not_commit_on_fail(self, tmp_path):
         coder = _make_coder(project_root=tmp_path)
 

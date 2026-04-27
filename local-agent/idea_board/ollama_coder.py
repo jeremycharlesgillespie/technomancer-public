@@ -379,12 +379,18 @@ class OllamaCoder:
 
             if test_result["passed"]:
                 self._log(f"[OllamaCoder] Round {round_num}: tests PASSED ✓")
-                # Only commit if tests pass. Stage exactly the files in this
-                # round's delta — the model may have touched files outside
-                # _get_changed_files's view (e.g. via write_file to a brand
-                # new path), so use git's working-tree state too.
-                if changed_files:
-                    files_to_stage = self._files_to_stage()
+                # Only commit if tests pass. The gate MUST check the
+                # working-tree state (tracked-modified + untracked) via
+                # _files_to_stage(), NOT ``main...HEAD`` (changed_files) —
+                # on round 0 nothing is committed yet, so ``_get_changed_files``
+                # returns []. The first deploy of this code (commit 38bb8a0)
+                # gated on changed_files and silently fell through to the
+                # post-coder.run() safety net (_auto_commit_uncommitted),
+                # which used the OLD ``[<id>] <description>`` message format
+                # instead of the deterministic
+                # ``[<id>] <title> <model> r<N>: <verb> <file>`` format.
+                files_to_stage = self._files_to_stage()
+                if files_to_stage:
                     self._commit_changes(
                         round_num,
                         files=files_to_stage,
