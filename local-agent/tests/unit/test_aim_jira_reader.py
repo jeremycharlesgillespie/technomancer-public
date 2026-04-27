@@ -24,7 +24,9 @@ def _mock_jira(monkeypatch):
     pytest runs without ``.env`` so ``settings.jira_project_key`` is None).
     """
     monkeypatch.setattr("idea_board.jira_sync.is_jira_configured", lambda: True)
+    monkeypatch.setattr("idea_board.jira_sync._jira_project_key_for_project", lambda: "TK")
     monkeypatch.setattr("aim.jira_reader.is_jira_configured", lambda: True)
+    monkeypatch.setattr("aim.jira_reader._jira_project_key_for_project", lambda: "TK")
     monkeypatch.setattr("agent.config.settings.jira_project_key", "TK")
 
 

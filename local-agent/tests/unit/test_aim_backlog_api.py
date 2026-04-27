@@ -24,7 +24,8 @@ def _stub_jira_project_key():
     blocks already mock ``is_jira_configured`` and ``_jira_api``, so the
     project-key resolver is the last leak.
     """
-    with patch("idea_board.web._jira_project_key_for_project", return_value="TK"):
+    with patch("idea_board.web._jira_project_key_for_project", return_value="TK"), \
+         patch("agent.config.settings.jira_project_key", "TK"):
         yield
 
 
