@@ -289,6 +289,10 @@ class OllamaCoder:
         # "you called finish() with zero edits" nudge so we don't loop
         # on it. Reset alongside _round_edit_count in _run_rounds.
         self._nudge_sent_this_round: bool = False
+        # MCP bridge — spawned in run(), torn down in the finally clause.
+        # When None, the coder runs with the core six tools only. The
+        # bridge is best-effort: a failed start logs and we continue.
+        self._mcp_bridge: Any = None
 
     # ------------------------------------------------------------------
     # Cancellation
@@ -318,13 +322,47 @@ class OllamaCoder:
     def run(self) -> None:
         """Run the full outer fix-round loop. Acquires GPU priority for duration."""
         acquire_coder_priority()
+        self._start_mcp_bridge()
         try:
             self._log(f"[OllamaCoder] Starting with model={self.model}, "
                       f"host={self.host}, "
                       f"max_rounds={self.max_rounds}, max_turns={self.max_turns}")
             self._run_rounds()
         finally:
+            self._stop_mcp_bridge()
             release_coder_priority()
+
+    def _start_mcp_bridge(self) -> None:
+        """Spawn the MCP context server for this coder session.
+
+        Best-effort: a failed start is logged and the coder runs
+        with the core six tools only. We never let an MCP failure
+        kill a story.
+        """
+        try:
+            from .mcp_bridge import MCPBridge
+            bridge = MCPBridge(log=self._log)
+            if bridge.start():
+                self._mcp_bridge = bridge
+            else:
+                self._log("[OllamaCoder] MCP bridge unavailable — "
+                          "running with core tools only")
+                self._mcp_bridge = None
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"[OllamaCoder] MCP bridge import/start raised: {exc} "
+                      f"— running with core tools only")
+            self._mcp_bridge = None
+
+    def _stop_mcp_bridge(self) -> None:
+        """Tear down the MCP bridge if we spawned one."""
+        bridge = self._mcp_bridge
+        self._mcp_bridge = None
+        if bridge is None:
+            return
+        try:
+            bridge.stop()
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"[OllamaCoder] MCP bridge stop raised: {exc}")
 
     # ------------------------------------------------------------------
     # Outer round loop
@@ -652,7 +690,47 @@ class OllamaCoder:
     # Tool execution
     # ------------------------------------------------------------------
 
+    def _effective_tool_definitions(self) -> list[dict[str, Any]]:
+        """Return the tool definitions to send to Ollama on each chat call.
+
+        Always includes the six core tools (read_file, write_file,
+        edit_file, list_files, search_code, finish). Appends MCP-
+        discovered tools when the bridge is up. Built fresh on every
+        call so a bridge that dies mid-run gracefully degrades to
+        core-tools-only on the next chat.
+
+        Defensive against bypassed-__init__ test fixtures: tests use
+        ``OllamaCoder.__new__(OllamaCoder)`` to skip __init__ when
+        exercising the chat layer in isolation, so ``_mcp_bridge``
+        may not exist on the instance — getattr fallback covers it.
+        """
+        tools: list[dict[str, Any]] = list(_TOOLS)
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
+            try:
+                tools.extend(bridge.tool_definitions)
+            except Exception as exc:  # noqa: BLE001
+                self._log(
+                    f"[OllamaCoder] MCP bridge tool_definitions raised: {exc}"
+                )
+        return tools
+
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
+        # MCP-discovered tools (e.g. aiw_purpose, codebase_index) route
+        # through the bridge before falling through to the core six.
+        # Bridge dispatch comes first so a future MCP server can shadow
+        # core tools intentionally if it ever needs to.
+        bridge = self._mcp_bridge
+        if bridge is not None:
+            try:
+                if bridge.has_tool(name):
+                    return bridge.call(name, args)
+            except Exception as exc:  # noqa: BLE001
+                # Don't let a bridge wobble kill the dispatch — fall
+                # through to the core-tool path which will return
+                # "unknown tool" if the name isn't core either.
+                self._log(f"[OllamaCoder] MCP dispatch raised for {name}: {exc}")
+
         try:
             # Note: there is no per-tool-call git/branch readiness gate here.
             # The AIW worker runs in an isolated A/B worktree (see
@@ -1049,7 +1127,7 @@ class OllamaCoder:
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system_prompt}] + messages,
-            "tools": _TOOLS,
+            "tools": self._effective_tool_definitions(),
             "stream": True,
             "think": False,
             "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
@@ -1350,6 +1428,15 @@ class OllamaCoder:
             "you have not done the work.\n"
             "  5. finish(summary=...) ONLY after at least one edit_file/write_file "
             "succeeded this round. Calling finish() with zero edits is wrong.\n"
+            "\n"
+            "Project context:\n"
+            "  For project conventions, the AIW workflow, allowed commands, "
+            "the codebase index, or the AIV scoring rubric, call the "
+            "corresponding MCP tool: aiw_purpose, conventions, "
+            "allowed_commands, codebase_index(area=...), scoring_rubric, "
+            "overview. These are authoritative — prefer them over guessing. "
+            "If an MCP tool is not available in this session, fall back to "
+            "reading the source directly.\n"
         )
 
     def _build_initial_prompt(self) -> str:

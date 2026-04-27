@@ -40,6 +40,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "prometheus-client>=0.20.0",
     "python-pptx>=0.6.21",
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

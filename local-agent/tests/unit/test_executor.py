@@ -1036,9 +1036,12 @@ class TestBuildStoryPromptPriorFailure:
             _enrich_stub_description=lambda i: i.description,
             _build_epic_context=lambda i: "",
             _build_discussion=lambda i: "",
-            _load_codebase_summary=lambda: "CODEBASE_SUMMARY_SENTINEL",
+            # _load_codebase_summary is no longer called from the prompt
+            # (TK-XXXX moved that content to the technomancer-context MCP
+            # server). We still patch the marker section that follows the
+            # prior-failure block so ordering tests have a stable anchor.
             _get_category_guidance=lambda c: "",
-            _find_relevant_test_file=lambda i: "",
+            _find_relevant_test_file=lambda i: "POST_FAILURE_SENTINEL",
             _build_workflow_section=lambda i: "",
             _get_board_provider=MagicMock(return_value=provider),
         )
@@ -1062,8 +1065,14 @@ class TestBuildStoryPromptPriorFailure:
 
         assert "## Prior Failure Context" not in prompt
 
-    def test_section_precedes_codebase_summary(self):
-        """Failure context is placed before the codebase summary so the LLM reads it early."""
+    def test_section_precedes_following_sections(self):
+        """Failure context is placed before later sections so the LLM reads it early.
+
+        Originally asserted ordering against the static codebase summary,
+        but that section moved to the technomancer-context MCP server.
+        Now checks ordering against the test-file reference section,
+        which is the next-anchor in the prompt's section list.
+        """
         comments = [
             _StubComment(
                 "[Execution Log - Failed]\nFAILURE_MARKER_TEXT",
@@ -1074,9 +1083,9 @@ class TestBuildStoryPromptPriorFailure:
             prompt = _build_story_prompt(self._make_story())
 
         assert "## Prior Failure Context" in prompt
-        assert "CODEBASE_SUMMARY_SENTINEL" in prompt
+        assert "POST_FAILURE_SENTINEL" in prompt
         assert prompt.index("## Prior Failure Context") < prompt.index(
-            "CODEBASE_SUMMARY_SENTINEL"
+            "POST_FAILURE_SENTINEL"
         )
 
 

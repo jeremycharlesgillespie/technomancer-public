@@ -1523,7 +1523,9 @@ def _build_story_prompt(
         _format_injected_epic_context(epic_context, previous_results),
         _build_discussion(idea),
         _build_prior_failure_context(idea),
-        f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        # Codebase index moved to MCP tool `codebase_index(area=...)`.
+        # The model can call it on demand instead of having ~600-1000
+        # tokens of file list stuffed into every prompt.
         _get_category_guidance(idea.category),
         _find_relevant_test_file(idea),
         _build_workflow_section(idea),
@@ -1578,7 +1580,8 @@ def _build_epic_prompt(idea: Any) -> str:
         f"This epic has **{len(stories)} stories** to implement sequentially.\n",
         f"## Epic Description\n{idea.description}",
         done_context,
-        f"\n## Codebase (what already exists — don't duplicate)\n{_load_codebase_summary()}",
+        # Codebase index moved to MCP tool `codebase_index(area=...)`.
+        # See the per-story prompt slim-down note for rationale.
         "\n## Implementation Process\n"
         "The branch has ALREADY been created for you. You are already on it.\n\n"
         "For EACH story below:\n"
