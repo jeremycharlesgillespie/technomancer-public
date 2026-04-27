@@ -274,6 +274,21 @@ class TestProjectKeyFor:
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("FA-100") == "FA"
 
+    def test_valid_idea_id_formats(self):
+        """Test that valid idea_id formats are correctly handled."""
+        # Test the specific case mentioned in the story
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
+            
+            # Test other valid formats
+            assert _project_key_for("TK-447") == "TK"
+            assert _project_key_for("AB-123") == "AB"
+            assert _project_key_for("XYZ-789") == "XYZ"
+            
+            # Test with mixed case (should be normalized to uppercase)
+            assert _project_key_for("fa-100") == "FA"
+            assert _project_key_for("tk-447") == "TK"
+
 
 class TestPhaseMarkerFinish:
     """Test _PhaseMarker.finish() method with NULL project keys."""
