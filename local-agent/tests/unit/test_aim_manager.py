@@ -1380,3 +1380,44 @@ class TestApplyCleanShutdownReset:
         next_load = load_state()
         assert next_load.clean_shutdown is False
         assert next_load.worker.consecutive_failures == 0
+
+
+class TestExtractCompletedIdeaId:
+    """Tests for _extract_completed_idea_id — pulls idea key from a worker
+    observation string so post-completion verify targets the right idea
+    instead of guessing via recent_done sort order.
+    """
+
+    def test_extracts_key_from_standard_observation(self) -> None:
+        from aim.manager import _extract_completed_idea_id
+
+        result = _extract_completed_idea_id("Completed successfully: TK-1214")
+        assert result == "TK-1214"
+
+    def test_returns_none_when_marker_absent(self) -> None:
+        from aim.manager import _extract_completed_idea_id
+
+        # Older worker observations did not include the key — verify
+        # we skip rather than return a misleading value.
+        assert _extract_completed_idea_id("Completed successfully") is None
+        assert _extract_completed_idea_id("Failed: tests broke") is None
+        assert _extract_completed_idea_id("") is None
+
+    def test_returns_none_when_marker_present_but_no_key(self) -> None:
+        from aim.manager import _extract_completed_idea_id
+
+        # Trailing whitespace / empty tail must not return an empty
+        # string (which would later be passed to verify_deployment).
+        assert _extract_completed_idea_id("Completed successfully: ") is None
+        assert _extract_completed_idea_id("Completed successfully:   ") is None
+
+    def test_takes_only_first_token_after_marker(self) -> None:
+        from aim.manager import _extract_completed_idea_id
+
+        # The worker may append summary text in the future. We commit
+        # to "first whitespace-separated token after the colon" so a
+        # later additive change doesn't break the extraction.
+        result = _extract_completed_idea_id(
+            "Completed successfully: TK-1214 (merged via A/B winner)"
+        )
+        assert result == "TK-1214"
