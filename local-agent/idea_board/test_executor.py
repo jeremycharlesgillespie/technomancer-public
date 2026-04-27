@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 
-from idea_board.executor import _project_key_for, _PhaseMarker, ExecutionState
+from idea_board.executor import _project_key_for, _is_valid_idea_id, _PhaseMarker, ExecutionState
 from agent.config import settings
 
 
@@ -108,3 +108,41 @@ class TestProjectKeyFor:
         """_project_key_for should extract TK from TK-500."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("TK-500") == "TK"
+
+    def test_is_valid_idea_id_returns_false_for_text_only(self):
+        """_is_valid_idea_id should return False for 'text-only'."""
+        assert _is_valid_idea_id("text-only") is False
+
+    def test_is_valid_idea_id_returns_true_for_FA_100(self):
+        """_is_valid_idea_id should return True for 'FA-100'."""
+        assert _is_valid_idea_id("FA-100") is True
+
+    def test_project_key_for_returns_none_for_text_only(self):
+        """_project_key_for should return None for 'text-only'."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("text-only") is None
+
+    def test_project_key_for_returns_FA_for_FA_100(self):
+        """_project_key_for should return 'FA' for 'FA-100'."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_is_valid_idea_id_edge_cases(self):
+        """Test edge cases for _is_valid_idea_id function."""
+        # Valid cases
+        assert _is_valid_idea_id("FA-100") is True
+        assert _is_valid_idea_id("TK-500") is True
+        assert _is_valid_idea_id("ABC-123") is True
+        
+        # Invalid cases
+        assert _is_valid_idea_id("text-only") is False
+        assert _is_valid_idea_id("") is False
+        assert _is_valid_idea_id("   ") is False
+        assert _is_valid_idea_id("123-456") is False  # No alphabetic prefix
+        assert _is_valid_idea_id("FA") is False  # No hyphen
+        assert _is_valid_idea_id("FA-") is False  # No suffix
+        assert _is_valid_idea_id("-123") is False  # No prefix
+        assert _is_valid_idea_id("FA-123abc") is True  # Has digits in suffix
+        assert _is_valid_idea_id("FA-abc") is False  # No digits in suffix
+        assert _is_valid_idea_id(123) is False  # Not a string
+        assert _is_valid_idea_id(None) is False  # Not a string

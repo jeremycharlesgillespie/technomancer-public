@@ -42,6 +42,39 @@ from idea_board.aiv_post_merge import enqueue_merged_story
 __all__ = ["enqueue_merged_story"]
 
 
+def _is_valid_idea_id(idea_id: str) -> bool:
+    """Check if an idea ID is valid (follows <project>-<number> format).
+    
+    A valid idea ID must:
+    - Contain a hyphen
+    - Have an alphabetic prefix before the hyphen
+    - Have at least one digit after the hyphen
+    - Not be empty or whitespace-only
+    
+    Returns True if valid, False otherwise.
+    """
+    if not isinstance(idea_id, str):
+        return False
+    
+    if not idea_id.strip():
+        return False
+    
+    if "-" not in idea_id:
+        return False
+    
+    prefix, suffix = idea_id.split("-", 1)
+    
+    # Prefix must be alphabetic (only letters)
+    if not prefix.isalpha():
+        return False
+    
+    # Suffix must contain at least one digit
+    if not any(c.isdigit() for c in suffix):
+        return False
+    
+    return True
+
+
 def _project_key_for(idea_id: str | None) -> str | None:
     """Return the project key for story-timing rows (e.g. ``TK``, ``FA``).
 
@@ -58,26 +91,22 @@ def _project_key_for(idea_id: str | None) -> str | None:
     if not idea_id:
         return None
     
+    # If Jira project key is explicitly set, return it (overrides prefix extraction)
     if settings.jira_project_key:
         return settings.jira_project_key
     
-    # Reject obviously malformed inputs early
-    if not idea_id.strip():
+    # Early exit for invalid idea IDs - this is the required change for TK-1036
+    if not _is_valid_idea_id(idea_id):
         return None
     
-    # Explicitly check for specific malformed inputs like '--', '-', '', ' '
-    if idea_id in ('--', '-', '', ' '):
-        return None
-    
-    # Must contain at least one digit to be a valid story ID
-    if not any(c.isdigit() for c in idea_id):
-        return None
-        
+    # Extract prefix from valid idea ID
     if "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
         # Ensure prefix is alphabetic (contains only letters)
         if prefix.isalpha():
             return prefix.upper()
+    
+    # If we get here, the idea_id is valid but doesn't have a prefix (shouldn't happen with _is_valid_idea_id)
     return None
 
 
