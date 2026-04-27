@@ -1,11 +1,20 @@
 """Tests for idea_board.executor._project_key_for — project key extraction."""
 
 import re
+import sqlite3
 import pytest
 from unittest.mock import patch
 
-from idea_board.executor import IDEA_ID_PATTERN, _project_key_for, _is_valid_idea_id, _PhaseMarker, ExecutionState
+from idea_board.executor import (
+    IDEA_ID_PATTERN,
+    _project_key_for,
+    _is_valid_idea_id,
+    _PhaseMarker,
+    ExecutionState,
+    _state_timer,
+)
 from agent.config import settings
+from agent.story_timings import init_db, DB_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +223,156 @@ class TestIdeaIdPattern:
         assert IDEA_ID_PATTERN.match("-123") is None
         assert IDEA_ID_PATTERN.match("FA-123abc") is None
         assert IDEA_ID_PATTERN.match("FA-abc") is None
+
+
+# ---------------------------------------------------------------------------
+# Integration Tests — Full execution flow with timing rows
+# -----------------------
+
+class TestIntegrationMissingProjectKey:
+    """Integration test for _project_key_for fallback when Jira is not configured.
+
+    This test simulates an execution where `idea_id` exists but Jira is not
+    configured (no project key), so the alpha-prefix fallback logic is verified.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path, monkeypatch):
+        """Point story_timings at a temp DB for each test."""
+        monkeypatch.setattr("agent.story_timings.DB_PATH", tmp_path / "story_timings.db")
+        monkeypatch.setattr("agent.story_timings.DB_DIR", tmp_path)
+        init_db()
+        yield
+        # Clean up the DB after the test
+        conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+        conn.execute("DELETE FROM story_phase_timings")
+        conn.commit()
+        conn.close()
+
+    def test_project_key_derived_from_idea_id_when_jira_not_configured(self):
+        """Integration test: verify project key is derived from idea_id prefix when jira_project_key is None.
+
+        This test:
+        1. Mocks settings.jira_project_key as None (Jira not configured)
+        2. Creates an ExecutionState with a valid idea_id (e.g., "TK-1234")
+        3. Uses _state_timer which calls _project_key_for
+        4. Verifies the timing row in the database contains the correct project key ("TK")
+        """
+        # Mock Jira project key as None (Jira not configured)
+        with patch.object(settings, 'jira_project_key', None):
+            # Create an ExecutionState with a valid idea_id
+            state = ExecutionState(
+                idea_id="TK-1234",
+                run_id="test-run-123",
+            )
+
+            # Use _state_timer which internally calls _project_key_for
+            # This should derive "TK" from the idea_id prefix
+            with _state_timer(state, "executor.claude_work", metadata={"test": "data"}):
+                pass
+
+            # Verify the timing row was created with the correct project key
+            conn = sqlite3.connect(str(settings.DB_PATH))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-123",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            # Assertions
+            assert row is not None, "Timing row should be created"
+            assert row["story_id"] == "TK-1234", "Story ID should match"
+            assert row["project"] == "TK", "Project key should be derived from idea_id prefix"
+            assert row["phase"] == "executor.claude_work", "Phase should match"
+            assert row["success"] == 1, "Phase should be marked as successful"
+            assert row["metadata"] == '{"test": "data"}', "Metadata should be JSON-stringified"
+
+    def test_project_key_derived_from_different_idea_id_prefixes(self, tmp_path, monkeypatch):
+        """Integration test: verify project key extraction works for various idea_id prefixes.
+
+        Tests that when jira_project_key is None, _project_key_for correctly
+        extracts different prefixes from various idea IDs.
+        """
+        with patch.object(settings, 'jira_project_key', None):
+            test_cases = [
+                ("TK-1234", "TK"),
+                ("FA-5678", "FA"),
+                ("ABC-9999", "ABC"),
+                ("XYZ-100", "XYZ"),
+            ]
+
+            for idea_id, expected_project in test_cases:
+                # Create a temporary DB for each test case
+                temp_db = tmp_path / f"story_timings_{idea_id}.db"
+                monkeypatch.setattr("agent.story_timings.DB_PATH", temp_db)
+                monkeypatch.setattr("agent.story_timings.DB_DIR", temp_db.parent)
+                init_db()
+
+                # Create ExecutionState and use _state_timer
+                state = ExecutionState(
+                    idea_id=idea_id,
+                    run_id=f"test-run-{idea_id}",
+                )
+
+                with _state_timer(state, "executor.claude_work"):
+                    pass
+
+                # Verify the timing row
+                conn = sqlite3.connect(str(temp_db))
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(
+                    "SELECT project FROM story_phase_timings WHERE run_id = ?",
+                    (f"test-run-{idea_id}",),
+                )
+                row = cursor.fetchone()
+                conn.close()
+
+                assert row is not None, f"Timing row should be created for {idea_id}"
+                assert row["project"] == expected_project, (
+                    f"Project key for {idea_id} should be {expected_project}"
+                )
+
+    def test_timing_rows_have_valid_project_keys_when_jira_not_configured(self, tmp_path, monkeypatch):
+        """Integration test: verify multiple timing rows all have valid project keys.
+
+        This test creates multiple phases for the same idea and verifies that
+        all timing rows contain valid project keys derived from the idea_id prefix.
+        """
+        with patch.object(settings, 'jira_project_key', None):
+            # Create a temporary DB
+            temp_db = tmp_path / "story_timings_multi.db"
+            monkeypatch.setattr("agent.story_timings.DB_PATH", temp_db)
+            monkeypatch.setattr("agent.story_timings.DB_DIR", temp_db.parent)
+            init_db()
+
+            # Create ExecutionState
+            state = ExecutionState(
+                idea_id="FA-9999",
+                run_id="test-run-multi",
+            )
+
+            # Record multiple phases
+            phases = ["executor.plan", "executor.code", "executor.test", "executor.deploy"]
+            for phase in phases:
+                with _state_timer(state, phase):
+                    pass
+
+            # Verify all timing rows have valid project keys
+            conn = sqlite3.connect(str(temp_db))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT project, phase FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-multi",),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+
+            # Assertions
+            assert len(rows) == len(phases), f"Should have {len(phases)} timing rows"
+            for row in rows:
+                assert row["project"] == "FA", (
+                    f"All timing rows should have project key 'FA' derived from idea_id prefix"
+                )
+                assert row["phase"] in phases, f"Phase {row['phase']} should be in expected phases"
