@@ -2131,6 +2131,7 @@ def execute_idea(
                         max_rounds=settings.aiw_ollama_coder_max_rounds,
                         num_ctx=settings.aiw_ollama_coder_num_ctx,
                         host=host_override or "",
+                        story_title=idea.title,
                     )
                     coder.run()
                 with _state_timer(state, "executor.auto_commit"):

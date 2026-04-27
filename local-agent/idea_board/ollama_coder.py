@@ -187,23 +187,6 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "run_bash",
-            "description": (
-                "Run a shell command. Allowed prefixes: git, pytest, python, python3. "
-                "Blocked: safe_update, push origin, push --force, merge, checkout main, rm -rf."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to run"}
-                },
-                "required": ["command"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "list_files",
             "description": "List files in a directory.",
             "parameters": {
@@ -235,36 +218,13 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "verify_git_clean",
-            "description": "Verify that the git working directory is clean (no uncommitted changes).",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_branch",
-            "description": "Create a new git branch with the given name.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "branch_name": {
-                        "type": "string",
-                        "description": "Name of the branch to create"
-                    }
-                },
-                "required": ["branch_name"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "finish",
-            "description": "Signal that implementation is complete. Call only after committing all changes.",
+            "description": (
+                "Signal that the implementation is complete. The harness will run "
+                "pytest and commit the changes — you do not need to do either yourself. "
+                "Pass a brief summary describing what you changed; the harness will use "
+                "it in the commit message."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -295,6 +255,7 @@ class OllamaCoder:
         max_rounds: int = 20,
         num_ctx: int = 16384,
         host: str = "",
+        story_title: str = "",
     ) -> None:
         self.prompt = prompt
         self.project_root = Path(project_root)
@@ -309,6 +270,10 @@ class OllamaCoder:
         # callers are unaffected. The A/B harness sets this to point
         # model B at a remote Ollama (e.g. http://192.168.1.150:11434).
         self.host = host or OLLAMA_HOST
+        # Story title — used by _commit_changes to build the deterministic
+        # commit message ``[<idea_id>] <title> <model> r<N>: <summary>``.
+        # Empty string is acceptable; the message just omits the title slot.
+        self.story_title = story_title
         self._log = state.log if hasattr(state, "log") else lambda m: None
 
     # ------------------------------------------------------------------
@@ -377,6 +342,15 @@ class OllamaCoder:
                 return
             self._log(f"[OllamaCoder] --- Round {round_num} ---")
 
+            # Snapshot which files existed at the start of the round. Used by
+            # _commit_changes to label each file as edit/create in the commit
+            # message. This must happen BEFORE the inner loop runs, otherwise
+            # we'd label every file as "edit" (since the model just wrote it).
+            pre_round_existing: set[str] = {
+                str(self.project_root / f)
+                for f in self._git_branch_files_or_empty()
+            }
+
             # Build prompt for this round
             if round_num == 0:
                 system_prompt = self._build_system_prompt()
@@ -405,9 +379,17 @@ class OllamaCoder:
 
             if test_result["passed"]:
                 self._log(f"[OllamaCoder] Round {round_num}: tests PASSED ✓")
-                # Only commit if tests pass
+                # Only commit if tests pass. Stage exactly the files in this
+                # round's delta — the model may have touched files outside
+                # _get_changed_files's view (e.g. via write_file to a brand
+                # new path), so use git's working-tree state too.
                 if changed_files:
-                    self._commit_changes(round_num)
+                    files_to_stage = self._files_to_stage()
+                    self._commit_changes(
+                        round_num,
+                        files=files_to_stage,
+                        pre_round_existing=pre_round_existing,
+                    )
                 return
 
             self._log(
@@ -631,8 +613,6 @@ class OllamaCoder:
                     args.get("old_string", ""),
                     args.get("new_string", ""),
                 )
-            elif name == "run_bash":
-                return self._tool_run_bash(args.get("command", ""))
             elif name == "list_files":
                 return self._tool_list_files(args.get("path", "."), args.get("pattern", "*"))
             elif name == "search_code":
@@ -643,6 +623,16 @@ class OllamaCoder:
                 )
             elif name == "finish":
                 return f"Finished: {args.get('summary', '')}"
+            elif name in ("run_bash", "verify_git_clean", "create_branch"):
+                # These were available in older versions of the coder but the
+                # harness now owns all mechanical work (branching, testing,
+                # committing). Tell the model explicitly so it stops retrying.
+                return (
+                    f"ERROR: unknown tool '{name}'. The harness owns "
+                    f"branches/tests/commits — you have no shell. Use "
+                    f"read_file / write_file / edit_file / list_files / "
+                    f"search_code, and call finish(summary=...) when done."
+                )
             else:
                 return f"ERROR: unknown tool '{name}'"
         except EnvironmentReadyError as e:
@@ -1042,33 +1032,62 @@ class OllamaCoder:
     # ------------------------------------------------------------------
 
     def _build_system_prompt(self) -> str:
+        """System prompt for the coder.
+
+        Pure context handoff. The harness owns all mechanical work
+        (branching, running pytest, committing, merging). The model owns
+        thinking: read files, decide what to change, write the patch.
+        Crucially, we do NOT instruct the model to run git or pytest —
+        it has no shell. Past versions of this prompt told the model to
+        run those commands itself, which caused work duplication and one
+        842-stale-branch runaway when a per-tool readiness gate misfired
+        (commit 22f4cbe).
+        """
         return (
             "/no_think\n"
             "You are an expert Python software engineer implementing Jira stories.\n"
-            "You have tools to read, write, and edit files, run git/pytest/python commands, "
-            "list files, and search code.\n\n"
+            "\n"
+            "The harness has already set up an isolated worktree on a clean branch "
+            "for this story. After you call finish(), the harness will run the test "
+            "suite and commit your changes. You do NOT run git, you do NOT run "
+            "tests, and you have no shell.\n"
+            "\n"
+            "Your job is to:\n"
+            "  1. Read the relevant files to understand the code.\n"
+            "  2. Decide what change to make.\n"
+            "  3. Write the change with read_file / write_file / edit_file / "
+            "list_files / search_code.\n"
+            "  4. Call finish(summary=...) when you believe the implementation "
+            "is complete. Your summary will be used in the commit message.\n"
+            "\n"
+            "Tools (these are ALL the tools you have):\n"
+            "  - read_file(path, offset?, length?)\n"
+            "  - write_file(path, content)\n"
+            "  - edit_file(path, old_string, new_string)\n"
+            "  - list_files(path, pattern?)\n"
+            "  - search_code(pattern, path?, file_pattern?)\n"
+            "  - finish(summary)\n"
+            "\n"
             f"Project root: {self.project_root.as_posix()}\n"
-            "All tool paths (read_file, write_file, edit_file, list_files, search_code) "
-            "accept either relative or absolute paths. Prefer RELATIVE paths "
-            "anchored at the project root (e.g. `local-agent/agent/foo.py`) — "
-            "they are shorter, less error-prone, and unaffected by the project "
-            "root's exact location on disk.\n\n"
+            f"Story ID: {self.idea_id}\n"
+            "\n"
+            "Path conventions:\n"
+            "  - All tool paths accept relative OR absolute. Prefer relative paths "
+            "anchored at the project root (e.g. `agent/foo.py`).\n"
+            "  - Test files live under `tests/unit/` and must start with `test_` "
+            "(e.g. `tests/unit/test_foo.py`). pytest will not collect any other filename.\n"
+            "\n"
             "Rules:\n"
-            "- Always read relevant files before editing them\n"
-            "- Prefer relative paths (e.g. `local-agent/tests/unit/test_foo.py`) "
-            "over absolute paths when referencing files\n"
-            "- Run `git add <file1> <file2> ... && git commit -m '[<idea_id>] <description>'` after each meaningful change. Only add files you explicitly modified — never use `git add -A` or `git add .`\n"
-            "- Run tests with pytest to verify your implementation\n"
-            "- Call finish() only after committing all changes\n"
-            "- Do not modify test files unless the story explicitly asks you to\n"
-            "- Test files MUST live under local-agent/tests/unit/ and start "
-            "with `test_` (e.g. tests/unit/test_jira_retry.py). pytest will "
-            "not collect any other filename.\n"
-            "- run_bash already runs in the project root. Do NOT prefix commands "
-            "with `cd <path> && ...`. Just call `pytest tests/unit/test_foo.py`, "
-            "`git status`, etc. directly.\n"
-            "- Make minimal, focused changes that solve the task\n"
-            f"- Story ID: {self.idea_id}\n"
+            "  - Always read a file before editing it.\n"
+            "  - Make minimal, focused changes that solve the task.\n"
+            "  - Writing tests is your call — if the change is non-trivial, add or "
+            "update tests under `tests/unit/` so the harness can verify your work. "
+            "Skip tests only for purely cosmetic changes or when the story "
+            "explicitly says no tests.\n"
+            "  - Don't gut existing tests just to make them pass — fix the code, "
+            "not the assertion (unless the test was actually wrong).\n"
+            "  - Call finish(summary=...) when you're done. The harness takes it "
+            "from there.\n"
         )
 
     def _build_initial_prompt(self) -> str:
@@ -1088,7 +1107,8 @@ class OllamaCoder:
     ) -> str:
         hint = _classify_error_hint(test_output)
         hint_section = f"\n\n## Hint\n{hint}" if hint else ""
-        change_summary = self._git_diff_stat()
+        committed_summary = self._git_diff_stat()
+        uncommitted_summary = self._git_diff_stat_uncommitted()
 
         # Progressive context: full file content from round 1+
         file_context = ""
@@ -1098,6 +1118,16 @@ class OllamaCoder:
                 file_context += f"\n### {f}\n"
                 content = self._tool_read_file(f)
                 file_context += content[:3000] + "\n"
+
+        # The harness only commits at the end of a passing round. So if the
+        # previous round's tests failed, the model's edits are still sitting
+        # in the working tree as unstaged diff — show that explicitly so the
+        # model doesn't think its work was lost.
+        change_summary = (
+            f"### Committed (git diff --stat main...HEAD)\n{committed_summary}\n"
+            f"\n### Uncommitted (git diff --stat HEAD — your edits from the previous round)\n"
+            f"{uncommitted_summary}"
+        )
 
         return (
             f"## Original Task (fix attempt round {round_num}/{self.max_rounds})\n"
@@ -1111,7 +1141,9 @@ class OllamaCoder:
             f"## Your Job\n"
             f"Fix the failing tests without breaking passing tests. "
             f"Read the failing test file and the source file you changed. "
-            f"Edit the source to make tests pass. Commit when done, then call finish()."
+            f"Edit the source to make the failing tests pass, then call "
+            f"`finish(summary=...)`. The harness will run pytest and commit "
+            f"your changes — do not try to run git or pytest yourself."
         )
 
     def _find_test_context(self) -> str:
@@ -1206,6 +1238,59 @@ class OllamaCoder:
         except Exception:
             return []
 
+    def _git_branch_files_or_empty(self) -> list[str]:
+        """Return relative paths of files committed on the branch so far.
+
+        Used as the "what existed at round start" snapshot so the commit
+        message can label each file as edit/create. Returns relative paths
+        (so the caller can join with project_root). Returns [] on any error
+        (no git, fresh branch, etc.) — the commit message will just label
+        every file as ``create`` in that case, which is acceptable.
+        """
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--name-only", "main...HEAD"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            return [f for f in result.stdout.strip().splitlines() if f]
+        except Exception:
+            return []
+
+    def _files_to_stage(self) -> list[str]:
+        """Return absolute paths of files to stage for this round's commit.
+
+        Combines:
+          - Tracked-file modifications and deletions: ``git diff --name-only HEAD``
+          - Untracked files: ``git ls-files --others --exclude-standard``
+
+        We deliberately DON'T use ``git add -A`` — operators have been bitten
+        by that staging scratch files outside scope. The combined output here
+        is the legitimate "everything the model touched in this round" set.
+        """
+        files: list[str] = []
+        try:
+            modified = subprocess.run(
+                ["git", "diff", "--name-only", "HEAD"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            files.extend(f for f in modified.stdout.strip().splitlines() if f)
+            untracked = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            files.extend(f for f in untracked.stdout.strip().splitlines() if f)
+        except Exception as exc:
+            self._log(f"[OllamaCoder] Warning: _files_to_stage git query failed: {exc}")
+            return []
+        # De-dupe while preserving order, then absolutize.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for f in files:
+            if f not in seen:
+                seen.add(f)
+                unique.append(f)
+        return [str(self.project_root / f) for f in unique]
+
     def _git_diff_stat(self) -> str:
         try:
             result = subprocess.run(
@@ -1216,30 +1301,107 @@ class OllamaCoder:
         except Exception:
             return "(could not get diff)"
 
-    def _commit_changes(self, round_num: int) -> None:
-        """Commit all changed files with a descriptive message."""
+    def _git_diff_stat_uncommitted(self) -> str:
+        """Return ``git diff --stat HEAD`` — i.e. unstaged + uncommitted edits.
+
+        Used in fix prompts to show the model what edits from the previous
+        round are still sitting in the working tree (the harness only commits
+        on a passing round, so a failing round's edits stay uncommitted).
+        """
         try:
-            # Get changed files
-            changed_files = self._get_changed_files()
-            if not changed_files:
+            result = subprocess.run(
+                ["git", "diff", "--stat", "HEAD"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            return result.stdout.strip() or "(no uncommitted edits)"
+        except Exception:
+            return "(could not get diff)"
+
+    def _commit_changes(
+        self,
+        round_num: int,
+        files: list[str] | None = None,
+        pre_round_existing: set[str] | None = None,
+    ) -> None:
+        """Commit the given files with a deterministic message.
+
+        ``files`` is the explicit set of files to stage — captured at the start
+        of the round by the caller so that the staged set is deterministic
+        (recomputing inside this function via ``_get_changed_files`` was
+        racy, since the model could touch a file mid-round that we'd then
+        also stage). When ``files`` is None, fall back to the legacy
+        whole-branch behavior so existing call sites and tests still work.
+
+        ``pre_round_existing`` is the set of files (absolute paths) that
+        existed on disk at the start of the round. Used to label each file
+        as ``edit`` (existed) or ``create`` (didn't) in the commit message.
+
+        Commit message format:
+            ``[<idea_id>] <title> <model> r<N>: <verb> <first> (+M more)``
+
+        Title and model are pulled from the instance attributes set at
+        construction time. The (+M more) suffix is omitted when only one
+        file changed.
+        """
+        try:
+            target_files = files if files is not None else self._get_changed_files()
+            if not target_files:
                 return
-                
-            # Add all changed files
+
+            existing_set = pre_round_existing or set()
+
+            # Stage exactly the files the caller passed. Never use ``git add -A``
+            # or ``.`` — operators have been bitten by that before when the model
+            # touched scratch files outside its scope.
             subprocess.run(
-                ["git", "add"] + changed_files,
+                ["git", "add"] + list(target_files),
                 capture_output=True, cwd=str(self.project_root),
             )
-            
-            # Commit with descriptive message
-            commit_msg = f"[{self.idea_id}] Round {round_num} changes"
+
+            commit_msg = self._build_commit_message(
+                round_num, list(target_files), existing_set
+            )
             subprocess.run(
                 ["git", "commit", "-m", commit_msg],
                 capture_output=True, cwd=str(self.project_root),
             )
-            self._log(f"[OllamaCoder] Round {round_num}: committed changes")
-            
+            self._log(f"[OllamaCoder] Round {round_num}: committed changes — {commit_msg}")
+
         except Exception as exc:
             self._log(f"[OllamaCoder] Warning: Failed to commit changes: {exc}")
+
+    def _build_commit_message(
+        self,
+        round_num: int,
+        files: list[str],
+        pre_round_existing: set[str],
+    ) -> str:
+        """Build the deterministic commit message for ``_commit_changes``.
+
+        Extracted so unit tests can pin the format without going through git.
+        """
+        # File path for the auto-summary: prefer the relative path from
+        # project_root so the message stays short and stable across machines.
+        first = files[0]
+        try:
+            first_rel = str(Path(first).relative_to(self.project_root))
+        except (ValueError, TypeError):
+            first_rel = Path(first).name
+
+        verb = "create" if first not in pre_round_existing else "edit"
+        extra = len(files) - 1
+        suffix = f" (+{extra} more)" if extra > 0 else ""
+        auto_summary = f"{verb} {first_rel}{suffix}"
+
+        # Title and model are optional decorations — keep the message readable
+        # if they're empty (older callers / tests).
+        parts = [f"[{self.idea_id}]"]
+        if self.story_title:
+            parts.append(self.story_title)
+        if self.model:
+            parts.append(self.model)
+        header = " ".join(parts)
+        return f"{header} r{round_num}: {auto_summary}"
 
     def _tag_round_commits(self, round_num: int) -> None:
         """Amend the latest commit message to include round tag if on a story branch."""
