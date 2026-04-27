@@ -125,6 +125,53 @@ class TestCreateWorktree:
         with pytest.raises(RuntimeError, match="reported success but"):
             ab_worktree.create_worktree(repo, "abc12345")
 
+    def test_symlinks_env_into_worktree(self, tmp_path, monkeypatch):
+        """When source has local-agent/.env, create a symlink in the worktree.
+
+        The AIW pytest harness runs in the worktree; without .env, any test
+        that reads ``settings.<X>`` for an env-backed value fails (TK-1215).
+        Symlink (not copy) so the worktree always sees current values.
+        """
+        repo = tmp_path / "repo"
+        (repo / "local-agent").mkdir(parents=True)
+        src_env = repo / "local-agent" / ".env"
+        src_env.write_text("JIRA_PROJECT_KEY=TK\n")
+
+        target = tmp_path / "technomancer-aiw-abc12345"
+
+        def fake_run(cmd, **kw):
+            target.mkdir()
+            (target / "local-agent").mkdir()
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(ab_worktree.subprocess, "run", fake_run)
+
+        ab_worktree.create_worktree(repo, "abc12345")
+
+        dst_env = target / "local-agent" / ".env"
+        assert dst_env.is_symlink()
+        assert dst_env.resolve() == src_env.resolve()
+
+    def test_missing_source_env_does_not_raise(self, tmp_path, monkeypatch):
+        """No .env in source ⇒ no symlink, no error — best-effort path."""
+        repo = tmp_path / "repo"
+        (repo / "local-agent").mkdir(parents=True)
+        # Note: NO .env created.
+
+        target = tmp_path / "technomancer-aiw-abc12345"
+
+        def fake_run(cmd, **kw):
+            target.mkdir()
+            (target / "local-agent").mkdir()
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(ab_worktree.subprocess, "run", fake_run)
+
+        # Should complete normally
+        result = ab_worktree.create_worktree(repo, "abc12345")
+        assert result == target
+        assert not (target / "local-agent" / ".env").exists()
+
 
 class TestRemoveWorktree:
     def test_runs_git_worktree_remove_force_and_prune(self, tmp_path, monkeypatch):

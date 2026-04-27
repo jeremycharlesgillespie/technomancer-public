@@ -10,8 +10,22 @@ import pytest
 # Mock jira_sync._api and is_jira_configured before importing
 @pytest.fixture(autouse=True)
 def _mock_jira(monkeypatch):
-    """Ensure Jira is 'configured' and _api is mocked for all tests."""
+    """Ensure Jira is 'configured' and _api is mocked for all tests.
+
+    Both names are patched because ``aim.jira_reader`` does
+    ``from idea_board.jira_sync import _api, is_jira_configured`` —
+    that binds a local reference inside ``aim.jira_reader``. Patching
+    only the source module leaves the local copy unpatched, which is
+    fine in isolation but causes order-dependent failures when other
+    modules' import chain reaches into ``aim.jira_reader.is_jira_configured``
+    first. Patching both sites makes the fixture order-independent.
+
+    Also force a project key so the JQL has a real value (worktree
+    pytest runs without ``.env`` so ``settings.jira_project_key`` is None).
+    """
     monkeypatch.setattr("idea_board.jira_sync.is_jira_configured", lambda: True)
+    monkeypatch.setattr("aim.jira_reader.is_jira_configured", lambda: True)
+    monkeypatch.setattr("agent.config.settings.jira_project_key", "TK")
 
 
 @pytest.fixture

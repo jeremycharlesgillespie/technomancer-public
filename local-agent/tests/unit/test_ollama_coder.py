@@ -469,6 +469,108 @@ class TestFixPromptBuilding:
         hint = _classify_error_hint("some random output with no known error")
         assert hint == ""
 
+    def test_no_edit_nudge_when_prev_round_had_zero_edits(self, tmp_path: Path) -> None:
+        """prev_round_edit_count == 0 → fix prompt leads with the no-edit nudge.
+
+        TK-1045 burned 2 rounds because the model called finish() after only
+        read_file calls. The fix prompt now leads with a strong nudge when
+        the previous round made zero edits. Without this, the model has no
+        signal that "I read the file" wasn't enough.
+        """
+        coder = _make_coder(tmp_path)
+        coder._get_changed_files = lambda: []  # type: ignore[method-assign]
+        coder._git_diff_stat = lambda: ""  # type: ignore[method-assign]
+        coder._git_diff_stat_uncommitted = lambda: ""  # type: ignore[method-assign]
+        coder.prev_round_edit_count = 0
+
+        prompt = coder._build_fix_prompt(1, "FAILED tests/foo.py", [], ["tests/foo.py::bar"])
+
+        assert "did not edit any files last round" in prompt
+        assert "edit_file" in prompt and "write_file" in prompt
+        # Nudge must come BEFORE the original-task header so the model sees
+        # it before deciding what to do.
+        nudge_idx = prompt.find("did not edit any files last round")
+        task_idx = prompt.find("Original Task")
+        assert nudge_idx < task_idx, (
+            "no-edit nudge must precede the task header so the model sees "
+            "it before re-engaging with the task"
+        )
+
+    def test_no_nudge_when_prev_round_made_edits(self, tmp_path: Path) -> None:
+        """prev_round_edit_count > 0 → no nudge (model is doing the right thing).
+
+        We don't want to scold a model that's actively editing — the nudge
+        is precisely scoped to the failure mode where finish() arrived
+        without any tool-driven changes.
+        """
+        coder = _make_coder(tmp_path)
+        coder._get_changed_files = lambda: []  # type: ignore[method-assign]
+        coder._git_diff_stat = lambda: ""  # type: ignore[method-assign]
+        coder._git_diff_stat_uncommitted = lambda: ""  # type: ignore[method-assign]
+        coder.prev_round_edit_count = 3
+
+        prompt = coder._build_fix_prompt(1, "FAILED tests/foo.py", [], [])
+
+        assert "did not edit any files last round" not in prompt
+
+    def test_no_nudge_when_prev_round_count_is_none(self, tmp_path: Path) -> None:
+        """First fix round (None sentinel) doesn't emit the nudge.
+
+        prev_round_edit_count is None until the first inner loop completes.
+        We still go through _build_fix_prompt on round 1, but should NOT
+        scold the model for "doing nothing last round" when there *was*
+        no last round in the relevant sense (round 0 ran the initial
+        prompt, not the fix prompt).
+        """
+        coder = _make_coder(tmp_path)
+        coder._get_changed_files = lambda: []  # type: ignore[method-assign]
+        coder._git_diff_stat = lambda: ""  # type: ignore[method-assign]
+        coder._git_diff_stat_uncommitted = lambda: ""  # type: ignore[method-assign]
+        # Default state from __init__
+        assert coder.prev_round_edit_count is None
+
+        prompt = coder._build_fix_prompt(1, "FAILED tests/foo.py", [], [])
+
+        assert "did not edit any files last round" not in prompt
+
+    def test_edit_counter_increments_on_successful_edit(self, tmp_path: Path) -> None:
+        """_execute_tool('edit_file', ...) increments _round_edit_count on success."""
+        # Create a real file in the worktree so edit_file has something to edit.
+        local_agent = tmp_path / "local-agent"
+        local_agent.mkdir()
+        target = local_agent / "foo.py"
+        target.write_text("hello world\n")
+
+        coder = _make_coder(tmp_path)
+        coder._round_edit_count = 0
+
+        result = coder._execute_tool(
+            "edit_file",
+            {"path": "local-agent/foo.py", "old_string": "hello", "new_string": "goodbye"},
+        )
+
+        assert not str(result).startswith("ERROR"), f"edit failed: {result}"
+        assert coder._round_edit_count == 1
+        assert target.read_text() == "goodbye world\n"
+
+    def test_edit_counter_does_not_increment_on_error(self, tmp_path: Path) -> None:
+        """edit_file that returns ERROR (e.g., file not found) does NOT bump
+        _round_edit_count — otherwise an attempted-but-failed edit would
+        suppress the next round's nudge despite no real progress.
+        """
+        coder = _make_coder(tmp_path)
+        coder._round_edit_count = 0
+
+        result = coder._execute_tool(
+            "edit_file",
+            {"path": "nonexistent/path.py", "old_string": "x", "new_string": "y"},
+        )
+
+        assert str(result).startswith("ERROR"), (
+            f"expected ERROR for nonexistent path, got: {result}"
+        )
+        assert coder._round_edit_count == 0
+
 
 # ---------------------------------------------------------------------------
 # TestStripThink
@@ -1090,6 +1192,69 @@ class TestDriftDetection:
         assert len(round_log_lines) == 4
         assert any("Drift detected" in m for m in log_lines)
         assert any("empty_shop" in m for m in log_lines)
+
+    def test_drift_abort_does_not_log_exhausted_rounds(self, tmp_path: Path) -> None:
+        """Drift-break path must NOT log "Exhausted N rounds".
+
+        The original code put a single ``self._log("Exhausted ...")`` after
+        the for-loop. That message fires on EVERY exit, including
+        drift-break — which produced a confusing log where a story died
+        at round 3 of 20 but the log claimed "Exhausted 20 rounds".
+        After the fix, drift uses a "Stopped at round X/Y (drift)"
+        message and the for/else only logs "Exhausted" when the loop
+        truly runs to completion.
+        """
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 20
+        same_failing = ["t1"]
+        same_changed = ["a.py"]
+        # 4 rounds same failing-set + same changed-set + zero commits → drift.
+        self._wire_drift_test(
+            coder,
+            failing_per_round=[same_failing] * 10,
+            changed_per_round=[same_changed] * 10,
+            commit_count_per_call=[0] * 11,
+            inner_finished_per_round=[True] * 10,
+        )
+        log_lines = self._run_with_logger(coder)
+
+        assert any("Drift detected" in m for m in log_lines)
+        assert any("Stopped at round 4/20 (drift)" in m for m in log_lines), (
+            "Drift abort must log a 'Stopped at round X/Y (drift)' message "
+            "so operators can see at a glance whether the run hit drift "
+            "early or genuinely exhausted all rounds"
+        )
+        assert not any("Exhausted 20 rounds" in m for m in log_lines), (
+            "Drift abort must NOT claim 'Exhausted 20 rounds' — the loop "
+            "broke at round 3, the model never got 20 attempts"
+        )
+
+    def test_genuine_exhaustion_logs_exhausted(self, tmp_path: Path) -> None:
+        """When the for-loop completes naturally, log "Exhausted N rounds".
+
+        This is the path where every round had progress signals (commits or
+        varying failing-set) so drift never fired, but tests still didn't
+        pass at the end. The "Exhausted N rounds" message is the right
+        terminal log here.
+        """
+        coder = _make_coder(tmp_path)
+        coder.max_rounds = 5
+        # Vary failing-set + changed-set + commits → drift never fires.
+        self._wire_drift_test(
+            coder,
+            failing_per_round=[["t1"], ["t2"], ["t3"], ["t4"], ["t5"]],
+            changed_per_round=[["a.py"], ["b.py"], ["c.py"], ["d.py"], ["e.py"]],
+            commit_count_per_call=list(range(6)),
+            inner_finished_per_round=[True] * 5,
+        )
+        log_lines = self._run_with_logger(coder)
+
+        assert not any("Drift detected" in m for m in log_lines)
+        assert any("Exhausted 5 rounds" in m for m in log_lines), (
+            "Genuine round exhaustion must log 'Exhausted N rounds' "
+            "(the for/else branch). Without this message operators can't "
+            "distinguish 'model couldn't fix it in N tries' from a crash."
+        )
 
 
 # ---------------------------------------------------------------------------

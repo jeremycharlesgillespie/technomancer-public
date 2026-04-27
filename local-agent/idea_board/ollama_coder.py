@@ -275,6 +275,16 @@ class OllamaCoder:
         # Empty string is acceptable; the message just omits the title slot.
         self.story_title = story_title
         self._log = state.log if hasattr(state, "log") else lambda m: None
+        # Counts edit_file / write_file calls during the *current* round.
+        # _run_rounds resets it before each inner loop and reads it after,
+        # so _build_fix_prompt can flag a model that finished a round
+        # without making any edits — the failure mode that wasted 2 of
+        # TK-1045's rounds (model called finish() after only read_file).
+        self._round_edit_count = 0
+        # Snapshot of self._round_edit_count from the *previous* round.
+        # Read by _build_fix_prompt to inject a strong nudge when the
+        # model called finish() without editing anything.
+        self.prev_round_edit_count: int | None = None
 
     # ------------------------------------------------------------------
     # Cancellation
@@ -359,9 +369,18 @@ class OllamaCoder:
                 system_prompt = self._build_system_prompt()
                 user_prompt = self._build_fix_prompt(round_num, test_output, changed_files, failing_tests)
 
+            # Reset the per-round edit counter. Incremented inside
+            # _execute_tool when the model successfully calls write_file
+            # or edit_file. Snapshot to prev_round_edit_count after the
+            # inner loop runs so the *next* round's _build_fix_prompt
+            # can see whether the model actually edited anything.
+            self._round_edit_count = 0
+
             # Run inner tool-calling loop
             messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
             finished = self._run_inner_loop(system_prompt, messages, round_num)
+
+            self.prev_round_edit_count = self._round_edit_count
 
             inner_exhausted = not finished
             if inner_exhausted:
@@ -430,9 +449,21 @@ class OllamaCoder:
                     f"{round_num} (4-round window, no progress)"
                 )
                 self._log(f"[OllamaCoder] Drift reason: {drift_reason}")
+                self._log(
+                    f"[OllamaCoder] Stopped at round {round_num + 1}/"
+                    f"{self.max_rounds} (drift) — story will be marked failed"
+                )
                 break
-
-        self._log(f"[OllamaCoder] Exhausted {self.max_rounds} rounds — story will be marked failed")
+        else:
+            # ``for/else`` runs only when the loop completes without ``break``.
+            # The previous version logged "Exhausted N rounds" unconditionally
+            # at the end, including on the drift-break path — confusing
+            # because the model only ran a handful of rounds before drift
+            # killed it. Now exhaustion and drift each get their own message.
+            self._log(
+                f"[OllamaCoder] Exhausted {self.max_rounds} rounds — "
+                f"story will be marked failed"
+            )
 
     def _count_branch_commits(self) -> int:
         """Count commits on the current branch ahead of main.
@@ -612,13 +643,19 @@ class OllamaCoder:
                     length=args.get("length") or args.get("limit"),
                 )
             elif name == "write_file":
-                return self._tool_write_file(args.get("path", ""), args.get("content", ""))
+                result = self._tool_write_file(args.get("path", ""), args.get("content", ""))
+                if not str(result).startswith("ERROR"):
+                    self._round_edit_count += 1
+                return result
             elif name == "edit_file":
-                return self._tool_edit_file(
+                result = self._tool_edit_file(
                     args.get("path", ""),
                     args.get("old_string", ""),
                     args.get("new_string", ""),
                 )
+                if not str(result).startswith("ERROR"):
+                    self._round_edit_count += 1
+                return result
             elif name == "list_files":
                 return self._tool_list_files(args.get("path", "."), args.get("pattern", "*"))
             elif name == "search_code":
@@ -1135,7 +1172,32 @@ class OllamaCoder:
             f"{uncommitted_summary}"
         )
 
+        # If the previous round called finish() without making any edits
+        # (and tests are still failing — which they are, since we're in
+        # _build_fix_prompt), inject a strong nudge at the top of the
+        # prompt. Empirically observed during TK-1045: the model read
+        # the test file, decided "this looks fine", and called finish()
+        # — burning 2 rounds before drift detection caught it. The
+        # nudge tells the model explicitly that "I read it" is not a
+        # valid response when tests are red, and lists the only tools
+        # that count as taking action.
+        no_edit_nudge = ""
+        if self.prev_round_edit_count == 0:
+            no_edit_nudge = (
+                "## ⚠️ You did not edit any files last round\n"
+                "You called `finish()` but invoked zero `edit_file` or "
+                "`write_file` calls — and the tests below are still failing. "
+                "Reading files alone does not change anything. This round you "
+                "MUST use `edit_file` or `write_file` to modify the source "
+                "before calling `finish()` again. If after careful reading "
+                "you genuinely believe no code change is required (e.g., the "
+                "failing tests are bugs in unrelated code), explain that "
+                "concretely in your `finish()` summary instead of restating "
+                "what the test does.\n\n"
+            )
+
         return (
+            f"{no_edit_nudge}"
             f"## Original Task (fix attempt round {round_num}/{self.max_rounds})\n"
             f"{self.prompt}\n\n"
             f"## What Was Changed\n{change_summary}\n\n"

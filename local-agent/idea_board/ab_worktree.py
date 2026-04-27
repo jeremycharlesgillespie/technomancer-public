@@ -91,6 +91,26 @@ def create_worktree(repo_root: Path, slug: str) -> Path:
             f"git worktree add reported success but {target} does not exist"
         )
 
+    # Symlink local-agent/.env from the source repo into the worktree so
+    # pytest runs in the worktree see the same env (Jira creds, project
+    # key, model overrides, etc.) the source repo uses. Without this, any
+    # test that reads `agent.config.settings.<X>` for a value that lives
+    # in .env hits None and fails — and pytest is the harness's
+    # success/failure gate, so a single missing setting kills every AIW
+    # round. Symlink not copy: env values change frequently and we never
+    # want a worktree to hold a stale token snapshot. Best-effort: if
+    # the source .env is missing or the link fails for any reason, log
+    # and continue — tests SHOULD mock their own env, this is a safety
+    # net for tests that forget to.
+    src_env = repo_root / "local-agent" / ".env"
+    dst_env = target / "local-agent" / ".env"
+    if src_env.is_file() and not dst_env.exists():
+        try:
+            dst_env.symlink_to(src_env)
+            logger.info("[AB-Worktree] symlinked .env: %s -> %s", dst_env, src_env)
+        except OSError as exc:
+            logger.warning("[AB-Worktree] could not symlink .env: %s", exc)
+
     logger.info("[AB-Worktree] created: %s", target)
     return target
 

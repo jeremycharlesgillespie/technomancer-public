@@ -9,6 +9,25 @@ import pytest
 from idea_board.web import app
 
 
+@pytest.fixture(autouse=True)
+def _stub_jira_project_key():
+    """Force a valid Jira project key for every test in this module.
+
+    The /api/aim/backlog code path resolves the project key via
+    ``_jira_project_key_for_project(project)`` which falls back to
+    ``settings.jira_project_key``. In the AIW worktree (and on any host
+    without a loaded ``.env``) that setting is None, which short-circuits
+    the ``if is_jira_configured() and jira_project_key:`` gate and makes
+    every "what happens when Jira IS configured" test fail with
+    ``in_progress is None``. Patching the resolver itself isolates the
+    tests from real env state — the previous individual ``patch(...)``
+    blocks already mock ``is_jira_configured`` and ``_jira_api``, so the
+    project-key resolver is the last leak.
+    """
+    with patch("idea_board.web._jira_project_key_for_project", return_value="TK"):
+        yield
+
+
 @pytest.fixture
 def client():
     """Flask test client for the idea board app."""
