@@ -173,3 +173,63 @@ def test_compare_coerces_string_delta_to_int() -> None:
     assert result.delta_axes["meets_requirements"] == 3
     assert result.delta_axes["code_quality"] == 0
     assert result.delta_axes["test_quality"] == 0
+
+
+def test_compare_parses_per_axis_winner() -> None:
+    """The new per_axis_winner field is parsed and exposed on the result."""
+    payload = json.dumps({
+        "winner": "model_a",
+        "reasoning": "A wins overall but B has stronger tests.",
+        "delta_axes": {axis: 0 for axis in (
+            "meets_requirements", "code_quality", "test_quality",
+            "security_safety", "scope_discipline", "edge_cases", "product_impact",
+        )},
+        "per_axis_winner": {
+            "meets_requirements": "model_a",
+            "code_quality": "tie",
+            "test_quality": "model_b",
+            "security_safety": "tie",
+            "scope_discipline": "model_a",
+            "edge_cases": "model_b",
+            "product_impact": "tie",
+        },
+    })
+    with patch("agent.llm_router.complete", return_value=payload):
+        result = compare(_story(), _make_run("a"), _make_run("b"))
+    assert result.per_axis_winner["test_quality"] == "model_b"
+    assert result.per_axis_winner["edge_cases"] == "model_b"
+    assert result.per_axis_winner["meets_requirements"] == "model_a"
+    assert len(result.per_axis_winner) == 7
+
+
+def test_compare_handles_missing_per_axis_winner() -> None:
+    """Older comparator output without per_axis_winner still parses."""
+    payload = json.dumps({
+        "winner": "model_a",
+        "reasoning": "x",
+        "delta_axes": {},
+        # no per_axis_winner key at all
+    })
+    with patch("agent.llm_router.complete", return_value=payload):
+        result = compare(_story(), _make_run("a"), _make_run("b"))
+    assert result.winner == "model_a"
+    assert result.per_axis_winner == {}
+
+
+def test_compare_filters_invalid_per_axis_winner_values() -> None:
+    """Garbage values (not in {model_a, model_b, tie}) become empty strings."""
+    payload = json.dumps({
+        "winner": "tie",
+        "reasoning": "x",
+        "delta_axes": {},
+        "per_axis_winner": {
+            "test_quality": "winner",  # invalid
+            "edge_cases": "model_b",   # valid
+            "code_quality": 42,        # invalid type
+        },
+    })
+    with patch("agent.llm_router.complete", return_value=payload):
+        result = compare(_story(), _make_run("a"), _make_run("b"))
+    assert result.per_axis_winner["edge_cases"] == "model_b"
+    assert result.per_axis_winner["test_quality"] == ""
+    assert result.per_axis_winner["code_quality"] == ""
