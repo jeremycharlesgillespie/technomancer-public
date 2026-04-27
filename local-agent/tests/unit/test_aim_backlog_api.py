@@ -28,6 +28,17 @@ def _stub_jira_project_key():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_jira_project_key_in_config():
+    """Ensure settings.jira_project_key is set to 'TK' for all tests.
+
+    This prevents issues when tests run in an environment without .env file
+    where settings.jira_project_key would be None.
+    """
+    with patch("agent.config.settings.jira_project_key", "TK"):
+        yield
+
+
 @pytest.fixture
 def client():
     """Flask test client for the idea board app."""

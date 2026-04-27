@@ -28,6 +28,17 @@ def _mock_jira(monkeypatch):
     monkeypatch.setattr("agent.config.settings.jira_project_key", "TK")
 
 
+@pytest.fixture(autouse=True)
+def _force_jira_project_key():
+    """Ensure settings.jira_project_key is set to 'TK' for all tests.
+
+    This prevents issues when tests run in an environment without .env file
+    where settings.jira_project_key would be None.
+    """
+    with patch("agent.config.settings.jira_project_key", "TK"):
+        yield
+
+
 @pytest.fixture
 def mock_api():
     """Provide a mock for the Jira _api function."""
