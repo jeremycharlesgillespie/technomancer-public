@@ -42,6 +42,42 @@ from idea_board.aiv_post_merge import enqueue_merged_story
 __all__ = ["enqueue_merged_story"]
 
 
+def _is_valid_idea_id(idea_id: str) -> bool:
+    """Validate that an idea_id string is well-formed for project key extraction.
+
+    Returns False for inputs that should not proceed to key extraction:
+    - Empty or whitespace-only strings
+    - Specific sentinel values ('--', '-', '', ' ')
+    - Strings without digits (no numbers in the ID)
+    - Strings with non-alphabetic prefixes (e.g., "123-456" or "123abc-456")
+
+    Args:
+        idea_id: The idea ID string to validate
+
+    Returns:
+        True if the idea_id is valid, False otherwise
+    """
+    # Reject empty or whitespace-only inputs
+    if not idea_id or not idea_id.strip():
+        return False
+
+    # Explicitly check for specific malformed sentinel values
+    if idea_id in ('--', '-', '', ' '):
+        return False
+
+    # Must contain at least one digit to be a valid story ID
+    if not any(c.isdigit() for c in idea_id):
+        return False
+
+    # Prefix must be alphabetic (letters only) for valid Jira-style IDs
+    if "-" in idea_id:
+        prefix = idea_id.split("-", 1)[0]
+        if not prefix.isalpha():
+            return False
+
+    return True
+
+
 def _project_key_for(idea_id: str | None) -> str | None:
     """Return the project key for story-timing rows (e.g. ``TK``, ``FA``).
 
@@ -51,28 +87,17 @@ def _project_key_for(idea_id: str | None) -> str | None:
     when nothing parses — phase timers accept ``None`` and store NULL.
     
     Handles malformed inputs gracefully by returning None instead of crashing.
-    Returns ``None`` for inputs lacking digits (e.g., plain text without numbers).
-    Returns ``None`` for inputs with non-alphabetic prefixes (e.g., "123-456" or "123abc-456").
     """
-    # Explicit None guard at the start — fails fast without attempting string parsing
-    if not idea_id:
-        return None
-    
+    # If Jira project key is explicitly configured, use it (overrides idea_id prefix)
+    # This allows using any idea_id even if it's malformed, as long as the project key is set
     if settings.jira_project_key:
         return settings.jira_project_key
     
-    # Reject obviously malformed inputs early
-    if not idea_id.strip():
+    # Early validation: reject invalid idea_ids before attempting extraction
+    if not _is_valid_idea_id(idea_id):
         return None
-    
-    # Explicitly check for specific malformed inputs like '--', '-', '', ' '
-    if idea_id in ('--', '-', '', ' '):
-        return None
-    
-    # Must contain at least one digit to be a valid story ID
-    if not any(c.isdigit() for c in idea_id):
-        return None
-        
+
+    # Extract project key from idea_id (fallback path)
     if "-" in idea_id:
         prefix = idea_id.split("-", 1)[0]
         # Ensure prefix is alphabetic (contains only letters)
