@@ -38,17 +38,40 @@ def patched_karen(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def patched_karen_and_models(tmp_path, monkeypatch):
-    """Patch both KAREN and models to use temp directories."""
+def patched_karen_and_provider(tmp_path, monkeypatch):
+    """Patch KAREN's complaint storage and the board provider used by KAREN.
+
+    KAREN writes generated ideas through ``board.get_provider().add(...)``.
+    Tests mock the provider so they don't depend on idea-board local
+    storage (deleted in PR 6) or on a live Jira backend.
+
+    Returns a tuple ``(tmp_path, fake_provider)`` so tests can inspect
+    the captured ``add(...)`` calls.
+    """
     import idea_board.karen as karen_module
-    import idea_board.models as models_module
 
     monkeypatch.setattr(karen_module, "COMPLAINTS_FILE", tmp_path / "complaints.json")
-    monkeypatch.setattr(models_module, "IDEAS_FILE", tmp_path / "ideas.json")
-    # Prevent obsidian sync from failing
-    monkeypatch.setattr(models_module, "VAULT_IDEAS_DIR", tmp_path / "vault_ideas")
-    (tmp_path / "vault_ideas").mkdir()
-    return tmp_path
+
+    fake_provider = MagicMock()
+    next_id = {"n": 0}
+
+    def _fake_add(title, description, source="generic", category="feature", **_kwargs):
+        next_id["n"] += 1
+        item = MagicMock()
+        item.id = f"TK-{next_id['n']:03d}"
+        item.title = title
+        item.description = description
+        item.source = source
+        item.category = category
+        return item
+
+    fake_provider.add.side_effect = _fake_add
+    fake_provider.add_comment.return_value = None
+    fake_provider.load_all.return_value = []
+
+    monkeypatch.setattr("board.get_provider", lambda: fake_provider)
+    monkeypatch.setattr("board.factory.get_provider", lambda: fake_provider)
+    return tmp_path, fake_provider
 
 
 # ============================================================================
@@ -207,9 +230,9 @@ class TestIdeaGeneration:
         return mock_client
 
     @patch("ollama.Client")
-    def test_generate_ideas_from_complaint(self, mock_client_cls, patched_karen_and_models):
-        """Mock Ollama, verify ideas are created with source='karen'."""
-        from idea_board.models import load_ideas
+    def test_generate_ideas_from_complaint(self, mock_client_cls, patched_karen_and_provider):
+        """Mock Ollama and provider; verify provider.add is called with source='karen'."""
+        _tmp, fake_provider = patched_karen_and_provider
 
         mock_client_cls.return_value = self._mock_ollama_response(
             json.dumps([{
@@ -223,13 +246,17 @@ class TestIdeaGeneration:
         idea_ids = generate_ideas_from_complaint(complaint)
 
         assert len(idea_ids) == 1
-        ideas = load_ideas()
-        assert ideas[0].source == "karen"
-        assert ideas[0].title == "Speed up search indexing"
+        assert fake_provider.add.call_count == 1
+        add_kwargs = fake_provider.add.call_args.kwargs
+        assert add_kwargs["title"] == "Speed up search indexing"
+        assert add_kwargs["source"] == "karen"
+        assert add_kwargs["category"] == "performance"
 
     @patch("ollama.Client")
-    def test_complaint_links_to_ideas(self, mock_client_cls, patched_karen_and_models):
+    def test_complaint_links_to_ideas(self, mock_client_cls, patched_karen_and_provider):
         """Complaint's generated_idea_ids is populated after generation."""
+        _tmp, fake_provider = patched_karen_and_provider
+
         mock_client_cls.return_value = self._mock_ollama_response(
             json.dumps([
                 {"title": "Idea A", "description": "Desc A", "category": "ux"},
@@ -241,13 +268,16 @@ class TestIdeaGeneration:
         idea_ids = generate_ideas_from_complaint(complaint)
 
         assert len(idea_ids) == 2
+        assert fake_provider.add.call_count == 2
         loaded = load_complaints()
         assert loaded[0].state == "processed"
         assert loaded[0].generated_idea_ids == idea_ids
 
     @patch("ollama.Client")
-    def test_handles_empty_response(self, mock_client_cls, patched_karen_and_models):
+    def test_handles_empty_response(self, mock_client_cls, patched_karen_and_provider):
         """No ideas generated when LLM returns bad JSON."""
+        _tmp, fake_provider = patched_karen_and_provider
+
         mock_client_cls.return_value = self._mock_ollama_response(
             "I have no suggestions."
         )
@@ -256,10 +286,13 @@ class TestIdeaGeneration:
         idea_ids = generate_ideas_from_complaint(complaint)
 
         assert idea_ids == []
+        assert fake_provider.add.call_count == 0
 
     @patch("ollama.Client")
-    def test_handles_llm_error(self, mock_client_cls, patched_karen_and_models):
+    def test_handles_llm_error(self, mock_client_cls, patched_karen_and_provider):
         """Returns empty list when Ollama call fails."""
+        _tmp, fake_provider = patched_karen_and_provider
+
         mock_client = MagicMock()
         mock_client.chat.side_effect = Exception("Connection refused")
         mock_client_cls.return_value = mock_client
@@ -268,3 +301,4 @@ class TestIdeaGeneration:
         idea_ids = generate_ideas_from_complaint(complaint)
 
         assert idea_ids == []
+        assert fake_provider.add.call_count == 0

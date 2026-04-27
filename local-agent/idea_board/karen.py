@@ -309,6 +309,21 @@ def generate_ideas_from_complaint(complaint: Complaint) -> list[str]:
 # FLASK BLUEPRINT — API + WEB PAGE
 # ============================================================================
 
+def _jira_browse_base() -> str:
+    """Return the Jira base URL for browse links, or empty string if unconfigured.
+
+    Used by the KAREN page to render generated-story links straight to Jira
+    instead of the (deprecated) local /ideas route.
+    """
+    try:
+        from agent.config import settings
+
+        url = (settings.jira_url or "").strip().rstrip("/")
+        return url
+    except Exception:
+        return ""
+
+
 karen_bp = Blueprint("karen", __name__)
 
 
@@ -433,10 +448,16 @@ def _render_karen_page(active: list[Complaint], total: int, resolved: int) -> st
             state_class = c.state
             ideas_html = ""
             if c.generated_idea_ids:
+                # KAREN-generated stories now live in Jira; link straight there
+                # rather than the (deprecated) local /ideas route.
+                jira_base = _jira_browse_base()
                 links = ", ".join(
-                    f'<a href="/ideas">{iid}</a>' for iid in c.generated_idea_ids
+                    f'<a href="{jira_base}/browse/{iid}" target="_blank" rel="noopener">{iid}</a>'
+                    if jira_base
+                    else iid
+                    for iid in c.generated_idea_ids
                 )
-                ideas_html = f'<div class="ideas">Ideas generated: {links}</div>'
+                ideas_html = f'<div class="ideas">Stories generated: {links}</div>'
 
             complaints_html += f"""
             <div class="complaint {state_class}" id="{c.id}">
@@ -463,7 +484,6 @@ def _render_karen_page(active: list[Complaint], total: int, resolved: int) -> st
     <p class="subtitle">Kinetic Aggression Routing Enhancement Network</p>
     <div class="nav">
         <a href="/">Hub</a>
-        <a href="/ideas">Ideas</a>
         <a href="/news">News Config</a>
         <a href="/karen" class="active">KAREN</a>
     </div>
