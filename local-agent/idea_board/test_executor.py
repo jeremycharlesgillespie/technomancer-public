@@ -108,3 +108,22 @@ class TestProjectKeyFor:
         """_project_key_for should extract TK from TK-500."""
         with patch.object(settings, 'jira_project_key', None):
             assert _project_key_for("TK-500") == "TK"
+
+    # ---------------------------------------------------------------------------
+    # Malformed input edge cases (TK-1039)
+    # -------------------------------
+
+    def test_returns_none_for_double_dash(self):
+        """_project_key_for should return None for '--' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for('--') is None
+
+    def test_returns_none_for_single_dash(self):
+        """_project_key_for should return None for '-' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for('-') is None
+
+    def test_returns_none_for_space(self):
+        """_project_key_for should return None for ' ' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for(' ') is None

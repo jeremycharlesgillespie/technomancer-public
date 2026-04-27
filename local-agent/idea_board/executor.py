@@ -61,7 +61,7 @@ def _project_key_for(idea_id: str | None) -> str | None:
     if not idea_id or not idea_id.strip():
         return None
     
-    # Explicitly check for empty string and whitespace-only inputs
+    # Explicitly check for placeholder/empty inputs that should be treated as None
     if idea_id in ('--', '-', '', ' '):
         return None
     
