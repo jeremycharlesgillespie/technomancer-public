@@ -1365,6 +1365,11 @@ def _build_workflow_section(idea: Any) -> str:
         "Do NOT try to deploy, merge, or restart anything.\n"
         "Do NOT call add_idea() or create ideas in production code — only in tests.\n"
         "\nJust write code, write tests, and commit. The executor handles the rest.\n"
+        "\n## EDGE CASE COVERAGE\n"
+        "When you write or update tests, include at least one boundary case "
+        "(empty input, None, malformed value, wrong type) alongside the happy "
+        "path. The harness scoring rewards tests that actually exercise edge "
+        "cases — a happy-path-only test is graded as a smoke test.\n"
         "\n## TESTING RULES\n"
         "Tests use `@patch('agent.module_name.thing')` to mock dependencies.\n"
         "This ONLY works if `thing` is imported at module level.\n"
@@ -1412,6 +1417,11 @@ def _build_workflow_section_external(idea: Any) -> str:
         "\n**YOUR JOB IS DONE AFTER COMMITTING.**\n"
         "\nDo NOT try to deploy, merge, push, or restart anything.\n"
         "Just write code, write tests, and commit. The executor handles the rest.\n"
+        "\n## EDGE CASE COVERAGE\n"
+        "When you write or update tests, include at least one boundary case "
+        "(empty input, None, malformed value, wrong type) alongside the happy "
+        "path. The harness scoring rewards tests that actually exercise edge "
+        "cases.\n"
     )
 
 
@@ -2843,6 +2853,40 @@ def execute_idea(
                         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                         capture_output=True, text=True, cwd=str(project_root),
                     ).stdout.strip()
+
+                    # Detect "no_op_pass": pytest passed but the branch
+                    # has zero commits ahead of main and no working-tree
+                    # diff. This happens when the model calls finish()
+                    # without editing — tests pass against unchanged code,
+                    # the push silently no-ops (or fails with src refspec),
+                    # and the harness records a false success. Catch it
+                    # here so the failure_log carries a clear signal
+                    # instead of "git_push_refspec_failed".
+                    ahead_check = subprocess.run(
+                        ["git", "rev-list", "--count", f"main..{branch}"],
+                        capture_output=True, text=True, cwd=str(project_root),
+                    )
+                    commits_ahead = int(
+                        (ahead_check.stdout or "0").strip() or "0"
+                    )
+                    diff_check = subprocess.run(
+                        ["git", "diff", "--stat", "main", "HEAD"],
+                        capture_output=True, text=True, cwd=str(project_root),
+                    )
+                    has_diff = bool(diff_check.stdout.strip())
+                    if commits_ahead == 0 and not has_diff:
+                        state.log(
+                            f"no_op_pass: branch '{branch}' has 0 commits "
+                            f"ahead of main and no diff. Tests passed but "
+                            f"the model never edited any source. Skipping "
+                            f"push — this is not a real success."
+                        )
+                        # Reset deploy_sha so the orchestrator's
+                        # success = bool(inner.deploy_sha) check at
+                        # ab_executor.py:397 classifies this as failed.
+                        state.deploy_sha = ""
+                        return
+
                     sha_result = subprocess.run(
                         ["git", "rev-parse", "HEAD"],
                         capture_output=True, text=True, cwd=str(project_root),

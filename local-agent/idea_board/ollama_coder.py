@@ -285,6 +285,10 @@ class OllamaCoder:
         # Read by _build_fix_prompt to inject a strong nudge when the
         # model called finish() without editing anything.
         self.prev_round_edit_count: int | None = None
+        # Per-round flag: set True once the inner loop has injected the
+        # "you called finish() with zero edits" nudge so we don't loop
+        # on it. Reset alongside _round_edit_count in _run_rounds.
+        self._nudge_sent_this_round: bool = False
 
     # ------------------------------------------------------------------
     # Cancellation
@@ -375,6 +379,7 @@ class OllamaCoder:
             # inner loop runs so the *next* round's _build_fix_prompt
             # can see whether the model actually edited anything.
             self._round_edit_count = 0
+            self._nudge_sent_this_round = False
 
             # Run inner tool-calling loop
             messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
@@ -595,6 +600,34 @@ class OllamaCoder:
                 })
 
                 if name == "finish":
+                    # Mid-round zero-edit nudge: model called finish() but
+                    # never invoked edit_file or write_file this round.
+                    # Reading and searching are not work; the round-2
+                    # fallback nudge in _build_fix_prompt only fires AFTER
+                    # an entire wasted round. Catch it now (turn 0+) so
+                    # the model gets one chance to actually edit before
+                    # we waste the round. Fire at most once per round.
+                    if (
+                        self._round_edit_count == 0
+                        and not self._nudge_sent_this_round
+                        and turn < self.max_turns - 2
+                    ):
+                        self._nudge_sent_this_round = True
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "You called finish() but you have not made any "
+                                "edits this round. Reading and searching are not "
+                                "work. Use edit_file or write_file to change the "
+                                "source, then call finish() again. If after "
+                                "careful reading you genuinely believe no code "
+                                "change is needed, say so explicitly in "
+                                "finish(summary=...) on your next call — but "
+                                "think twice; the tests are not currently passing."
+                            ),
+                        })
+                        self._log("[OllamaCoder] Mid-round no-edit nudge injected")
+                        break  # restart the turn loop after the nudge
                     # Self-review pass on round 0 if model finished very quickly
                     if round_num == 0 and not self_reviewed and turn < 3:
                         self_reviewed = True
@@ -1262,7 +1295,6 @@ class OllamaCoder:
         (commit 22f4cbe).
         """
         return (
-            "/no_think\n"
             "You are an expert Python software engineer implementing Jira stories.\n"
             "\n"
             "The harness has already set up an isolated worktree on a clean branch "
@@ -1297,7 +1329,9 @@ class OllamaCoder:
             "\n"
             "Rules:\n"
             "  - Always read a file before editing it.\n"
-            "  - Make minimal, focused changes that solve the task.\n"
+            "  - Make the smallest change that satisfies the story. Do not refactor "
+            "unrelated code, rename imports, or reformat files outside the story's "
+            "stated WHAT/WHERE.\n"
             "  - Writing tests is your call — if the change is non-trivial, add or "
             "update tests under `tests/unit/` so the harness can verify your work. "
             "Skip tests only for purely cosmetic changes or when the story "
@@ -1306,6 +1340,16 @@ class OllamaCoder:
             "not the assertion (unless the test was actually wrong).\n"
             "  - Call finish(summary=...) when you're done. The harness takes it "
             "from there.\n"
+            "\n"
+            "Workflow per round:\n"
+            "  1. Locate ONCE: list_files / search_code to find the source and "
+            "test file. Do not repeat the same search — it will not return new results.\n"
+            "  2. Read in full: the failing test file, then the source file.\n"
+            "  3. Plan briefly (one sentence) what you will change.\n"
+            "  4. Edit with edit_file or write_file. If you do not edit anything, "
+            "you have not done the work.\n"
+            "  5. finish(summary=...) ONLY after at least one edit_file/write_file "
+            "succeeded this round. Calling finish() with zero edits is wrong.\n"
         )
 
     def _build_initial_prompt(self) -> str:

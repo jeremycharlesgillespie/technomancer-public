@@ -19,16 +19,31 @@ class TestNullProjectHandling:
         assert _project_key_for("") is None
 
     def test_project_key_for_invalid_format_returns_none(self):
-        """Test that _project_key_for returns None for invalid format."""
-        assert _project_key_for("invalid") is None
-        assert _project_key_for("123-456") is None
-        assert _project_key_for("abc-") is None
+        """Test that _project_key_for returns None for invalid format.
+
+        Patches settings.jira_project_key to None so the explicit-Jira
+        override at executor.py:89 doesn't short-circuit the prefix
+        parser. With JIRA_PROJECT_KEY set in the host's .env (e.g. "TK"),
+        the function correctly returns that value for every input — but
+        this test exists to exercise the *prefix-fallback* path.
+        """
+        with patch("idea_board.executor.settings") as mock_settings:
+            mock_settings.jira_project_key = None
+            assert _project_key_for("invalid") is None
+            assert _project_key_for("123-456") is None
+            assert _project_key_for("abc-") is None
 
     def test_project_key_for_valid_format_returns_prefix(self):
-        """Test that _project_key_for returns correct prefix for valid format."""
-        assert _project_key_for("TK-123") == "TK"
-        assert _project_key_for("FA-456") == "FA"
-        assert _project_key_for("ABC-789") == "ABC"
+        """Test that _project_key_for returns correct prefix for valid format.
+
+        Patches settings.jira_project_key to None — see sibling test
+        for rationale.
+        """
+        with patch("idea_board.executor.settings") as mock_settings:
+            mock_settings.jira_project_key = None
+            assert _project_key_for("TK-123") == "TK"
+            assert _project_key_for("FA-456") == "FA"
+            assert _project_key_for("ABC-789") == "ABC"
 
     def test_state_timer_with_none_idea_id(self):
         """Test that _state_timer correctly handles None idea_id."""
