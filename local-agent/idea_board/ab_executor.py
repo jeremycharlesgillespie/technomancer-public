@@ -233,10 +233,26 @@ def _reset_to_main(project_root: Path, state: ExecutionState) -> bool:
     that's been merged-to-main on the next run, so this duplicates the
     sequence ``aim/worker._ensure_git_clean`` performs at the worker
     boundary.
+
+    Uses --detach to avoid worktree collision check when main is already
+    checked out in the primary repo.
     """
     try:
+        # Get the current main SHA to detach from
+        result = subprocess.run(
+            ["git", "rev-parse", "main"],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(project_root),
+        )
+        if result.returncode != 0:
+            state.log(f"[AB] failed to get main SHA: {result.stderr}")
+            return False
+        
+        main_sha = result.stdout.strip()
+        
+        # Detach from main SHA to avoid worktree collision
         subprocess.run(
-            ["git", "checkout", "--force", "main"],
+            ["git", "checkout", "--detach", main_sha],
             capture_output=True, text=True, timeout=15,
             cwd=str(project_root),
         )

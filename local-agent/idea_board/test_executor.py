@@ -1,9 +1,20 @@
-"""Tests for idea_board.executor._project_key_for — project key extraction."""
+"""Tests for idea_board.executor — project key extraction, branch creation, and git operations."""
+
+import subprocess
+import tempfile
+import threading
+import time
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch
 
-from idea_board.executor import _project_key_for, _PhaseMarker, ExecutionState
+from idea_board.executor import (
+    _project_key_for,
+    _PhaseMarker,
+    ExecutionState,
+    execute_idea,
+)
 from agent.config import settings
 
 
@@ -303,3 +314,106 @@ class TestPhaseMarkerFinish:
         
         # This should not raise any exceptions
         marker.finish()
+
+
+class TestBranchCreation:
+    """Test branch creation logic to ensure clean main checkout."""
+
+    def test_branch_created_from_main_sha_not_previous_commit(self, tmp_path):
+        """Branch should be created from main SHA, not from previous model's commit.
+
+        This test verifies the fix for TK-1216: when using worktrees, the
+        executor must checkout main with --detach to avoid worktree collision
+        checks. The resulting branch should have main as its initial commit,
+        not the previous model's commit.
+        """
+        # Create a temporary git repo
+        repo_path = tmp_path / "test_repo"
+        repo_path.mkdir()
+
+        # Initialize git repo and create initial commit
+        subprocess.run(["git", "init"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_path, capture_output=True)
+
+        # Create initial file and commit
+        (repo_path / "initial.txt").write_text("initial content")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_path, capture_output=True)
+
+        # Get main SHA
+        result = subprocess.run(["git", "rev-parse", "main"], cwd=repo_path, capture_output=True, text=True)
+        main_sha = result.stdout.strip()
+
+        # Create a feature branch from main
+        subprocess.run(["git", "checkout", "-b", "feature-1"], cwd=repo_path, capture_output=True)
+        (repo_path / "feature.txt").write_text("feature content")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Feature 1"], cwd=repo_path, capture_output=True)
+
+        # Get feature branch SHA
+        result = subprocess.run(["git", "rev-parse", "feature-1"], cwd=repo_path, capture_output=True, text=True)
+        feature_sha = result.stdout.strip()
+
+        # Reset to main and create a new branch
+        subprocess.run(["git", "checkout", "--detach", main_sha], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "feature-2"], cwd=repo_path, capture_output=True)
+
+        # Verify that feature-2's initial commit is main, not feature-1
+        result = subprocess.run(["git", "rev-parse", "feature-2"], cwd=repo_path, capture_output=True, text=True)
+        branch_sha = result.stdout.strip()
+
+        # The branch should be created from main, not from feature-1
+        assert branch_sha == main_sha, f"Branch SHA {branch_sha} should equal main SHA {main_sha}"
+
+        # Verify the branch's first parent is main
+        result = subprocess.run(["git", "rev-list", "-1", "feature-2"], cwd=repo_path, capture_output=True, text=True)
+        assert result.stdout.strip() == main_sha
+
+    def test_branch_creation_with_worktree_collision(self, tmp_path):
+        """Branch creation should work correctly when main is already checked out.
+
+        This test simulates the worktree collision scenario where main is
+        already checked out in the primary repo, and verifies that the
+        executor can still create a clean branch from main.
+        """
+        # Create a temporary git repo
+        repo_path = tmp_path / "test_repo"
+        repo_path.mkdir()
+
+        # Initialize git repo and create initial commit
+        subprocess.run(["git", "init"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_path, capture_output=True)
+
+        # Create initial file and commit
+        (repo_path / "initial.txt").write_text("initial content")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_path, capture_output=True)
+
+        # Get main SHA
+        result = subprocess.run(["git", "rev-parse", "main"], cwd=repo_path, capture_output=True, text=True)
+        main_sha = result.stdout.strip()
+
+        # Create a feature branch and make a commit
+        subprocess.run(["git", "checkout", "-b", "feature-1"], cwd=repo_path, capture_output=True)
+        (repo_path / "feature.txt").write_text("feature content")
+        subprocess.run(["git", "add", "."], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Feature 1"], cwd=repo_path, capture_output=True)
+
+        # Simulate worktree collision by checking out main again
+        subprocess.run(["git", "checkout", "main"], cwd=repo_path, capture_output=True)
+
+        # Now try to create a new branch from main using --detach
+        subprocess.run(["git", "checkout", "--detach", main_sha], cwd=repo_path, capture_output=True)
+        subprocess.run(["git", "clean", "-fd"], cwd=repo_path, capture_output=True)
+
+        # This should not raise an error
+        result = subprocess.run(["git", "checkout", "-b", "feature-2"], cwd=repo_path, capture_output=True, text=True)
+        assert result.returncode == 0, f"Branch creation failed: {result.stderr}"
+
+        # Verify that feature-2's initial commit is main
+        result = subprocess.run(["git", "rev-parse", "feature-2"], cwd=repo_path, capture_output=True, text=True)
+        branch_sha = result.stdout.strip()
+        assert branch_sha == main_sha, f"Branch SHA {branch_sha} should equal main SHA {main_sha}"

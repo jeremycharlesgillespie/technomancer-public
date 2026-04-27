@@ -2093,16 +2093,18 @@ def execute_idea(
                 try:
                     state.log("--- Setting up fresh branch ---")
 
-                    # Step 1: Force switch to main
-                    current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
-                    if current != "main":
-                        state.log(f"Resetting from {current} to main...")
-                        _git(["checkout", "--force", "main"])
-                        _git(["branch", "-D", current])
-                        state.log(f"Deleted old branch {current}")
+                    # Step 1: Get main SHA to detach from (avoids worktree collision)
+                    main_result = _git(["rev-parse", "main"])
+                    if main_result.returncode != 0:
+                        raise RuntimeError(f"Failed to get main SHA: {main_result.stderr}")
+
+                    main_sha = main_result.stdout.strip()
+                    state.log(f"Detaching from main SHA: {main_sha[:7]}")
+
+                    # Detach from main SHA to avoid worktree collision
+                    _git(["checkout", "--detach", main_sha])
 
                     # Step 2: Clean working directory
-                    _git(["checkout", "--force", "main"])
                     _git(["clean", "-fd"], timeout=30)
                     state.log("Working directory clean")
 
