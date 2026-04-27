@@ -54,11 +54,15 @@ def _project_key_for(idea_id: str | None) -> str | None:
     Returns ``None`` for inputs lacking digits (e.g., plain text without numbers).
     Returns ``None`` for inputs with non-alphabetic prefixes (e.g., "123-456" or "123abc-456").
     """
+    # Explicit None guard at the start — fails fast without attempting string parsing
+    if not idea_id:
+        return None
+    
     if settings.jira_project_key:
         return settings.jira_project_key
     
     # Reject obviously malformed inputs early
-    if not idea_id or not idea_id.strip():
+    if not idea_id.strip():
         return None
     
     # Explicitly check for specific malformed inputs like '--', '-', '', ' '
