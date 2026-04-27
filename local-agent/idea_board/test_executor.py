@@ -7,6 +7,41 @@ from idea_board.executor import _project_key_for, _PhaseMarker, ExecutionState
 from agent.config import settings
 
 
+# ---------------------------------------------------------------------------
+# Helper function for missing project key scenarios
+# ---------------------------------------------------------- -------------------
+
+def _assert_missing_key_handling(
+    test_func,
+    expected_result: str | None = None,
+    message: str = "Expected None for missing project key"
+):
+    """Reusable assertion helper for testing missing project key scenarios.
+
+    This helper encapsulates the common pattern of testing that _project_key_for
+    returns None (or a specific fallback) when given inputs that should not
+    produce a valid project key. It provides a clear contract for failure
+    scenarios and ensures consistent test logic.
+
+    Args:
+        test_func: A callable that takes a string input and returns the result
+                   of _project_key_for(input).
+        expected_result: The expected result (typically None, but can be a
+                         fallback string like "FA" when jira_project_key is set).
+        message: Custom assertion message describing the expected behavior.
+
+    Example:
+        _assert_missing_key_handling(
+            lambda x: _project_key_for(x),
+            expected_result=None,
+            message="Should return None for empty string"
+        )
+    """
+    with patch.object(settings, 'jira_project_key', None):
+        result = test_func()
+        assert result == expected_result, message
+
+
 class TestProjectKeyFor:
     """Test _project_key_for function with various inputs."""
 
