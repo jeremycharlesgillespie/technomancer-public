@@ -36,7 +36,7 @@ from agent.ollama_client import (
     acquire_coder_priority,
     release_coder_priority,
 )
-from agent.accountability import verify_git_clean, create_branch, GitDirtyError
+from agent.accountability import GitDirtyError
 
 logger = logging.getLogger(__name__)
 
@@ -602,10 +602,16 @@ class OllamaCoder:
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
         try:
-            # Enforce readiness gate for code generation tools
-            if name in ("read_file", "write_file", "run_bash"):
-                self._check_readiness_gate()
-            
+            # Note: there is no per-tool-call git/branch readiness gate here.
+            # The AIW worker runs in an isolated A/B worktree (see
+            # idea_board/ab_worktree.py and idea_board/ab_executor.py); the
+            # branch is created once by execute_idea(branch_suffix=...) and
+            # the worktree is torn down at the end of the run. A previous
+            # gate (TK-1095) re-checked git-clean and created a fresh branch
+            # on EVERY tool call, which (a) targeted the main repo instead
+            # of the worktree, (b) doubled the TK- prefix when idea_id was
+            # already "TK-NNNN", and (c) created hundreds of stale branches
+            # per run when the model invoked tools in a tight loop. Removed.
             if name == "read_file":
                 # The model frequently passes ``offset`` and ``length`` even
                 # when the schema doesn't declare them, expecting Read-tool-
@@ -644,30 +650,6 @@ class OllamaCoder:
             raise e
         except Exception as exc:
             return f"ERROR: {exc}"
-
-    def _check_readiness_gate(self) -> None:
-        """Check that the environment is ready for code generation.
-
-        This method ensures that:
-        1. The git repository is clean (no uncommitted changes)
-        2. A new branch can be created for this work
-
-        Raises:
-            EnvironmentReadyError: If either check fails.
-        """
-        # Check 1: Verify git is clean
-        git_clean_result = verify_git_clean()
-        if "VERIFIED" not in git_clean_result:
-            # If git is not clean, raise EnvironmentReadyError
-            raise EnvironmentReadyError("Git repository is not clean")
-        
-        # Check 2: Try to create a branch for this work
-        # We'll use a branch name based on the idea ID
-        branch_name = f"TK-{self.idea_id}"
-        branch_result = create_branch(branch_name)
-        if "ERROR" in branch_result:
-            # If branch creation fails, raise EnvironmentReadyError
-            raise EnvironmentReadyError("Failed to create branch")
 
     # Project subdirectories that we recognize as legitimate re-anchor points
     # when the model emits an absolute path with a typo'd or wrong project prefix.
@@ -1362,46 +1344,6 @@ def _find_related_tests_for_files(changed_files: list[str], project_root: Path) 
             if candidate.exists():
                 related.add(str(candidate))
     return sorted(related)
-
-
-def _check_environment_ready() -> None:
-    """Check that the environment is ready for code generation.
-
-    Raises:
-        EnvironmentReadyError: If git repository is not clean.
-    """
-    # Check that git repository is clean
-    try:
-        result = verify_git_clean()
-        if not result.startswith("VERIFIED:"):
-            raise EnvironmentReadyError("Git repository is not clean")
-    except GitDirtyError:
-        raise EnvironmentReadyError("Git repository is not clean")
-    except Exception:
-        # If we can't verify git status, we can't proceed safely
-        raise EnvironmentReadyError("Failed to verify git status")
-
-
-def create_branch(short_name: str) -> str:
-    """Create and checkout new branch with timestamp.
-    
-    This is a helper function that mimics the behavior of safe_update.create_branch
-    but is available for use in the OllamaCoder context.
-    
-    Args:
-        short_name: Short name for the branch
-        
-    Returns:
-        The created branch name
-        
-    Raises:
-        EnvironmentReadyError: If branch creation fails
-    """
-    try:
-        from safe_update import create_branch as safe_create_branch
-        return safe_create_branch(short_name)
-    except Exception as e:
-        raise EnvironmentReadyError(f"Failed to create branch: {str(e)}")
 
 
 def _parse_tool_calls_from_content(content: str) -> list[dict[str, Any]]:
