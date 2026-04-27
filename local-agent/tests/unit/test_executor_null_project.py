@@ -24,7 +24,7 @@ import pytest
 
 from idea_board.executor import ExecutionState, _state_timer
 from agent import story_timings
-from agent.story_timings import init_db, DB_PATH, _local
+from agent.story_timings import init_db, _local
 
 
 @pytest.fixture(autouse=True)
@@ -63,8 +63,12 @@ class TestNullProjectIntegration:
         with timer:
             pass
 
-        # Verify the timing row was created with NULL project
-        conn = sqlite3.connect(str(DB_PATH))
+        # Verify the timing row was created with NULL project. Read the
+        # path off the live module — the autouse fixture monkeypatches
+        # ``agent.story_timings.DB_PATH``, so importing the symbol at the
+        # top of this file would freeze the pre-patch value and miss the
+        # row entirely (it'd query the production DB instead).
+        conn = sqlite3.connect(str(story_timings.DB_PATH))
         conn.row_factory = sqlite3.Row
         cursor = conn.execute(
             "SELECT * FROM story_phase_timings WHERE run_id = ?",
