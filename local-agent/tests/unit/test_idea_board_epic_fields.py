@@ -4,7 +4,7 @@ and the corresponding API endpoints in idea_board/web.py.
 
 Covers:
 - Model: new fields serialize/deserialize, defaults, auto-populate order
-- API: PUT /api/ideas/<id>/order, PUT /api/ideas/<id>/context
+- API: PUT /api/jira/<id>/order, PUT /api/jira/<id>/context
 - Rendering: epic_prompt uses execution_order and epic_context
 """
 
@@ -158,156 +158,9 @@ class TestGetExecutionOrder:
             assert result == []
 
 
-# ============================================================================
-# API ENDPOINT TESTS
-# ============================================================================
-
-
-class TestApiSetOrder:
-    """Tests for PUT /api/ideas/<id>/order."""
-
-    def test_set_order_success(self, client):
-        epic = Idea(
-            id="idea-001", title="Epic", description="D",
-            idea_type="epic", execution_order=["idea-002", "idea-003"],
-        )
-        with patch("idea_board.web.set_execution_order", return_value=epic):
-            resp = client.put(
-                "/api/ideas/idea-001/order",
-                data=json.dumps({"order": ["idea-002", "idea-003"]}),
-                content_type="application/json",
-            )
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert data["execution_order"] == ["idea-002", "idea-003"]
-
-    def test_set_order_not_found(self, client):
-        with patch("idea_board.web.set_execution_order", return_value=None):
-            resp = client.put(
-                "/api/ideas/idea-999/order",
-                data=json.dumps({"order": ["idea-001"]}),
-                content_type="application/json",
-            )
-            assert resp.status_code == 404
-
-    def test_set_order_invalid_body(self, client):
-        resp = client.put(
-            "/api/ideas/idea-001/order",
-            data=json.dumps({"order": "not-a-list"}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
-
-    def test_set_order_missing_body(self, client):
-        resp = client.put(
-            "/api/ideas/idea-001/order",
-            data=json.dumps({}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
-
-
-class TestApiSetContext:
-    """Tests for PUT /api/ideas/<id>/context."""
-
-    def test_set_context_success(self, client):
-        epic = Idea(
-            id="idea-001", title="Epic", description="D",
-            idea_type="epic", epic_context="New context",
-        )
-        with patch("idea_board.web.set_epic_context", return_value=epic):
-            resp = client.put(
-                "/api/ideas/idea-001/context",
-                data=json.dumps({"context": "New context"}),
-                content_type="application/json",
-            )
-            assert resp.status_code == 200
-            data = resp.get_json()
-            assert data["epic_context"] == "New context"
-
-    def test_set_context_not_found(self, client):
-        with patch("idea_board.web.set_epic_context", return_value=None):
-            resp = client.put(
-                "/api/ideas/idea-999/context",
-                data=json.dumps({"context": "whatever"}),
-                content_type="application/json",
-            )
-            assert resp.status_code == 404
-
-    def test_set_context_empty_string_allowed(self, client):
-        """Clearing epic context with empty string should work."""
-        epic = Idea(id="idea-001", title="Epic", description="D", epic_context="")
-        with patch("idea_board.web.set_epic_context", return_value=epic):
-            resp = client.put(
-                "/api/ideas/idea-001/context",
-                data=json.dumps({"context": ""}),
-                content_type="application/json",
-            )
-            assert resp.status_code == 200
-
-
-class TestEpicPromptUsesOrder:
-    """Tests that epic_prompt endpoint respects execution_order and epic_context."""
-
-    def test_epic_prompt_includes_context(self, client):
-        epic = Idea(
-            id="idea-001", title="Big Feature", description="Build it",
-            idea_type="epic", epic_context="This is the big picture",
-        )
-        story = Idea(
-            id="idea-002", title="Story 1", description="Do thing",
-            parent_id="idea-001", state="proposed",
-        )
-        with patch("idea_board.web.get_idea", return_value=epic), \
-             patch("idea_board.web.load_ideas", return_value=[epic, story]), \
-             patch("idea_board.web.get_execution_order", return_value=["idea-002"]):
-            resp = client.get("/api/ideas/idea-001/epic_prompt")
-            assert resp.status_code == 200
-            prompt = resp.get_json()["prompt"]
-            assert "This is the big picture" in prompt
-            assert "Epic Context" in prompt
-
-    def test_epic_prompt_respects_order(self, client):
-        epic = Idea(
-            id="idea-001", title="Epic", description="D",
-            idea_type="epic",
-            execution_order=["idea-003", "idea-002"],
-        )
-        story1 = Idea(
-            id="idea-002", title="Second", description="Do second",
-            parent_id="idea-001", state="proposed",
-        )
-        story2 = Idea(
-            id="idea-003", title="First", description="Do first",
-            parent_id="idea-001", state="proposed",
-        )
-        with patch("idea_board.web.get_idea", return_value=epic), \
-             patch("idea_board.web.load_ideas", return_value=[epic, story1, story2]), \
-             patch("idea_board.web.get_execution_order", return_value=["idea-003", "idea-002"]):
-            resp = client.get("/api/ideas/idea-001/epic_prompt")
-            prompt = resp.get_json()["prompt"]
-            # "First" story should appear before "Second" in the prompt
-            assert prompt.index("First") < prompt.index("Second")
-
-    def test_epic_prompt_no_context_omits_section(self, client):
-        epic = Idea(
-            id="idea-001", title="Epic", description="D",
-            idea_type="epic", epic_context="",
-        )
-        story = Idea(
-            id="idea-002", title="Story", description="Do",
-            parent_id="idea-001", state="proposed",
-        )
-        with patch("idea_board.web.get_idea", return_value=epic), \
-             patch("idea_board.web.load_ideas", return_value=[epic, story]), \
-             patch("idea_board.web.get_execution_order", return_value=["idea-002"]):
-            resp = client.get("/api/ideas/idea-001/epic_prompt")
-            prompt = resp.get_json()["prompt"]
-            assert "Epic Context" not in prompt
-
 
 class TestApiExecuteRouting:
-    """POST /api/ideas/<id>/execute — epics go through the Executor Manager
+    """POST /api/jira/<id>/execute — epics go through the Executor Manager
     (execute_epic), stories/tasks go directly through execute_idea.
 
     This is the entry point the Execute button hits; it's the glue that ties
@@ -329,10 +182,10 @@ class TestApiExecuteRouting:
         with patch("idea_board.web.get_idea", return_value=epic), \
              patch("idea_board.executor.execute_epic", return_value=self._fake_state()) as mock_ep, \
              patch("idea_board.executor.execute_idea") as mock_ei:
-            resp = client.post("/api/ideas/idea-001/execute")
+            resp = client.post("/api/jira/idea-001/execute")
             assert resp.status_code == 200
             assert resp.get_json() == {
-                "status": "executing", "idea_id": "idea-001", "pid": 12345,
+                "status": "executing", "key": "idea-001", "pid": 12345,
             }
             mock_ep.assert_called_once_with("idea-001")
             mock_ei.assert_not_called()
@@ -345,7 +198,7 @@ class TestApiExecuteRouting:
         with patch("idea_board.web.get_idea", return_value=story), \
              patch("idea_board.executor.execute_epic") as mock_ep, \
              patch("idea_board.executor.execute_idea", return_value=self._fake_state()) as mock_ei:
-            resp = client.post("/api/ideas/idea-002/execute")
+            resp = client.post("/api/jira/idea-002/execute")
             assert resp.status_code == 200
             mock_ei.assert_called_once_with("idea-002")
             mock_ep.assert_not_called()
@@ -358,14 +211,14 @@ class TestApiExecuteRouting:
         with patch("idea_board.web.get_idea", return_value=task), \
              patch("idea_board.executor.execute_epic") as mock_ep, \
              patch("idea_board.executor.execute_idea", return_value=self._fake_state()) as mock_ei:
-            resp = client.post("/api/ideas/idea-003/execute")
+            resp = client.post("/api/jira/idea-003/execute")
             assert resp.status_code == 200
             mock_ei.assert_called_once_with("idea-003")
             mock_ep.assert_not_called()
 
     def test_execute_missing_idea_returns_404(self, client):
         with patch("idea_board.web.get_idea", return_value=None):
-            resp = client.post("/api/ideas/idea-999/execute")
+            resp = client.post("/api/jira/idea-999/execute")
             assert resp.status_code == 404
 
     def test_execute_epic_returning_none_is_500(self, client):
@@ -375,5 +228,5 @@ class TestApiExecuteRouting:
         )
         with patch("idea_board.web.get_idea", return_value=epic), \
              patch("idea_board.executor.execute_epic", return_value=None):
-            resp = client.post("/api/ideas/idea-001/execute")
+            resp = client.post("/api/jira/idea-001/execute")
             assert resp.status_code == 500

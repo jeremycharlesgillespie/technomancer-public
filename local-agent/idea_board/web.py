@@ -5,12 +5,9 @@ Runs on port 8322, binds to 0.0.0.0 for Tailscale/LAN access.
 Starts as a daemon thread from the Discord bot process.
 
 Routes:
-    GET  /                        — HTML dashboard
-    GET  /api/ideas               — JSON list (filterable: ?state=proposed)
-    POST /api/ideas/<id>/vote     — Vote on an idea
-    POST /api/ideas/<id>/comment  — Add a comment
-    POST /api/ideas/<id>/execute  — Trigger Claude Code execution
-    GET  /api/ideas/<id>/log/stream — SSE stream for live execution log
+    GET  /                        — HTML hub homepage
+    POST /api/jira/<key>/execute  — Trigger Claude Code execution
+    GET  /api/jira/<key>/log/stream — SSE stream for live execution log
     GET  /api/aim/logs/tail       — SSE stream of aim.log + worker.log lines filtered by idea
     GET  /api/aim/projects        — JSON list of available project names for dropdown population
     GET  /api/errors              — JSON list of recent crashes from crash_log.md
@@ -152,1046 +149,11 @@ BOARD_PORT: int = settings.board_port
 app = Flask(__name__)
 
 
-# ============================================================================
-# Discord notifications for idea lifecycle events
-# ============================================================================
-
-_BRIDGE_TOKEN_FILE = Path(__file__).parent.parent / ".bridge_token"
-
-
-def _send_to_discord(message: str) -> None:
-    """Send a message to the llm_chat Discord channel via the bridge API."""
-    try:
-        import requests as _req
-
-        if not _BRIDGE_TOKEN_FILE.exists():
-            logger.debug("Bridge token file not found, skipping Discord notification")
-            return
-        token = _BRIDGE_TOKEN_FILE.read_text(encoding="utf-8").strip()
-        _req.post(
-            "http://127.0.0.1:8321/api/send",
-            headers={"X-Bridge-Token": token, "Content-Type": "application/json"},
-            json={"message": message},
-            timeout=5,
-        )
-    except Exception:
-        logger.debug("Could not send Discord notification via bridge", exc_info=True)
-
-
-def _notify_idea_complete(idea_id: str, title: str) -> None:
-    """Send a Discord notification when an idea is marked done."""
-    _send_to_discord(f"✅ **Idea Completed** — **{idea_id}**: {title}")
-
-
-def _notify_idea_failed(idea_id: str, title: str, error_text: str) -> None:
-    """Send a Discord notification when an idea execution fails."""
-    snippet = error_text[:200] if len(error_text) > 200 else error_text
-    _send_to_discord(f"❌ **Idea Failed** — **{idea_id}**: {title}\n{snippet}")
-
-
-# ============================================================================
-# LLM CONVERSATION FOR IDEAS
-# ============================================================================
-
-IDEA_DISCUSSION_PROMPT = """You are an eager, thoughtful software engineer discussing an improvement idea
-with your manager ({owner_name}). You originally proposed this idea. Now {owner_name} is
-giving you feedback and asking questions about it.
-
-YOUR IDEA:
-Title: {title}
-Description: {description}
-Category: {category}
-
-CONVERSATION SO FAR:
-{conversation}
-
-RULES:
-- Be direct, specific, and technical — {owner_name} is a senior software engineer
-- If they ask you to explain, give concrete technical details
-- If they push back, consider their point honestly — maybe the idea needs refinement
-- If they're interested, suggest next steps or implementation approach
-- If you realize the idea is bad based on their feedback, say so honestly
-- Keep responses concise (2-4 sentences) — this is a chat, not an essay
-- Reference specific files, functions, or patterns from the Technomancer codebase when relevant
-- You're enthusiastic but not pushy — respect your manager's judgment"""
-
-
-def _generate_idea_reply(idea: "Idea") -> str | None:
-    """Generate an LLM reply to the latest comment on an idea.
-
-    Creates an isolated Agent instance (never touches the main bot)
-    and sends it the full idea context + conversation history.
-
-    Args:
-        idea: The Idea with updated comments
-
-    Returns:
-        The LLM's reply text, or None on failure
-    """
-    # Build conversation history
-    conv_lines = []
-    for c in idea.comments:
-        role = f"{settings.owner_name} (manager)" if c.author == "owner" else "You (engineer)"
-        conv_lines.append(f"{role}: {c.text}")
-    conversation = "\n".join(conv_lines)
-
-    prompt = IDEA_DISCUSSION_PROMPT.format(
-        owner_name=settings.owner_name,
-        title=idea.title,
-        description=idea.description,
-        category=idea.category,
-        conversation=conversation,
-    )
-
-    try:
-        import ollama
-
-        client = ollama.Client(host="http://127.0.0.1:11434")
-        response = client.chat(
-            model="qwen3.5:9b",
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.7, "num_ctx": 8192},
-        )
-        content = response.get("message", {}).get("content", "") or ""
-
-        # Strip thinking tags if present
-        import re
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-
-        return content if content else None
-    except Exception as e:
-        logger.error(f"[IdeaBoard] LLM reply error: {e}")
-        return None
-
-
-# ============================================================================
-# HTML DASHBOARD
-# ============================================================================
-
-DASHBOARD_CSS = """
-:root {
-    --bg: #1a1a1a; --surface: #252525; --text: #e0e0e0; --muted: #888;
-    --accent: #66b3ff; --green: #4caf50; --red: #f44336; --orange: #ff9800;
-    --border: #333;
-}
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-       background: var(--bg); color: var(--text); padding: 20px; line-height: 1.6; }
-h1 { margin-bottom: 1rem; color: var(--accent); }
-.stats { color: var(--muted); margin-bottom: 2rem; font-size: 0.9rem; }
-.section-title { font-size: 1.2rem; color: var(--accent); margin: 2rem 0 1rem;
-                 border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }
-.card { background: var(--surface); border-radius: 8px; padding: 1.2rem;
-        margin-bottom: 1rem; border-left: 4px solid var(--border); }
-.card.proposed { border-left-color: var(--accent); }
-.card.approved { border-left-color: var(--green); }
-.card.vetoed { border-left-color: var(--red); opacity: 0.6; }
-.card.executing { border-left-color: var(--orange); }
-.card.done { border-left-color: var(--green); opacity: 0.7; }
-.card.failed { border-left-color: var(--red); opacity: 0.7; }
-.card.refining { border-left-color: var(--orange); }
-.card-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
-.card-meta { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.5rem; }
-.card-desc { margin-bottom: 0.8rem; font-size: 0.95rem; }
-.desc-section { margin-bottom: 0.4rem; line-height: 1.5; }
-.desc-label { font-weight: 600; color: var(--accent); }
-.desc-text { margin-bottom: 0.4rem; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 4px;
-         font-size: 0.75rem; margin-right: 4px; }
-.badge-cat { background: #333; color: var(--accent); }
-.badge-src { background: #333; color: var(--muted); }
-.badge-state { background: #333; font-weight: 600; }
-.badge-state.proposed { color: var(--accent); }
-.badge-state.approved { color: var(--green); }
-.badge-state.vetoed { color: var(--red); }
-.badge-state.executing { color: var(--orange); }
-.badge-state.done { color: var(--green); }
-.badge-state.failed { color: var(--red); }
-.actions { margin-top: 0.8rem; display: flex; gap: 8px; flex-wrap: wrap; }
-.btn { padding: 6px 16px; border: none; border-radius: 4px; cursor: pointer;
-       font-size: 0.85rem; font-weight: 500; }
-.btn-approve { background: var(--green); color: white; }
-.btn-veto { background: var(--red); color: white; }
-.btn-execute { background: var(--orange); color: white; }
-.btn-run { background: #2196F3; color: white; font-weight: 600; }
-.btn:hover { opacity: 0.85; }
-.comments { margin-top: 0.8rem; padding-top: 0.8rem; border-top: 1px solid var(--border);
-            max-height: 400px; overflow-y: auto; }
-.comment { font-size: 0.9rem; margin-bottom: 0.6rem; padding: 8px 12px;
-           border-radius: 6px; max-width: 85%; }
-.comment.owner { background: #1a3a5c; margin-left: auto; }
-.comment.llm { background: #2d2d2d; }
-.comment-author { font-weight: 600; font-size: 0.75rem; margin-bottom: 2px; }
-.comment-author.owner { color: var(--accent); }
-.comment-author.llm { color: var(--green); }
-.comment-text { line-height: 1.5; }
-.comment-time { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
-.comment-form { display: flex; gap: 8px; margin-top: 0.8rem; }
-.comment-input { flex: 1; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
-                 border-radius: 6px; color: var(--text); font-size: 0.9rem; }
-.comment-input:focus { outline: none; border-color: var(--accent); }
-.btn-comment { background: var(--accent); color: white; }
-.thinking { color: var(--muted); font-style: italic; padding: 8px 12px;
-            animation: pulse 1.5s ease-in-out infinite; }
-@keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
-@keyframes fadeIn { from { opacity: 0; transform: translateX(-50%) translateY(20px); }
-                    to { opacity: 1; transform: translateX(-50%) translateY(0); } }
-.exec-log { background: #111; border: 1px solid var(--border); border-radius: 6px;
-            padding: 10px; margin-top: 0.8rem; max-height: 300px; overflow-y: auto;
-            font-family: 'Cascadia Code', 'Consolas', monospace; font-size: 0.8rem;
-            line-height: 1.4; white-space: pre-wrap; color: #ccc; }
-.exec-log .line { margin: 0; }
-.exec-header { display: flex; justify-content: space-between; align-items: center;
-               margin-top: 0.8rem; }
-.exec-status { font-size: 0.85rem; }
-.btn-cancel { background: var(--red); color: white; font-size: 0.8rem; padding: 4px 12px; }
-.btn-done { background: var(--green); color: white; }
-.btn-delete { background: transparent; color: var(--muted); border: 1px solid var(--border);
-              font-size: 0.8rem; }
-.badge-type { font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-.badge-epic { background: #4a1a6b; color: #c084fc; }
-.badge-story { background: #1a3a5c; color: var(--accent); }
-.badge-task { background: #333; color: var(--muted); }
-.epic-group { border: 2px solid #4a1a6b; border-radius: 10px; padding: 0.5rem;
-              margin-bottom: 1.2rem; background: rgba(74,26,107,0.08); }
-.epic-group > .card.epic-card { border-left-width: 6px; margin-bottom: 0.5rem; }
-.epic-children { margin-left: 1.5rem; border-left: 2px dashed #4a1a6b;
-                 padding-left: 0.75rem; }
-.epic-children > .card.child-card { opacity: 0.95; font-size: 0.95em; }
-.btn-epic-copy { background: #7c3aed; color: white; font-weight: 600; }
-.archive-section { margin-top: 2rem; border-top: 2px solid var(--border); padding-top: 1rem; }
-.drag-child.drag-over { border-top: 2px solid #7c3aed; }
-.drag-handle { display: inline-block; vertical-align: middle; }
-.archive-toggle { cursor: pointer; color: var(--muted); font-size: 1.1rem; padding: 0.8rem 0;
-                  user-select: none; list-style: none; }
-.archive-toggle::-webkit-details-marker { display: none; }
-.archive-toggle::before { content: '\\25B6  '; font-size: 0.8rem; }
-details[open] > .archive-toggle::before { content: '\\25BC  '; }
-.archive-toggle:hover { color: var(--accent); }
-"""
-
-
-def _format_description(raw: str) -> str:
-    """Format a structured idea description into HTML sections.
-
-    Detects WHAT:, WHY:, HOW:, BENEFITS:, COST:, UNLOCKS: headers and renders
-    each as a labeled section.  Works whether headers are on separate lines or
-    inline (all on one line).  Falls back to plain text for descriptions
-    without any recognised section headers.
-    """
-    import re
-
-    section_labels = {
-        "WHAT": "What",
-        "WHY": "Why",
-        "HOW": "How",
-        "BENEFITS": "Benefits",
-        "COST": "Cost",
-        "UNLOCKS": "Unlocks",
-    }
-
-    # Check if description has structured sections (inline or newline-separated)
-    header_keys = "|".join(section_labels)
-    has_sections = bool(re.search(rf"(?:^|\b)(?:{header_keys}):", raw))
-
-    if not has_sections:
-        return html.escape(raw)
-
-    # Split on section headers — works for both newline-separated and inline
-    pattern = rf"((?:{header_keys}):)"
-    splits = re.split(pattern, raw.strip())
-
-    parts = []
-    # First element might be text before any header
-    if splits[0].strip():
-        parts.append(f'<div class="desc-text">{html.escape(splits[0].strip())}</div>')
-
-    # Process header + content pairs
-    i = 1
-    while i < len(splits) - 1:
-        header_key = splits[i].rstrip(":")
-        content = splits[i + 1].strip()
-        label = section_labels.get(header_key, header_key)
-        parts.append(
-            f'<div class="desc-section">'
-            f'<span class="desc-label">{html.escape(label)}:</span> '
-            f'{html.escape(content)}'
-            f'</div>'
-        )
-        i += 2
-
-    return "\n".join(parts)
-
-
-def _render_idea_card(idea: dict[str, Any], is_child: bool = False) -> str:
-    """Render a single idea as an HTML card."""
-    eid = html.escape(idea["id"])
-    title = html.escape(idea["title"])
-    desc = _format_description(idea["description"])
-    state = idea["state"]
-    category = html.escape(idea.get("category", ""))
-    source = html.escape(idea.get("source", ""))
-    idea_type = idea.get("idea_type", "story")
-    parent_id = idea.get("parent_id", "")
-    created = idea.get("created", "")[:10]
-    claude_vote = idea.get("votes", {}).get("claude") or "—"
-    owner_vote = idea.get("votes", {}).get("owner") or "—"
-    owner_display = html.escape(settings.owner_name)
-
-    # Comments section — chat-style conversation
-    comments_html = ""
-    for c in idea.get("comments", []):
-        author = html.escape(c["author"])
-        text = html.escape(c["text"])
-        ts = c.get("timestamp", "")[:16]
-        label = owner_display if author == "owner" else "LLM"
-        comments_html += (
-            f'<div class="comment {author}">'
-            f'<div class="comment-author {author}">{label}</div>'
-            f'<div class="comment-text">{text}</div>'
-            f'<div class="comment-time">{ts}</div>'
-            f'</div>\n'
-        )
-
-    # Action buttons
-    actions = ""
-    approve_btn = f'<button class="btn btn-approve" onclick="doVote(\'{eid}\',\'approve\')">Approve</button>'
-    veto_btn = f'<button class="btn btn-veto" onclick="doVote(\'{eid}\',\'veto\')">Veto</button>'
-    copy_btn = f'<button class="btn btn-execute" onclick="doExecute(\'{eid}\')">Copy for Claude Code</button>'
-    epic_copy_btn = f'<button class="btn btn-epic-copy" onclick="doExecuteEpic(\'{eid}\')">Copy Epic for Claude Code</button>'
-    run_btn = f'<button class="btn btn-run" onclick="doRunExecute(\'{eid}\')">Execute</button>'
-    done_btn = f'<button class="btn btn-done" onclick="doMarkDone(\'{eid}\')">Mark Done</button>'
-    delete_btn = f'<button class="btn btn-delete" onclick="doDelete(\'{eid}\')">Delete</button>'
-    clipboard_btn = epic_copy_btn if idea_type == "epic" else copy_btn
-    if state in ("proposed", "refining"):
-        actions = f'<div class="actions">{approve_btn} {veto_btn} {run_btn} {clipboard_btn} {delete_btn}</div>'
-    elif state == "approved":
-        actions = f'<div class="actions">{run_btn} {clipboard_btn} {done_btn} {delete_btn}</div>'
-    elif state == "failed":
-        actions = f'<div class="actions">{run_btn} {clipboard_btn} {done_btn} {delete_btn}</div>'
-    elif state == "done":
-        actions = f'<div class="actions">{delete_btn}</div>'
-    elif state == "vetoed":
-        actions = f'<div class="actions">{delete_btn}</div>'
-    elif state == "executing":
-        actions = f"""
-        <div class="exec-header">
-            <span class="exec-status thinking">Claude Code is working...</span>
-            <button class="btn btn-cancel" onclick="doCancel('{eid}')">Cancel</button>
-        </div>
-        <div class="exec-log" id="log-{eid}">Loading execution log...</div>"""
-
-    # Show execution log for done/failed (collapsed)
-    exec_log_section = ""
-    if state in ("done", "failed") and idea.get("execution_log"):
-        log_text = html.escape(idea["execution_log"][-2000:])
-        exec_log_section = f"""
-        <details style="margin-top: 0.8rem;">
-            <summary style="cursor:pointer;color:var(--muted);font-size:0.85rem">Execution Log</summary>
-            <div class="exec-log">{log_text}</div>
-        </details>"""
-
-    type_badge = f'<span class="badge badge-type badge-{idea_type}">{idea_type}</span>'
-    parent_link = ""
-    if parent_id:
-        safe_pid = html.escape(parent_id)
-        parent_link = f' &bull; <a href="#" onclick="document.querySelector(\'[data-idea=\\x27{safe_pid}\\x27]\')?.scrollIntoView({{behavior:\\x27smooth\\x27}});return false" style="color:var(--accent)">parent: {safe_pid}</a>'
-
-    # Epic context section (only for epics with context set)
-    epic_context_html = ""
-    if idea_type == "epic" and idea.get("epic_context"):
-        ctx_text = html.escape(idea["epic_context"])
-        epic_context_html = f"""
-        <div class="epic-context" style="margin: 0.8rem 0; padding: 0.6rem; background: rgba(74,26,107,0.15); border-radius: 6px; border-left: 3px solid #7c3aed;">
-            <div style="font-size: 0.8rem; color: #c084fc; font-weight: 600; margin-bottom: 4px;">Epic Context</div>
-            <div style="font-size: 0.9rem; white-space: pre-wrap;">{ctx_text}</div>
-        </div>
-        <div style="margin-top: 4px;">
-            <button class="btn" style="font-size:0.75rem;padding:3px 8px;background:transparent;color:var(--muted);border:1px solid var(--border)" onclick="editEpicContext('{eid}')">Edit Context</button>
-        </div>"""
-    elif idea_type == "epic":
-        epic_context_html = f"""
-        <div style="margin: 0.5rem 0;">
-            <button class="btn" style="font-size:0.75rem;padding:3px 8px;background:transparent;color:var(--muted);border:1px solid var(--border)" onclick="editEpicContext('{eid}')">Add Epic Context</button>
-        </div>"""
-
-    child_class = " child-card" if is_child else ""
-    epic_class = " epic-card" if idea_type == "epic" else ""
-
-    return f"""
-    <div class="card {state}{epic_class}{child_class}" data-idea="{eid}">
-        <div class="card-title">{eid}: {title}</div>
-        <div class="card-meta">
-            {type_badge}
-            <span class="badge badge-state {state}">{state}</span>
-            <span class="badge badge-cat">{category}</span>
-            <span class="badge badge-src">{source}</span>
-            &bull; {created} &bull; Claude: {claude_vote} &bull; {owner_display}: {owner_vote}{parent_link}
-        </div>
-        <div class="card-desc">{desc}</div>
-        {epic_context_html}
-        {actions}
-        {exec_log_section}
-        <div class="comments">
-            {comments_html}
-            <form class="comment-form" onsubmit="doComment(event,'{eid}')">
-                <input class="comment-input" name="text" placeholder="Add a comment..." autocomplete="off">
-                <button class="btn btn-comment" type="submit">Send</button>
-            </form>
-        </div>
-    </div>"""
-
-
-def _render_dashboard(ideas: list[dict[str, Any]]) -> str:
-    """Render the full HTML dashboard page."""
-    owner_name_js = html.escape(settings.owner_name, quote=True)
-    # Build lookup for parent→children
-    by_id: dict[str, dict] = {i["id"]: i for i in ideas}
-    children_of: dict[str, list[dict]] = {}
-    for idea in ideas:
-        pid = idea.get("parent_id")
-        if pid:
-            children_of.setdefault(pid, []).append(idea)
-
-    # Group top-level ideas by state (exclude children — they render under parents)
-    groups: dict[str, list[dict]] = {}
-    for idea in ideas:
-        if idea.get("parent_id") and idea["parent_id"] in by_id:
-            continue  # will be rendered under its parent
-        state = idea["state"]
-        groups.setdefault(state, []).append(idea)
-
-    # Render active sections (visible by default)
-    active_states = ["proposed", "refining", "approved", "executing"]
-    archived_states = ["done", "failed", "vetoed"]
-
-    def _order_children(parent: dict, kids: list[dict]) -> list[dict]:
-        """Sort children by execution_order if set, else by creation order."""
-        order = parent.get("execution_order", [])
-        if not order:
-            return kids
-        kid_by_id = {k["id"]: k for k in kids}
-        ordered = [kid_by_id[oid] for oid in order if oid in kid_by_id]
-        # Append any children not in execution_order at the end
-        ordered_ids = set(order)
-        for k in kids:
-            if k["id"] not in ordered_ids:
-                ordered.append(k)
-        return ordered
-
-    def _render_state_section(state: str, items: list[dict]) -> str:
-        html_out = f'<h2 class="section-title">{state.upper()} ({len(items)})</h2>\n'
-        for idea in items:
-            idea_type = idea.get("idea_type", "story")
-            kids = children_of.get(idea["id"], [])
-            if idea_type == "epic" or kids:
-                html_out += '<div class="epic-group">\n'
-                html_out += _render_idea_card(idea)
-                if kids:
-                    ordered_kids = _order_children(idea, kids)
-                    epic_id = html.escape(idea["id"])
-                    html_out += f'<div class="epic-children" id="children-{epic_id}" data-epic="{epic_id}">\n'
-                    for idx, child in enumerate(ordered_kids):
-                        child_id = html.escape(child["id"])
-                        html_out += f'<div class="drag-child" draggable="true" data-child-id="{child_id}" data-order="{idx}">\n'
-                        html_out += f'<span class="drag-handle" style="cursor:grab;color:var(--muted);margin-right:6px;font-size:0.9rem" title="Drag to reorder">&#9776;</span>'
-                        html_out += _render_idea_card(child, is_child=True)
-                        html_out += '</div>\n'
-                    html_out += '</div>\n'
-                html_out += '</div>\n'
-            else:
-                html_out += _render_idea_card(idea)
-        return html_out
-
-    sections_html = ""
-    for state in active_states:
-        items = groups.get(state, [])
-        if items:
-            sections_html += _render_state_section(state, items)
-
-    # Render archived sections (collapsed by default)
-    archived_count = sum(len(groups.get(s, [])) for s in archived_states)
-    archived_html = ""
-    for state in archived_states:
-        items = groups.get(state, [])
-        if items:
-            archived_html += _render_state_section(state, items)
-
-    if archived_html:
-        sections_html += (
-            f'<details class="archive-section">'
-            f'<summary class="archive-toggle">'
-            f'Archived ({archived_count} completed/vetoed/failed)'
-            f'</summary>\n'
-            f'{archived_html}'
-            f'</details>\n'
-        )
-
-    total = len(ideas)
-    proposed = len(groups.get("proposed", []))
-    now = datetime.now().strftime("%I:%M %p")
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ideas - Technomancer Hub</title>
-    <style>{DASHBOARD_CSS}
-.nav {{ margin-bottom: 1.5rem; display: flex; gap: 12px; flex-wrap: wrap; }}
-.nav a {{ color: var(--accent); text-decoration: none; padding: 6px 14px;
-         border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; }}
-.nav a:hover, .nav a.active {{ background: var(--accent); color: #000; }}
-</style>
-</head>
-<body>
-    <h1>Technomancer Hub</h1>
-    <div class="nav">
-        <a href="/">Hub</a>
-        <a href="/ideas" class="active">Ideas</a>
-        <a href="/news">News Config</a>
-        <a href="/karen">KAREN</a>
-        <a href="/analytics">Discord Analytics</a>
-    </div>
-    <p class="stats" id="stats">{total} ideas total &bull; {proposed} pending review &bull; Last refresh: {now}</p>
-
-    <div id="evolve-panel" class="card" style="border-left-color: var(--accent); margin-bottom: 1.5rem;">
-        <div class="card-title">Evolve Status</div>
-        <div id="evolve-content" style="color: var(--muted);">Loading...</div>
-    </div>
-
-    {sections_html if sections_html else '<p style="color:var(--muted)">No ideas yet. They will start appearing hourly.</p>'}
-
-    <script>
-    const ownerName = '{owner_name_js}';
-    async function doVote(id, v) {{
-        const card = document.querySelector(`[data-idea="${{id}}"]`) || event.target.closest('.card');
-        const btn = event.target;
-        btn.disabled = true;
-        btn.textContent = '...';
-        await fetch(`/api/ideas/${{id}}/vote`, {{
-            method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'owner', vote: v}})
-        }});
-        // Update card state visually
-        if (card) {{
-            card.className = 'card ' + (v === 'approve' ? 'approved' : 'vetoed');
-            const stateEl = card.querySelector('.badge-state');
-            if (stateEl) {{ stateEl.textContent = v === 'approve' ? 'approved' : 'vetoed'; stateEl.className = 'badge badge-state ' + (v === 'approve' ? 'approved' : 'vetoed'); }}
-            const actions = card.querySelector('.actions');
-            if (v === 'veto' && actions) actions.remove();
-        }}
-    }}
-    async function doExecute(id) {{
-        const btn = event.target;
-        btn.disabled = true;
-        btn.textContent = 'Copying...';
-
-        // Fetch the formatted prompt
-        const resp = await fetch(`/api/ideas/${{id}}/prompt`);
-        const data = await resp.json();
-        const prompt = data.prompt;
-
-        // Copy to clipboard
-        let copied = false;
-        try {{
-            await navigator.clipboard.writeText(prompt);
-            copied = true;
-        }} catch(e) {{
-            // Fallback for non-HTTPS or older browsers
-            const ta = document.createElement('textarea');
-            ta.value = prompt;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            copied = document.execCommand('copy');
-            document.body.removeChild(ta);
-        }}
-
-        // Show toast notification
-        showToast(copied
-            ? 'Instructions copied to clipboard! Paste into Claude Code.'
-            : 'Could not copy — open Claude Code and use the prompt below.');
-
-        // Update button
-        btn.textContent = copied ? 'Copied to clipboard' : 'Copy failed';
-        btn.style.background = copied ? 'var(--green)' : 'var(--red)';
-
-        // Mark as approved
-        await fetch(`/api/ideas/${{id}}/vote`, {{
-            method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
-        }});
-
-        // Reset button after 5 seconds
-        setTimeout(() => {{
-            btn.textContent = 'Copy for Claude Code';
-            btn.style.background = '';
-            btn.disabled = false;
-        }}, 5000);
-    }}
-
-    async function doRunExecute(id) {{
-        if (!confirm('Run Claude Code autonomously on this idea? It will use safe_update workflow.')) return;
-        const btn = event.target;
-        btn.disabled = true;
-        btn.textContent = 'Starting...';
-        try {{
-            const resp = await fetch(`/api/ideas/${{id}}/execute`, {{method: 'POST'}});
-            const data = await resp.json();
-            if (resp.ok) {{
-                showToast('Claude Code execution started! Watch the log below.');
-                btn.textContent = 'Running...';
-                btn.style.background = 'var(--green)';
-                const card = document.querySelector(`[data-idea="${{id}}"]`);
-                if (card) startLogStream(id, card);
-            }} else {{
-                showToast(data.error || 'Failed to start execution');
-                btn.textContent = 'Execute';
-                btn.style.background = '';
-                btn.disabled = false;
-            }}
-        }} catch(e) {{
-            showToast('Error: ' + e.message);
-            btn.textContent = 'Execute';
-            btn.style.background = '';
-            btn.disabled = false;
-        }}
-    }}
-
-    async function doExecuteEpic(id) {{
-        const btn = event.target;
-        btn.disabled = true;
-        btn.textContent = 'Copying epic...';
-
-        const resp = await fetch(`/api/ideas/${{id}}/epic_prompt`);
-        const data = await resp.json();
-        const prompt = data.prompt;
-
-        let copied = false;
-        try {{
-            await navigator.clipboard.writeText(prompt);
-            copied = true;
-        }} catch(e) {{
-            const ta = document.createElement('textarea');
-            ta.value = prompt;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
-            ta.select();
-            copied = document.execCommand('copy');
-            document.body.removeChild(ta);
-        }}
-
-        showToast(copied
-            ? 'Epic instructions copied! Paste into Claude Code to implement all stories.'
-            : 'Could not copy — try manually.');
-
-        btn.textContent = copied ? 'Epic copied!' : 'Copy failed';
-        btn.style.background = copied ? 'var(--green)' : 'var(--red)';
-
-        // Approve all child stories
-        const cards = document.querySelectorAll('[data-idea]');
-        for (const card of cards) {{
-            const parentLink = card.querySelector('a[onclick*="' + id + '"]');
-            if (parentLink) {{
-                const childId = card.dataset.idea;
-                await fetch(`/api/ideas/${{childId}}/vote`, {{
-                    method: 'POST', headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
-                }});
-            }}
-        }}
-        // Approve the epic itself
-        await fetch(`/api/ideas/${{id}}/vote`, {{
-            method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{voter: 'owner', vote: 'approve'}})
-        }});
-
-        setTimeout(() => {{
-            btn.textContent = 'Copy Epic for Claude Code';
-            btn.style.background = '';
-            btn.disabled = false;
-        }}, 5000);
-    }}
-
-    async function doMarkDone(id) {{
-        await fetch(`/api/ideas/${{id}}/done`, {{method: 'POST'}});
-        showToast('Marked as done.');
-        const card = document.querySelector(`[data-idea="${{id}}"]`);
-        if (card) {{
-            card.className = 'card done';
-            const stateEl = card.querySelector('.badge-state');
-            if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
-            const actions = card.querySelector('.actions');
-            if (actions) {{ actions.innerHTML = '<button class="btn btn-delete" onclick="doDelete(\\'' + id + '\\')">Delete</button>'; }}
-        }}
-    }}
-
-    async function doDelete(id) {{
-        if (!confirm('Permanently delete this idea?')) return;
-        await fetch(`/api/ideas/${{id}}`, {{method: 'DELETE'}});
-        showToast('Idea deleted.');
-        const card = document.querySelector(`[data-idea="${{id}}"]`);
-        if (card) card.remove();
-    }}
-
-    function showToast(msg) {{
-        // Remove existing toast
-        const old = document.getElementById('toast');
-        if (old) old.remove();
-
-        const toast = document.createElement('div');
-        toast.id = 'toast';
-        toast.textContent = msg;
-        toast.style.cssText = `
-            position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
-            background: var(--surface); color: var(--text); padding: 14px 28px;
-            border-radius: 8px; border: 1px solid var(--accent); font-size: 0.95rem;
-            z-index: 9999; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-            animation: fadeIn 0.3s ease;
-        `;
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 4000);
-    }}
-
-    async function doCancel(id) {{
-        if (!confirm('Cancel this execution?')) return;
-        await fetch(`/api/ideas/${{id}}/cancel`, {{method: 'POST'}});
-    }}
-
-    function updateCardState(card, statusEl, ideaState) {{
-        const stateEl = card.querySelector('.badge-state');
-        const cancelBtn = card.querySelector('.btn-cancel');
-        if (ideaState === 'done') {{
-            if (stateEl) {{ stateEl.textContent = 'done'; stateEl.className = 'badge badge-state done'; }}
-            card.className = 'card done';
-            if (statusEl) {{ statusEl.textContent = 'Done'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--green)'; }}
-        }} else if (ideaState === 'failed') {{
-            if (stateEl) {{ stateEl.textContent = 'failed'; stateEl.className = 'badge badge-state failed'; }}
-            card.className = 'card failed';
-            if (statusEl) {{ statusEl.textContent = 'Failed'; statusEl.className = 'exec-status'; statusEl.style.color = 'var(--red)'; }}
-        }}
-        if (cancelBtn && (ideaState === 'done' || ideaState === 'failed')) cancelBtn.remove();
-    }}
-
-    function startLogPoll(id, card, initialLines) {{
-        const logEl = document.getElementById(`log-${{id}}`);
-        const statusEl = card.querySelector('.exec-status');
-        let allLines = initialLines || [];
-        if (statusEl) statusEl.textContent = 'Claude Code is working... (polling)';
-
-        const iv = setInterval(async () => {{
-            try {{
-                const resp = await fetch(`/api/ideas/${{id}}/log`);
-                if (!resp.ok) return;
-                const data = await resp.json();
-                allLines = data.lines || [];
-                if (logEl && allLines.length > 0) {{
-                    logEl.textContent = allLines.slice(-50).join('\\n');
-                    logEl.scrollTop = logEl.scrollHeight;
-                }}
-                if (statusEl && data.is_alive) {{
-                    statusEl.textContent = `Claude Code is working... (${{Math.round(data.elapsed)}}s)`;
-                }}
-                if (!data.is_alive || data.idea_state === 'done' || data.idea_state === 'failed') {{
-                    clearInterval(iv);
-                    updateCardState(card, statusEl, data.idea_state);
-                }}
-            }} catch (_) {{
-                // Network error during poll — keep trying
-            }}
-        }}, 3000);
-    }}
-
-    function startLogStream(id, card) {{
-        const logEl = document.getElementById(`log-${{id}}`);
-        const statusEl = card.querySelector('.exec-status');
-        let allLines = [];
-        let sseOpened = false;
-        const src = new EventSource(`/api/ideas/${{id}}/log/stream`);
-
-        src.addEventListener('log', (e) => {{
-            sseOpened = true;
-            const data = JSON.parse(e.data);
-            allLines = allLines.concat(data.lines);
-            if (logEl && allLines.length > 0) {{
-                logEl.textContent = allLines.slice(-50).join('\\n');
-                logEl.scrollTop = logEl.scrollHeight;
-            }}
-        }});
-
-        src.addEventListener('state', (e) => {{
-            sseOpened = true;
-            const data = JSON.parse(e.data);
-            if (statusEl && data.is_alive) {{
-                statusEl.textContent = `Claude Code is working... (${{Math.round(data.elapsed)}}s)`;
-            }}
-        }});
-
-        src.addEventListener('done', (e) => {{
-            src.close();
-            const data = JSON.parse(e.data);
-            updateCardState(card, statusEl, data.idea_state);
-        }});
-
-        src.onerror = () => {{
-            src.close();
-            // SSE failed — fall back to polling
-            if (!sseOpened) {{
-                // Never connected successfully — start polling from scratch
-                startLogPoll(id, card, []);
-            }} else {{
-                // Had partial data — continue from where SSE left off
-                startLogPoll(id, card, allLines);
-            }}
-        }};
-    }}
-
-    // Auto-start log streaming for any cards already in executing state
-    document.querySelectorAll('.card.executing').forEach(card => {{
-        const id = card.dataset.idea;
-        if (id) startLogStream(id, card);
-    }})
-    async function doComment(e, id) {{
-        e.preventDefault();
-        const input = e.target.text;
-        const text = input.value.trim();
-        if (!text) return;
-        input.value = '';
-
-        // Show the message immediately
-        const commentsDiv = e.target.closest('.comments');
-        commentsDiv.insertAdjacentHTML('beforeend',
-            `<div class="comment owner">` +
-            `<div class="comment-author owner">${{ownerName}}</div>` +
-            `<div class="comment-text">${{text}}</div>` +
-            `</div>`
-        );
-
-        // Show thinking indicator
-        commentsDiv.insertAdjacentHTML('beforeend',
-            `<div class="thinking" id="thinking-${{id}}">LLM is thinking...</div>`
-        );
-
-        // Send to API (LLM reply happens in background)
-        await fetch(`/api/ideas/${{id}}/comment`, {{
-            method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{author: 'owner', text: text}})
-        }});
-
-        // Poll for the LLM reply (check every 2 seconds for up to 60 seconds)
-        let attempts = 0;
-        const poll = setInterval(async () => {{
-            attempts++;
-            const resp = await fetch(`/api/ideas/${{id}}`);
-            const idea = await resp.json();
-            const comments = idea.comments || [];
-            const lastComment = comments[comments.length - 1];
-            if (lastComment && lastComment.author === 'llm') {{
-                clearInterval(poll);
-                const el = document.getElementById(`thinking-${{id}}`);
-                if (el) el.remove();
-                commentsDiv.insertAdjacentHTML('beforeend',
-                    `<div class="comment llm">` +
-                    `<div class="comment-author llm">LLM</div>` +
-                    `<div class="comment-text">${{lastComment.text}}</div>` +
-                    `</div>`
-                );
-            }}
-            if (attempts >= 30) {{
-                clearInterval(poll);
-                const el = document.getElementById(`thinking-${{id}}`);
-                if (el) el.textContent = 'LLM did not respond.';
-            }}
-        }}, 2000);
-    }}
-
-    // Auto-scroll comment threads to bottom on page load
-    document.querySelectorAll('.comments').forEach(el => {{
-        el.scrollTop = el.scrollHeight;
-    }});
-
-    // Background poll for new ideas (updates stats bar, no page reload)
-    let lastIdeaCount = {total};
-    setInterval(async () => {{
-        try {{
-            const resp = await fetch('/api/ideas');
-            const ideas = await resp.json();
-            if (ideas.length > lastIdeaCount) {{
-                const diff = ideas.length - lastIdeaCount;
-                const statsEl = document.getElementById('stats');
-                if (statsEl) {{
-                    statsEl.innerHTML = `${{ideas.length}} ideas total &bull; `
-                        + `<strong style="color:var(--green)">${{diff}} new!</strong> `
-                        + `&bull; <a href="/" style="color:var(--accent)">Refresh to see</a>`;
-                }}
-                lastIdeaCount = ideas.length;
-            }}
-        }} catch(e) {{}}
-    }}, 30000);
-
-    // Evolve status polling
-    async function updateEvolveStatus() {{
-        try {{
-            const resp = await fetch('/api/evolve/status');
-            const data = await resp.json();
-            const el = document.getElementById('evolve-content');
-            if (!el) return;
-
-            if (data.running) {{
-                const pct = data.tests_total > 0
-                    ? Math.round((data.tests_completed / data.tests_total) * 100) : 0;
-                const filled = Math.round(pct / 5);
-                const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(20 - filled);
-
-                let logHtml = '';
-                const recentLog = (data.log || []).slice(-8);
-                for (const line of recentLog) {{
-                    const color = line.includes('FAIL') ? 'var(--red)'
-                        : line.includes('PASS') ? 'var(--green)' : 'var(--muted)';
-                    logHtml += `<div style="color:${{color}};font-size:0.8rem;font-family:monospace">${{line}}</div>`;
-                }}
-
-                el.innerHTML = `
-                    <div style="margin-bottom:0.5rem">
-                        <span class="thinking">Running</span> &bull;
-                        Phase: <strong>${{data.phase}}</strong> &bull;
-                        ${{data.tests_completed}}/${{data.tests_total}} tests &bull;
-                        Avg: ${{data.avg_score || 0}}/10
-                    </div>
-                    <div style="font-family:monospace;font-size:0.9rem;margin-bottom:0.5rem;color:var(--accent)">
-                        ${{bar}} ${{pct}}%
-                    </div>
-                    ${{logHtml}}
-                `;
-                document.getElementById('evolve-panel').style.borderLeftColor = 'var(--orange)';
-            }} else if (data.phase === 'complete' || data.last_run) {{
-                const lastRun = data.last_run || data.started || 'unknown';
-                const ts = lastRun.includes('T') ? lastRun.split('T')[1]?.slice(0,5) || lastRun : lastRun;
-                el.innerHTML = `
-                    Last run: ${{ts}} &bull;
-                    ${{data.tests_total || '?'}} tests &bull;
-                    Avg: ${{data.avg_score || '?'}}/10 &bull;
-                    ${{data.tests_passed || '?'}} passed
-                `;
-                document.getElementById('evolve-panel').style.borderLeftColor = 'var(--green)';
-            }} else {{
-                el.textContent = 'Never run. Type "evolve" in Discord to start.';
-            }}
-        }} catch(e) {{}}
-    }}
-
-    updateEvolveStatus();
-    setInterval(updateEvolveStatus, 5000);
-
-    // --- Epic context editing ---
-    async function editEpicContext(epicId) {{
-        const idea = await (await fetch(`/api/ideas/${{epicId}}`)).json();
-        const current = idea.epic_context || '';
-        const newCtx = prompt('Epic Context (big-picture narrative for this epic):', current);
-        if (newCtx === null) return;  // cancelled
-        await fetch(`/api/ideas/${{epicId}}/context`, {{
-            method: 'PUT', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify({{context: newCtx}})
-        }});
-        location.reload();
-    }}
-
-    // --- Drag-to-reorder stories ---
-    let dragSrcEl = null;
-    document.querySelectorAll('.drag-child').forEach(item => {{
-        item.addEventListener('dragstart', function(e) {{
-            dragSrcEl = this;
-            this.style.opacity = '0.4';
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', this.dataset.childId);
-        }});
-        item.addEventListener('dragend', function() {{
-            this.style.opacity = '1';
-            document.querySelectorAll('.drag-child').forEach(el => el.classList.remove('drag-over'));
-        }});
-        item.addEventListener('dragover', function(e) {{
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            this.classList.add('drag-over');
-        }});
-        item.addEventListener('dragleave', function() {{
-            this.classList.remove('drag-over');
-        }});
-        item.addEventListener('drop', async function(e) {{
-            e.preventDefault();
-            this.classList.remove('drag-over');
-            if (dragSrcEl === this) return;
-            const container = this.parentElement;
-            const epicId = container.dataset.epic;
-            // Reorder DOM
-            const children = [...container.querySelectorAll('.drag-child')];
-            const fromIdx = children.indexOf(dragSrcEl);
-            const toIdx = children.indexOf(this);
-            if (fromIdx < toIdx) {{
-                container.insertBefore(dragSrcEl, this.nextSibling);
-            }} else {{
-                container.insertBefore(dragSrcEl, this);
-            }}
-            // Build new order from DOM
-            const newOrder = [...container.querySelectorAll('.drag-child')].map(el => el.dataset.childId);
-            // Save to API
-            await fetch(`/api/ideas/${{epicId}}/order`, {{
-                method: 'PUT', headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{order: newOrder}})
-            }});
-            showToast('Story order updated');
-        }});
-    }});
-    </script>
-</body>
-</html>"""
 
 
 # ============================================================================
 # ROUTES
 # ============================================================================
-
-@app.route("/ideas")
-def dashboard() -> str:
-    """Serve the HTML idea board dashboard."""
-    ideas = [i.to_dict() for i in load_ideas()]
-    return _render_dashboard(ideas)
-
-
-@app.route("/analytics")
-def analytics() -> str:
-    """Serve the engagement analytics dashboard."""
-    return _render_analytics()
-
-
-@app.route("/api/analytics")
-def api_analytics() -> tuple:
-    """GET /api/analytics — engagement data as JSON."""
-    days = int(request.args.get("days", 7))
-    from agent.engagement_analytics import get_command_stats, get_daily_activity, get_top_users, get_underused_commands
-    return jsonify({
-        "days": days,
-        "commands": get_command_stats(days),
-        "daily_activity": get_daily_activity(days),
-        "top_users": get_top_users(days),
-        "underused": get_underused_commands(days),
-    })
-
-
-@app.route("/api/analytics/unused")
-def api_analytics_unused() -> tuple:
-    """GET /api/analytics/unused — detailed list of commands with zero invocations."""
-    days = int(request.args.get("days", 14))
-    from agent.engagement_analytics import get_unused_commands_detailed
-    return jsonify({
-        "days": days,
-        "definition": f"Commands with zero invocations in the last {days} days",
-        "commands": get_unused_commands_detailed(days),
-    })
-
 
 @app.route("/")
 def hub() -> str:
@@ -1199,362 +161,9 @@ def hub() -> str:
     return _render_hub()
 
 
-@app.route("/api/ideas")
-def api_ideas() -> tuple:
-    """GET /api/ideas — list all ideas, optionally filtered by state."""
-    ideas = load_ideas()
-    state_filter = request.args.get("state")
-    if state_filter:
-        ideas = [i for i in ideas if i.state == state_filter]
-    return jsonify([i.to_dict() for i in ideas])
-
-
-@app.route("/api/ideas/<idea_id>")
-def api_idea(idea_id: str) -> tuple:
-    """GET /api/ideas/<id> — get a single idea by ID."""
-    idea = get_idea(idea_id)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/vote", methods=["POST"])
-def api_vote(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/vote — record a vote."""
-    data = request.get_json(silent=True) or {}
-    voter = data.get("voter", "")
-    vote_value = data.get("vote", "")
-    if voter not in ("owner", "claude") or not vote_value:
-        return jsonify({"error": "Need voter (owner|claude) and vote"}), 400
-
-    idea = vote(idea_id, voter, vote_value)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/comment", methods=["POST"])
-def api_comment(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/comment — add a comment and get LLM reply.
-
-    When the owner posts a comment, the LLM reads the full idea context
-    and conversation history, then replies as an eager employee
-    discussing the idea with their manager.
-    """
-    data = request.get_json(silent=True) or {}
-    author = data.get("author", "owner")
-    text = data.get("text", "").strip()
-    if not text:
-        return jsonify({"error": "Need text"}), 400
-
-    idea = add_comment(idea_id, author, text)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-
-    # Notify Discord when Claude reports a failure
-    if author == "claude" and "execution failed" in text.lower():
-        _notify_idea_failed(idea_id, idea.title, text)
-
-    # If the owner posted, trigger an LLM reply in a background thread
-    if author == "owner":
-        import threading
-
-        def _llm_reply() -> None:
-            try:
-                reply = _generate_idea_reply(idea)
-                if reply:
-                    add_comment(idea_id, "llm", reply)
-            except Exception as e:
-                logger.error(f"[IdeaBoard] LLM reply failed: {e}")
-
-        threading.Thread(target=_llm_reply, daemon=True).start()
-
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/done", methods=["POST"])
-def api_done(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/done — manually mark an idea as implemented."""
-    idea = mark_done(idea_id, f"Manually marked as done by {settings.owner_name}.")
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-
-    _notify_idea_complete(idea_id, idea.title)
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>", methods=["DELETE"])
-def api_delete(idea_id: str) -> tuple:
-    """DELETE /api/ideas/<id> — permanently remove an idea from the board."""
-    if delete_idea(idea_id):
-        return jsonify({"status": "deleted", "idea_id": idea_id})
-    return jsonify({"error": "Idea not found"}), 404
-
-
-@app.route("/api/ideas/<idea_id>/type", methods=["POST"])
-def api_set_type(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/type — change an idea's type (epic/story/task)."""
-    data = request.get_json(silent=True) or {}
-    new_type = data.get("idea_type", "").strip().lower()
-    if new_type not in ("epic", "story", "task"):
-        return jsonify({"error": "idea_type must be epic, story, or task"}), 400
-
-    ideas = load_ideas()
-    for idea in ideas:
-        if idea.id == idea_id:
-            idea.idea_type = new_type
-            save_ideas(ideas)
-            return jsonify(idea.to_dict())
-    return jsonify({"error": "Idea not found"}), 404
-
-
-@app.route("/api/ideas/<idea_id>/add_story", methods=["POST"])
-def api_add_story(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/add_story — create a new story under an epic."""
-    parent = get_idea(idea_id)
-    if not parent:
-        return jsonify({"error": "Parent idea not found"}), 404
-
-    data = request.get_json(silent=True) or {}
-    title = data.get("title", "").strip()
-    description = data.get("description", "").strip()
-    if not title:
-        return jsonify({"error": "title is required"}), 400
-
-    idea = add_idea(
-        title=title,
-        description=description or f"Story under epic: {parent.title}",
-        source=parent.source,
-        category=parent.category,
-        idea_type="story",
-        parent_id=idea_id,
-    )
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/order", methods=["PUT"])
-def api_set_order(idea_id: str) -> tuple:
-    """PUT /api/ideas/<id>/order — set execution order for an epic's stories."""
-    data = request.get_json(silent=True) or {}
-    order = data.get("order")
-    if not isinstance(order, list):
-        return jsonify({"error": "order must be a list of story IDs"}), 400
-
-    idea = set_execution_order(idea_id, order)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/context", methods=["PUT"])
-def api_set_context(idea_id: str) -> tuple:
-    """PUT /api/ideas/<id>/context — set epic context narrative."""
-    data = request.get_json(silent=True) or {}
-    context = data.get("context", "")
-    if not isinstance(context, str):
-        return jsonify({"error": "context must be a string"}), 400
-
-    idea = set_epic_context(idea_id, context)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-    return jsonify(idea.to_dict())
-
-
-@app.route("/api/ideas/<idea_id>/prompt")
-def api_prompt(idea_id: str) -> tuple:
-    """GET /api/ideas/<id>/prompt — build a ready-to-paste prompt for Claude Code.
-
-    Formats the idea title, description, and full discussion thread into
-    a prompt that can be pasted directly into an interactive Claude Code
-    session (VS Code or claude.ai/code).
-    """
-    idea = get_idea(idea_id)
-    if not idea:
-        return jsonify({"error": "Idea not found"}), 404
-
-    # Build discussion context
-    discussion = ""
-    if idea.comments:
-        discussion = "\n\nDiscussion (what was decided):\n"
-        for c in idea.comments:
-            label = f"{settings.owner_name} (manager)" if c.author == "owner" else "LLM (engineer)"
-            discussion += f"- {label}: {c.text}\n"
-
-    # Build epic context if this story belongs to an epic
-    epic_context = ""
-    if idea.parent_id:
-        parent = get_idea(idea.parent_id)
-        if parent:
-            sibling_ideas = load_ideas()
-            siblings = [i for i in sibling_ideas if i.parent_id == idea.parent_id and i.id != idea.id]
-            sibling_info = ""
-            for s in siblings:
-                done_marker = " [DONE]" if s.state == "done" else ""
-                sibling_info += f"  - {s.id}: {s.title}{done_marker}\n"
-            epic_context = (
-                f"\n## Parent Epic: {parent.title}\n"
-                f"**Epic Description:** {parent.description}\n"
-                f"**Other stories in this epic:**\n{sibling_info}\n"
-                f"This story is part of a larger initiative. Ensure your implementation "
-                f"integrates with the other stories and contributes to the epic's full lifecycle goal.\n"
-            )
-
-    # Build sibling context if this IS an epic
-    children_context = ""
-    if idea.idea_type == "epic":
-        all_ideas = load_ideas()
-        kids = [i for i in all_ideas if i.parent_id == idea.id]
-        if kids:
-            children_context = "\n**Stories in this epic:**\n"
-            for k in kids:
-                done_marker = " [DONE]" if k.state == "done" else ""
-                children_context += f"  - {k.id}: {k.title}{done_marker}\n"
-            children_context += "\n"
-
-    type_label = f"[{idea.idea_type.upper()}] " if idea.idea_type != "story" else ""
-
-    prompt = (
-        f"Implement this improvement for the Technomancer project.\n\n"
-        f"## {type_label}Idea: {idea.title}\n\n"
-        f"**Description:** {idea.description}\n"
-        f"**Category:** {idea.category}\n"
-        f"{epic_context}{children_context}"
-        f"{discussion}\n"
-        f"## Requirements\n"
-        f"- Follow the safe_update.py git workflow (branch, code, validate, commit, merge)\n"
-        f"- Run `python validate.py startup` before committing\n"
-        f"- Verify `python bot_service.py status` shows Bot running: True after deploy\n"
-        f"- Read CLAUDE.md for project conventions\n\n"
-        f"## After completion — update the idea board\n"
-        f"When you are DONE and everything is deployed and verified, run:\n"
-        f'```bash\ncurl -X POST http://localhost:8322/api/ideas/{idea.id}/done\n```\n\n'
-        f"If you CANNOT complete this task or it fails, run:\n"
-        f'```bash\ncurl -X POST http://localhost:8322/api/ideas/{idea.id}/comment '
-        f'-H "Content-Type: application/json" '
-        f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n```\n"
-    )
-
-    return jsonify({"idea_id": idea_id, "prompt": prompt})
-
-
-@app.route("/api/ideas/<idea_id>/epic_prompt")
-def api_epic_prompt(idea_id: str) -> tuple:
-    """GET /api/ideas/<id>/epic_prompt — build a prompt for implementing an entire epic.
-
-    Generates a master prompt that includes the epic context and every child
-    story in order, instructing Claude Code to implement them sequentially
-    with a full safe_update cycle for each.
-    """
-    epic = get_idea(idea_id)
-    if not epic:
-        return jsonify({"error": "Idea not found"}), 404
-
-    all_ideas = load_ideas()
-    all_children = [i for i in all_ideas if i.parent_id == idea_id]
-
-    if not all_children:
-        # Not an epic or no children — fall back to single prompt
-        return api_prompt(idea_id)
-
-    # Order children by execution_order (auto-populated if empty)
-    order = get_execution_order(idea_id)
-    child_by_id = {i.id: i for i in all_children}
-    ordered_children = [child_by_id[oid] for oid in order if oid in child_by_id]
-    # Append any not in order
-    ordered_ids = set(order)
-    for c in all_children:
-        if c.id not in ordered_ids:
-            ordered_children.append(c)
-
-    stories = [i for i in ordered_children if i.state != "done"]
-    done_stories = [i for i in ordered_children if i.state == "done"]
-
-    if not stories and not done_stories:
-        return api_prompt(idea_id)
-
-    # Build the story sections
-    story_sections = ""
-    for idx, story in enumerate(stories, 1):
-        discussion = ""
-        if story.comments:
-            discussion = "Discussion:\n"
-            for c in story.comments:
-                label = settings.owner_name if c.author == "owner" else "LLM"
-                discussion += f"  - {label}: {c.text}\n"
-
-        story_sections += (
-            f"\n{'=' * 70}\n"
-            f"## Story {idx}/{len(stories)}: {story.title}\n"
-            f"**ID:** {story.id}\n"
-            f"**Category:** {story.category}\n\n"
-            f"**Description:** {story.description}\n"
-            f"{discussion}\n"
-            f"**After completing this story**, run:\n"
-            f"```bash\n"
-            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/done\n"
-            f"```\n"
-            f"If this story fails, run:\n"
-            f"```bash\n"
-            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/comment "
-            f"-H \"Content-Type: application/json\" "
-            f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
-            f"```\n"
-            f"Then move to the next story.\n"
-        )
-
-    # Done stories context
-    done_context = ""
-    if done_stories:
-        done_context = "\n## Already Completed Stories\n"
-        for d in done_stories:
-            done_context += f"- {d.id}: {d.title} [DONE]\n"
-        done_context += "\nThese are already implemented. Build on them, don't duplicate them.\n"
-
-    # Include epic context if set
-    epic_ctx_section = ""
-    if epic.epic_context:
-        epic_ctx_section = (
-            f"\n## Epic Context\n"
-            f"{epic.epic_context}\n"
-        )
-
-    prompt = (
-        f"# EPIC: {epic.title}\n\n"
-        f"You are implementing an entire epic for the Technomancer project.\n"
-        f"This epic has **{len(stories)} stories** to implement sequentially.\n\n"
-        f"## Epic Description\n"
-        f"{epic.description}\n"
-        f"{epic_ctx_section}"
-        f"{done_context}\n"
-        f"## Implementation Process\n\n"
-        f"For EACH story below, follow this exact cycle:\n"
-        f"1. Read CLAUDE.md for project conventions\n"
-        f"2. Run `python safe_update.py <short-name>` to create a branch\n"
-        f"3. Implement the story (code, tests)\n"
-        f"4. Run `python validate.py startup` before committing\n"
-        f"5. Commit and run `python safe_update.py continue` to test, merge, restart\n"
-        f"6. Verify `python bot_service.py status` shows Bot running: True\n"
-        f"7. Mark the story done with the curl command provided\n"
-        f"8. Move to the next story\n\n"
-        f"IMPORTANT:\n"
-        f"- Each story gets its OWN safe_update branch and commit\n"
-        f"- Do NOT batch multiple stories into one branch\n"
-        f"- If a story fails, log it and move to the next one\n"
-        f"- Each story should build on what the previous stories created\n"
-        f"- When ALL stories are complete, mark the epic done:\n"
-        f"```bash\n"
-        f"curl -X POST http://localhost:8322/api/ideas/{epic.id}/done\n"
-        f"```\n"
-        f"\n# Stories to Implement\n"
-        f"{story_sections}"
-    )
-
-    return jsonify({"idea_id": idea_id, "prompt": prompt})
-
-
-@app.route("/api/ideas/<idea_id>/execute", methods=["POST"])
-def api_execute(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/execute — trigger Claude Code to implement this idea.
+@app.route("/api/jira/<key>/execute", methods=["POST"])
+def api_execute(key: str) -> tuple:
+    """POST /api/jira/<key>/execute — trigger Claude Code to implement this idea.
 
     For epics with child stories, uses execute_epic() to run stories
     sequentially. For stories/tasks, uses execute_idea() directly.
@@ -1563,47 +172,47 @@ def api_execute(idea_id: str) -> tuple:
     log lines (validation, branch setup inside execute_idea before the
     background thread spawns) carry the correlation id for this run.
     """
-    run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{idea_id or 'unknown'}"
-    with with_run_context(run_id=run_id, idea_key=idea_id):
-        idea = get_idea(idea_id)
+    run_id = f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{key or 'unknown'}"
+    with with_run_context(run_id=run_id, idea_key=key):
+        idea = get_idea(key)
         if not idea:
-            logger.info("[Executor] Unknown idea %s — nothing to execute", idea_id)
+            logger.info("[Executor] Unknown idea %s — nothing to execute", key)
             return jsonify({"error": "Idea not found"}), 404
 
         logger.info(
-            "[Executor] Starting run for %s (type=%s)", idea_id, idea.idea_type
+            "[Executor] Starting run for %s (type=%s)", key, idea.idea_type
         )
         if idea.idea_type == "epic":
             from .executor import execute_epic
 
-            state = execute_epic(idea_id)
+            state = execute_epic(key)
         else:
             from .executor import execute_idea
 
-            state = execute_idea(idea_id)
+            state = execute_idea(key)
 
         if not state:
-            logger.warning("[Executor] Failed to start execution for %s", idea_id)
+            logger.warning("[Executor] Failed to start execution for %s", key)
             return jsonify({"error": "Failed to start execution"}), 500
-        return jsonify({"status": "executing", "idea_id": idea_id, "pid": state.pid})
+        return jsonify({"status": "executing", "key": key, "pid": state.pid})
 
 
-@app.route("/execute/<idea_id>")
-def execute_page(idea_id: str):
-    """GET /execute/<id> — clickable execute page (linked from Jira).
+@app.route("/jira/<key>")
+def execute_page(key: str):
+    """GET /jira/<key> — clickable execute page (linked from Jira).
 
     Shows idea details and a one-tap Execute button. After execution
     starts, redirects to the live log stream.
     """
-    idea = get_idea(idea_id)
-    title = idea.title if idea else idea_id
+    idea = get_idea(key)
+    title = idea.title if idea else key
     state = idea.state if idea else "unknown"
     idea_type = idea.idea_type if idea else "story"
     title_color = "#9b59b6" if idea_type == "epic" else "#2ecc71"
 
     # Detect stale "executing" (no executor thread alive)
     if state == "executing":
-        live = get_execution(idea_id)
+        live = get_execution(key)
         if not live:
             state = "interrupted"
 
@@ -1612,7 +221,7 @@ def execute_page(idea_id: str):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Execute {idea_id}</title>
+    <title>Execute {key}</title>
     <style>
         body {{ font-family: -apple-system, system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; margin: 0; padding: 2rem; }}
         .card {{ max-width: 600px; margin: 2rem auto; background: #16213e; border-radius: 12px; padding: 2rem; border-left: 4px solid #0f3460; }}
@@ -1633,7 +242,7 @@ def execute_page(idea_id: str):
 </head>
 <body>
     <div class="card">
-        <span class="idea-id">{idea_id}</span>
+        <span class="idea-id">{key}</span>
         <span class="state {state}" id="state-badge">{state}</span>
         <h1>{title}</h1>
         <button id="exec-btn" onclick="doExecute()">Execute with Claude Code</button>
@@ -1650,7 +259,7 @@ def execute_page(idea_id: str):
         status.textContent = 'Triggering executor...';
 
         try {{
-            const resp = await fetch('/api/ideas/{idea_id}/execute', {{method: 'POST'}});
+            const resp = await fetch('/api/jira/{key}/execute', {{method: 'POST'}});
             const data = await resp.json();
             if (resp.ok) {{
                 btn.textContent = 'Running...';
@@ -1681,7 +290,7 @@ def execute_page(idea_id: str):
         const log = document.getElementById('log');
         const status = document.getElementById('status');
         const btn = document.getElementById('exec-btn');
-        const es = new EventSource('/api/ideas/{idea_id}/log/stream');
+        const es = new EventSource('/api/jira/{key}/log/stream');
 
         es.addEventListener('log', function(e) {{
             try {{
@@ -1772,29 +381,29 @@ def execute_page(idea_id: str):
 </html>"""
 
 
-@app.route("/api/ideas/<idea_id>/cancel", methods=["POST"])
-def api_cancel(idea_id: str) -> tuple:
-    """POST /api/ideas/<id>/cancel — cancel a running execution."""
+@app.route("/api/jira/<key>/cancel", methods=["POST"])
+def api_cancel(key: str) -> tuple:
+    """POST /api/jira/<key>/cancel — cancel a running execution."""
     from .executor import cancel_execution
 
-    if cancel_execution(idea_id):
-        return jsonify({"status": "cancelling", "idea_id": idea_id})
+    if cancel_execution(key):
+        return jsonify({"status": "cancelling", "key": key})
     return jsonify({"error": "Not currently executing"}), 400
 
 
-@app.route("/api/ideas/<idea_id>/log")
-def api_log(idea_id: str) -> tuple:
-    """GET /api/ideas/<id>/log — get the live execution log.
+@app.route("/api/jira/<key>/log")
+def api_log(key: str) -> tuple:
+    """GET /api/jira/<key>/log — get the live execution log.
 
     Returns the current stdout buffer from the running Claude Code
     process. Poll this every few seconds for live updates.
     """
-    state = get_execution(idea_id)
-    idea = get_idea(idea_id)
+    state = get_execution(key)
+    idea = get_idea(key)
     idea_state = idea.state if idea else "unknown"
     if state:
         return jsonify({
-            "idea_id": idea_id,
+            "key": key,
             "pid": state.pid,
             "elapsed": round(state.elapsed, 1),
             "is_alive": state.is_alive,
@@ -1806,7 +415,7 @@ def api_log(idea_id: str) -> tuple:
     # Not actively executing — return stored log from idea
     if idea and idea.execution_log:
         return jsonify({
-            "idea_id": idea_id,
+            "key": key,
             "pid": None,
             "elapsed": 0,
             "is_alive": False,
@@ -1816,18 +425,18 @@ def api_log(idea_id: str) -> tuple:
         })
 
     return jsonify({
-        "idea_id": idea_id,
+        "key": key,
         "lines": [],
         "line_count": 0,
         "idea_state": idea_state,
     })
 
 
-@app.route("/api/ideas/<idea_id>/log/stream")
-def api_log_stream(idea_id: str) -> Response:
-    """GET /api/ideas/<id>/log/stream — SSE stream for live execution log.
+@app.route("/api/jira/<key>/log/stream")
+def api_log_stream(key: str) -> Response:
+    """GET /api/jira/<key>/log/stream — SSE stream for live execution log.
 
-    Replaces polling of /api/ideas/<id>/log with a single persistent
+    Replaces polling of /api/jira/<key>/log with a single persistent
     connection.  Sends three event types:
 
     - ``log``   : new log lines (JSON list of strings)
@@ -1856,7 +465,7 @@ def api_log_stream(idea_id: str) -> Response:
                     return content
         except OSError:
             pass
-        idea = get_idea(idea_id)
+        idea = get_idea(key)
         return idea.state if idea else "unknown"
 
     def _tail_disk_log(log_path: Path, done_path: Path):
@@ -1904,19 +513,19 @@ def api_log_stream(idea_id: str) -> Response:
         })
 
     def generate():
-        log_path = EXECUTION_LOGS_DIR / f"{idea_id}.log"
-        done_path = EXECUTION_LOGS_DIR / f"{idea_id}.done"
+        log_path = EXECUTION_LOGS_DIR / f"{key}.log"
+        done_path = EXECUTION_LOGS_DIR / f"{key}.done"
 
         # ---- Disk log present: cross-process tail (preferred path) ----
         if log_path.exists():
             yield from _tail_disk_log(log_path, done_path)
             return
 
-        state = get_execution(idea_id)
+        state = get_execution(key)
 
         # ---- Not actively executing: send stored log and close ----
         if not state:
-            idea = get_idea(idea_id)
+            idea = get_idea(key)
             lines = idea.execution_log.split("\n") if idea and idea.execution_log else []
 
             # Detect stale "executing" state (executor thread lost on restart)
@@ -1945,7 +554,7 @@ def api_log_stream(idea_id: str) -> Response:
 
             # Send state update
             alive = state.is_alive
-            idea = get_idea(idea_id)
+            idea = get_idea(key)
             idea_state = idea.state if idea else "unknown"
             yield _sse("state", {
                 "elapsed": round(state.elapsed, 1),
@@ -2027,7 +636,7 @@ _LIVE_LOG_HTML = """<!doctype html>
 <script>
   const logEl = document.getElementById('log');
   const statusEl = document.getElementById('status');
-  const src = new EventSource('/api/ideas/{item_id}/log/stream');
+  const src = new EventSource('/api/jira/{item_id}/log/stream');
 
   function appendLines(lines) {{
     const near = window.innerHeight + window.scrollY + 100 >= document.body.offsetHeight;
@@ -2965,7 +1574,7 @@ def live_log_viewer(item_id: str) -> Response:
     """Live "look over the shoulder" log viewer for an executing item.
 
     Works for both local idea IDs (idea-XXX) and Jira keys (TK-XXX).
-    Streams from the existing /api/ideas/<id>/log/stream SSE endpoint.
+    Streams from the existing /api/jira/<key>/log/stream SSE endpoint.
     """
     html_body = _LIVE_LOG_HTML.format(item_id=item_id)
     return Response(html_body, mimetype="text/html")
@@ -3565,7 +2174,7 @@ def api_aim_events_stream() -> Response:
 
     Tails ``aim/events.jsonl`` and emits each newly appended line as an
     ``event``-named SSE frame whose data payload is the raw JSON event.
-    Mirrors the polling pattern used by ``/api/ideas/<id>/log/stream``:
+    Mirrors the polling pattern used by ``/api/jira/<key>/log/stream``:
     open the file, seek to the end, and poll for new lines roughly once
     per second.
     """
@@ -7265,234 +5874,6 @@ h1 { margin-bottom: 0.5rem; color: var(--accent); }
 """
 
 
-def _render_analytics() -> str:
-    """Render the engagement analytics dashboard."""
-    from agent.engagement_analytics import get_command_stats, get_daily_activity, get_top_users, get_underused_commands
-    from agent.discord_errors import get_gateway_trend, get_feedback_summary
-
-    days = 14
-    cmd_stats = get_command_stats(days)
-    daily = get_daily_activity(days)
-    top_users = get_top_users(days, limit=10)
-    underused = get_underused_commands(days)
-
-    total_cmds = sum(r["cnt"] for r in cmd_stats)
-    total_msgs = sum(d["messages"] for d in daily) if daily else 0
-
-    # Command usage table
-    cmd_rows = ""
-    for r in cmd_stats[:20]:
-        pct = round(r["cnt"] / total_cmds * 100, 1) if total_cmds else 0
-        bar_width = min(pct * 3, 100)
-        cmd_rows += f"""<tr>
-            <td><code>{html.escape(r['command'])}</code></td>
-            <td>{r['cnt']}</td>
-            <td>{r['unique_users']}</td>
-            <td><div style="background:var(--accent);height:8px;width:{bar_width}%;border-radius:4px"></div> {pct}%</td>
-        </tr>"""
-
-    # Daily activity for chart (simple text-based)
-    daily_rows = ""
-    max_msgs = max((d["messages"] for d in daily), default=1)
-    for d in daily[-14:]:
-        bar_width = min(d["messages"] / max_msgs * 100, 100) if max_msgs else 0
-        daily_rows += f"""<tr>
-            <td>{d['day']}</td>
-            <td>{d['messages']}</td>
-            <td>{d['commands']}</td>
-            <td>{d['users']}</td>
-            <td><div style="background:var(--green);height:8px;width:{bar_width}%;border-radius:4px"></div></td>
-        </tr>"""
-
-    # User leaderboard
-    user_rows = ""
-    for u in top_users:
-        user_rows += f"""<tr>
-            <td>{html.escape(u['user_name'])}</td>
-            <td>{u['messages']}</td>
-            <td>{u['commands']}</td>
-        </tr>"""
-
-    # Underused features
-    underused_html = ""
-    if underused:
-        underused_html = "<h2>Underused Features (0 invocations)</h2><p>" + ", ".join(
-            f"<code>{html.escape(c)}</code>" for c in underused
-        ) + "</p>"
-
-    # Gateway health
-    try:
-        gw = get_gateway_trend(24)
-        health = gw["current_health"]
-        gw_html = f"""<h2>Gateway Health</h2>
-        <p>Score: <strong title="Composite Discord gateway health score from 0-100 based on the past 24 hours of connection events; higher is better.">{health['health_score']}/100</strong> ({health['prediction']})
-        &bull; <span title="Number of full Discord gateway disconnects (lost socket, had to reconnect from scratch) in the last 24 hours.">Disconnects (24h): {gw['disconnects']}</span>
-        &bull; <span title="Number of successful session resumes after a transient Discord gateway drop in the last 24 hours.">Resumes: {gw['resumes']}</span></p>"""
-        if gw["latency"]:
-            gw_html += f"<p><span title=\"Average Discord gateway heartbeat latency in milliseconds over the last 24 hours.\">Latency: avg {gw['latency']['avg']}ms</span>, <span title=\"95th-percentile Discord gateway heartbeat latency in milliseconds over the last 24 hours.\">p95 {gw['latency']['p95']}ms</span></p>"
-    except Exception:
-        gw_html = ""
-
-    # Feedback
-    try:
-        fb = get_feedback_summary(days)
-        fb_html = f"""<h2>Response Satisfaction</h2>
-        <p><span title="Total number of thumbs-up / thumbs-down reactions users left on bot responses in the last {days} days.">Total feedback: {fb.get('total', 0)}</span> &bull; <span title="Percentage of reactions that were positive (thumbs-up / total) over the last {days} days.">Satisfaction: {fb.get('satisfaction_rate', 0)}%</span></p>"""
-    except Exception:
-        fb_html = ""
-
-    now = datetime.now().strftime("%I:%M %p")
-
-    return f"""<!DOCTYPE html>
-<html lang="en"><head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Discord Analytics - Technomancer Hub</title>
-    <style>{DASHBOARD_CSS}
-.nav {{ margin-bottom: 1.5rem; display: flex; gap: 12px; flex-wrap: wrap; }}
-.nav a {{ color: var(--accent); text-decoration: none; padding: 6px 14px;
-         border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; }}
-.nav a:hover, .nav a.active {{ background: var(--accent); color: #000; }}
-table {{ width: 100%; border-collapse: collapse; margin: 0.8rem 0; }}
-th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border); font-size: 0.9rem; }}
-th {{ color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }}
-.stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 1rem 0; }}
-.stat-card {{ background: var(--surface); padding: 1rem; border-radius: 8px; text-align: center; }}
-.stat-card .number {{ font-size: 1.8rem; font-weight: 700; color: var(--accent); }}
-.stat-card .label {{ font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }}
-.stat-card.clickable {{ cursor: pointer; transition: transform 0.1s, background 0.2s; }}
-.stat-card.clickable:hover {{ background: #2e2e2e; transform: translateY(-1px); }}
-.stat-card.clickable .hint {{ font-size: 0.7rem; color: var(--accent); margin-top: 4px; }}
-.modal-backdrop {{ display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
-                    z-index: 50; align-items: flex-start; justify-content: center; padding: 40px 16px;
-                    overflow-y: auto; }}
-.modal-backdrop.open {{ display: flex; }}
-.modal {{ background: var(--surface); border-radius: 10px; max-width: 720px; width: 100%;
-          padding: 1.5rem; border: 1px solid var(--border); }}
-.modal-head {{ display: flex; justify-content: space-between; align-items: baseline;
-               gap: 12px; margin-bottom: 0.5rem; }}
-.modal-head h2 {{ margin: 0; color: var(--accent); }}
-.modal-close {{ background: none; border: none; color: var(--muted); font-size: 1.4rem;
-                cursor: pointer; padding: 0 4px; }}
-.modal-close:hover {{ color: var(--text); }}
-.modal-def {{ font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem;
-              padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }}
-.modal .cmd-row {{ padding: 8px 0; border-bottom: 1px solid var(--border); }}
-.modal .cmd-row:last-child {{ border-bottom: none; }}
-.modal .cmd-name {{ font-family: 'Cascadia Code', 'Fira Code', monospace;
-                     color: var(--accent); font-weight: 600; }}
-.modal .cmd-meta {{ font-size: 0.75rem; color: var(--muted); margin-top: 2px; }}
-.modal .cmd-desc {{ font-size: 0.85rem; color: var(--text); margin-top: 2px; }}
-</style></head>
-<body>
-    <h1>Discord Analytics</h1>
-    <div class="nav">
-        <a href="/">Hub</a>
-        <a href="/ideas">Ideas</a>
-        <a href="/news">News Config</a>
-        <a href="/karen">KAREN</a>
-        <a href="/analytics" class="active">Discord Analytics</a>
-    </div>
-
-    <div class="stats-grid">
-        <div class="stat-card" title="Total Discord bot command invocations (e.g. !status, !betterDev) in the last {days} days."><div class="number">{total_cmds}</div><div class="label">Commands ({days}d)</div></div>
-        <div class="stat-card" title="Total Discord messages sent in watched channels in the last {days} days (includes commands and regular chat)."><div class="number">{total_msgs}</div><div class="label">Messages ({days}d)</div></div>
-        <div class="stat-card" title="Number of distinct commands that received at least one invocation in the last {days} days."><div class="number">{len(cmd_stats)}</div><div class="label">Unique Commands</div></div>
-        <div class="stat-card clickable" id="unused-card" onclick="openUnusedModal()" title="Commands registered with the Discord bot that received zero invocations in the last {days} days. Click to see the list.">
-            <div class="number">{len(underused)}</div>
-            <div class="label">Unused Features</div>
-            <div class="hint">Click for list &rarr;</div>
-        </div>
-    </div>
-
-    <div class="modal-backdrop" id="unused-modal" onclick="if(event.target===this)closeUnusedModal()">
-        <div class="modal" role="dialog" aria-labelledby="unused-modal-title">
-            <div class="modal-head">
-                <h2 id="unused-modal-title">Unused Features</h2>
-                <button class="modal-close" onclick="closeUnusedModal()" aria-label="Close">&times;</button>
-            </div>
-            <div class="modal-def" id="unused-modal-def">Loading&hellip;</div>
-            <div id="unused-modal-body">Loading&hellip;</div>
-        </div>
-    </div>
-
-    <h2>Command Usage</h2>
-    <table>
-        <tr><th>Command</th><th>Count</th><th>Users</th><th>Share</th></tr>
-        {cmd_rows if cmd_rows else '<tr><td colspan="4" style="color:var(--muted)">No command usage data yet. Commands will be tracked as they are used.</td></tr>'}
-    </table>
-
-    {underused_html}
-
-    <h2>Daily Activity</h2>
-    <table>
-        <tr><th>Date</th><th>Messages</th><th>Commands</th><th>Users</th><th>Volume</th></tr>
-        {daily_rows if daily_rows else '<tr><td colspan="5" style="color:var(--muted)">No activity data yet.</td></tr>'}
-    </table>
-
-    <h2>Top Users</h2>
-    <table>
-        <tr><th>User</th><th>Messages</th><th>Commands</th></tr>
-        {user_rows if user_rows else '<tr><td colspan="3" style="color:var(--muted)">No user data yet.</td></tr>'}
-    </table>
-
-    {gw_html}
-    {fb_html}
-
-    <p style="color:var(--muted);font-size:0.8rem;margin-top:2rem">Last refresh: {now} &bull; Data period: {days} days</p>
-
-    <script>
-    function escapeHtml(s) {{
-        return String(s == null ? '' : s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }}
-    async function openUnusedModal() {{
-        const modal = document.getElementById('unused-modal');
-        const body = document.getElementById('unused-modal-body');
-        const defEl = document.getElementById('unused-modal-def');
-        modal.classList.add('open');
-        body.textContent = 'Loading...';
-        defEl.textContent = '';
-        try {{
-            const resp = await fetch('/api/analytics/unused?days={days}');
-            if (!resp.ok) {{
-                throw new Error('HTTP ' + resp.status);
-            }}
-            const data = await resp.json();
-            defEl.textContent = data.definition || '';
-            const cmds = data.commands || [];
-            if (!cmds.length) {{
-                body.innerHTML = '<p style="color:var(--muted)">Every command has been used recently.</p>';
-                return;
-            }}
-            body.innerHTML = cmds.map(function(c) {{
-                const lastSeen = c.last_seen
-                    ? escapeHtml(String(c.last_seen).slice(0, 10))
-                    : 'never';
-                const cat = c.category ? ' &bull; ' + escapeHtml(c.category) : '';
-                const desc = c.description
-                    ? '<div class="cmd-desc">' + escapeHtml(c.description) + '</div>'
-                    : '';
-                return '<div class="cmd-row">'
-                    + '<span class="cmd-name">' + escapeHtml(c.name) + '</span>'
-                    + '<div class="cmd-meta">Last seen: ' + lastSeen + cat + '</div>'
-                    + desc
-                    + '</div>';
-            }}).join('');
-        }} catch (err) {{
-            body.innerHTML = '<p style="color:var(--red)">Failed to load: '
-                + escapeHtml(err.message || String(err)) + '</p>';
-        }}
-    }}
-    function closeUnusedModal() {{
-        document.getElementById('unused-modal').classList.remove('open');
-    }}
-    document.addEventListener('keydown', function(e) {{
-        if (e.key === 'Escape') closeUnusedModal();
-    }});
-    </script>
-</body></html>"""
 
 
 ERRORS_CSS = """
@@ -8981,22 +7362,6 @@ def _render_hub() -> str:
 
     recent_validation_card_html = _render_recent_validation_card_html()
 
-    # Idea Board card links out to Jira when configured — Jira is the source of truth.
-    if settings.jira_url and settings.jira_project_key:
-        idea_board_href = (
-            f"{settings.jira_url.rstrip('/')}"
-            f"/jira/software/projects/{settings.jira_project_key}/boards"
-        )
-        idea_board_target_attr = ' target="_blank" rel="noopener"'
-        idea_board_subtext = (
-            f'<p style="color:var(--muted);font-size:0.8rem;margin-top:0.25rem">'
-            f'Using Jira - backed by {settings.jira_project_key}</p>'
-        )
-    else:
-        idea_board_href = "/ideas"
-        idea_board_target_attr = ""
-        idea_board_subtext = ""
-
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9007,7 +7372,7 @@ def _render_hub() -> str:
 </head>
 <body>
     <h1>Technomancer Hub</h1>
-    <p class="subtitle">Central control panel for all Technomancer services · <a href="/api/ideas" style="color: var(--muted); font-size: 0.85em;">API: /api/ideas</a></p>
+    <p class="subtitle">Central control panel for all Technomancer services</p>
 
     <div class="health-panel">
         <h2>Service Health <a href="/errors" style="font-size:0.7rem;font-weight:normal;color:var(--muted);margin-left:8px">View errors &rarr;</a></h2>
@@ -9054,12 +7419,6 @@ def _render_hub() -> str:
     </div>
 
     <div class="grid">
-        <a href="{idea_board_href}"{idea_board_target_attr} class="card green">
-            <h2>Idea Board</h2>
-            <p>View, vote, and discuss improvement ideas.</p>
-            <span class="badge">{done}/{total} done ({completion_pct}%) &middot; {proposed} pending &middot; {executing} running</span>
-            {idea_board_subtext}
-        </a>
         <a href="/news" class="card orange">
             <h2>News Config</h2>
             <p>Manage RSS feeds, topic preferences, and digest schedule.</p>
@@ -9067,10 +7426,6 @@ def _render_hub() -> str:
         <a href="/karen" class="card" style="border-left: 4px solid #e94560;">
             <h2>K.A.R.E.N.</h2>
             <p>Submit complaints. They get turned into improvement ideas.</p>
-        </a>
-        <a href="/analytics" class="card" style="border-left: 4px solid #5865F2;">
-            <h2>Discord Analytics</h2>
-            <p>Discord command usage, engagement trends, and feature adoption.</p>
         </a>
         {errors_card_html}
         {recent_validation_card_html}

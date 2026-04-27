@@ -62,7 +62,7 @@ class TestLiveDetailPageContents:
         resp = client.get("/live/TK-42")
         body = resp.data.decode()
         assert "TK-42" in body
-        assert "/api/ideas/TK-42/log/stream" in body
+        assert "/api/jira/TK-42/log/stream" in body
 
     def test_different_ids_produce_different_pages(self, client):
         body_a = client.get("/live/TK-1").data.decode()

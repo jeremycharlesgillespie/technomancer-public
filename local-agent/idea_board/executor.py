@@ -1521,17 +1521,9 @@ def _build_epic_prompt(idea: Any) -> str:
             f"**Category:** {story.category}\n\n"
             f"**Description:** {story.description}\n\n"
             f"{discussion}"
-            f"**After completing this story**, run:\n"
-            f"```bash\n"
-            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/done\n"
-            f"```\n"
-            f"If this story fails, run:\n"
-            f"```bash\n"
-            f"curl -X POST http://localhost:8322/api/ideas/{story.id}/comment "
-            f'-H "Content-Type: application/json" '
-            f"-d '{{\"author\": \"claude\", \"text\": \"Execution failed: <describe what went wrong>\"}}'\n"
-            f"```\n"
-            f"Then move to the next story.\n"
+            f"After completing this story, commit your changes and move on to the next.\n"
+            f"State changes (done/failed/comments) are recorded by the executor's "
+            f"internal mark-done / mark-failed logic — you do not need to call any HTTP API.\n"
         )
 
     sections = [

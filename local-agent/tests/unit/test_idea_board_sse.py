@@ -2,8 +2,8 @@
 Tests for SSE log streaming and polling fallback in idea_board/web.py.
 
 Validates that:
-- /api/ideas/<id>/log/stream returns proper Server-Sent Events
-- /api/ideas/<id>/log returns idea_state for polling fallback
+- /api/jira/<id>/log/stream returns proper Server-Sent Events
+- /api/jira/<id>/log returns idea_state for polling fallback
 """
 
 import json
@@ -75,7 +75,7 @@ class FakeExecutionState:
 
 
 class TestLogStreamSSE:
-    """Tests for GET /api/ideas/<id>/log/stream."""
+    """Tests for GET /api/jira/<id>/log/stream."""
 
     def test_stored_log_returns_done(self, client):
         """When idea is not executing, returns stored log and a done event."""
@@ -85,7 +85,7 @@ class TestLogStreamSSE:
 
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-001/log/stream")
+            resp = client.get("/api/jira/idea-001/log/stream")
             assert resp.status_code == 200
             assert "text/event-stream" in resp.content_type
 
@@ -103,7 +103,7 @@ class TestLogStreamSSE:
         """When idea doesn't exist, returns done with unknown state."""
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=None):
-            resp = client.get("/api/ideas/idea-999/log/stream")
+            resp = client.get("/api/jira/idea-999/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
             # No log event when there are no lines — just done
@@ -118,7 +118,7 @@ class TestLogStreamSSE:
 
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-002/log/stream")
+            resp = client.get("/api/jira/idea-002/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
             # No lines = no log event, just done
             assert events[0]["event"] == "done"
@@ -147,7 +147,7 @@ class TestLogStreamSSE:
              patch("idea_board.web.get_idea", side_effect=[fake_idea, done_idea]), \
              patch("idea_board.web.time.sleep"), \
              patch.object(type(state), "is_alive", new_callable=lambda: property(_is_alive_side_effect)):
-            resp = client.get("/api/ideas/idea-010/log/stream")
+            resp = client.get("/api/jira/idea-010/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         event_types = [e["event"] for e in events]
@@ -163,14 +163,14 @@ class TestLogStreamSSE:
         """Response has text/event-stream MIME type."""
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=None):
-            resp = client.get("/api/ideas/idea-001/log/stream")
+            resp = client.get("/api/jira/idea-001/log/stream")
             assert "text/event-stream" in resp.content_type
 
     def test_cache_headers(self, client):
         """SSE response has no-cache header."""
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=None):
-            resp = client.get("/api/ideas/idea-001/log/stream")
+            resp = client.get("/api/jira/idea-001/log/stream")
             assert resp.headers.get("Cache-Control") == "no-cache"
 
     def test_failed_execution_sends_failed_state(self, client):
@@ -185,7 +185,7 @@ class TestLogStreamSSE:
         with patch("idea_board.web.get_execution", return_value=state), \
              patch("idea_board.web.get_idea", return_value=fake_idea), \
              patch("idea_board.web.time.sleep"):
-            resp = client.get("/api/ideas/idea-020/log/stream")
+            resp = client.get("/api/jira/idea-020/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         done_ev = [e for e in events if e["event"] == "done"][0]
@@ -193,7 +193,7 @@ class TestLogStreamSSE:
 
 
 class TestLogStreamDiskTail:
-    """Tests for the disk-log tailing path of /api/ideas/<id>/log/stream.
+    """Tests for the disk-log tailing path of /api/jira/<id>/log/stream.
 
     The SSE generator prefers ``execution_logs/<id>.log`` (cross-process)
     over the in-memory ``_active`` dict when the file is present.
@@ -207,7 +207,7 @@ class TestLogStreamDiskTail:
         done_path.write_text("done\n", encoding="utf-8")
 
         with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path):
-            resp = client.get("/api/ideas/idea-100/log/stream")
+            resp = client.get("/api/jira/idea-100/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         log_events = [e for e in events if e["event"] == "log"]
@@ -228,7 +228,7 @@ class TestLogStreamDiskTail:
         done_path.write_text("failed\n", encoding="utf-8")
 
         with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path):
-            resp = client.get("/api/ideas/idea-101/log/stream")
+            resp = client.get("/api/jira/idea-101/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         # Last event is done with the sentinel-supplied state
@@ -248,7 +248,7 @@ class TestLogStreamDiskTail:
 
         with patch("idea_board.web.EXECUTION_LOGS_DIR", tmp_path), \
              patch("idea_board.web.get_execution", return_value=state):
-            resp = client.get("/api/ideas/idea-102/log/stream")
+            resp = client.get("/api/jira/idea-102/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         log_events = [e for e in events if e["event"] == "log"]
@@ -274,7 +274,7 @@ class TestLogStreamDiskTail:
              patch("idea_board.web.get_idea", return_value=fake_idea), \
              patch("idea_board.web.time.time", side_effect=_time_side_effect), \
              patch("idea_board.web.time.sleep"):
-            resp = client.get("/api/ideas/idea-103/log/stream")
+            resp = client.get("/api/jira/idea-103/log/stream")
             events = _parse_sse(resp.get_data(as_text=True))
 
         done_events = [e for e in events if e["event"] == "done"]
@@ -284,7 +284,7 @@ class TestLogStreamDiskTail:
 
 
 class TestLogPollingEndpoint:
-    """Tests for GET /api/ideas/<id>/log — polling fallback endpoint."""
+    """Tests for GET /api/jira/<id>/log — polling fallback endpoint."""
 
     def test_active_execution_includes_idea_state(self, client):
         """Polling response includes idea_state when execution is active."""
@@ -296,7 +296,7 @@ class TestLogPollingEndpoint:
 
         with patch("idea_board.web.get_execution", return_value=state), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-030/log")
+            resp = client.get("/api/jira/idea-030/log")
             data = resp.get_json()
             assert data["idea_state"] == "executing"
             assert data["is_alive"] is True
@@ -310,7 +310,7 @@ class TestLogPollingEndpoint:
 
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-031/log")
+            resp = client.get("/api/jira/idea-031/log")
             data = resp.get_json()
             assert data["idea_state"] == "done"
             assert data["is_alive"] is False
@@ -324,7 +324,7 @@ class TestLogPollingEndpoint:
 
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-032/log")
+            resp = client.get("/api/jira/idea-032/log")
             data = resp.get_json()
             assert data["idea_state"] == "failed"
 
@@ -332,7 +332,7 @@ class TestLogPollingEndpoint:
         """Polling response returns unknown state when idea doesn't exist."""
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=None):
-            resp = client.get("/api/ideas/idea-999/log")
+            resp = client.get("/api/jira/idea-999/log")
             data = resp.get_json()
             assert data["idea_state"] == "unknown"
             assert data["lines"] == []
@@ -345,7 +345,7 @@ class TestLogPollingEndpoint:
 
         with patch("idea_board.web.get_execution", return_value=None), \
              patch("idea_board.web.get_idea", return_value=fake_idea):
-            resp = client.get("/api/ideas/idea-033/log")
+            resp = client.get("/api/jira/idea-033/log")
             data = resp.get_json()
             assert data["idea_state"] == "proposed"
             assert data["lines"] == []
