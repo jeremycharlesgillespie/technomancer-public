@@ -306,7 +306,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 ## Project Stats
 
 | Metric | Value |
-|--------|-------|
+|--------|--------|
 | Test count | 5966 |
 | Code coverage | 0% |
 | Python modules | 103 |
@@ -316,3 +316,5 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 ## License
 
 MIT
+
+✨
