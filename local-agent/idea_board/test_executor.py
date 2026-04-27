@@ -269,6 +269,16 @@ class TestProjectKeyFor:
             # The function should not crash, but the behavior with whitespace is to return it
             assert result is not None  # Should not be None
 
+    def test_returns_fa_prefix_for_fa100_input(self):
+        """_project_key_for should return 'FA' for valid input FA-100."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_returns_fa_prefix_for_fa100_with_additional_text(self):
+        """_project_key_for should extract FA prefix from text containing FA-100."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("This is a test for FA-100") == "FA"
+
 
 class TestPhaseMarkerFinish:
     """Test _PhaseMarker.finish() method with NULL project keys."""
