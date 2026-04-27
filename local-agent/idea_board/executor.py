@@ -2097,12 +2097,24 @@ def execute_idea(
                     current = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
                     if current != "main":
                         state.log(f"Resetting from {current} to main...")
-                        _git(["checkout", "--force", "main"])
+                        # Get main SHA to detach from and avoid worktree collision
+                        main_result = _git(["rev-parse", "main"])
+                        if main_result.returncode == 0:
+                            main_sha = main_result.stdout.strip()
+                            _git(["checkout", "--detach", main_sha])
+                        else:
+                            _git(["checkout", "--force", "main"])
                         _git(["branch", "-D", current])
                         state.log(f"Deleted old branch {current}")
 
                     # Step 2: Clean working directory
-                    _git(["checkout", "--force", "main"])
+                    # Get main SHA to detach from and avoid worktree collision
+                    main_result = _git(["rev-parse", "main"])
+                    if main_result.returncode == 0:
+                        main_sha = main_result.stdout.strip()
+                        _git(["checkout", "--detach", main_sha])
+                    else:
+                        _git(["checkout", "--force", "main"])
                     _git(["clean", "-fd"], timeout=30)
                     state.log("Working directory clean")
 
