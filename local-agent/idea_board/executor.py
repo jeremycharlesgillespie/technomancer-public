@@ -886,11 +886,72 @@ def _has_branch_commits(project_root: Path, base: str = "main") -> bool:
         return False
 
 
+def _build_auto_commit_message(
+    idea_id: str,
+    idea_title: str,
+    model: str,
+    changed_paths: list[str],
+) -> str:
+    """Build the auto-commit message in the same shape as per-round commits.
+
+    Per-round (from ``OllamaCoder._build_commit_message``):
+      ``[<idea>] <title> <model> r<N>: <verb> <file> (+M more)``
+
+    Safety-net auto-commit:
+      ``[<idea>] <title> <model> auto-commit: edit <file> (+M more)``
+
+    The literal ``auto-commit`` sentinel replaces ``r<N>`` so it's obvious
+    in ``git log`` that the commit came from the safety net rather than a
+    passing round. Verb is always ``edit`` here — at this point in the
+    pipeline we don't reliably know which paths existed before the run
+    started, and this commit only fires on failure paths anyway.
+    """
+    parts = [f"[{idea_id}]"]
+    if idea_title.strip():
+        parts.append(idea_title.strip())
+    if model.strip():
+        parts.append(model.strip())
+    header = " ".join(parts)
+
+    if not changed_paths:
+        # Should never happen — caller already checked status — but keep
+        # the message coherent in case it does.
+        return f"{header} auto-commit: edit (no files reported)"
+
+    first = changed_paths[0]
+    extra = len(changed_paths) - 1
+    suffix = f" (+{extra} more)" if extra > 0 else ""
+    return f"{header} auto-commit: edit {first}{suffix}"
+
+
+def _parse_status_porcelain_paths(porcelain: str) -> list[str]:
+    """Extract file paths from ``git status --porcelain`` output.
+
+    Format: each line is ``XY <path>`` (or ``XY <path> -> <new>`` for
+    renames). We return the post-rename path so the commit message
+    reflects where the work landed.
+    """
+    paths: list[str] = []
+    for line in porcelain.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Drop the two-character status code + the space that follows.
+        # Porcelain v1 always has exactly that prefix.
+        rest = line[3:] if len(line) > 3 else line
+        # Renames: "old -> new" — keep new.
+        if " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        paths.append(rest.strip())
+    return paths
+
+
 def _auto_commit_uncommitted(
     project_root: Path | str,
     idea_id: str,
     state: "ExecutionState",
     idea_title: str = "",
+    model: str = "",
 ) -> bool:
     """Commit any uncommitted changes left behind by ``claude -p``.
 
@@ -902,6 +963,11 @@ def _auto_commit_uncommitted(
 
     Runs BEFORE the success check so ``git rev-list --count main..HEAD``
     sees a commit instead of zero.
+
+    Commit message matches the per-round commit format from
+    ``OllamaCoder._build_commit_message`` but with an ``auto-commit``
+    sentinel in place of ``r<N>`` so the safety-net commits are visually
+    distinguishable in ``git log``.
 
     Returns True if an auto-commit landed (so callers can log it as a
     real event rather than a silent save).
@@ -916,13 +982,16 @@ def _auto_commit_uncommitted(
         state.log(f"Auto-commit: status check failed ({exc}) — skipping")
         return False
 
-    dirty = (status.stdout or "").strip()
-    if not dirty:
+    # Don't strip leading whitespace — porcelain v1 lines look like
+    # ``" M path"`` (space + status + space) and the parser depends on
+    # the two-character status prefix being intact.
+    raw = status.stdout or ""
+    if not raw.strip():
         return False
 
-    changed_lines = [ln for ln in dirty.splitlines() if ln.strip()]
+    changed_paths = _parse_status_porcelain_paths(raw)
     state.log(
-        f"Auto-commit: {len(changed_lines)} uncommitted path(s) left by "
+        f"Auto-commit: {len(changed_paths)} uncommitted path(s) left by "
         f"Claude — committing so success check sees the work"
     )
 
@@ -931,13 +1000,14 @@ def _auto_commit_uncommitted(
             ["git", "add", "-A"],
             capture_output=True, text=True, timeout=15, cwd=cwd,
         )
-        subject = idea_title.strip() or "Implement story"
+        message = _build_auto_commit_message(
+            idea_id=idea_id,
+            idea_title=idea_title,
+            model=model,
+            changed_paths=changed_paths,
+        )
         commit = subprocess.run(
-            [
-                "git", "commit",
-                "-m",
-                f"[{idea_id}] {subject}",
-            ],
+            ["git", "commit", "-m", message],
             capture_output=True, text=True, timeout=15, cwd=cwd,
         )
     except Exception as exc:
@@ -2135,7 +2205,13 @@ def execute_idea(
                     )
                     coder.run()
                 with _state_timer(state, "executor.auto_commit"):
-                    _auto_commit_uncommitted(project_root, idea_id, state, idea.title)
+                    _auto_commit_uncommitted(
+                        project_root,
+                        idea_id,
+                        state,
+                        idea.title,
+                        model=model_override or settings.aiw_ollama_coder_model,
+                    )
                 # Check commits — same success criterion as claude backend
                 project_root_str = str(project_root)
                 current_branch_check = subprocess.run(
