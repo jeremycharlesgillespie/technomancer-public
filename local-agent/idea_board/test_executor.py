@@ -1,9 +1,10 @@
 """Tests for idea_board.executor._project_key_for — project key extraction."""
 
+import re
 import pytest
 from unittest.mock import patch
 
-from idea_board.executor import _project_key_for, _is_valid_idea_id, _PhaseMarker, ExecutionState
+from idea_board.executor import IDEA_ID_PATTERN, _project_key_for, _is_valid_idea_id, _PhaseMarker, ExecutionState
 from agent.config import settings
 
 
@@ -146,3 +147,70 @@ class TestProjectKeyFor:
         assert _is_valid_idea_id("FA-abc") is False  # No digits in suffix
         assert _is_valid_idea_id(123) is False  # Not a string
         assert _is_valid_idea_id(None) is False  # Not a string
+
+
+# ---------------------------------------------------------------------------
+# IDEA_ID_PATTERN constant
+# -----------------------
+
+class TestIdeaIdPattern:
+    """Test the IDEA_ID_PATTERN regex constant."""
+
+    def test_pattern_matches_valid_idea_id(self):
+        """re.match(Idea_ID_PATTERN, 'FA-100') should match."""
+        assert IDEA_ID_PATTERN.match("FA-100") is not None
+
+    def test_pattern_does_not_match_text_only(self):
+        """_is_valid_idea_id('text-only') should return False."""
+        assert _is_valid_idea_id("text-only") is False
+
+    def test_pattern_does_not_match_empty_string(self):
+        """_is_valid_idea_id('') should return False."""
+        assert _is_valid_idea_id("") is False
+
+    def test_pattern_does_not_match_whitespace_only(self):
+        """_is_valid_idea_id('   ') should return False."""
+        assert _is_valid_idea_id("   ") is False
+
+    def test_pattern_does_not_match_numbers_only(self):
+        """_is_valid_idea_id('123-456') should return False."""
+        assert _is_valid_idea_id("123-456") is False
+
+    def test_pattern_does_not_match_missing_hyphen(self):
+        """_is_valid_idea_id('FA') should return False."""
+        assert _is_valid_idea_id("FA") is False
+
+    def test_pattern_does_not_match_missing_suffix(self):
+        """_is_valid_idea_id('FA-') should return False."""
+        assert _is_valid_idea_id("FA-") is False
+
+    def test_pattern_does_not_match_missing_prefix(self):
+        """_is_valid_idea_id('-123') should return False."""
+        assert _is_valid_idea_id("-123") is False
+
+    def test_pattern_does_not_match_non_string(self):
+        """_is_valid_idea_id(123) should return False."""
+        assert _is_valid_idea_id(123) is False
+
+    def test_pattern_does_not_match_none(self):
+        """_is_valid_idea_id(None) should return False."""
+        assert _is_valid_idea_id(None) is False
+
+    def test_pattern_matches_various_valid_formats(self):
+        """Test various valid idea ID formats."""
+        assert IDEA_ID_PATTERN.match("FA-100") is not None
+        assert IDEA_ID_PATTERN.match("TK-500") is not None
+        assert IDEA_ID_PATTERN.match("ABC-123") is not None
+        assert IDEA_ID_PATTERN.match("XYZ-9999") is not None
+
+    def test_pattern_does_not_match_invalid_formats(self):
+        """Test various invalid idea ID formats."""
+        assert IDEA_ID_PATTERN.match("text-only") is None
+        assert IDEA_ID_PATTERN.match("") is None
+        assert IDEA_ID_PATTERN.match("   ") is None
+        assert IDEA_ID_PATTERN.match("123-456") is None
+        assert IDEA_ID_PATTERN.match("FA") is None
+        assert IDEA_ID_PATTERN.match("FA-") is None
+        assert IDEA_ID_PATTERN.match("-123") is None
+        assert IDEA_ID_PATTERN.match("FA-123abc") is None
+        assert IDEA_ID_PATTERN.match("FA-abc") is None
