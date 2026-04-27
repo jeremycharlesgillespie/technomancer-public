@@ -234,6 +234,75 @@ class TestProjectKeyFor:
             # The function should not crash, but the behavior with whitespace is to return it
             assert result is not None  # Should not be None
 
+    def test_returns_none_for_missing_keys(self):
+        """_project_key_for should return None for inputs that don't contain valid project keys."""
+        with patch.object(settings, 'jira_project_key', None):
+            # Test various inputs that should result in None (no valid project key)
+            assert _project_key_for("FA-abc") is None  # No digits
+            assert _project_key_for("123-456") is None  # No alphabetic prefix
+            assert _project_key_for("ABC") is None  # No hyphen
+            assert _project_key_for("") is None  # Empty string
+            assert _project_key_for("   ") is None  # Whitespace only
+            assert _project_key_for("-") is None  # Dash only
+            assert _project_key_for("--") is None  # Double dash only
+            assert _project_key_for("ABC-") is None  # Trailing dash
+            assert _project_key_for("-123") is None  # Leading dash
+            assert _project_key_for("123-") is None  # Leading digits, trailing dash
+            assert _project_key_for("ABC123") is None  # No hyphen
+            assert _project_key_for("ABC-123-456") is None  # Multiple hyphens but first part not alphabetic
+
+    def test_handles_missing_key_gracefully(self):
+        """_project_key_for should handle missing keys gracefully without raising exceptions."""
+        with patch.object(settings, 'jira_project_key', None):
+            # These inputs should all return None without raising exceptions
+            test_cases = [
+                "FA-abc",      # No digits
+                "123-456",     # No alphabetic prefix
+                "ABC",         # No hyphen
+                "",            # Empty string
+                "   ",         # Whitespace only
+                "-",           # Dash only
+                "--",          # Double dash only
+                "ABC-",        # Trailing dash
+                "-123",        # Leading dash
+                "123-",        # Leading digits, trailing dash
+                "ABC123",      # No hyphen
+                "ABC-123-456", # Multiple hyphens but first part not alphabetic
+            ]
+            
+            for case in test_cases:
+                # This should not raise any exceptions and should return None
+                result = _project_key_for(case)
+                assert result is None, f"Expected None for input '{case}', got {result}"
+
+    def test_no_exception_raised_for_no_key_found(self):
+        """_project_key_for should not raise an exception when no project key is found."""
+        with patch.object(settings, 'jira_project_key', None):
+            # Test that no exceptions are raised for inputs that don't contain valid project keys
+            test_inputs = [
+                "FA-abc",      # No digits
+                "123-456",     # No alphabetic prefix  
+                "ABC",         # No hyphen
+                "",            # Empty string
+                "   ",         # Whitespace only
+                "-",           # Dash only
+                "--",          # Double dash only
+                "ABC-",        # Trailing dash
+                "-123",        # Leading dash
+                "123-",        # Leading digits, trailing dash
+                "ABC123",      # No hyphen
+                "ABC-123-456", # Multiple hyphens but first part not alphabetic
+            ]
+            
+            for input_text in test_inputs:
+                # This should not raise any exceptions
+                try:
+                    result = _project_key_for(input_text)
+                    # Should return None for all these cases
+                    assert result is None
+                except Exception as e:
+                    pytest.fail(f"Exception raised for input '{input_text}': {e}")
+
 
 class TestPhaseMarkerFinish:
     """Test _PhaseMarker.finish() method with NULL project keys."""
@@ -303,3 +372,75 @@ class TestPhaseMarkerFinish:
         
         # This should not raise any exceptions
         marker.finish()
+
+
+class TestProjectKeyForExceptionHandling:
+    """Test that _project_key_for handles missing keys gracefully."""
+
+    def test_returns_none_for_missing_keys(self):
+        """_project_key_for should return None for inputs that don't contain valid project keys."""
+        with patch.object(settings, 'jira_project_key', None):
+            # Test various inputs that should result in None (no valid project key)
+            assert _project_key_for("FA-abc") is None  # No digits
+            assert _project_key_for("123-456") is None  # No alphabetic prefix
+            assert _project_key_for("ABC") is None  # No hyphen
+            assert _project_key_for("") is None  # Empty string
+            assert _project_key_for("   ") is None  # Whitespace only
+            assert _project_key_for("-") is None  # Dash only
+            assert _project_key_for("--") is None  # Double dash only
+            assert _project_key_for("ABC-") is None  # Trailing dash
+            assert _project_key_for("-123") is None  # Leading dash
+            assert _project_key_for("123-") is None  # Leading digits, trailing dash
+            assert _project_key_for("ABC123") is None  # No hyphen
+            assert _project_key_for("ABC-123-456") is None  # Multiple hyphens but first part not alphabetic
+
+    def test_no_exception_raised_for_missing_keys(self):
+        """_project_key_for should not raise an exception when no project key is found."""
+        with patch.object(settings, 'jira_project_key', None):
+            # Test that no exceptions are raised for inputs that don't contain valid project keys
+            test_inputs = [
+                "FA-abc",      # No digits
+                "123-456",     # No alphabetic prefix  
+                "ABC",         # No hyphen
+                "",            # Empty string
+                "   ",         # Whitespace only
+                "-",           # Dash only
+                "--",          # Double dash only
+                "ABC-",        # Trailing dash
+                "-123",        # Leading dash
+                "123-",        # Leading digits, trailing dash
+                "ABC123",      # No hyphen
+                "ABC-123-456", # Multiple hyphens but first part not alphabetic
+            ]
+            
+            for input_text in test_inputs:
+                # This should not raise any exceptions and should return None
+                try:
+                    result = _project_key_for(input_text)
+                    assert result is None, f"Expected None for input '{input_text}', got {result}"
+                except Exception as e:
+                    pytest.fail(f"Exception raised for input '{input_text}': {e}")
+
+    def test_handles_missing_key_gracefully_with_no_exception(self):
+        """_project_key_for should handle missing keys gracefully without raising exceptions."""
+        with patch.object(settings, 'jira_project_key', None):
+            # These inputs should all return None without raising exceptions
+            test_cases = [
+                "FA-abc",      # No digits
+                "123-456",     # No alphabetic prefix
+                "ABC",         # No hyphen
+                "",            # Empty string
+                "   ",         # Whitespace only
+                "-",           # Dash only
+                "--",          # Double dash only
+                "ABC-",        # Trailing dash
+                "-123",        # Leading dash
+                "123-",        # Leading digits, trailing dash
+                "ABC123",      # No hyphen
+                "ABC-123-456", # Multiple hyphens but first part not alphabetic
+            ]
+            
+            for case in test_cases:
+                # This should not raise any exceptions and should return None
+                result = _project_key_for(case)
+                assert result is None, f"Expected None for input '{case}', got {result}"
