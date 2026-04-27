@@ -996,8 +996,17 @@ def _auto_commit_uncommitted(
     )
 
     try:
+        # Stage exactly the paths git already reported as dirty. Never
+        # ``git add -A`` here: if the model emptied or shrank
+        # ``.gitignore``, ``-A`` would sweep in every previously-ignored
+        # file (db files, profiling artifacts, log dirs, etc.) and the
+        # safety-net commit would balloon into a churned-up tree. We
+        # observed exactly that on TK-1215 (model deleted the gitignore,
+        # auto-commit then added 13 generated .db files in a single
+        # commit). Use ``--`` so paths starting with ``-`` aren't parsed
+        # as flags.
         subprocess.run(
-            ["git", "add", "-A"],
+            ["git", "add", "--", *changed_paths],
             capture_output=True, text=True, timeout=15, cwd=cwd,
         )
         message = _build_auto_commit_message(

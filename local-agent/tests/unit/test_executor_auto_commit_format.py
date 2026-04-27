@@ -272,3 +272,84 @@ class TestAutoCommitUncommittedIntegration:
         assert commit_calls == [
             "[TK-1] t m auto-commit: edit a.py (+1 more)"
         ]
+
+
+# ---------------------------------------------------------------------------
+# Regression: ``git add -A`` would balloon commits when the model touched
+# ``.gitignore``. Auto-commit must stage exactly the paths git status
+# reports, never sweep newly-unignored files. Observed on TK-1215 (model
+# emptied .gitignore, then auto-commit committed 13 freshly-unignored
+# .db files in one commit).
+# ---------------------------------------------------------------------------
+
+class TestAutoCommitStagingScope:
+    def _make_state(self):
+        state = MagicMock()
+        state.log = MagicMock()
+        return state
+
+    def test_stages_only_reported_paths_not_dash_A(self, tmp_path):
+        """The git add invocation must use explicit paths, never ``-A``."""
+        state = self._make_state()
+        add_invocations = []
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            if cmd[:2] == ["git", "status"]:
+                # Two dirty files reported by git status.
+                result.stdout = " M agent/foo.py\n M tests/test_foo.py\n"
+            elif cmd[:2] == ["git", "add"]:
+                add_invocations.append(list(cmd))
+            return result
+
+        with patch("idea_board.executor.subprocess.run", side_effect=fake_run):
+            _auto_commit_uncommitted(
+                project_root=tmp_path,
+                idea_id="TK-1",
+                state=state,
+                idea_title="t",
+                model="m",
+            )
+
+        assert len(add_invocations) == 1
+        cmd = add_invocations[0]
+        # Never -A (the bug we're regressing against).
+        assert "-A" not in cmd, f"git add -A is forbidden, got: {cmd}"
+        # Exactly the reported paths land on the command line.
+        assert "agent/foo.py" in cmd
+        assert "tests/test_foo.py" in cmd
+
+    def test_dash_dash_separator_for_path_safety(self, tmp_path):
+        """Use ``--`` separator so paths starting with ``-`` aren't parsed
+        as flags. Defensive — git status shouldn't emit such paths, but
+        the separator costs nothing and protects against weird filenames."""
+        state = self._make_state()
+        add_invocations = []
+
+        def fake_run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            if cmd[:2] == ["git", "status"]:
+                result.stdout = " M weird.py\n"
+            elif cmd[:2] == ["git", "add"]:
+                add_invocations.append(list(cmd))
+            return result
+
+        with patch("idea_board.executor.subprocess.run", side_effect=fake_run):
+            _auto_commit_uncommitted(
+                project_root=tmp_path,
+                idea_id="TK-1",
+                state=state,
+                idea_title="t",
+            )
+
+        cmd = add_invocations[0]
+        assert "--" in cmd, f"missing -- separator: {cmd}"
+        # The path appears AFTER --, never before.
+        sep_idx = cmd.index("--")
+        assert "weird.py" in cmd[sep_idx + 1:]
