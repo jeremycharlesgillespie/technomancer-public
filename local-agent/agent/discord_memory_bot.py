@@ -751,8 +751,8 @@ Keep responses concise for Discord but thorough when they need depth.""",
         agent.register_tool(tool)
     for tool in get_web_tools():
         agent.register_tool(tool)
-    from idea_board.models import get_idea_board_tools
-    for tool in get_idea_board_tools():
+    from agent.jira_tools import get_jira_tools
+    for tool in get_jira_tools():
         agent.register_tool(tool)
     for tool in get_knowledge_gap_tools():
         agent.register_tool(tool)
