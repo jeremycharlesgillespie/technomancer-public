@@ -18,9 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from idea_board.jira_sync import sync_idea_to_jira
-from idea_board.models import get_idea
-
 logger = logging.getLogger(__name__)
 
 DB_DIR = Path(__file__).parent.parent / "data"
@@ -139,17 +136,37 @@ def get_jira_dlq_entries(limit: int = 100) -> list[dict[str, Any]]:
     return entries
 
 
+def get_idea(idea_id: str) -> Any:
+    """Look up an idea via the board provider for retry-time payload rebuild.
+
+    Lives on this module so tests retain a stable patch target
+    (``patch.object(jira_sync_dlq, "get_idea", ...)``). Returns ``None``
+    when the provider has no record, exactly like the legacy
+    ``idea_board.models.get_idea`` did.
+    """
+    from board import get_provider
+    return get_provider().get(idea_id)
+
+
+def sync_idea_to_jira(idea: Any) -> Any:
+    """Thin alias for ``idea_board.jira_sync.sync_idea_to_jira``.
+
+    Re-exported here so ``retry_jira_dlq_entry`` (and its tests) have a
+    single, in-module symbol to patch instead of depending on the
+    cross-module import order.
+    """
+    from idea_board.jira_sync import sync_idea_to_jira as _sync
+    return _sync(idea)
+
+
 def retry_jira_dlq_entry(entry_id: int) -> bool:
     """Re-invoke the Jira sync for a single dead-letter row.
 
-    Loads the row by ``entry_id``, resolves the associated idea via
-    :func:`idea_board.models.get_idea`, and calls
-    :func:`idea_board.jira_sync.sync_idea_to_jira`. On success (sync
-    returns a truthy Jira key) the row is deleted and ``True`` is
-    returned. On any failure — unknown entry id, missing idea, raised
-    exception, or a falsy sync result — the row is left in place with
-    ``last_failed_at`` bumped to the current UTC time and ``False`` is
-    returned.
+    Looks the row up by id, fetches the source idea via
+    :func:`get_idea` (board provider), and re-runs
+    :func:`sync_idea_to_jira`. On a successful sync the row is deleted;
+    on failure (sync raises or returns falsy) the row is left in place
+    and ``last_failed_at`` is bumped to the current UTC time.
     """
     init_db()
     conn = _get_conn()
@@ -162,22 +179,24 @@ def retry_jira_dlq_entry(entry_id: int) -> bool:
         return False
 
     idea = get_idea(row["idea_id"])
-    jira_key: str | None = None
-    if idea is not None:
-        try:
-            jira_key = sync_idea_to_jira(idea)
-        except Exception as exc:
-            logger.warning(
-                "[JiraDLQ] Retry raised for row %s (%s): %s",
-                row["id"], row["idea_id"], exc,
-            )
-            jira_key = None
-
-    if jira_key:
-        conn.execute(
-            "DELETE FROM jira_sync_dlq WHERE id = ?",
-            (int(entry_id),),
+    if idea is None:
+        logger.warning(
+            "[JiraDLQ] Retry skipped for row %s (%s): idea not found",
+            row["id"], row["idea_id"],
         )
+        return False
+
+    try:
+        result = sync_idea_to_jira(idea)
+    except Exception as exc:
+        logger.warning(
+            "[JiraDLQ] Retry failed for row %s (%s): %s",
+            row["id"], row["idea_id"], exc,
+        )
+        result = None
+
+    if result:
+        conn.execute("DELETE FROM jira_sync_dlq WHERE id = ?", (int(entry_id),))
         conn.commit()
         return True
 

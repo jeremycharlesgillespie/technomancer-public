@@ -138,10 +138,12 @@ class TestWatchExecution:
             log_lines=["Line 1", "Line 2", "Line 3"],
         )
 
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea(state="done")
         with patch("idea_board.executor.get_execution", return_value=fake_state), \
              patch("aim.state.update_worker_heartbeat"), \
              patch("aim.state.update_worker_status"), \
-             patch("idea_board.models.get_idea", return_value=FakeIdea(state="done")):
+             patch("board.get_provider", return_value=fake_provider):
             result = watch_execution("idea-001")
 
         assert result.success is True
@@ -153,11 +155,14 @@ class TestWatchExecution:
         fake_state = FakeExecutionState(idea_id="idea-001")
         fake_state._alive = False  # Already dead
 
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea(
+            state="failed", execution_log="Tests failed"
+        )
         with patch("idea_board.executor.get_execution", return_value=fake_state), \
              patch("aim.state.update_worker_heartbeat"), \
              patch("aim.state.update_worker_status"), \
-             patch("idea_board.models.get_idea",
-                   return_value=FakeIdea(state="failed", execution_log="Tests failed")):
+             patch("board.get_provider", return_value=fake_provider):
             result = watch_execution("idea-001")
 
         assert result.success is False

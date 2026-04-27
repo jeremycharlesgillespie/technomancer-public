@@ -69,7 +69,6 @@ from agent.healthy_notifications import query_healthy_notifications
 from agent.run_context import with_run_context
 
 from .executor import EXECUTION_LOGS_DIR, get_execution
-from .models import Idea, save_ideas
 
 from board import get_provider as _get_board_provider
 from idea_board.jira_sync import is_jira_configured, _api as _jira_api
@@ -5784,10 +5783,6 @@ def quality_ab_detail_page(story_key: str) -> tuple[str, int] | str:
 # ============================================================================
 # SERVER LIFECYCLE
 # ============================================================================
-
-# Import here to avoid circular — IDEAS_DIR used in _execute
-from .models import IDEAS_DIR
-
 
 HUB_CSS = """
 :root {

@@ -37,17 +37,30 @@ def _block_git_cleanup():
 
 @pytest.fixture(autouse=True)
 def _force_local_board_provider():
-    """Force LocalProvider in tests so Jira API is never hit.
+    """Pin a stub provider in the factory cache so Jira API is never hit.
 
-    Production flips to JiraProvider when is_jira_configured() is true.
-    Tests use LocalProvider via existing mocks of idea_board.models.*,
-    so we force that path regardless of the .env state.
+    Since PR 6 removed LocalProvider and made the factory raise when Jira
+    is not configured, tests that don't explicitly patch ``board.get_provider``
+    would crash on the unconfigured guard. This fixture seeds ``board.factory``
+    with a MagicMock provider so unrelated code paths get a no-op double, and
+    individual tests still override via their own ``patch("board.get_provider")``.
     """
-    from board import reset_provider
+    from board import factory, reset_provider
 
     reset_provider()
-    with patch("board.factory.is_jira_configured", return_value=False):
-        yield
+    stub = MagicMock()
+    # Default returns chosen so unrelated production paths don't get
+    # MagicMock sentinels back where they expect concrete data:
+    #  - load_all / load_active: empty list (no ideas)
+    #  - get(...): None (no such idea)
+    # Tests that exercise a real idea path patch ``board.get_provider``
+    # themselves to inject a tailored fake.
+    stub.load_all.return_value = []
+    stub.load_active.return_value = []
+    stub.get.return_value = None
+    stub.get_comments.return_value = []
+    factory._provider = stub
+    yield
     reset_provider()
 
 # =============================================================================
@@ -370,7 +383,7 @@ def _block_jira_sync(monkeypatch):
     issues (we lost TK-364 and TK-365 this way during Phase 2).
     """
     monkeypatch.setattr(
-        "idea_board.models._jira_sync_background",
+        "aim.dedup._jira_sync_background",
         lambda idea: None,
     )
 
@@ -394,8 +407,8 @@ def mock_dedup_llm(monkeypatch):
     ``tuple[bool, str]`` shape that both seams now expose (TK-766), so
     legacy tests written against the bool API keep working.
 
-      * ``idea_board.models._is_duplicate`` — the public seam every
-        caller (``add_idea``, queue review, ``/api/jira/create``) goes
+      * ``aim.dedup._is_duplicate`` — the public seam every
+        caller (queue review, ``/api/jira/create``) goes
         through. Returns ``tuple[bool, str]`` (TK-766).
       * ``idea_board.dedup_llm.is_near_exact_duplicate`` — the LLM
         near-exact judge. Already returns ``tuple[bool, str]``.
@@ -435,7 +448,7 @@ def mock_dedup_llm(monkeypatch):
     mock.side_effect = _coerce
 
     # Legacy seam — the function every caller already routes through.
-    monkeypatch.setattr("idea_board.models._is_duplicate", mock)
+    monkeypatch.setattr("aim.dedup._is_duplicate", mock)
 
     # Future LLM judge target. The module is introduced by a separate
     # story (TK-743); guard the patch so this fixture is safe to add

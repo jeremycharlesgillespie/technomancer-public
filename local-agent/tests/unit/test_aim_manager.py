@@ -202,7 +202,9 @@ class TestAssessBoard:
             category: str = "quality"
             created: str = "2026-04-14T10:00:00"
 
-        with patch("idea_board.models.load_ideas", return_value=[FakeIdea()]):
+        fake_provider = MagicMock()
+        fake_provider.load_active.return_value = [FakeIdea()]
+        with patch("board.get_provider", return_value=fake_provider):
             board = assess_board(state)
 
         assert board["todo"] == 20
@@ -227,8 +229,10 @@ class TestAssessBoard:
             FakeIdea(id="idea-004", title="D", state="executing"),
         ]
 
+        fake_provider = MagicMock()
+        fake_provider.load_active.return_value = ideas
         with patch("aim.jira_reader.get_board_summary", side_effect=Exception("No Jira")), \
-             patch("idea_board.models.load_ideas", return_value=ideas):
+             patch("board.get_provider", return_value=fake_provider):
             board = assess_board(state)
 
         assert board["jira_available"] is False
@@ -253,8 +257,10 @@ class TestAssessBoard:
             FakeIdea(id="TK-3", title="Failed", state="failed"),
         ]
 
+        fake_provider = MagicMock()
+        fake_provider.load_active.return_value = ideas
         with patch("aim.jira_reader.get_board_summary", side_effect=Exception("No Jira")), \
-             patch("idea_board.models.load_ideas", return_value=ideas):
+             patch("board.get_provider", return_value=fake_provider):
             board = assess_board(state)
 
         assert len(board["approved_ideas"]) == 1
@@ -279,7 +285,9 @@ class TestExecuteDecision:
 
         decision = Decision(action="ASSIGN", target="idea-042", reason="Best pick")
 
-        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
+        with patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
              patch("aim.manager._notify_discord"), \
              patch("aim.manager._is_peak_hour_pt", return_value=False):
@@ -293,7 +301,9 @@ class TestExecuteDecision:
 
         decision = Decision(action="ASSIGN", target="idea-999", reason="?")
 
-        with patch("idea_board.models.get_idea", return_value=None), \
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = None
+        with patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign:
             execute_decision(state, decision, {})
 
@@ -311,7 +321,9 @@ class TestExecuteDecision:
 
         decision = Decision(action="ASSIGN", target="idea-042", reason="?")
 
-        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
+        with patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign:
             execute_decision(state, decision, {})
 
@@ -396,8 +408,10 @@ class TestExecuteDecision:
 
         decision = Decision(action="ASSIGN", target="TK-102", reason="top")
 
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
         with patch("aim.manager._is_peak_hour_pt", return_value=False), \
-             patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
              patch("aim.manager._notify_discord"), \
              patch("aim.state.save_state"):
@@ -419,8 +433,10 @@ class TestExecuteDecision:
         state.last_assigned_at = ""
 
         decision = Decision(action="ASSIGN", target="TK-103", reason="top")
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
         with patch("aim.manager._is_peak_hour_pt", return_value=False), \
-             patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+             patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker"), \
              patch("aim.manager._notify_discord"), \
              patch("aim.state.save_state"):
@@ -443,7 +459,9 @@ class TestExecuteDecision:
         # Still shows in_progress=1 after recovery attempt
         board = {"todo": 20, "in_progress": 1}
 
-        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
+        with patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
              patch("aim.manager._recover_orphan_in_progress"), \
              patch("aim.manager.assess_board", return_value={"todo": 20, "in_progress": 1}):
@@ -470,12 +488,12 @@ class TestExecuteDecision:
             call_count[0] += 1
             return {"todo": 20, "in_progress": 0, "approved_ideas": []}
 
-        with patch("idea_board.models.get_idea", return_value=FakeIdea()), \
+        fake_provider = MagicMock()
+        fake_provider.get.return_value = FakeIdea()
+        with patch("board.get_provider", return_value=fake_provider), \
              patch("aim.state.assign_idea_to_worker") as mock_assign, \
              patch("aim.manager._recover_orphan_in_progress"), \
-             patch("aim.manager.assess_board", side_effect=mock_assess), \
-             patch("board.get_provider") as mock_provider:
-            mock_provider.return_value.get.return_value = FakeIdea()
+             patch("aim.manager.assess_board", side_effect=mock_assess):
             execute_decision(state, decision, board)
 
         mock_assign.assert_called_once_with("TK-100")
@@ -546,24 +564,26 @@ class TestCreateNewWork:
         ]
         call_idx = [0]
 
-        def mock_add_idea(title, description, source, category, **kwargs):
+        def mock_provider_add(title, description, source, category, **kwargs):
             idx = call_idx[0]
             call_idx[0] += 1
             return created_ideas[idx]
 
+        fake_provider = MagicMock()
+        fake_provider.load_all.return_value = []
+        fake_provider.add.side_effect = mock_provider_add
+
         with patch("aim.brain.generate_work_ideas", return_value=ideas), \
-             patch("idea_board.models.load_ideas", return_value=[]), \
-             patch("idea_board.models.add_idea", side_effect=mock_add_idea) as mock_add, \
-             patch("idea_board.models.vote") as mock_vote, \
+             patch("board.get_provider", return_value=fake_provider), \
              patch("aim.manager._notify_discord"), \
              patch("agent.config.settings") as mock_settings:
             mock_settings.aim_board_high_threshold = 100
             mock_settings.aim_auto_approve_categories = "quality,performance,test"
             _create_new_work(state, {"todo": 5})
 
-        assert mock_add.call_count == 2
+        assert fake_provider.add.call_count == 2
         # Performance idea should be auto-approved, feature should not
-        mock_vote.assert_called_once_with("idea-100", "owner", "approve")
+        fake_provider.vote.assert_called_once_with("idea-100", "owner", "approve")
 
     def test_skips_when_board_full(self, state):
         from aim.manager import _create_new_work

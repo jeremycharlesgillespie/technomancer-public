@@ -105,11 +105,16 @@ class TestHandleShowLearning:
 
 
 class TestHandleShowIdeas:
-    @patch("idea_board.models.list_ideas_for_llm",
-           return_value="**Idea Board** — 1 idea(s):\n\n**idea-001**: Test idea")
-    def test_shows_ideas(self, mock_list):
-        msg = _make_msg("ideas")
-        _run(handle_show_ideas(msg, _send_response))
+    def test_shows_ideas(self):
+        # board.get_provider is imported inside handle_show_ideas, so patch
+        # the factory and stub list_ideas_for_llm on the returned provider.
+        fake_provider = MagicMock()
+        fake_provider.list_ideas_for_llm.return_value = (
+            "**Idea Board** — 1 idea(s):\n\n**idea-001**: Test idea"
+        )
+        with patch("board.get_provider", return_value=fake_provider):
+            msg = _make_msg("ideas")
+            _run(handle_show_ideas(msg, _send_response))
         assert "idea" in msg._last_response.lower() or "Idea Board" in msg._last_response
 
 

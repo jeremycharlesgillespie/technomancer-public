@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from idea_board import dedup
-from idea_board.models import Idea
+from board.types import Idea
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +35,25 @@ def _clean_cache():
     dedup.clear_cache()
     yield
     dedup.clear_cache()
+
+
+def _provider_returning(ideas):
+    """Return a mock board provider whose ``load_all()`` yields ``ideas``."""
+    provider = MagicMock()
+    provider.load_all.return_value = ideas
+    return provider
+
+
+def _patch_provider(ideas):
+    """Patch ``board.get_provider`` to return a provider that loads ``ideas``."""
+    return patch("board.get_provider", return_value=_provider_returning(ideas))
+
+
+def _patch_provider_raising(exc):
+    """Patch ``board.get_provider`` so the provider's ``load_all`` raises."""
+    provider = MagicMock()
+    provider.load_all.side_effect = exc
+    return patch("board.get_provider", return_value=provider)
 
 
 @pytest.fixture
@@ -59,7 +78,7 @@ class TestCacheMissHit:
     def test_first_call_is_a_miss_and_embeds(self, sample_ideas):
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             result = dedup.find_duplicate("new title", "new desc")
         assert result == "idea-001"
@@ -69,7 +88,7 @@ class TestCacheMissHit:
     def test_second_call_within_ttl_is_a_hit(self, sample_ideas):
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             first = dedup.find_duplicate("title", "desc")
             after_first = embed.call_count
@@ -81,7 +100,7 @@ class TestCacheMissHit:
     def test_different_keys_do_not_share_cache(self, sample_ideas):
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             dedup.find_duplicate("title A", "desc A")
             after_first = embed.call_count
@@ -92,7 +111,7 @@ class TestCacheMissHit:
     def test_non_duplicate_result_is_cached_as_none(self, sample_ideas):
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.1):
             first = dedup.find_duplicate("title", "desc")
             after_first = embed.call_count
@@ -112,7 +131,7 @@ class TestCacheExpiry:
         """Backdate the cache entry past TTL; the next call must re-embed."""
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             dedup.find_duplicate("title", "desc")
             key = dedup._cache_key("title", "desc")
@@ -127,7 +146,7 @@ class TestCacheExpiry:
         """At exactly TTL seconds old, the entry is still valid (≤, not <)."""
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             dedup.find_duplicate("title", "desc")
             key = dedup._cache_key("title", "desc")
@@ -142,7 +161,7 @@ class TestCacheExpiry:
         """After an expired hit the stale entry is replaced, not duplicated."""
         embed = MagicMock(return_value=[0.1] * 8)
         with patch.object(dedup, "embed_text", embed), \
-             patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+             _patch_provider(sample_ideas), \
              patch.object(dedup, "cosine_similarity", return_value=0.9):
             dedup.find_duplicate("title", "desc")
             key = dedup._cache_key("title", "desc")
@@ -191,9 +210,9 @@ class TestFallOpen:
         assert any("falling open" in r.message.lower() for r in warnings)
 
     def test_load_ideas_exception_returns_none(self):
-        """An unhealthy ideas store must also trigger fall-open, not a crash."""
+        """An unhealthy provider read must also trigger fall-open, not a crash."""
         with patch.object(dedup, "embed_text", return_value=[0.1] * 8), \
-             patch.object(dedup, "load_ideas", side_effect=OSError("disk")):
+             _patch_provider_raising(OSError("disk")):
             assert dedup.find_duplicate("t", "d") is None
 
     def test_fall_open_result_is_not_cached(self):
@@ -223,7 +242,7 @@ def test_total_suite_runtime_budget(sample_ideas):
     start = time.monotonic()
     embed = MagicMock(return_value=[0.1] * 8)
     with patch.object(dedup, "embed_text", embed), \
-         patch.object(dedup, "load_ideas", return_value=sample_ideas), \
+         _patch_provider(sample_ideas), \
          patch.object(dedup, "cosine_similarity", return_value=0.9):
         for _ in range(50):
             dedup.find_duplicate("title", "desc")

@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from idea_board.models import Idea
+from board.types import Idea
 from idea_board.web import app
 
 

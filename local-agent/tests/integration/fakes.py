@@ -25,8 +25,8 @@ from datetime import datetime
 from typing import Iterable
 
 from board.provider import BoardItem, Comment, parse_marker
-from idea_board.models import Comment as IdeaComment
-from idea_board.models import Idea
+from board.types import Comment as IdeaComment
+from board.types import Idea
 
 
 class FakeJiraProvider:

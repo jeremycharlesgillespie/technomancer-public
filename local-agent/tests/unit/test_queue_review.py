@@ -35,8 +35,8 @@ from aim.state import AIMState, WorkerState
 # no-op. Tests that need to exercise the real sync fan-out restore this
 # reference via ``monkeypatch.setattr``. Module-scope assignment runs at
 # collection time, ahead of any fixture setup.
-import idea_board.models as _idea_models  # noqa: E402
-_REAL_JIRA_SYNC_BACKGROUND = _idea_models._jira_sync_background
+import aim.dedup as _aim_dedup  # noqa: E402
+_REAL_JIRA_SYNC_BACKGROUND = _aim_dedup._jira_sync_background
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,8 @@ class TestIsDuplicate:
         and ``_is_duplicate`` propagates that to False. The LLM seam is
         patched so this test does not spawn a real ``claude -p`` subprocess.
         """
-        from idea_board.models import Idea, _is_duplicate
+        from board.types import Idea
+        from aim.dedup import _is_duplicate
 
         existing = Idea(
             id="TK-321",
@@ -166,7 +167,8 @@ class TestIsDuplicate:
         (the right verdict for a near-identical rephrase) and the verdict
         propagates to True.
         """
-        from idea_board.models import Idea, _is_duplicate
+        from board.types import Idea
+        from aim.dedup import _is_duplicate
 
         existing = Idea(
             id="TK-1",
@@ -391,7 +393,8 @@ class TestAddDoneDuplicateFlagComment:
 
     def test_appends_llm_comment_with_exact_text(self):
         """Comment lands on ``story.comments`` with author ``"llm"`` and the text the caller passed."""
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         story = Idea(id="idea-100", title="t", description="d")
         marker = (
@@ -408,7 +411,8 @@ class TestAddDoneDuplicateFlagComment:
 
     def test_timestamp_is_set_automatically(self):
         """The Comment dataclass fills in an ISO timestamp; the helper must not pass empty."""
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         story = Idea(id="idea-101", title="t", description="d")
 
@@ -420,10 +424,11 @@ class TestAddDoneDuplicateFlagComment:
 
     def test_helper_invokes_jira_sync_background(self, monkeypatch):
         """Helper must route through ``_jira_sync_background`` so future wiring changes can't drop it silently."""
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         sync_spy = MagicMock()
-        monkeypatch.setattr("idea_board.models._jira_sync_background", sync_spy)
+        monkeypatch.setattr("aim.dedup._jira_sync_background", sync_spy)
 
         story = Idea(id="idea-102", title="t", description="d")
         add_done_duplicate_flag_comment(story, "marker text")
@@ -438,10 +443,11 @@ class TestAddDoneDuplicateFlagComment:
         for a synchronous stand-in so the assertion doesn't need to
         race a real thread start, and mocks the Jira-layer seams.
         """
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         monkeypatch.setattr(
-            "idea_board.models._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
+            "aim.dedup._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
         )
 
         class _SyncThread:
@@ -451,7 +457,7 @@ class TestAddDoneDuplicateFlagComment:
             def start(self):
                 self._target()
 
-        monkeypatch.setattr("idea_board.models.threading.Thread", _SyncThread)
+        monkeypatch.setattr("aim.dedup.threading.Thread", _SyncThread)
 
         import idea_board.jira_sync as js
         sync_mock = MagicMock()
@@ -465,10 +471,11 @@ class TestAddDoneDuplicateFlagComment:
 
     def test_jira_sync_skipped_when_unconfigured(self, monkeypatch):
         """If Jira is not configured, ``sync_idea_to_jira`` is never called."""
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         monkeypatch.setattr(
-            "idea_board.models._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
+            "aim.dedup._jira_sync_background", _REAL_JIRA_SYNC_BACKGROUND,
         )
 
         class _SyncThread:
@@ -478,7 +485,7 @@ class TestAddDoneDuplicateFlagComment:
             def start(self):
                 self._target()
 
-        monkeypatch.setattr("idea_board.models.threading.Thread", _SyncThread)
+        monkeypatch.setattr("aim.dedup.threading.Thread", _SyncThread)
 
         import idea_board.jira_sync as js
         sync_mock = MagicMock()
@@ -512,7 +519,7 @@ class TestReviewQueueReasonLogging:
         def _fake_dedup(new_title, new_desc, existing):
             return (False, "llm_timeout")
 
-        monkeypatch.setattr("idea_board.models._is_duplicate", _fake_dedup)
+        monkeypatch.setattr("aim.dedup._is_duplicate", _fake_dedup)
 
         ideas = [
             FakeIdea(
@@ -545,7 +552,7 @@ class TestReviewQueueReasonLogging:
         def _fake_dedup(new_title, new_desc, existing):
             return (True, "near-exact: same files, same outcome")
 
-        monkeypatch.setattr("idea_board.models._is_duplicate", _fake_dedup)
+        monkeypatch.setattr("aim.dedup._is_duplicate", _fake_dedup)
 
         ideas = [
             FakeIdea(
@@ -586,7 +593,8 @@ class TestFindDuplicateTargetStory:
         Locks the "first match" contract. A later test is the only way
         to notice if a future refactor switches to "best match" silently.
         """
-        from idea_board.models import Idea, find_duplicate_target_story
+        from board.types import Idea
+        from aim.dedup import find_duplicate_target_story
 
         c1 = Idea(id="TK-A", title="unrelated story", description="alpha", state="done")
         c2 = Idea(id="TK-B", title="winner", description="beta", state="done")
@@ -595,7 +603,7 @@ class TestFindDuplicateTargetStory:
         def _fake_is_dup(new_title, new_desc, ref):
             return (ref.id in ("TK-B", "TK-C"), f"match={ref.id}")
 
-        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+        with patch("aim.dedup._is_duplicate", _fake_is_dup):
             ref, reason = find_duplicate_target_story("t", "d", [c1, c2, c3])
 
         assert ref is c2, "helper must return the first matching candidate"
@@ -609,7 +617,8 @@ class TestFindDuplicateTargetStory:
         Dropping the reason on a no-match would silently disable that
         observability path.
         """
-        from idea_board.models import Idea, find_duplicate_target_story
+        from board.types import Idea
+        from aim.dedup import find_duplicate_target_story
 
         c1 = Idea(id="TK-A", title="x", description="y", state="done")
         c2 = Idea(id="TK-B", title="x", description="y", state="done")
@@ -617,7 +626,7 @@ class TestFindDuplicateTargetStory:
         def _fake_is_dup(new_title, new_desc, ref):
             return (False, f"llm_timeout on {ref.id}")
 
-        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+        with patch("aim.dedup._is_duplicate", _fake_is_dup):
             ref, reason = find_duplicate_target_story("t", "d", [c1, c2])
 
         assert ref is None
@@ -627,9 +636,9 @@ class TestFindDuplicateTargetStory:
 
     def test_empty_candidates_returns_none_and_empty_reason(self):
         """No candidates → no LLM calls, no reason."""
-        from idea_board.models import find_duplicate_target_story
+        from aim.dedup import find_duplicate_target_story
 
-        with patch("idea_board.models._is_duplicate") as mock_dedup:
+        with patch("aim.dedup._is_duplicate") as mock_dedup:
             ref, reason = find_duplicate_target_story("t", "d", [])
 
         assert ref is None
@@ -673,7 +682,8 @@ class TestFindDuplicateTargetStoryDedupLlmIntegrationTK758:
         the prefilter reject identical inputs, this test will fail with
         ``assert_called_once`` instead of silently skipping the LLM.
         """
-        from idea_board.models import Idea, find_duplicate_target_story
+        from board.types import Idea
+        from aim.dedup import find_duplicate_target_story
 
         ref = Idea(
             id="TK-100",
@@ -703,7 +713,8 @@ class TestFindDuplicateTargetStoryDedupLlmIntegrationTK758:
         DIFFERENT reason string is preserved in ``last_reason`` so
         observability isn't lost on legitimate non-dup verdicts.
         """
-        from idea_board.models import Idea, find_duplicate_target_story
+        from board.types import Idea
+        from aim.dedup import find_duplicate_target_story
 
         ref = Idea(
             id="TK-101",
@@ -742,7 +753,8 @@ class TestFindDuplicateTargetStoryDedupLlmIntegrationTK758:
         """
         import logging
 
-        from idea_board.models import Idea, find_duplicate_target_story
+        from board.types import Idea
+        from aim.dedup import find_duplicate_target_story
 
         ref = Idea(
             id="TK-102",
@@ -751,7 +763,7 @@ class TestFindDuplicateTargetStoryDedupLlmIntegrationTK758:
             state="done",
         )
 
-        with caplog.at_level(logging.WARNING, logger="idea_board.models"):
+        with caplog.at_level(logging.WARNING, logger="aim.dedup"):
             with patch(
                 "idea_board.dedup_llm.is_near_exact_duplicate",
                 return_value=(False, "llm_timeout"),
@@ -782,7 +794,8 @@ class TestIsDuplicateOfDoneStory:
     """``is_duplicate_of_done_story`` narrows Step 2 to Done refs only."""
 
     def test_done_ref_returns_true(self):
-        from idea_board.models import Idea, is_duplicate_of_done_story
+        from board.types import Idea
+        from aim.dedup import is_duplicate_of_done_story
 
         ref = Idea(id="TK-1", title="t", description="d", state="done")
         assert is_duplicate_of_done_story(ref) is True
@@ -794,14 +807,16 @@ class TestIsDuplicateOfDoneStory:
         auto-veto, and a one-off Failed dup is often a legitimate
         retry. The advisory flag would just add noise.
         """
-        from idea_board.models import Idea, is_duplicate_of_done_story
+        from board.types import Idea
+        from aim.dedup import is_duplicate_of_done_story
 
         ref = Idea(id="TK-1", title="t", description="d", state="failed")
         assert is_duplicate_of_done_story(ref) is False
 
     def test_non_terminal_state_returns_false(self):
         """Only ``done`` is flagged — no other state qualifies."""
-        from idea_board.models import Idea, is_duplicate_of_done_story
+        from board.types import Idea
+        from aim.dedup import is_duplicate_of_done_story
 
         for state in ("proposed", "approved", "refining", "executing", "vetoed"):
             ref = Idea(id="TK-1", title="t", description="d", state=state)
@@ -832,8 +847,8 @@ class TestDoneDuplicatePipelineTK759:
         Done target → True, which is the signal Step 2 uses to emit
         the advisory comment.
         """
-        from idea_board.models import (
-            Idea,
+        from board.types import Idea
+        from aim.dedup import (
             find_duplicate_target_story,
             is_duplicate_of_done_story,
         )
@@ -844,7 +859,7 @@ class TestDoneDuplicatePipelineTK759:
         def _fake_is_dup(new_title, new_desc, ref):
             return (True, "match=done")
 
-        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+        with patch("aim.dedup._is_duplicate", _fake_is_dup):
             ref, _reason = find_duplicate_target_story("t", "d", candidates)
 
         assert ref is done_ref
@@ -859,8 +874,8 @@ class TestDoneDuplicatePipelineTK759:
         confirms the filter rejects the Failed case even when
         ``_is_duplicate`` says it's a dup.
         """
-        from idea_board.models import (
-            Idea,
+        from board.types import Idea
+        from aim.dedup import (
             find_duplicate_target_story,
             is_duplicate_of_done_story,
         )
@@ -871,7 +886,7 @@ class TestDoneDuplicatePipelineTK759:
         def _fake_is_dup(new_title, new_desc, ref):
             return (True, "match=failed")
 
-        with patch("idea_board.models._is_duplicate", _fake_is_dup):
+        with patch("aim.dedup._is_duplicate", _fake_is_dup):
             ref, _reason = find_duplicate_target_story("t", "d", candidates)
 
         assert ref is failed_ref
@@ -886,12 +901,12 @@ class TestDoneDuplicatePipelineTK759:
         guard-order contract so a future refactor can't swap the check
         order and crash the queue review on a non-match.
         """
-        from idea_board.models import (
+        from aim.dedup import (
             find_duplicate_target_story,
             is_duplicate_of_done_story,
         )
 
-        with patch("idea_board.models._is_duplicate", return_value=(False, "no")):
+        with patch("aim.dedup._is_duplicate", return_value=(False, "no")):
             ref, _reason = find_duplicate_target_story("t", "d", [])
 
         assert ref is None
@@ -912,7 +927,8 @@ class TestFormatDoneDuplicateComment:
 
     def test_exact_format_with_known_input(self):
         """Known ref → exact string. Locks every character of the contract."""
-        from idea_board.models import Idea, format_done_duplicate_comment
+        from board.types import Idea
+        from aim.dedup import format_done_duplicate_comment
 
         ref = Idea(
             id="TK-501",
@@ -940,7 +956,8 @@ class TestFormatDoneDuplicateComment:
         of these degrades the operator's ability to act on the
         comment without opening the referenced story.
         """
-        from idea_board.models import Idea, format_done_duplicate_comment
+        from board.types import Idea
+        from aim.dedup import format_done_duplicate_comment
 
         ref = Idea(
             id="TK-501",
@@ -966,7 +983,8 @@ class TestFormatDoneDuplicateComment:
         id population (e.g. a provider that returns partial rows)
         still yields actionable output.
         """
-        from idea_board.models import Idea, format_done_duplicate_comment
+        from board.types import Idea
+        from aim.dedup import format_done_duplicate_comment
 
         ref = Idea(id="", title="t", description="d", state="done")
         text = format_done_duplicate_comment(ref)
@@ -983,7 +1001,8 @@ class TestFormatDoneDuplicateComment:
         would collapse the format into ``"TK-501:  (Done)"`` which
         reads like a typo rather than degraded data.
         """
-        from idea_board.models import Idea, format_done_duplicate_comment
+        from board.types import Idea
+        from aim.dedup import format_done_duplicate_comment
 
         ref = Idea(id="TK-501", title="", description="d", state="done")
         text = format_done_duplicate_comment(ref)
@@ -1100,7 +1119,7 @@ class TestReviewQueueHelperPipelineOrder:
         silently changes when the Jira sync fires and which refs can
         leak through; this test is the tripwire.
         """
-        import idea_board.models as models
+        import aim.dedup as models
 
         mock_dedup_llm.return_value = True
 
@@ -1150,10 +1169,10 @@ class TestReviewQueueHelperPipelineOrder:
 
         with patch("board.get_provider", return_value=mock_provider), \
              patch("aim.manager._notify_discord"), \
-             patch("idea_board.models.find_duplicate_target_story", _spy_find), \
-             patch("idea_board.models.is_duplicate_of_done_story", _spy_is_done), \
-             patch("idea_board.models.format_done_duplicate_comment", _spy_format), \
-             patch("idea_board.models.add_done_duplicate_flag_comment", _spy_add):
+             patch("aim.dedup.find_duplicate_target_story", _spy_find), \
+             patch("aim.dedup.is_duplicate_of_done_story", _spy_is_done), \
+             patch("aim.dedup.format_done_duplicate_comment", _spy_format), \
+             patch("aim.dedup.add_done_duplicate_flag_comment", _spy_add):
             review_queue(state)
 
         # Only the Done-dup idea drives the pipeline; the Done ref
@@ -1172,7 +1191,7 @@ class TestReviewQueueHelperPipelineOrder:
         need flagging doesn't pay the formatting cost or emit a
         comment.
         """
-        import idea_board.models as models
+        import aim.dedup as models
 
         mock_dedup_llm.return_value = True
 
@@ -1204,18 +1223,18 @@ class TestReviewQueueHelperPipelineOrder:
         with patch("board.get_provider", return_value=mock_provider), \
              patch("aim.manager._notify_discord"), \
              patch(
-                 "idea_board.models.find_duplicate_target_story",
+                 "aim.dedup.find_duplicate_target_story",
                  side_effect=real_find,
              ) as find_spy, \
              patch(
-                 "idea_board.models.is_duplicate_of_done_story",
+                 "aim.dedup.is_duplicate_of_done_story",
                  side_effect=real_is_done,
              ) as is_done_spy, \
              patch(
-                 "idea_board.models.format_done_duplicate_comment",
+                 "aim.dedup.format_done_duplicate_comment",
              ) as format_spy, \
              patch(
-                 "idea_board.models.add_done_duplicate_flag_comment",
+                 "aim.dedup.add_done_duplicate_flag_comment",
              ) as add_spy:
             review_queue(state)
 
@@ -1235,7 +1254,8 @@ class TestAddDoneDuplicateFlagCommentProviderMode:
 
     def test_provider_add_comment_called_with_story_id_author_text(self):
         """When a provider is supplied, persistence goes through it."""
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         story = Idea(id="idea-200", title="t", description="d")
         provider = MagicMock()
@@ -1250,7 +1270,8 @@ class TestAddDoneDuplicateFlagCommentProviderMode:
         Avoids a double-append once the provider's own write lands
         in ``story.comments`` on the next load.
         """
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         story = Idea(id="idea-201", title="t", description="d")
         provider = MagicMock()
@@ -1269,10 +1290,11 @@ class TestAddDoneDuplicateFlagCommentProviderMode:
         wasteful, and obscures which write actually triggered a Jira
         update when debugging.
         """
-        from idea_board.models import Idea, add_done_duplicate_flag_comment
+        from board.types import Idea
+        from aim.dedup import add_done_duplicate_flag_comment
 
         sync_spy = MagicMock()
-        monkeypatch.setattr("idea_board.models._jira_sync_background", sync_spy)
+        monkeypatch.setattr("aim.dedup._jira_sync_background", sync_spy)
 
         story = Idea(id="idea-202", title="t", description="d")
         provider = MagicMock()

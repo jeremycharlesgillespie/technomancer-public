@@ -38,7 +38,7 @@ from aim.splitter import (
 )
 from agent.story_format import ATOMIC_LABEL
 from board.provider import Comment
-from idea_board.models import Idea
+from board.types import Idea
 
 
 # ---------------------------------------------------------------------------

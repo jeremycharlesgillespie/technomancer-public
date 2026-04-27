@@ -19,7 +19,7 @@ from agent import executor_runs_db
 from aim.brain import Decision
 from aim.state import AIMState, WorkerState, load_state, save_state
 from board.provider import Comment, parse_marker
-from idea_board.models import Idea
+from board.types import Idea
 
 
 # ---------------------------------------------------------------------------

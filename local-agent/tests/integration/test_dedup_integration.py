@@ -42,7 +42,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from idea_board import dedup_llm
-from idea_board.models import Idea, _is_duplicate
+from board.types import Idea
+from aim.dedup import _is_duplicate
 
 
 # ---------------------------------------------------------------------------

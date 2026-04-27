@@ -27,7 +27,6 @@ import time
 from dataclasses import dataclass
 
 from agent.embeddings import cosine_similarity, embed_text
-from idea_board.models import load_ideas
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +95,12 @@ def find_duplicate(title: str, description: str) -> str | None:
     best_id: str | None = None
     best_score: float = 0.0
     try:
-        ideas = load_ideas()
+        # PR 6: ideas now live in Jira, not the local JSON store. Read
+        # the active set through the provider so the existing fall-open
+        # contract (returns ``None`` on any backend failure) still
+        # holds when Jira is unreachable.
+        from board import get_provider
+        ideas = get_provider().load_all()
         for idea in ideas:
             if idea.state == "vetoed":
                 continue
