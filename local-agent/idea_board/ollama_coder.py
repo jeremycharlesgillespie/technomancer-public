@@ -1277,8 +1277,21 @@ class OllamaCoder:
             # run the runner will not idle-unload.
             "keep_alive": -1,
         }
+        # Pre-compute prompt size once so every retry attempt logs the
+        # same number. ``json.dumps`` is overkill here — we only need a
+        # rough char count to spot prompts that have ballooned past what
+        # the model can chew through inside CHAT_CHUNK_TIMEOUT.
+        prompt_chars = sum(
+            len(str(m.get("content") or "")) for m in body["messages"]
+        )
+        msg_count = len(body["messages"])
         for attempt in range(4):  # 1 initial + 3 retries
-            response = self._stream_chat_once(body)
+            response = self._stream_chat_once(
+                body,
+                prompt_chars=prompt_chars,
+                msg_count=msg_count,
+                attempt=attempt,
+            )
             if response is None:
                 return None
             status, payload = response
@@ -1318,6 +1331,10 @@ class OllamaCoder:
     def _stream_chat_once(
         self,
         body: dict[str, Any],
+        *,
+        prompt_chars: int = 0,
+        msg_count: int = 0,
+        attempt: int = 0,
     ) -> tuple[str, Any] | None:
         """Run one streaming /api/chat attempt.
 
@@ -1329,12 +1346,27 @@ class OllamaCoder:
         - ``"retry_500"``: payload is the response text; caller may retry.
         - ``"http_error"``: payload is the response text; non-retryable.
         - ``"non_json"``: payload is the offending line; non-retryable.
+
+        Diagnostic logging: every attempt logs prompt size + model + host
+        at INFO before the request fires; on success, on network error,
+        and on mid-stream timeout we log how long it took to fail and
+        how far we got. This is the data we need to decide whether the
+        timeout fix is "longer first-chunk timeout" vs "retry on read
+        timeout" vs "smaller prompt".
         """
         url = f"{self.host}/api/chat"
         # Use a (connect, read) timeout tuple so the connect handshake
         # has its own short window. The read timeout governs how long
         # we wait between streamed chunks.
         request_timeout = (10, self.CHAT_CHUNK_TIMEOUT)
+        t_request_start = time.time()
+        logger.info(
+            "[OllamaCoder] chat request: model=%s host=%s attempt=%d "
+            "messages=%d prompt_chars=%d num_ctx=%d "
+            "chunk_timeout=%ds total_timeout=%ds",
+            self.model, self.host, attempt, msg_count, prompt_chars,
+            self.num_ctx, self.CHAT_CHUNK_TIMEOUT, self.CHAT_TOTAL_TIMEOUT,
+        )
         try:
             # ``with`` ensures the underlying socket is closed even if
             # we bail out of the iter_lines loop on cancellation.
@@ -1348,14 +1380,26 @@ class OllamaCoder:
                         "[OllamaCoder] HTTP %d: %s", r.status_code, r.text[:200],
                     )
                     return ("http_error", r.text)
-                return self._consume_chat_stream(r)
+                return self._consume_chat_stream(
+                    r,
+                    t_request_start=t_request_start,
+                    prompt_chars=prompt_chars,
+                )
         except requests.RequestException as exc:
-            logger.warning("[OllamaCoder] Network error: %s", exc)
+            elapsed = time.time() - t_request_start
+            logger.warning(
+                "[OllamaCoder] Network error after %.1fs: model=%s host=%s "
+                "prompt_chars=%d attempt=%d exc=%s",
+                elapsed, self.model, self.host, prompt_chars, attempt, exc,
+            )
             return None
 
     def _consume_chat_stream(
         self,
         response: "requests.Response",
+        *,
+        t_request_start: float | None = None,
+        prompt_chars: int = 0,
     ) -> tuple[str, Any]:
         """Read NDJSON chunks from a streaming chat response.
 
@@ -1371,12 +1415,27 @@ class OllamaCoder:
         timeout fires; on timeout it raises a ``RequestException``
         which the caller maps to None — so cancel latency is bounded
         by ``CHAT_CHUNK_TIMEOUT`` in the worst case.
+
+        Diagnostic timing: ``t_request_start`` (when caller fired
+        ``requests.post``) lets us record first-chunk latency, which
+        is dominated by Ollama's prompt-eval pass. On a 30b model with
+        a 30k-token prompt, prompt-eval can easily exceed
+        ``CHAT_CHUNK_TIMEOUT`` even though the model is healthy —
+        that's the hypothesis driving these logs.
         """
+        if t_request_start is None:
+            t_request_start = time.time()
         accumulated_content: list[str] = []
         accumulated_tool_calls: list[Any] = []
         final_message: dict[str, Any] = {}
         final_metadata: dict[str, Any] = {}
         deadline = time.time() + self.CHAT_TOTAL_TIMEOUT
+
+        # Stream-progress counters used both for INFO logging on success
+        # and for forensic logging on timeout.
+        first_chunk_time: float | None = None
+        chunks_received = 0
+        last_chunk_time = t_request_start
 
         try:
             for raw_line in response.iter_lines(decode_unicode=True):
@@ -1391,7 +1450,13 @@ class OllamaCoder:
                 if time.time() > deadline:
                     logger.warning(
                         "[OllamaCoder] streaming chat exceeded "
-                        "CHAT_TOTAL_TIMEOUT=%ds", self.CHAT_TOTAL_TIMEOUT,
+                        "CHAT_TOTAL_TIMEOUT=%ds (model=%s host=%s "
+                        "prompt_chars=%d chunks_received=%d "
+                        "first_chunk_latency=%s)",
+                        self.CHAT_TOTAL_TIMEOUT, self.model, self.host,
+                        prompt_chars, chunks_received,
+                        f"{first_chunk_time - t_request_start:.1f}s"
+                        if first_chunk_time else "never",
                     )
                     response.close()
                     return ("http_error", "stream timeout")
@@ -1400,6 +1465,21 @@ class OllamaCoder:
                     # Heartbeat / keep-alive — just loop and re-check
                     # cancel.
                     continue
+
+                # First non-empty chunk: this is when prompt-eval
+                # finishes and the model starts generating tokens.
+                # The biggest knob in the timeout problem.
+                now = time.time()
+                if first_chunk_time is None:
+                    first_chunk_time = now
+                    logger.info(
+                        "[OllamaCoder] first chunk arrived after %.1fs "
+                        "(model=%s host=%s prompt_chars=%d)",
+                        now - t_request_start, self.model, self.host,
+                        prompt_chars,
+                    )
+                chunks_received += 1
+                last_chunk_time = now
 
                 try:
                     chunk = json.loads(raw_line)
@@ -1432,8 +1512,25 @@ class OllamaCoder:
                             final_metadata[k] = v
                     break
         except requests.RequestException as exc:
-            # Per-chunk read timeout or socket error mid-stream.
-            logger.warning("[OllamaCoder] stream read error: %s", exc)
+            # Per-chunk read timeout or socket error mid-stream. The
+            # forensic log: how far we got, and where the stall sits
+            # (waiting on first chunk = prompt-eval, waiting on later
+            # chunk = generation hiccup or remote socket issue).
+            elapsed = time.time() - t_request_start
+            time_since_last = time.time() - last_chunk_time
+            logger.warning(
+                "[OllamaCoder] stream read error after %.1fs: model=%s "
+                "host=%s prompt_chars=%d chunks_received=%d "
+                "first_chunk_latency=%s time_since_last_chunk=%.1fs "
+                "stalled_on=%s exc=%s",
+                elapsed, self.model, self.host, prompt_chars,
+                chunks_received,
+                f"{first_chunk_time - t_request_start:.1f}s"
+                if first_chunk_time else "never",
+                time_since_last,
+                "first_chunk" if first_chunk_time is None else "subsequent_chunk",
+                exc,
+            )
             return ("http_error", str(exc))
 
         # Reassemble a dict that looks like the old non-streaming
@@ -1445,6 +1542,24 @@ class OllamaCoder:
 
         result: dict[str, Any] = dict(final_metadata)
         result["message"] = final_message
+
+        # Success log: surfaces healthy first-chunk latency so we know
+        # what "normal" looks like and can spot drift over time.
+        total_elapsed = time.time() - t_request_start
+        first_chunk_latency = (
+            first_chunk_time - t_request_start
+            if first_chunk_time is not None
+            else 0.0
+        )
+        logger.info(
+            "[OllamaCoder] chat done: model=%s host=%s prompt_chars=%d "
+            "first_chunk_latency=%.1fs total_elapsed=%.1fs chunks=%d "
+            "prompt_eval_count=%s eval_count=%s",
+            self.model, self.host, prompt_chars,
+            first_chunk_latency, total_elapsed, chunks_received,
+            final_metadata.get("prompt_eval_count"),
+            final_metadata.get("eval_count"),
+        )
         return ("ok", result)
 
     def _sleep_with_cancel(self, seconds: float) -> bool:

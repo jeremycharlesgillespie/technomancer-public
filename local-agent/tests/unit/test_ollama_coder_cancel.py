@@ -352,3 +352,127 @@ class TestRequestShape:
 
         # ``stream=True`` so requests doesn't buffer the entire response.
         assert mock_post.call_args.kwargs.get("stream") is True
+
+
+# ===========================================================================
+# Diagnostic logging — context for the qwen3 timeout investigation
+# ===========================================================================
+
+
+class TestDiagnosticLogging:
+    """Verify the timeout-investigation logs fire with the expected fields.
+
+    The qwen3-coder model on a 30b parameter checkpoint can spend
+    20-40s on prompt-eval before the first token arrives. Our
+    ``CHAT_CHUNK_TIMEOUT`` is 30s — close enough to the prompt-eval
+    ceiling that healthy generations sometimes time out. These tests
+    pin the diagnostic fields we rely on to decide whether the fix is
+    a longer first-chunk timeout, a retry, or a smaller prompt.
+    """
+
+    def test_request_log_includes_prompt_size_and_model(self, caplog):
+        coder = _make_coder()
+        lines = [json.dumps({"message": {}, "done": True})]
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            return_value=_stream_response(lines),
+        ):
+            with caplog.at_level("INFO", logger="idea_board.ollama_coder"):
+                coder._chat_with_tools(
+                    "system prompt text",
+                    [{"role": "user", "content": "user message body"}],
+                )
+
+        request_logs = [r for r in caplog.records if "chat request:" in r.message]
+        assert len(request_logs) == 1, "Expected one chat-request log per call"
+        msg = request_logs[0].message
+        assert "model=test-model" in msg
+        assert "host=http://test:11434" in msg
+        # System ("system prompt text" = 18 chars) + user ("user message body" = 17)
+        # = 35 chars total. Just check it's >= 35 to keep the test resilient.
+        assert "prompt_chars=" in msg
+        # Pull out the integer and verify it captured both messages.
+        for token in msg.split():
+            if token.startswith("prompt_chars="):
+                value = int(token.split("=", 1)[1])
+                assert value >= 35, f"prompt_chars too small: {value}"
+
+    def test_success_log_includes_first_chunk_latency(self, caplog):
+        coder = _make_coder()
+        lines = [
+            json.dumps({"message": {"role": "assistant", "content": "hi"}}),
+            json.dumps({
+                "message": {},
+                "done": True,
+                "eval_count": 7,
+                "prompt_eval_count": 42,
+            }),
+        ]
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            return_value=_stream_response(lines),
+        ):
+            with caplog.at_level("INFO", logger="idea_board.ollama_coder"):
+                coder._chat_with_tools("sys", [{"role": "user", "content": "x"}])
+
+        # Both the first-chunk log and the success log should fire.
+        first_chunk_logs = [r for r in caplog.records if "first chunk arrived" in r.message]
+        done_logs = [r for r in caplog.records if "chat done:" in r.message]
+        assert len(first_chunk_logs) == 1
+        assert len(done_logs) == 1
+        assert "prompt_eval_count=42" in done_logs[0].message
+        assert "eval_count=7" in done_logs[0].message
+        assert "first_chunk_latency=" in done_logs[0].message
+
+    def test_network_error_log_includes_elapsed_and_prompt_size(self, caplog):
+        import requests as real_requests
+        coder = _make_coder()
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            side_effect=real_requests.ConnectionError("connection refused"),
+        ):
+            with caplog.at_level("WARNING", logger="idea_board.ollama_coder"):
+                result = coder._chat_with_tools(
+                    "system text",
+                    [{"role": "user", "content": "user text"}],
+                )
+
+        assert result is None
+        net_logs = [r for r in caplog.records if "Network error after" in r.message]
+        assert len(net_logs) == 1
+        msg = net_logs[0].message
+        assert "model=test-model" in msg
+        assert "prompt_chars=" in msg
+        assert "attempt=" in msg
+
+    def test_stream_read_error_log_distinguishes_first_vs_subsequent_chunk(self, caplog):
+        """Mid-stream timeout BEFORE first chunk should be flagged ``stalled_on=first_chunk``.
+
+        This is the diagnostic that tells us whether the qwen3 timeout
+        is happening during prompt-eval (first chunk) or during
+        generation (subsequent chunks). Two completely different fixes.
+        """
+        import requests as real_requests
+        coder = _make_coder()
+
+        def _raising_iter_lines(decode_unicode=True):
+            raise real_requests.exceptions.ReadTimeout("read timeout=30")
+
+        r = MagicMock()
+        r.status_code = 200
+        r.text = ""
+        r.iter_lines = _raising_iter_lines
+        r.close = MagicMock()
+        r.__enter__ = MagicMock(return_value=r)
+        r.__exit__ = MagicMock(return_value=False)
+
+        with patch("idea_board.ollama_coder.requests.post", return_value=r):
+            with caplog.at_level("WARNING", logger="idea_board.ollama_coder"):
+                coder._chat_with_tools("sys", [])
+
+        stall_logs = [r for r in caplog.records if "stream read error after" in r.message]
+        assert len(stall_logs) == 1
+        msg = stall_logs[0].message
+        assert "stalled_on=first_chunk" in msg, f"unexpected log: {msg}"
+        assert "first_chunk_latency=never" in msg
+        assert "chunks_received=0" in msg
