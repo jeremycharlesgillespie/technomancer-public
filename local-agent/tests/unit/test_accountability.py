@@ -13,8 +13,9 @@ from agent.accountability import (
     verify_content_contains,
     verify_file_exists,
     verify_file_modified_recently,
-    verify_memory_saved,
     verify_git_clean,
+    verify_memory_saved,
+    verify_readme_writable,
 )
 
 
@@ -355,12 +356,13 @@ class TestGetAccountabilityTools:
         """get_accountability_tools returns list of Tool objects."""
         tools = get_accountability_tools()
 
-        assert len(tools) >= 4
+        assert len(tools) >= 5
         tool_names = [t.name for t in tools]
         assert "verify_file_exists" in tool_names
         assert "verify_file_modified" in tool_names
         assert "verify_content" in tool_names
         assert "verify_memory_saved" in tool_names
+        assert "verify_readme_writable" in tool_names
 
     def test_tools_have_descriptions(self):
         """All tools have descriptions."""
@@ -377,3 +379,73 @@ class TestGetAccountabilityTools:
         for tool in tools:
             assert "type" in tool.parameters
             assert "properties" in tool.parameters
+
+
+class TestVerifyReadmeWritable:
+    """Tests for verify_readme_writable function."""
+
+    def test_verify_readme_writable_exists_and_writable(self, tmp_path, monkeypatch):
+        """verify_readme_writable VERIFIED when README.md exists and is writable."""
+        # Create a temporary README.md at the project root
+        readme_path = tmp_path / "README.md"
+        readme_path.write_text("# Test\n")
+
+        # Monkeypatch the project root path used by verify_readme_writable
+        from agent import accountability
+        monkeypatch.setattr(accountability, "__file__", str(tmp_path / "agent" / "accountability.py"))
+
+        result = verify_readme_writable()
+
+        assert "VERIFIED" in result
+        assert "README.md" in result
+        assert "writable" in result.lower()
+
+    def test_verify_readme_writable_not_found(self, tmp_path, monkeypatch):
+        """verify_readme_writable NOT FOUND when README.md does not exist."""
+        # Monkeypatch the project root path used by verify_readme_writable
+        from agent import accountability
+        monkeypatch.setattr(accountability, "__file__", str(tmp_path / "agent" / "accountability.py"))
+
+        result = verify_readme_writable()
+
+        assert "NOT FOUND" in result
+        assert "README.md" in result
+
+    def test_verify_readme_writable_permission_denied(self, tmp_path, monkeypatch):
+        """verify_readme_writable ERROR when README.md exists but is not writable."""
+        # Create a temporary README.md at the project root
+        readme_path = tmp_path / "README.md"
+        readme_path.write_text("# Test\n")
+
+        # Monkeypatch the project root path used by verify_readme_writable
+        from agent import accountability
+        monkeypatch.setattr(accountability, "__file__", str(tmp_path / "agent" / "accountability.py"))
+
+        # Make the file read-only
+        readme_path.chmod(0o444)
+
+        result = verify_readme_writable()
+
+        assert "ERROR" in result
+        assert "permission" in result.lower()
+
+    def test_verify_readme_writable_preserves_content(self, tmp_path, monkeypatch):
+        """verify_readme_writable preserves original content after test."""
+        # Create a temporary README.md with original content at the project root
+        original_content = "# Technomancer\n\nThis is the original README.\n"
+        readme_path = tmp_path / "README.md"
+        readme_path.write_text(original_content)
+
+        # Monkeypatch the project root path used by verify_readme_writable
+        from agent import accountability
+        monkeypatch.setattr(accountability, "__file__", str(tmp_path / "agent" / "accountability.py"))
+
+        result = verify_readme_writable()
+
+        # Verify the function succeeded
+        assert "VERIFIED" in result
+
+        # Verify the original content is preserved
+        final_content = readme_path.read_text()
+        assert original_content in final_content
+        assert "[TK-1217] Canary check - writable" not in final_content

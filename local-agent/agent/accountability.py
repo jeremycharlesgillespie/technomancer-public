@@ -146,6 +146,56 @@ def verify_memory_saved(category: str) -> str:
         return f"NOT FOUND: Memory not saved in category '{category}'"
 
 
+def verify_readme_writable() -> str:
+    """
+    Verify that README.md exists and is writable.
+
+    This is a canary check to ensure the README can be modified before
+    adding content (e.g., the checkmark emoji).
+
+    Returns:
+        Verification result with details
+    """
+    # README.md is at the project root (local-agent/)
+    # Get the project root by going up from the current file's location
+    project_root = Path(__file__).parent.parent
+    readme_path = project_root / "README.md"
+
+    # Check if file exists
+    if not readme_path.exists():
+        return f"NOT FOUND: README.md does not exist at {readme_path}"
+
+    # Try to write to the file to verify writability
+    try:
+        # Write a temporary marker and then remove it
+        test_content = "# Technomancer\n\n[TK-1217] Canary check - writable\n"
+        with open(readme_path, 'a', encoding='utf-8') as f:
+            f.write(test_content)
+
+        # Remove the test content
+        with open(readme_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Check if our test content is still there
+        if test_content in content:
+            # Remove the test content
+            new_content = content.replace(test_content, "")
+            with open(readme_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            stat = readme_path.stat()
+            size = stat.st_size
+            mtime = datetime.fromtimestamp(stat.st_mtime)
+            return f"VERIFIED: README.md exists and is writable ({size} bytes, modified {mtime.strftime('%Y-%m-%d %H:%M:%S')})"
+        else:
+            return f"ERROR: README.md exists but is not writable - test content was not preserved"
+
+    except PermissionError:
+        return f"ERROR: Permission denied when writing to README.md"
+    except Exception as e:
+        return f"ERROR: Failed to write to README.md: {str(e)}"
+
+
 def verify_git_clean() -> str:
     """
     Verify that the git working directory is clean (no uncommitted changes).
@@ -351,6 +401,15 @@ def get_accountability_tools():
                 "required": ["branch_name"]
             },
             function=create_branch
+        ),
+        create_tool(
+            name="verify_readme_writable",
+            description="Verify that README.md exists and is writable (canary check)",
+            parameters={
+                "type": "object",
+                "properties": {}
+            },
+            function=verify_readme_writable
         ),
     ]
 
