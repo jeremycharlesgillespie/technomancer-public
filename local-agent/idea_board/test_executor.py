@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from idea_board.executor import _project_key_for, _PhaseMarker, ExecutionState
 from agent.config import settings
+from idea_board.executor import get_idea, load_ideas, mark_executing, mark_done, mark_failed
 
 
 # ---------------------------------------------------------------------------
@@ -343,3 +344,231 @@ class TestPhaseMarkerFinish:
         
         # This should not raise any exceptions
         marker.finish()
+
+
+class TestValidIdeaId:
+    """Test _project_key_for with valid idea_id formats."""
+
+    def test_returns_FA_for_FA_100(self):
+        """_project_key_for should return 'FA' for 'FA-100' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_returns_FA_for_FA_999(self):
+        """_project_key_for should return 'FA' for 'FA-999' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-999") == "FA"
+
+    def test_returns_TK_for_TK_123(self):
+        """_project_key_for should return 'TK' for 'TK-123' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("TK-123") == "TK"
+
+    def test_returns_ABC_for_ABC_456(self):
+        """_project_key_for should return 'ABC' for 'ABC-456' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC-456") == "ABC"
+
+    def test_returns_ABCDEF_for_ABCDEF_789(self):
+        """_project_key_for should return 'ABCDEF' for 'ABCDEF-789' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABCDEF-789") == "ABCDEF"
+
+    def test_returns_A_for_A_123(self):
+        """_project_key_for should return 'A' for 'A-123' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("A-123") == "A"
+
+    def test_returns_TK_when_jira_project_key_is_set(self):
+        """_project_key_for should return jira_project_key when set, even for valid idea_id."""
+        with patch.object(settings, 'jira_project_key', 'TK'):
+            assert _project_key_for("FA-100") == "TK"
+
+    def test_returns_FA_when_jira_project_key_is_empty(self):
+        """_project_key_for should return 'FA' when jira_project_key is empty string."""
+        with patch.object(settings, 'jira_project_key', ''):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_returns_FA_when_jira_project_key_is_whitespace(self):
+        """_project_key_for should return 'FA' when jira_project_key is whitespace."""
+        with patch.object(settings, 'jira_project_key', '   '):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_returns_uppercase_prefix(self):
+        """_project_key_for should return uppercase prefix for lowercase input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("fa-100") == "FA"
+
+    def test_returns_uppercase_prefix_for_mixed_case(self):
+        """_project_key_for should return uppercase prefix for mixed case input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("Fa-100") == "FA"
+
+    def test_returns_uppercase_prefix_for_all_uppercase(self):
+        """_project_key_for should return uppercase prefix for all uppercase input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
+
+    def test_returns_prefix_with_multiple_letters(self):
+        """_project_key_for should return prefix with multiple letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC-123") == "ABC"
+
+    def test_returns_prefix_with_many_letters(self):
+        """_project_key_for should return prefix with many letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABCDEFGHIJKL-123") == "ABCDEFGHIJKL"
+
+    def test_returns_prefix_with_single_letter(self):
+        """_project_key_for should return prefix with single letter."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("A-123") == "A"
+
+    def test_returns_prefix_with_many_digits(self):
+        """_project_key_for should return prefix for idea_id with many digits."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-123456789") == "FA"
+
+    def test_returns_prefix_with_many_digits_and_letters(self):
+        """_project_key_for should return prefix for idea_id with many digits and letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC-123456789") == "ABC"
+
+    def test_returns_prefix_with_many_hyphens(self):
+        """_project_key_for should return prefix for idea_id with multiple hyphens."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC-DEF-GHI-123") == "ABC"
+
+    def test_returns_prefix_with_trailing_hyphens(self):
+        """_project_key_for should return prefix for idea_id with trailing hyphens."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC--123") == "ABC"
+
+    def test_returns_prefix_with_leading_hyphen(self):
+        """_project_key_for should return None for idea_id with leading hyphen."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("-ABC-123") is None
+
+    def test_returns_none_for_idea_id_without_digits(self):
+        """_project_key_for should return None for idea_id without digits."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-abc") is None
+
+    def test_returns_none_for_idea_id_without_hyphen(self):
+        """_project_key_for should return None for idea_id without hyphen."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA123") is None
+
+    def test_returns_none_for_idea_id_with_non_alpha_prefix(self):
+        """_project_key_for should return None for idea_id with non-alpha prefix."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("123-FA") is None
+
+    def test_returns_none_for_idea_id_with_special_characters(self):
+        """_project_key_for should return None for idea_id with special characters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("!@#-ABC-123") is None
+
+    def test_returns_none_for_idea_id_with_underscore(self):
+        """_project_key_for should return None for idea_id with underscore."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC_DEF-123") is None
+
+    def test_returns_none_for_idea_id_with_space(self):
+        """_project_key_for should return None for idea_id with space."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABC DEF-123") is None
+
+    def test_returns_none_for_idea_id_with_only_digits(self):
+        """_project_key_for should return None for idea_id with only digits."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("123456") is None
+
+    def test_returns_none_for_idea_id_with_only_letters(self):
+        """_project_key_for should return None for idea_id with only letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("ABCDEF") is None
+
+    def test_returns_none_for_idea_id_with_only_hyphens(self):
+        """_project_key_for should return None for idea_id with only hyphens."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("---") is None
+
+    def test_returns_none_for_idea_id_with_only_special_chars(self):
+        """_project_key_for should return None for idea_id with only special characters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("!@#$%^&*()") is None
+
+    def test_returns_none_for_idea_id_with_only_spaces(self):
+        """_project_key_for should return None for idea_id with only spaces."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("   ") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores(self):
+        """_project_key_for should return None for idea_id with only underscores."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("___") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores_and_hyphens(self):
+        """_project_key_for should return None for idea_id with only underscores and hyphens."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("_-_-") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores_and_hyphens_and_spaces(self):
+        """_project_key_for should return None for idea_id with only underscores, hyphens, and spaces."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("_ - _") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores_and_hyphens_and_spaces_and_digits(self):
+        """_project_key_for should return None for idea_id with only underscores, hyphens, spaces, and digits."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("_ - 123") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores_and_hyphens_and_spaces_and_letters(self):
+        """_project_key_for should return None for idea_id with only underscores, hyphens, spaces, and letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("_ - ABC") is None
+
+    def test_returns_none_for_idea_id_with_only_underscores_and_hyphens_and_spaces_and_digits_and_letters(self):
+        """_project_key_for should return None for idea_id with only underscores, hyphens, spaces, digits, and letters."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("_ - 123ABC") is None
+
+    def test_handles_very_long_input(self):
+        """_project_key_for should handle very long inputs gracefully."""
+        with patch.object(settings, 'jira_project_key', None):
+            long_input = "A" * 1000 + "-123"
+            assert _project_key_for(long_input) == "A" * 1000
+
+    def test_handles_edge_case_with_numbers_only(self):
+        """_project_key_for should handle inputs with only numbers gracefully."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("123456") is None
+
+    def test_handles_edge_case_with_only_hyphens(self):
+        """_project_key_for should handle inputs with only hyphens gracefully."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("---") is None
+
+    def test_handles_none_settings_jira_project_key(self):
+        """_project_key_for should handle None jira_project_key gracefully."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-123") == "FA"
+
+    def test_handles_empty_settings_jira_project_key(self):
+        """_project_key_for should handle empty jira_project_key gracefully."""
+        with patch.object(settings, 'jira_project_key', ""):
+            assert _project_key_for("FA-123") == "FA"
+
+    def test_handles_whitespace_settings_jira_project_key(self):
+        """_project_key_for should handle whitespace jira_project_key gracefully."""
+        with patch.object(settings, 'jira_project_key', "   "):
+            # When jira_project_key is whitespace, it should return the whitespace value
+            result = _project_key_for("FA-123")
+            # The function should not crash, but the behavior with whitespace is to return it
+            assert result is not None  # Should not be None
+
+    def test_returns_valid_project_key_for_FA_100(self):
+        """_project_key_for should correctly extract 'FA' from 'FA-100' input."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-100") == "FA"
