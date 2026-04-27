@@ -993,11 +993,31 @@ class OllamaCoder:
         system_prompt: str,
         messages: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
+        """POST to Ollama's /api/chat with bounded cancel latency.
+
+        Streams the response so we can poll ``self._is_cancelled()``
+        between chunks and bail out within a few seconds when the
+        worker flips the cancel flag. The previous non-streaming
+        implementation used ``timeout=900`` as a single read timeout —
+        which meant a wedged generation could ignore cancellation for
+        up to 15 minutes, leaving the worker locked in "refusing to
+        stack" mode and forcing a full-stack restart.
+
+        Behaviour:
+        - Streams chunks with a short per-chunk read timeout
+          (CHAT_CHUNK_TIMEOUT). Between chunks we check the cancel
+          flag and abort if set.
+        - Reassembles the streamed chunks into the same dict shape
+          ``stream=False`` would have returned, so the caller never
+          knows whether streaming was used.
+        - HTTP 500 retry backoff is preserved (Ollama's transient
+          tool-format bug). Network errors still return None.
+        """
         body: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": system_prompt}] + messages,
             "tools": _TOOLS,
-            "stream": False,
+            "stream": True,
             "think": False,
             "options": {"num_ctx": self.num_ctx, "temperature": 0.2},
             # keep_alive=-1 pins the model resident in Ollama's scheduler
@@ -1010,33 +1030,188 @@ class OllamaCoder:
             "keep_alive": -1,
         }
         for attempt in range(4):  # 1 initial + 3 retries
-            try:
-                r = requests.post(
-                    f"{self.host}/api/chat",
-                    json=body,
-                    timeout=900,
-                )
-            except requests.RequestException as exc:
-                logger.warning("[OllamaCoder] Network error: %s", exc)
+            response = self._stream_chat_once(body)
+            if response is None:
                 return None
-            if r.status_code == 200:
-                break
-            # HTTP 500 with Ollama's XML parse bug is transient — retry with backoff
-            if r.status_code == 500 and attempt < 3:
+            status, payload = response
+            if status == "ok":
+                return payload
+            if status == "cancelled":
+                logger.info("[OllamaCoder] cancelled during streaming chat")
+                return None
+            if status == "retry_500" and attempt < 3:
                 delay = 2 ** attempt  # 1s, 2s, 4s
                 logger.warning(
                     "[OllamaCoder] HTTP 500 (attempt %d/4), retrying in %ds: %s",
-                    attempt + 1, delay, r.text[:120],
+                    attempt + 1, delay, str(payload)[:120],
                 )
-                time.sleep(delay)
+                # Sleep with cancel polling so a cancel during back-off
+                # also responds quickly.
+                if self._sleep_with_cancel(delay):
+                    return None
                 continue
-            logger.warning("[OllamaCoder] HTTP %d: %s", r.status_code, r.text[:200])
+            # Any other status is a non-retryable failure.
             return None
+        return None
+
+    # Per-chunk read timeout for the streaming chat. Short enough that
+    # a stuck connection releases promptly, long enough that the model's
+    # natural inter-chunk gap (typically <2 s for token-by-token
+    # streaming) doesn't trigger spurious timeouts.
+    CHAT_CHUNK_TIMEOUT = 30
+
+    # Hard cap on total streaming wall-clock. Defends against the
+    # pathological case where Ollama keeps emitting heartbeat-shaped
+    # chunks but never returns a "done" event. 15 minutes matches the
+    # old non-streaming timeout=900 so we don't change the upper bound,
+    # only the cancel-response latency.
+    CHAT_TOTAL_TIMEOUT = 900
+
+    def _stream_chat_once(
+        self,
+        body: dict[str, Any],
+    ) -> tuple[str, Any] | None:
+        """Run one streaming /api/chat attempt.
+
+        Returns ``None`` on a network error (caller maps to None).
+        Otherwise returns ``(status, payload)`` where ``status`` is one of:
+
+        - ``"ok"``: payload is the assembled response dict.
+        - ``"cancelled"``: payload is None; cancel flag fired mid-stream.
+        - ``"retry_500"``: payload is the response text; caller may retry.
+        - ``"http_error"``: payload is the response text; non-retryable.
+        - ``"non_json"``: payload is the offending line; non-retryable.
+        """
+        url = f"{self.host}/api/chat"
+        # Use a (connect, read) timeout tuple so the connect handshake
+        # has its own short window. The read timeout governs how long
+        # we wait between streamed chunks.
+        request_timeout = (10, self.CHAT_CHUNK_TIMEOUT)
         try:
-            return r.json()
-        except ValueError:
-            logger.warning("[OllamaCoder] Non-JSON response")
+            # ``with`` ensures the underlying socket is closed even if
+            # we bail out of the iter_lines loop on cancellation.
+            with requests.post(
+                url, json=body, stream=True, timeout=request_timeout,
+            ) as r:
+                if r.status_code == 500:
+                    return ("retry_500", r.text)
+                if r.status_code != 200:
+                    logger.warning(
+                        "[OllamaCoder] HTTP %d: %s", r.status_code, r.text[:200],
+                    )
+                    return ("http_error", r.text)
+                return self._consume_chat_stream(r)
+        except requests.RequestException as exc:
+            logger.warning("[OllamaCoder] Network error: %s", exc)
             return None
+
+    def _consume_chat_stream(
+        self,
+        response: "requests.Response",
+    ) -> tuple[str, Any]:
+        """Read NDJSON chunks from a streaming chat response.
+
+        Ollama emits one JSON object per line. Each chunk has a
+        ``message`` field (with incremental ``content`` and possibly
+        ``tool_calls``) and a final chunk has ``done: true``. We
+        accumulate everything and reassemble a non-streaming-shaped
+        dict for the caller.
+
+        Cancel polling: we check :meth:`_is_cancelled` between chunks
+        plus once per ``iter_lines`` iteration. ``iter_lines`` itself
+        blocks until either a line arrives or the per-chunk read
+        timeout fires; on timeout it raises a ``RequestException``
+        which the caller maps to None — so cancel latency is bounded
+        by ``CHAT_CHUNK_TIMEOUT`` in the worst case.
+        """
+        accumulated_content: list[str] = []
+        accumulated_tool_calls: list[Any] = []
+        final_message: dict[str, Any] = {}
+        final_metadata: dict[str, Any] = {}
+        deadline = time.time() + self.CHAT_TOTAL_TIMEOUT
+
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                # First check: cancellation. Bail before doing any
+                # parsing work so the worker's join window is short.
+                if self._is_cancelled():
+                    response.close()
+                    return ("cancelled", None)
+
+                # Hard wall-clock cap. Prevents a stream that keeps
+                # producing keep-alive lines from running forever.
+                if time.time() > deadline:
+                    logger.warning(
+                        "[OllamaCoder] streaming chat exceeded "
+                        "CHAT_TOTAL_TIMEOUT=%ds", self.CHAT_TOTAL_TIMEOUT,
+                    )
+                    response.close()
+                    return ("http_error", "stream timeout")
+
+                if not raw_line:
+                    # Heartbeat / keep-alive — just loop and re-check
+                    # cancel.
+                    continue
+
+                try:
+                    chunk = json.loads(raw_line)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "[OllamaCoder] non-JSON stream line: %s",
+                        str(raw_line)[:200],
+                    )
+                    return ("non_json", raw_line)
+
+                msg = chunk.get("message") or {}
+                if isinstance(msg, dict):
+                    # Token streaming — append to running buffer.
+                    if isinstance(msg.get("content"), str):
+                        accumulated_content.append(msg["content"])
+                    if isinstance(msg.get("tool_calls"), list):
+                        accumulated_tool_calls.extend(msg["tool_calls"])
+                    # Hold onto every field except content/tool_calls
+                    # so role/etc. reach the caller intact.
+                    for k, v in msg.items():
+                        if k not in ("content", "tool_calls"):
+                            final_message[k] = v
+
+                if chunk.get("done"):
+                    # Final chunk — capture the metadata fields
+                    # (eval_count, prompt_eval_count, etc.) the caller
+                    # may want.
+                    for k, v in chunk.items():
+                        if k != "message":
+                            final_metadata[k] = v
+                    break
+        except requests.RequestException as exc:
+            # Per-chunk read timeout or socket error mid-stream.
+            logger.warning("[OllamaCoder] stream read error: %s", exc)
+            return ("http_error", str(exc))
+
+        # Reassemble a dict that looks like the old non-streaming
+        # response shape so callers don't need to know about streaming.
+        final_message["content"] = "".join(accumulated_content)
+        if accumulated_tool_calls:
+            final_message["tool_calls"] = accumulated_tool_calls
+        final_message.setdefault("role", "assistant")
+
+        result: dict[str, Any] = dict(final_metadata)
+        result["message"] = final_message
+        return ("ok", result)
+
+    def _sleep_with_cancel(self, seconds: float) -> bool:
+        """Sleep up to ``seconds``, returning True if cancelled meanwhile.
+
+        Used for the HTTP 500 retry backoff so a cancel during a
+        retry-wait responds within ~0.5 s instead of waiting out the
+        full delay.
+        """
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            if self._is_cancelled():
+                return True
+            time.sleep(min(0.5, deadline - time.time()))
+        return False
 
     # ------------------------------------------------------------------
     # Context trimming
