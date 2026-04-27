@@ -98,3 +98,13 @@ class TestProjectKeyFor:
             assert _project_key_for(123) is None
             assert _project_key_for([]) is None
             assert _project_key_for({}) is None
+
+    def test_returns_FA_for_FA_1029(self):
+        """_project_key_for should extract FA from FA-1029."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("FA-1029") == "FA"
+
+    def test_returns_TK_for_TK_500(self):
+        """_project_key_for should extract TK from TK-500."""
+        with patch.object(settings, 'jira_project_key', None):
+            assert _project_key_for("TK-500") == "TK"
