@@ -92,6 +92,21 @@ DRIFT_EMPTY_EXHAUSTION_THRESHOLD = 2
 READ_FILE_MAX_CHARS = 20_000
 LIST_FILES_MAX = 200
 
+# Per-round dedup thresholds. The inner loop tracks each (tool_name, args)
+# signature within a round; once the count *exceeds* this number, the call
+# is short-circuited with a synthetic "[duplicate suppressed]" tool result
+# so the model is forced to try a different argument. Read-only tools get
+# a small budget (a second look at the same file/pattern is occasionally
+# legitimate). Mutating tools must not repeat the same exact write — if
+# the model is asking to write byte-identical content twice, it's stuck.
+_DEDUP_THRESHOLDS: dict[str, int] = {
+    "search_code": 2,
+    "list_files": 2,
+    "read_file": 2,
+    "write_file": 1,
+    "edit_file": 1,
+}
+
 
 def _coerce_int(value: Any) -> int | None:
     """Coerce a value (often a JSON-string from the model) to int.
@@ -293,6 +308,18 @@ class OllamaCoder:
         # When None, the coder runs with the core six tools only. The
         # bridge is best-effort: a failed start logs and we continue.
         self._mcp_bridge: Any = None
+        # Per-round dedup state. Keyed by (tool_name, sorted_args_repr);
+        # value is the call count for that signature within the current
+        # round. Reset in _run_rounds alongside _round_edit_count. The
+        # inner loop short-circuits a call with a synthetic result when
+        # the count exceeds a tool-specific threshold — direct kill for
+        # the search-loop pathology where the model repeats the same
+        # zero-result query for many turns. See _DEDUP_THRESHOLDS below.
+        self._tool_call_signatures: dict[tuple[str, str], int] = {}
+        # Per-round flag for the 75%-budget zero-edit warning. Set True
+        # the turn after the warning is injected so it fires at most
+        # once per round.
+        self._budget_warning_sent_this_round: bool = False
 
     # ------------------------------------------------------------------
     # Cancellation
@@ -418,6 +445,8 @@ class OllamaCoder:
             # can see whether the model actually edited anything.
             self._round_edit_count = 0
             self._nudge_sent_this_round = False
+            self._tool_call_signatures = {}
+            self._budget_warning_sent_this_round = False
 
             # Run inner tool-calling loop
             messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt}]
@@ -580,10 +609,41 @@ class OllamaCoder:
         """Run up to max_turns turns of tool-calling. Returns True if finish() called."""
         self_reviewed = False
 
+        # 75%-budget warning fires once per round when we've burned 3/4 of
+        # the turn budget and still made zero edits. Pre-compute the turn
+        # index at which to inject — `int(max_turns * 0.75)` matches the
+        # plan; for max_turns < 4 it lands at the start which is fine
+        # (those budgets are too small for the warning to be useful but
+        # we don't want a div-by-zero).
+        budget_warning_turn = max(1, int(self.max_turns * 0.75))
+
         for turn in range(self.max_turns):
             if self._is_cancelled():
                 self._log("[OllamaCoder] Cancelled — stopping inner loop")
                 return False
+
+            # 75%-budget zero-edit warning. Inject before the next chat
+            # call so the model sees it as the most recent user-role
+            # message and has a chance to actually edit before the wall.
+            if (
+                turn == budget_warning_turn
+                and self._round_edit_count == 0
+                and not self._budget_warning_sent_this_round
+            ):
+                self._budget_warning_sent_this_round = True
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "You have used 75% of your turns this round and "
+                        "have not edited any file. Stop exploring and "
+                        "start editing — pick the most likely file, read "
+                        "it once if you haven't, then make your change "
+                        "with edit_file or write_file. Reading more files "
+                        "will not finish the task."
+                    ),
+                })
+                self._log("[OllamaCoder] 75%-budget zero-edit warning injected")
+
             messages = self._trim_context(messages)
             response = self._chat_with_tools(system_prompt, messages)
             if self._is_cancelled():
@@ -628,8 +688,27 @@ class OllamaCoder:
                 args = raw_args if isinstance(raw_args, dict) else _safe_json(raw_args)
 
                 self._log(f"[OllamaCoder] → {name}({_fmt_args(args)})")
-                result = self._execute_tool(name, args)
-                self._log(f"[OllamaCoder] ← {str(result)[:300]}")
+                # Per-round duplicate-call suppression. If the same
+                # (name, args) signature has already been seen too many
+                # times this round, return a synthetic "[duplicate
+                # suppressed]" result instead of running the tool. Direct
+                # kill for the search-loop pathology where the model
+                # repeats a zero-result query for many turns.
+                dup_result = self._check_dedup(name, args)
+                if dup_result is not None:
+                    result: str = dup_result
+                    self._log(f"[OllamaCoder] ← (dup-suppressed) {result[:200]}")
+                else:
+                    result = self._execute_tool(name, args)
+                    self._log(f"[OllamaCoder] ← {str(result)[:300]}")
+                    # On a successful edit/write, drop dedup signatures
+                    # that mention the same path so the model can re-read
+                    # the now-changed file without being suppressed.
+                    if (
+                        name in ("edit_file", "write_file")
+                        and not str(result).startswith("ERROR")
+                    ):
+                        self._clear_dedup_for_path(args.get("path", ""))
 
                 # Append tool result
                 messages.append({
@@ -714,6 +793,64 @@ class OllamaCoder:
                     f"[OllamaCoder] MCP bridge tool_definitions raised: {exc}"
                 )
         return tools
+
+    def _tool_signature(self, name: str, args: dict[str, Any]) -> tuple[str, str]:
+        """Build a stable signature key for a tool call.
+
+        Sorts arg keys so ``{"a":1,"b":2}`` and ``{"b":2,"a":1}`` collide.
+        Uses ``repr`` on the sorted-items tuple to handle unhashable values
+        (lists, dicts) gracefully without raising. The args dict can come
+        from the model in any shape; we never want signature-building to
+        crash dispatch.
+        """
+        try:
+            sig = repr(sorted(args.items()))
+        except Exception:  # noqa: BLE001
+            sig = repr(args)
+        return (name, sig)
+
+    def _check_dedup(self, name: str, args: dict[str, Any]) -> str | None:
+        """Return a synthetic tool result if this call is a duplicate.
+
+        Increments the per-round counter for ``(name, args)`` and, when the
+        count exceeds the threshold for that tool, returns a synthetic
+        "[duplicate suppressed]" message so the model is forced to change
+        approach. Returns ``None`` (let the call proceed) when the tool is
+        not in the threshold table or the count is still under the limit.
+        """
+        threshold = _DEDUP_THRESHOLDS.get(name)
+        if threshold is None:
+            return None
+        sig = self._tool_signature(name, args)
+        count = self._tool_call_signatures.get(sig, 0) + 1
+        self._tool_call_signatures[sig] = count
+        if count <= threshold:
+            return None
+        # Render the args compactly for the synthetic message — the model
+        # should see exactly what it just repeated.
+        return (
+            f"[duplicate suppressed] You already called "
+            f"{name}({_fmt_args(args)}) {count - 1} time(s) this round. "
+            f"Repeating the same call will not return new results. Try a "
+            f"different argument, a different file, or read the file "
+            f"directly instead of searching."
+        )
+
+    def _clear_dedup_for_path(self, path: str) -> None:
+        """After a successful edit/write to ``path``, drop any signatures
+        whose args reference that path so subsequent re-reads of the now-
+        changed file are allowed. Without this, the model can't sensibly
+        re-read a file it just edited.
+        """
+        if not path:
+            return
+        marker = repr(path)
+        keys_to_drop = [
+            key for key in self._tool_call_signatures
+            if marker in key[1]
+        ]
+        for key in keys_to_drop:
+            del self._tool_call_signatures[key]
 
     def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
         # MCP-discovered tools (e.g. aiw_purpose, codebase_index) route

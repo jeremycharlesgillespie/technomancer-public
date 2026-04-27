@@ -1332,3 +1332,172 @@ class TestBashSandbox:
         result = coder._tool_run_bash("cat some_file.py")
         # The first 80 chars of the original command should appear.
         assert "cat some_file.py" in result
+
+
+# ---------------------------------------------------------------------------
+# TestToolCallDedup
+# ---------------------------------------------------------------------------
+
+class TestToolCallDedup:
+    """Per-round dedup short-circuits repeated tool calls.
+
+    The plan's Tier 3 fix targets glm's search-loop pathology
+    (16/51 exhausted_max_turns runs caused by repeated zero-result
+    search_code calls). The threshold table is exercised here.
+    """
+
+    def test_signature_collides_regardless_of_arg_order(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        sig_a = coder._tool_signature("search_code", {"pattern": "x", "path": "."})
+        sig_b = coder._tool_signature("search_code", {"path": ".", "pattern": "x"})
+        assert sig_a == sig_b
+
+    def test_signature_differs_on_different_args(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        sig_a = coder._tool_signature("search_code", {"pattern": "x"})
+        sig_b = coder._tool_signature("search_code", {"pattern": "y"})
+        assert sig_a != sig_b
+
+    def test_dedup_returns_none_under_threshold(self, tmp_path: Path) -> None:
+        """search_code threshold is 2 — the first two calls should pass."""
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {}
+        args = {"pattern": "foo"}
+        assert coder._check_dedup("search_code", args) is None
+        assert coder._check_dedup("search_code", args) is None
+
+    def test_dedup_suppresses_third_search_code(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {}
+        args = {"pattern": "foo"}
+        coder._check_dedup("search_code", args)
+        coder._check_dedup("search_code", args)
+        result = coder._check_dedup("search_code", args)
+        assert result is not None
+        assert result.startswith("[duplicate suppressed]")
+        assert "search_code" in result
+
+    def test_dedup_suppresses_second_edit_file(self, tmp_path: Path) -> None:
+        """edit_file threshold is 1 — second identical call is suppressed."""
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {}
+        args = {"path": "a.py", "old_string": "x", "new_string": "y"}
+        assert coder._check_dedup("edit_file", args) is None
+        result = coder._check_dedup("edit_file", args)
+        assert result is not None
+        assert result.startswith("[duplicate suppressed]")
+
+    def test_dedup_ignores_finish_and_unknown_tools(self, tmp_path: Path) -> None:
+        """Tools without a threshold entry are never deduped."""
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {}
+        for _ in range(10):
+            assert coder._check_dedup("finish", {"summary": "x"}) is None
+            assert coder._check_dedup("not_a_tool", {}) is None
+
+    def test_clear_dedup_for_path_drops_matching_signatures(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {}
+        coder._check_dedup("read_file", {"path": "a.py"})
+        coder._check_dedup("read_file", {"path": "b.py"})
+        coder._check_dedup("search_code", {"pattern": "x", "path": "a.py"})
+        coder._clear_dedup_for_path("a.py")
+        # Anything mentioning 'a.py' is gone, b.py is preserved.
+        keys = list(coder._tool_call_signatures.keys())
+        assert all("'a.py'" not in key[1] for key in keys)
+        assert any("'b.py'" in key[1] for key in keys)
+
+    def test_clear_dedup_for_path_no_op_on_empty_path(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        coder._tool_call_signatures = {("read_file", "[('path', 'a.py')]"): 1}
+        coder._clear_dedup_for_path("")
+        assert len(coder._tool_call_signatures) == 1
+
+    def test_signature_handles_unhashable_args(self, tmp_path: Path) -> None:
+        """args containing a list (e.g., 'paths': [...]) shouldn't crash."""
+        coder = _make_coder(tmp_path)
+        sig = coder._tool_signature("read_file", {"paths": ["a.py", "b.py"]})
+        assert isinstance(sig, tuple)
+        assert sig[0] == "read_file"
+
+
+# ---------------------------------------------------------------------------
+# TestBudgetWarning
+# ---------------------------------------------------------------------------
+
+class TestBudgetWarning:
+    """75%-budget zero-edit warning fires once per round when the model
+    has exhausted 3/4 of its turn budget without making any edits."""
+
+    def test_warning_injected_when_zero_edits_at_75_percent(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)  # max_turns=5 → warning at turn 3
+        coder._round_edit_count = 0
+        coder._budget_warning_sent_this_round = False
+        coder._tool_call_signatures = {}
+        coder._nudge_sent_this_round = False
+
+        # Plan a sequence of model responses: the first three turns the
+        # model just narrates with no tool calls, the fourth turn it
+        # finally calls finish so we can exit.
+        responses = [
+            _response(content=""),
+            _response(content=""),
+            _response(content=""),
+            _response(tool_calls=[_tool_call("finish", summary="ok")]),
+        ]
+        coder._chat_with_tools = lambda sys, msgs: responses.pop(0)  # type: ignore[method-assign]
+
+        # Capture all messages mutated by the inner loop.
+        messages: list[dict] = [{"role": "user", "content": "go"}]
+        coder._run_inner_loop("sys", messages, round_num=0)
+
+        # The warning should appear at least once in the user-role messages.
+        injected = [
+            m for m in messages
+            if m.get("role") == "user" and "75%" in m.get("content", "")
+        ]
+        assert len(injected) == 1, f"expected exactly one budget warning, got {len(injected)}"
+        assert "have not edited any file" in injected[0]["content"]
+
+    def test_warning_not_injected_if_edits_already_made(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        coder._round_edit_count = 1  # already edited something
+        coder._budget_warning_sent_this_round = False
+        coder._tool_call_signatures = {}
+        coder._nudge_sent_this_round = False
+
+        responses = [
+            _response(content=""),
+            _response(content=""),
+            _response(content=""),
+            _response(tool_calls=[_tool_call("finish", summary="ok")]),
+        ]
+        coder._chat_with_tools = lambda sys, msgs: responses.pop(0)  # type: ignore[method-assign]
+
+        messages: list[dict] = [{"role": "user", "content": "go"}]
+        coder._run_inner_loop("sys", messages, round_num=0)
+
+        injected = [
+            m for m in messages
+            if m.get("role") == "user" and "75%" in m.get("content", "")
+        ]
+        assert injected == []
+
+    def test_warning_fires_at_most_once_per_round(self, tmp_path: Path) -> None:
+        coder = _make_coder(tmp_path)
+        coder._round_edit_count = 0
+        coder._budget_warning_sent_this_round = False
+        coder._tool_call_signatures = {}
+        coder._nudge_sent_this_round = False
+
+        # Even if the model never finishes, we should see exactly one warning.
+        coder._chat_with_tools = lambda sys, msgs: _response(content="")  # type: ignore[method-assign]
+
+        messages: list[dict] = [{"role": "user", "content": "go"}]
+        coder._run_inner_loop("sys", messages, round_num=0)
+
+        injected = [
+            m for m in messages
+            if m.get("role") == "user" and "75%" in m.get("content", "")
+        ]
+        assert len(injected) == 1
