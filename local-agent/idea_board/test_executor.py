@@ -289,6 +289,50 @@ class TestProjectKeyFor:
             assert _project_key_for("fa-100") == "FA"
             assert _project_key_for("tk-447") == "TK"
 
+    def test_invalid_idea_id_formats(self):
+        """Test that invalid idea_id formats are rejected."""
+        with patch.object(settings, 'jira_project_key', None):
+            # Test the specific case mentioned in the story
+            assert _project_key_for("invalid@char-100") is None
+            
+            # Test other invalid formats
+            assert _project_key_for("invalid@char") is None
+            assert _project_key_for("invalid#char") is None
+            assert _project_key_for("invalid$char") is None
+            assert _project_key_for("invalid%char") is None
+            assert _project_key_for("invalid^char") is None
+            assert _project_key_for("invalid&char") is None
+            assert _project_key_for("invalid*char") is None
+            assert _project_key_for("invalid(char") is None
+            assert _project_key_for("invalid)char") is None
+            assert _project_key_for("invalid[char") is None
+            assert _project_key_for("invalid]char") is None
+            assert _project_key_for("invalid{char") is None
+            assert _project_key_for("invalid}char") is None
+            assert _project_key_for("invalid|char") is None
+            assert _project_key_for("invalid\\char") is None
+            assert _project_key_for("invalid:char") is None
+            assert _project_key_for("invalid;char") is None
+            assert _project_key_for("invalid\"char") is None
+            assert _project_key_for("invalid'char") is None
+            assert _project_key_for("invalid<char") is None
+            assert _project_key_for("invalid>char") is None
+            assert _project_key_for("invalid?char") is None
+            assert _project_key_for("invalid/char") is None
+            assert _project_key_for("invalid.char") is None
+            assert _project_key_for("invalid,char") is None
+            assert _project_key_for("invalid char") is None
+            assert _project_key_for("invalid\tchar") is None
+            assert _project_key_for("invalid\nchar") is None
+            assert _project_key_for("invalid\rchar") is None
+            assert _project_key_for("invalid\t\n\rchar") is None
+            assert _project_key_for("invalid@char123") is None
+            assert _project_key_for("invalid@char123@") is None
+            assert _project_key_for("123invalid") is None
+            assert _project_key_for("invalid123") is None
+            assert _project_key_for("invalid123@char") is None
+            assert _project_key_for("invalid@char123@char") is None
+
 
 class TestPhaseMarkerFinish:
     """Test _PhaseMarker.finish() method with NULL project keys."""
