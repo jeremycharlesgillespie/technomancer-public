@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -41,6 +42,12 @@ from idea_board.aiv_post_merge import enqueue_merged_story
 
 __all__ = ["enqueue_merged_story"]
 
+# Regex pattern for valid idea IDs: <project>-<number>
+# - <project>: One or more alphabetic characters (A-Z, a-z)
+# - <number>: One or more digits (0-9)
+# Example: FA-100, TK-1234, ABC-999
+IDEA_ID_PATTERN = re.compile(r"^[A-Za-z]+-\d+$")
+
 
 def _is_valid_idea_id(idea_id: str) -> bool:
     """Check if an idea ID is valid (follows <project>-<number> format).
@@ -59,20 +66,7 @@ def _is_valid_idea_id(idea_id: str) -> bool:
     if not idea_id.strip():
         return False
     
-    if "-" not in idea_id:
-        return False
-    
-    prefix, suffix = idea_id.split("-", 1)
-    
-    # Prefix must be alphabetic (only letters)
-    if not prefix.isalpha():
-        return False
-    
-    # Suffix must contain at least one digit
-    if not any(c.isdigit() for c in suffix):
-        return False
-    
-    return True
+    return bool(IDEA_ID_PATTERN.match(idea_id))
 
 
 def _project_key_for(idea_id: str | None) -> str | None:
