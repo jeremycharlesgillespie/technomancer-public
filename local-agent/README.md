@@ -1,6 +1,7 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-6059-brightgreen) ![coverage](https://img.shields.io/badge/coverage-0%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-103-blue) ![lines](https://img.shields.io/badge/lines-42k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-6059-brightgreen) ![coverage](https://img.shields.io/badge/coverage-0%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-103-blue) ![lines](https://img.shields.io/badge/lines-42k-blue) ![license](https://img.shields.io/badge/license-MIT
+✅-green)
 
 Technomancer is a **fully autonomous AI dev team** that ships production code
 the way humans do — from ranked Jira tickets, through feature branches, with
@@ -316,3 +317,4 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 ## License
 
 MIT
+✅
