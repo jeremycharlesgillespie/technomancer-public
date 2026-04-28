@@ -165,9 +165,34 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
                 path.unlink()
             removed += 1
             freed += size
+            log.info("Successful deletion of %s", path)
         except OSError as exc:
             log.warning("Failed to remove %s: %s", path, exc)
     return removed, freed
+
+
+# Export for testing
+__all__ = [
+    "cleanup_old_runs",
+    "start_cleanup_scheduler",
+    "stop_cleanup_scheduler",
+    "_remove_artifacts",
+    "_select_rows_to_delete",
+    "_path_size_bytes",
+    "_candidate_paths",
+]
+
+
+# Export for testing
+__all__ = [
+    "cleanup_old_runs",
+    "start_cleanup_scheduler",
+    "stop_cleanup_scheduler",
+    "_remove_artifacts",
+    "_select_rows_to_delete",
+    "_path_size_bytes",
+    "_candidate_paths",
+]
 
 
 def cleanup_old_runs(

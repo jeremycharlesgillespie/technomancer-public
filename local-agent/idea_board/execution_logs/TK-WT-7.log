@@ -1,10 +1,20 @@
-[20260428 04:56:55.482] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 04:56:55.482] === A/B Run A: model-a:tag @ localhost ===
-[20260428 04:56:55.483] [AB] unloading model A (model-a:tag) on localhost before B
-[20260428 04:56:55.483] === A/B Run B: model-b:tag @ localhost ===
-[20260428 04:56:55.483] [AB] scored model-a: err=''
-[20260428 04:56:55.483] [AB] scored model-b: err=''
-[20260428 04:56:55.483] [AB] comparison: winner='model_a' err=''
-[20260428 04:56:55.485] [AB] enqueued TK-WT-7 for AIV validation (sha=none)
-[20260428 04:56:55.485] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260428 04:56:55.485] [AB] worktree removal raised (non-fatal): permission denied
+[20260428 05:12:41.280] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 05:12:41.280] === A/B Run A: model-a:tag @ localhost ===
+[20260428 05:12:41.281] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 05:12:41.281] === A/B Run B: model-b:tag @ localhost ===
+[20260428 05:12:41.281] [AB] scored model-a: err=''
+[20260428 05:12:41.281] [AB] scored model-b: err=''
+[20260428 05:12:41.281] [AB] comparison: winner='model_a' err=''
+[20260428 05:12:41.284] [AB] enqueued TK-WT-7 for AIV validation (sha=none)
+[20260428 05:12:41.284] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 05:12:41.284] [AB] worktree removal raised (non-fatal): permission denied
+[20260428 05:16:16.917] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 05:16:16.917] === A/B Run A: model-a:tag @ localhost ===
+[20260428 05:16:16.918] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 05:16:16.918] === A/B Run B: model-b:tag @ localhost ===
+[20260428 05:16:16.918] [AB] scored model-a: err=''
+[20260428 05:16:16.918] [AB] scored model-b: err=''
+[20260428 05:16:16.918] [AB] comparison: winner='model_a' err=''
+[20260428 05:16:16.921] [AB] enqueued TK-WT-7 for AIV validation (sha=none)
+[20260428 05:16:16.921] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 05:16:16.921] [AB] worktree removal raised (non-fatal): permission denied

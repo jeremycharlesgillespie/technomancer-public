@@ -29,6 +29,161 @@ if not test_executor_logger.handlers:
     handler.setFormatter(formatter)
     test_executor_logger.addHandler(handler)
 
+# Import executor_runs_cleanup for logging verification tests
+from agent import executor_runs_cleanup
+
+
+# ---------------------------------------------------------------------------
+# executor_runs_cleanup logging verification
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOldRuns_Success:
+    """Test INFO logging for successful deletions in _remove_artifacts."""
+
+    def test_logs_info_on_successful_directory_removal(self, tmp_path, caplog):
+        """Test that INFO log is produced when directory is successfully removed."""
+        # Setup: Create a temp logs directory and a run_id directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "test-run-123"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True)
+        (dir_path / "file.txt").write_text("content", encoding="utf-8")
+
+        # Execute: Call _remove_artifacts with dry_run=False
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+
+        # Assert: Verify successful deletion and INFO log
+        assert dirs_removed == 1
+        assert bytes_freed > 0
+        assert not dir_path.exists()
+        assert any("Successful deletion" in record.message for record in caplog.records)
+        assert any(run_id in record.message for record in caplog.records)
+
+    def test_logs_info_on_successful_file_removal(self, tmp_path, caplog):
+        """Test that INFO log is produced when flat file is successfully removed."""
+        # Setup: Create a temp logs directory and a flat file
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "test-run-456"
+        file_path = logs_dir / f"{run_id}.log"
+        file_path.write_text("log content", encoding="utf-8")
+
+        # Execute: Call _remove_artifacts with dry_run=False
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+
+        # Assert: Verify successful deletion and INFO log
+        assert dirs_removed == 1
+        assert bytes_freed > 0
+        assert not file_path.exists()
+        assert any("Successful deletion" in record.message for record in caplog.records)
+        assert any(run_id in record.message for record in caplog.records)
+
+    def test_logs_info_on_multiple_successful_removals(self, tmp_path, caplog):
+        """Test that INFO log is produced for each successful removal."""
+        # Setup: Create directory and flat file
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "test-run-789"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True)
+        (dir_path / "file1.txt").write_text("content1", encoding="utf-8")
+        file_path = logs_dir / f"{run_id}.log"
+        file_path.write_text("log content", encoding="utf-8")
+
+        # Execute: Call _remove_artifacts with dry_run=False
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+
+        # Assert: Verify both were removed and INFO logs were produced
+        assert dirs_removed == 2
+        assert bytes_freed > 0
+        assert not dir_path.exists()
+        assert not file_path.exists()
+        # Should have two INFO logs (one for directory, one for file)
+        info_logs = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(info_logs) >= 2
+
+    def test_no_info_log_on_dry_run(self, tmp_path, caplog):
+        """Test that INFO log is NOT produced in dry_run mode."""
+        # Setup: Create a temp logs directory and a run_id directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "test-run-dry"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True)
+        (dir_path / "file.txt").write_text("content", encoding="utf-8")
+
+        # Execute: Call _remove_artifacts with dry_run=True
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=True
+            )
+
+        # Assert: Verify dry_run behavior and no INFO log
+        assert dirs_removed == 1
+        assert bytes_freed > 0
+        assert dir_path.exists()  # Should not be removed in dry_run
+        # Should have no INFO logs (only warnings if any)
+        info_logs = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(info_logs) == 0
+
+    def test_no_info_log_on_missing_artifacts(self, tmp_path, caplog):
+        """Test that INFO log is NOT produced when artifacts don't exist."""
+        # Setup: Create a temp logs directory but no artifacts
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "ghost-run"
+
+        # Execute: Call _remove_artifacts with dry_run=False
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+
+        # Assert: Verify no deletions and no INFO log
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+        # Should have no INFO logs
+        info_logs = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(info_logs) == 0
+
+    def test_logs_info_with_empty_directory(self, tmp_path, caplog):
+        """Test INFO log is produced when removing empty directory."""
+        # Setup: Create an empty directory
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        run_id = "empty-run"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir()
+
+        # Execute: Call _remove_artifacts with dry_run=False
+        with patch("agent.executor_runs_cleanup.EXECUTION_LOGS_DIR", logs_dir), \
+             caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+
+        # Assert: Verify successful deletion and INFO log
+        assert dirs_removed == 1
+        assert bytes_freed == 0  # Empty directory has no size
+        assert not dir_path.exists()
+        assert any("Successful deletion" in record.message for record in caplog.records)
+
 from idea_board.executor import (
     MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
