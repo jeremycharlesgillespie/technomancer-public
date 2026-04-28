@@ -237,27 +237,172 @@ def _log_flaky_tests(nodeids: List[str]) -> Optional[Path]:
     return crash_file
 
 
+def _worker_shaped_env() -> dict:
+    """Return an environment dict that mirrors what AIW workers see.
+
+    The AIW harness runs pytest inside a fresh git worktree at
+    ``<parent>/technomancer-aiw-<slug>``. That worktree has no ``.venv``,
+    so any test that spawns a subprocess via bare ``"python"`` (as opposed
+    to ``sys.executable``) gets ``FileNotFoundError`` because the dev's
+    activated venv is gone from PATH.
+
+    The dev shell that runs ``safe_update.py`` typically has
+    ``<repo>/local-agent/.venv/bin`` prepended to PATH, which masks the
+    bug locally. To catch it before merge we strip any ``.venv/bin``
+    entries from PATH so the test subprocess sees the same lookup
+    behavior the worker sees.
+
+    We do NOT clear VIRTUAL_ENV / PYTHONPATH — pytest itself is launched
+    via ``sys.executable``, so those don't influence interpreter lookup.
+    """
+    env = dict(os.environ)
+    path = env.get("PATH", "")
+    if path:
+        kept = [
+            entry for entry in path.split(os.pathsep)
+            if entry and ".venv/bin" not in entry and ".venv\\Scripts" not in entry
+        ]
+        env["PATH"] = os.pathsep.join(kept)
+    return env
+
+
+def _create_safe_update_worktree() -> Optional[Tuple[Path, Path]]:
+    """Provision a sibling worktree that mirrors AIW worker conditions.
+
+    Returns ``(worktree_root, local_agent_dir)`` on success — same shape
+    as ``idea_board.ab_worktree.create_worktree`` produces (sibling to
+    ``REPO_ROOT``, ``.env`` symlinked from the source repo so tests
+    that read ``agent.config.settings`` still see the expected values).
+
+    Returns ``None`` if creation fails. Callers fall back to the in-tree
+    runner so a worktree-creation hiccup never blocks a deploy.
+
+    Why a worktree at all: catching tests that work in the dev shell but
+    fail in the worker is the whole point of this safety net. See the
+    TK-Tier2 MCP smoke test (``command="python"``) and TK-999 cleanup
+    test for the two recent outages this would have prevented.
+    """
+    import uuid
+    slug = f"safeupdate-{uuid.uuid4().hex[:8]}"
+    target = REPO_ROOT.parent / f"technomancer-aiw-{slug}"
+    if target.exists():
+        log(f"Worktree path already exists: {target}", "WARNING")
+        return None
+
+    cmd = [
+        "git", "-C", str(REPO_ROOT), "worktree", "add",
+        "--detach", str(target), "HEAD",
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log(f"git worktree add crashed: {exc}", "WARNING")
+        return None
+    if result.returncode != 0:
+        log(
+            f"git worktree add failed (rc={result.returncode}): "
+            f"{(result.stderr or '').strip()[:300]}",
+            "WARNING",
+        )
+        return None
+    if not target.exists():
+        log(f"git worktree reported success but {target} missing", "WARNING")
+        return None
+
+    # Symlink .env so tests that read settings still get real values
+    # (matches idea_board.ab_worktree.create_worktree exactly).
+    src_env = REPO_ROOT / "local-agent" / ".env"
+    dst_env = target / "local-agent" / ".env"
+    if src_env.is_file() and not dst_env.exists():
+        try:
+            dst_env.symlink_to(src_env)
+        except OSError as exc:
+            log(f"Could not symlink .env into worktree: {exc}", "WARNING")
+
+    return target, target / "local-agent"
+
+
+def _remove_safe_update_worktree(worktree_root: Path) -> None:
+    """Force-remove worktree + prune. Best-effort, never raises."""
+    if not worktree_root.exists():
+        _prune_worktrees()
+        return
+    cmd = [
+        "git", "-C", str(REPO_ROOT), "worktree", "remove",
+        "--force", str(worktree_root),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log(f"git worktree remove crashed: {exc}", "WARNING")
+    if worktree_root.exists():
+        try:
+            shutil.rmtree(worktree_root)
+        except OSError as exc:
+            log(f"rmtree fallback failed for {worktree_root}: {exc}", "WARNING")
+    _prune_worktrees()
+
+
+def _prune_worktrees() -> None:
+    try:
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "worktree", "prune"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        log(f"worktree prune failed: {exc}", "WARNING")
+
+
 def _run_pytest_subprocess(
     nodeids: Optional[List[str]] = None,
     junit_xml: Optional[Path] = None,
 ) -> Tuple[int, str]:
     """Run pytest once as a subprocess. Returns (returncode, combined output).
 
-    When ``nodeids`` is supplied, only those tests are collected — used for
-    the flaky retry. No global ``--reruns`` flag: a test that doesn't pass
-    on its first attempt is a bug in the test or the code, not a reason to
-    paper over with a retry loop. External-API tests that genuinely need
-    retry should mark themselves with ``@pytest.mark.flaky(reruns=N)``.
+    Runs inside a fresh sibling git worktree (the same shape AIW workers
+    use) with the dev's ``.venv/bin`` stripped from PATH. This catches
+    tests that work in the activated dev shell but break in worker
+    contexts — historically those have silently broken every A/B run
+    until a human notices (TK-999, TK-Tier2 MCP smoke).
+
+    Falls back to the in-tree run if worktree creation fails, so a
+    transient git issue never blocks a deploy.
+
+    When ``nodeids`` is supplied, only those tests are collected — used
+    for the flaky retry. No global ``--reruns`` flag: a test that doesn't
+    pass on its first attempt is a bug, not a reason to paper over with
+    a retry loop.
     """
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
     if nodeids:
         cmd.extend(nodeids)
     if junit_xml is not None:
         cmd.append(f"--junitxml={junit_xml}")
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=600, cwd=SCRIPT_DIR,
-    )
-    return result.returncode, result.stdout + result.stderr
+
+    worktree_info = _create_safe_update_worktree()
+    if worktree_info is None:
+        log("Worktree mode unavailable — running pytest in-tree", "WARNING")
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=600, cwd=SCRIPT_DIR,
+        )
+        return result.returncode, result.stdout + result.stderr
+
+    worktree_root, worktree_local_agent = worktree_info
+    log(f"Running pytest in worktree: {worktree_local_agent}")
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+            cwd=worktree_local_agent,
+            env=_worker_shaped_env(),
+        )
+        return result.returncode, result.stdout + result.stderr
+    finally:
+        _remove_safe_update_worktree(worktree_root)
 
 
 def run_tests_with_retry(
