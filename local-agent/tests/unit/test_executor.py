@@ -1,9 +1,11 @@
 """Tests for idea_board.executor — pytest baseline, failure diffing, test targeting, and epic execution."""
 
+import io
 import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -55,23 +57,55 @@ def _isolated_logging(monkeypatch):
     """
     # Mock logging.basicConfig to prevent side effects
     monkeypatch.setattr("logging.basicConfig", lambda *args, **kwargs: None)
-    
+
     # Reset logging to clean state
     logging.shutdown()
-    
+
     # Clear all loggers to ensure clean state
     for name in list(logging.Logger.manager.loggerDict.keys()):
         logging.Logger.manager.loggerDict.pop(name, None)
-    
+
     # Clear the root logger handlers
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.setLevel(logging.NOTSET)
-    
+
     yield
-    
+
     # Cleanup after test
     logging.shutdown()
+
+
+@pytest.fixture(autouse=True)
+def _setup_test_logger():
+    """Configure a dedicated test logger with StreamHandler before tests run.
+
+    This fixture ensures that log messages (INFO/WARN) are captured and
+    visible during test execution. The logger is named 'test_executor'
+    and writes to sys.stdout via a StreamHandler.
+    """
+    # Create the test logger
+    test_logger = logging.getLogger("test_executor")
+    test_logger.setLevel(logging.DEBUG)
+
+    # Remove any existing handlers to avoid duplicates
+    test_logger.handlers.clear()
+
+    # Create a StreamHandler that writes to stdout
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.DEBUG)
+
+    # Set a simple formatter
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    stream_handler.setFormatter(formatter)
+
+    # Add the handler to the test logger
+    test_logger.addHandler(stream_handler)
+
+    yield
+
+    # Cleanup after test
+    test_logger.handlers.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -2388,3 +2422,148 @@ class TestDetectUncollectedTestFiles:
         with patch("subprocess.run", side_effect=OSError("boom")):
             uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
             assert uncollected == []
+
+
+# ---------------------------------------------------------------------------
+# Test Logger Configuration
+# ---------------------------------------------------------------------------
+
+
+class TestTestLogger:
+    """Test that the dedicated test logger is properly configured."""
+
+    def test_logger_exists(self):
+        """Verify that test_executor logger exists."""
+        test_logger = logging.getLogger("test_executor")
+        assert test_logger is not None
+        assert test_logger.name == "test_executor"
+
+    def test_logger_has_handler(self):
+        """Verify that test_executor logger has a StreamHandler."""
+        test_logger = logging.getLogger("test_executor")
+        assert len(test_logger.handlers) > 0
+
+    def test_handler_is_stream_handler(self):
+        """Verify that the handler is a StreamHandler."""
+        test_logger = logging.getLogger("test_executor")
+        handler = test_logger.handlers[0]
+        assert isinstance(handler, logging.StreamHandler)
+
+    def test_handler_writes_to_stdout(self):
+        """Verify that the StreamHandler writes to sys.stdout."""
+        test_logger = logging.getLogger("test_executor")
+        handler = test_logger.handlers[0]
+        # Check if stream is stdout (may be wrapped in EncodedFile on some systems)
+        stream_name = getattr(handler.stream, "name", "")
+        assert "stdout" in stream_name or "FileIO" in stream_name
+
+    def test_logger_level_is_debug(self):
+        """Verify that the logger level is set to DEBUG to allow all log levels."""
+        test_logger = logging.getLogger("test_executor")
+        assert test_logger.level == logging.DEBUG
+
+    def test_handler_level_is_debug(self):
+        """Verify that the handler level is set to DEBUG to allow all log levels."""
+        test_logger = logging.getLogger("test_executor")
+        handler = test_logger.handlers[0]
+        assert handler.level == logging.DEBUG
+
+    def test_formatter_exists(self):
+        """Verify that the handler has a formatter."""
+        test_logger = logging.getLogger("test_executor")
+        handler = test_logger.handlers[0]
+        assert handler.formatter is not None
+
+    def test_formatter_has_expected_fields(self):
+        """Verify that the formatter includes timestamp, name, level, and message."""
+        test_logger = logging.getLogger("test_executor")
+        handler = test_logger.handlers[0]
+        formatter = handler.formatter
+        # Check that the format string contains expected fields
+        assert "%(asctime)s" in formatter._fmt
+        assert "%(name)s" in formatter._fmt
+        assert "%(levelname)s" in formatter._fmt
+        assert "%(message)s" in formatter._fmt
+
+    def test_log_message_can_be_emitted(self):
+        """Verify that log messages can be emitted without AttributeError."""
+        test_logger = logging.getLogger("test_executor")
+        # This should not raise AttributeError
+        test_logger.info("Test INFO message")
+        test_logger.warning("Test WARNING message")
+        test_logger.error("Test ERROR message")
+
+    def test_log_message_includes_logger_name(self):
+        """Verify that log messages include the logger name."""
+        test_logger = logging.getLogger("test_executor")
+        import io
+        import sys
+
+        # Capture log output
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(name)s - %(message)s"))
+        test_logger.addHandler(handler)
+
+        test_logger.info("Test message")
+        output = log_stream.getvalue()
+
+        assert "test_executor" in output
+        assert "Test message" in output
+
+    def test_log_message_includes_timestamp(self):
+        """Verify that log messages include a timestamp."""
+        test_logger = logging.getLogger("test_executor")
+        import io
+
+        # Capture log output
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+        test_logger.addHandler(handler)
+
+        test_logger.info("Test message")
+        output = log_stream.getvalue()
+
+        # Timestamp should be present (format: YYYY-MM-DD HH:MM:SS)
+        assert len(output) > 20  # Minimum length for timestamp + message
+        assert "Test message" in output
+
+    def test_log_message_includes_level(self):
+        """Verify that log messages include the log level."""
+        test_logger = logging.getLogger("test_executor")
+        import io
+
+        # Capture log output
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+        test_logger.addHandler(handler)
+
+        test_logger.info("Test message")
+        output = log_stream.getvalue()
+
+        assert "INFO" in output
+        assert "Test message" in output
+
+    def test_multiple_log_levels(self):
+        """Verify that different log levels can be emitted."""
+        test_logger = logging.getLogger("test_executor")
+        import io
+
+        # Capture log output
+        log_stream = io.StringIO()
+        handler = logging.StreamHandler(log_stream)
+        handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
+        test_logger.addHandler(handler)
+
+        test_logger.debug("Debug message")
+        test_logger.info("Info message")
+        test_logger.warning("Warning message")
+        test_logger.error("Error message")
+        output = log_stream.getvalue()
+
+        assert "DEBUG" in output
+        assert "INFO" in output
+        assert "WARNING" in output
+        assert "ERROR" in output
