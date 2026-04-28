@@ -7696,6 +7696,122 @@ def api_gpu_metrics() -> Response:
     return jsonify({"samples": samples, "count": len(samples)})
 
 
+@app.route("/api/ollama-residency")
+def api_ollama_residency() -> Response:
+    """Return model residency timeline cross-referenced with VRAM utilization.
+
+    Returns JSON with:
+    - timeline: list of time buckets with model residency status
+    - gpu_samples: GPU utilization samples for the same time period
+    - models: list of all models that were resident at any point
+    - time_buckets: list of time buckets with model residency status for Gantt chart
+    """
+    from . import gpu_monitor
+    from agent import model_residency
+    import time
+    
+    def _parse_int(name: str) -> int | None:
+        raw = request.args.get(name)
+        if raw is None or raw == "":
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            return None
+
+    start_ts = _parse_int("start")
+    end_ts = _parse_int("end")
+    
+    # Default to last 24 hours if no time range specified
+    if start_ts is None and end_ts is None:
+        end_ts = int(time.time())
+        start_ts = end_ts - 86400  # 24 hours ago
+    
+    # Initialize the model residency database
+    model_residency.init_db()
+    
+    # Get GPU samples
+    gpu_samples = gpu_monitor.get_samples(
+        gpu_monitor.DB_PATH,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        max_points=5000,
+    )
+    
+    # Get model residency events
+    residency_events = model_residency.get_model_timeline(start_ts, end_ts)
+    
+    # Create time buckets for Gantt-style visualization (5s buckets like GPU samples)
+    bucket_size = 5  # 5 second buckets to match GPU sampling
+    time_buckets = []
+    
+    # Get all unique timestamps from events and samples to determine bucket boundaries
+    all_timestamps = set()
+    for event in residency_events:
+        all_timestamps.add(event["timestamp"])
+    for sample in gpu_samples:
+        all_timestamps.add(sample["ts"])
+    
+    # Create time buckets
+    if all_timestamps:
+        min_ts = min(all_timestamps)
+        max_ts = max(all_timestamps)
+        
+        # Create buckets from min to max timestamp
+        current_bucket_start = min_ts - (min_ts % bucket_size)
+        while current_bucket_start <= max_ts:
+            bucket_end = current_bucket_start + bucket_size
+            
+            # Find models resident in this bucket
+            resident_models = set()
+            for event in residency_events:
+                if event["timestamp"] <= bucket_end and event["timestamp"] > current_bucket_start:
+                    # If it's a load event, add the model
+                    if event["action"] == "load":
+                        resident_models.add(event["model_name"])
+                    # If it's an unload event, remove the model
+                    elif event["action"] == "unload" and event["model_name"] in resident_models:
+                        resident_models.remove(event["model_name"])
+            
+            # Check if any models were resident at the start of this bucket
+            # (models that were loaded before this bucket and not yet unloaded)
+            for event in residency_events:
+                if event["timestamp"] <= current_bucket_start and event["action"] == "load":
+                    # Check if this model was not yet unloaded
+                    not_unloaded = True
+                    for unload_event in residency_events:
+                        if (unload_event["timestamp"] > event["timestamp"] and 
+                            unload_event["timestamp"] <= bucket_end and
+                            unload_event["model_name"] == event["model_name"]):
+                            not_unloaded = False
+                            break
+                    if not_unloaded:
+                        resident_models.add(event["model_name"])
+            
+            time_buckets.append({
+                "start_timestamp": current_bucket_start,
+                "end_timestamp": bucket_end,
+                "resident_models": list(resident_models)
+            })
+            
+            current_bucket_start = bucket_end
+    
+    # Get unique model names
+    models = set()
+    for event in residency_events:
+        models.add(event["model_name"])
+    
+    # Return the combined data
+    return jsonify({
+        "timeline": residency_events,
+        "gpu_samples": gpu_samples,
+        "models": list(models),
+        "time_buckets": time_buckets,
+        "start_timestamp": start_ts,
+        "end_timestamp": end_ts,
+    })
+
+
 @app.route("/gpu")
 def gpu_page() -> str:
     """Zoomable Chart.js view of RTX 5080 utilization over time."""
