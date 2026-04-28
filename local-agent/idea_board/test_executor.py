@@ -226,6 +226,189 @@ class TestIdeaIdPattern:
 
 
 # ---------------------------------------------------------------------------
+# _PhaseMarker Tests
+# -------------------
+
+class TestPhaseMarker:
+    """Test _PhaseMarker.finish behavior with various project key scenarios."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_path, monkeypatch):
+        """Point story_timings at a temp DB for each test."""
+        monkeypatch.setattr("agent.story_timings.DB_PATH", tmp_path / "story_timings.db")
+        monkeypatch.setattr("agent.story_timings.DB_DIR", tmp_path)
+        init_db()
+        yield
+        # Clean up the DB after the test
+        conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+        conn.execute("DELETE FROM story_phase_timings")
+        conn.commit()
+        conn.close()
+
+    def test_phase_marker_finish_with_valid_project_key(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should successfully record a phase with a valid project key."""
+        with patch.object(settings, 'jira_project_key', "FA"):
+            state = ExecutionState(
+                idea_id="FA-1234",
+                run_id="test-run-1",
+            )
+            marker = _PhaseMarker(state, "executor.claude_work", metadata={"test": "data"})
+            marker.finish(success=True)
+
+            # Verify the timing row was created
+            conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-1",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row is not None, "Timing row should be created"
+            assert row["project"] == "FA", "Project key should be 'FA'"
+            assert row["story_id"] == "FA-1234", "Story ID should match"
+            assert row["phase"] == "executor.claude_work", "Phase should match"
+            assert row["success"] == 1, "Phase should be marked as successful"
+
+    def test_phase_marker_finish_with_none_project_key(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should successfully record a phase with None project key.
+
+        This test verifies that when _project_key_for returns None (e.g., when
+        idea_id is invalid or Jira is not configured), record_phase is called
+        with project=None and no KeyError is thrown.
+        """
+        with patch.object(settings, 'jira_project_key', None):
+            state = ExecutionState(
+                idea_id="TK-1234",
+                run_id="test-run-2",
+            )
+            marker = _PhaseMarker(state, "executor.claude_work", metadata={"test": "data"})
+            marker.finish(success=True)
+
+            # Verify the timing row was created with project=None
+            conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-2",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row is not None, "Timing row should be created"
+            assert row["project"] is None, "Project key should be None"
+            assert row["story_id"] == "TK-1234", "Story ID should match"
+            assert row["phase"] == "executor.claude_work", "Phase should match"
+            assert row["success"] == 1, "Phase should be marked as successful"
+
+    def test_phase_marker_finish_with_invalid_idea_id(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should successfully record a phase with None project key for invalid idea_id.
+
+        This test verifies that when _project_key_for returns None due to an
+        invalid idea_id (e.g., "text-only"), record_phase is called with
+        project=None and no KeyError is thrown.
+        """
+        with patch.object(settings, 'jira_project_key', None):
+            state = ExecutionState(
+                idea_id="text-only",
+                run_id="test-run-3",
+            )
+            marker = _PhaseMarker(state, "executor.claude_work", metadata={"test": "data"})
+            marker.finish(success=True)
+
+            # Verify the timing row was created with project=None
+            conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT * FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-3",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row is not None, "Timing row should be created"
+            assert row["project"] is None, "Project key should be None for invalid idea_id"
+            assert row["story_id"] == "text-only", "Story ID should match"
+            assert row["phase"] == "executor.claude_work", "Phase should match"
+            assert row["success"] == 1, "Phase should be marked as successful"
+
+    def test_phase_marker_finish_idempotent(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should be idempotent — calling it multiple times should not create duplicate rows."""
+        with patch.object(settings, 'jira_project_key', "FA"):
+            state = ExecutionState(
+                idea_id="FA-1234",
+                run_id="test-run-4",
+            )
+            marker = _PhaseMarker(state, "executor.claude_work", metadata={"test": "data"})
+
+            # Call finish multiple times
+            marker.finish(success=True)
+            marker.finish(success=True)
+            marker.finish(success=True)
+
+            # Verify only one timing row was created
+            conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT COUNT(*) as count FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-4",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row["count"] == 1, "Should have exactly one timing row despite multiple finish calls"
+
+    def test_phase_marker_finish_with_exception(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should handle exceptions gracefully without crashing.
+
+        This test verifies that if record_phase raises an exception, it's caught
+        and logged as a warning, but the marker state is properly cleaned up.
+        """
+        with patch.object(settings, 'jira_project_key', "FA"):
+            state = ExecutionState(
+                idea_id="FA-1234",
+                run_id="test-run-5",
+            )
+            marker = _PhaseMarker(state, "executor.claude_work", metadata={"test": "data"})
+
+            # Mock record_phase to raise an exception
+            with patch('idea_board.executor.record_phase') as mock_record:
+                mock_record.side_effect = Exception("Simulated DB error")
+                marker.finish(success=True)
+
+                # Verify the exception was caught and logged
+                assert mock_record.called, "record_phase should have been called"
+
+    def test_phase_marker_finish_with_metadata(self, tmp_path, monkeypatch):
+        """_PhaseMarker.finish should serialize metadata correctly."""
+        with patch.object(settings, 'jira_project_key', "FA"):
+            state = ExecutionState(
+                idea_id="FA-1234",
+                run_id="test-run-6",
+            )
+            marker = _PhaseMarker(
+                state,
+                "executor.claude_work",
+                metadata={"test": "data", "nested": {"key": "value"}}
+            )
+            marker.finish(success=True)
+
+            # Verify the timing row was created with serialized metadata
+            conn = sqlite3.connect(str(tmp_path / "story_timings.db"))
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT metadata FROM story_phase_timings WHERE run_id = ?",
+                ("test-run-6",),
+            )
+            row = cursor.fetchone()
+            conn.close()
+
+            assert row is not None, "Timing row should be created"
+            assert row["metadata"] == '{"test": "data", "nested": {"key": "value"}}', "Metadata should be JSON-stringified"
+
+
+# ---------------------------------------------------------------------------
 # Integration Tests — Full execution flow with timing rows
 # -----------------------
 
