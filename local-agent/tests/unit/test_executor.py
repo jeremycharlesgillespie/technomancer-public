@@ -46,6 +46,27 @@ from idea_board.executor import (
 
 
 # ---------------------------------------------------------------------------
+# Verify logging import
+# -------------------------------------------------------------------------
+
+
+class TestLoggingImport:
+    """Verify that logging module can be imported and used correctly."""
+
+    def test_logging_import_works(self):
+        """Test that logging module is properly imported and functional."""
+        # This test ensures that the logging import doesn't cause any issues
+        assert logging is not None
+        assert hasattr(logging, 'getLogger')
+        
+    def test_logging_functionality(self):
+        """Test that basic logging functionality works."""
+        logger = logging.getLogger(__name__)
+        assert logger is not None
+        assert logger.name == __name__
+
+
+# ---------------------------------------------------------------------------
 # _parse_pytest_failures
 # ---------------------------------------------------------------------------
 
