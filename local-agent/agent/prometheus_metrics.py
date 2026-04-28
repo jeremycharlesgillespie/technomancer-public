@@ -213,6 +213,23 @@ def set_ollama_model_resident(model: str, resident: bool) -> None:
     _ollama_model_resident.labels(model=model).set(1 if resident else 0)
 
 
+def record_ollama_model_residency(model: str, action: str, mem_used_mb: int = 0, mem_total_mb: int = 0) -> None:
+    """Record an Ollama model residency event for timeline tracking.
+    
+    This function records model load/unload events to the model_residency database
+    for cross-referencing with GPU utilization data.
+    
+    Safe to call even if prometheus_client is not installed (silently no-ops).
+    """
+    # Import here to avoid circular dependencies
+    try:
+        from .model_residency import record_model_event
+        record_model_event(model, action, mem_used_mb, mem_total_mb)
+    except Exception as e:
+        # Silently ignore errors in recording residency - this is best-effort
+        pass
+
+
 def start_metrics_server(port: int = DEFAULT_PORT) -> bool:
     """Start the Prometheus HTTP metrics server on the given port.
 
