@@ -15,6 +15,20 @@ import pytest
 
 from agent.config import settings as app_settings
 
+# Configure a dedicated test logger for executor tests
+test_executor_logger = logging.getLogger("test_executor")
+test_executor_logger.setLevel(logging.INFO)
+
+# Create handler and formatter for test logger
+if not test_executor_logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    test_executor_logger.addHandler(handler)
+
 from idea_board.executor import (
     MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
@@ -2382,6 +2396,32 @@ class TestDetectUncollectedTestFiles:
             mock_run.return_value = self._fake_diff([])
             uncollected = _detect_uncollected_test_files(Path("/tmp/fake"))
             assert uncollected == []
+
+
+class TestTestLogger:
+    """Test that the dedicated test logger is properly configured."""
+
+    def test_logger_configured(self):
+        """Verify the test executor logger is properly configured."""
+        assert test_executor_logger is not None
+        assert test_executor_logger.name == "test_executor"
+        assert len(test_executor_logger.handlers) == 1
+        assert isinstance(test_executor_logger.handlers[0], logging.StreamHandler)
+        
+    def test_logger_can_emit_messages(self):
+        """Verify the logger can emit INFO and WARN messages."""
+        # Test INFO level
+        test_executor_logger.info("Test INFO message")
+        
+        # Test WARN level  
+        test_executor_logger.warning("Test WARN message")
+        
+        # Test that it doesn't raise AttributeError when adding handlers
+        try:
+            test_executor_logger.addHandler(logging.StreamHandler())
+            # Should not raise AttributeError
+        except AttributeError:
+            pytest.fail("Adding handler to test logger raised AttributeError")
 
     def test_handles_subprocess_failure(self):
         """If git diff blows up, return empty list rather than crash."""
