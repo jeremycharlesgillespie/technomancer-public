@@ -498,30 +498,27 @@ class TestErrorHandling:
         logs_dir = _isolate_db
         run_id = "error-test-dry-run"
         _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
-        
+
         # Create a directory with files
         dir_path = logs_dir / run_id
         dir_path.mkdir(parents=True, exist_ok=True)
         (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
-        
+
         # Even in dry_run mode, it should still calculate the size properly
-        dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
-            run_id=run_id, dry_run=True
-        )
-        
+        with caplog.at_level(logging.WARNING, logger="agent.executor_runs_cleanup"):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=True
+            )
+
         # Should not crash and should still report what would be removed
         assert isinstance(dirs_removed, int)
         assert dirs_removed >= 0
-        # Should not have any INFO logs about successful deletions
-        assert len(caplog.records) == 0
-        executor_runs_cleanup._remove_artifacts(
-            run_id=run_id, dry_run=True
+        # Dry run never deletes, so no WARNING-level "Failed to remove" entries.
+        warning_records = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warning_records == [], (
+            f"Dry run should not emit warnings; got "
+            f"{[r.getMessage() for r in warning_records]}"
         )
-        
-        # Should not crash
-        assert isinstance(dirs_removed, int)
-        assert dirs_removed >= 0  # At least 0 directories would be removed
-        # Should not have logged any warnings since it's dry run
 
     def test_cleanup_old_runs_handles_delete_errors(self, _isolate_db, caplog, monkeypatch):
         """Test that cleanup_old_runs gracefully handles errors during deletion."""
@@ -774,18 +771,25 @@ class TestCleanupOldRuns_Skipped:
     def test_remove_artifacts_with_dry_run_logs_skipped_paths(self, _isolate_db, caplog):
         """Test that _remove_artifacts with dry_run=True logs skipped paths."""
         # Test with a non-existent run_id - should log that paths are skipped
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.INFO, logger="agent.executor_runs_cleanup"):
             dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
                 run_id="nonexistent-run-id", dry_run=True
             )
-            
+
             # Should report that no paths were removed (since they don't exist)
             assert dirs_removed == 0
             assert bytes_freed == 0
-            
-            # Should not have any INFO logs about successful deletions
-            # since there are no paths to delete
-            assert len(caplog.records) == 0
+
+            # Each non-existent candidate path produces a "would skip" INFO log.
+            skip_logs = [
+                r for r in caplog.records
+                if r.name == "agent.executor_runs_cleanup"
+                and "would skip missing path" in r.getMessage()
+            ]
+            assert len(skip_logs) >= 1, (
+                f"Expected at least one 'would skip missing path' log; "
+                f"got records={[r.getMessage() for r in caplog.records]}"
+            )
 
     def test_remove_artifacts_with_missing_files_logs_skipped_paths(self, _isolate_db, caplog):
         """Test that _remove_artifacts with missing files logs skipped paths."""
