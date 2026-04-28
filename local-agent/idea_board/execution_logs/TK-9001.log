@@ -1,0 +1,4 @@
+[20260427 20:15:08.858] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260427 20:15:08.858] [Inner] tick
+[20260427 20:15:08.858] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260427 20:15:08.858] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)

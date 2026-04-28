@@ -1,0 +1,9 @@
+[20260427 20:15:08.942] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260427 20:15:08.942] === A/B Run A: model-a:tag @ localhost ===
+[20260427 20:15:08.943] [AB] unloading model A (model-a:tag) on localhost before B
+[20260427 20:15:08.943] === A/B Run B: model-b:tag @ localhost ===
+[20260427 20:15:08.943] [AB] scored model-a: err=''
+[20260427 20:15:08.943] [AB] scored model-b: err=''
+[20260427 20:15:08.943] [AB] comparison: winner='model_a' err=''
+[20260427 20:15:08.945] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260427 20:15:08.946] [AB] unloading model B (model-b:tag) on localhost at run end
