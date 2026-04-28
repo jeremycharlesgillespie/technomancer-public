@@ -152,9 +152,11 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
     freed = 0
     for path in _candidate_paths(run_id):
         if not path.exists():
+            log.info("Skipped missing path: %s", path)
             continue
         size = _path_size_bytes(path)
         if dry_run:
+            log.info("Skipped dry-run path: %s (%d bytes)", path, size)
             removed += 1
             freed += size
             continue
@@ -168,6 +170,8 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
             log.info("Successful deletion of %s (%d bytes)", path, size)
         except OSError as exc:
             log.warning("Failed to remove %s: %s", path, exc)
+    if not _candidate_paths(run_id):
+        log.info("Skipped: no paths for run_id=%s", run_id)
     return removed, freed
 
 
