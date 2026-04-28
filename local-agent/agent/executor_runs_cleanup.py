@@ -123,6 +123,29 @@ def _path_size_bytes(path: Path) -> int:
     return total
 
 
+def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
+    """Safely return a list with flat artifact files for ``run_id``.
+
+    Returns:
+        - A list with Path objects for ``<run_id>.log`` and ``<run_id>.done``
+          files if they exist.
+        - An empty list [] otherwise.
+
+    This helper function allows legacy code to delegate flat file handling
+    without raising exceptions on missing files.
+    """
+    if not run_id:
+        return []
+    
+    flat_files = [
+        EXECUTION_LOGS_DIR / f"{run_id}.log",
+        EXECUTION_LOGS_DIR / f"{run_id}.done",
+    ]
+    
+    # Filter to only return files that actually exist
+    return [f for f in flat_files if f.exists()]
+
+
 def _resolve_directory_artifact(run_id: str | None) -> list[Path]:
     """Safely return a list with a single Path object for the directory artifact.
 
@@ -154,21 +177,17 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
 
     Returns:
         A list of Path objects for the main run directory, .log file, and .done file.
-        If the parent directory doesn't exist, returns an empty list to avoid
-        attempting to create paths in non-existent directories.
+        If no artifacts exist, returns an empty list.
     """
     if not run_id:
         return []
     
-    # Check if the parent directory exists before creating paths
-    if not EXECUTION_LOGS_DIR.exists():
-        return []
+    # Delegate to helper functions for flat and directory artifacts
+    flat_artifacts = _resolve_flat_artifacts(run_id)
+    dir_artifact = _resolve_directory_artifact(run_id)
     
-    return [
-        EXECUTION_LOGS_DIR / run_id,
-        EXECUTION_LOGS_DIR / f"{run_id}.log",
-        EXECUTION_LOGS_DIR / f"{run_id}.done",
-    ]
+    # Concatenate results and return
+    return flat_artifacts + dir_artifact
 
 
 def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
@@ -204,11 +223,6 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
             log.info("Successful deletion of %s (%d bytes)", path, size)
         except (OSError, PermissionError) as exc:
             log.warning("Failed to remove %s: %s", path, exc)
-    # If no paths were checked (e.g., run_id was None), log that no paths were processed
-    if paths_checked == 0:
-        if dry_run:
-            log.info("Dry run: no paths to check for run_id %s", run_id)
-        return 0, 0
     return removed, freed
 
 
