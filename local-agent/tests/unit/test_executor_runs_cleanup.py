@@ -438,6 +438,71 @@ class TestEdgeCases:
 
 
 class TestErrorHandling:
+
+    def test_resolve_directory_artifact_happy_path(self, _isolate_db):
+        """Test _resolve_directory_artifact with valid directory."""
+        logs_dir = _isolate_db
+        run_id = "test-run-id"
+        
+        # Create the directory
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Test the function
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0] == dir_path
+        assert result[0].exists()
+        assert result[0].is_dir()
+
+    def test_resolve_directory_artifact_none_run_id(self, _isolate_db):
+        """Test _resolve_directory_artifact with None run_id."""
+        result = executor_runs_cleanup._resolve_directory_artifact(None)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_directory_artifact_empty_string_run_id(self, _isolate_db):
+        """Test _resolve_directory_artifact with empty string run_id."""
+        result = executor_runs_cleanup._resolve_directory_artifact("")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_directory_artifact_nonexistent_directory(self, _isolate_db):
+        """Test _resolve_directory_artifact with non-existent directory."""
+        result = executor_runs_cleanup._resolve_directory_artifact("nonexistent-run-id")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_directory_artifact_file_instead_of_directory(self, _isolate_db):
+        """Test _resolve_directory_artifact with a file instead of directory."""
+        logs_dir = _isolate_db
+        run_id = "file-run-id"
+        
+        # Create a file instead of directory
+        file_path = logs_dir / run_id
+        file_path.write_text("test content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_directory_artifact_with_dots_in_name(self, _isolate_db):
+        """Test _resolve_directory_artifact with run_id containing dots."""
+        logs_dir = _isolate_db
+        run_id = "run.id.with.dots"
+        
+        # Create the directory
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0] == dir_path
+        assert result[0].exists()
+        assert result[0].is_dir()
     def test_remove_artifacts_handles_oserror_on_directory_removal(self, _isolate_db, caplog):
         """Test that _remove_artifacts gracefully handles OSError when removing directories."""
         logs_dir = _isolate_db
