@@ -144,6 +144,30 @@ def _resolve_directory_artifact(run_id: str | None) -> list[Path]:
     return [path]
 
 
+def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
+    """Safely return a list of Path objects for flat artifact files.
+
+    Returns:
+        - A list with Path objects for .log and .done files if run_id is not None
+          or empty, and the parent directory exists.
+        - An empty list [] otherwise.
+
+    This helper function allows legacy code to delegate flat file handling
+    without raising exceptions on missing files or non-existent directories.
+    """
+    if not run_id:
+        return []
+    
+    # Check if the parent directory exists before creating paths
+    if not EXECUTION_LOGS_DIR.exists():
+        return []
+    
+    return [
+        EXECUTION_LOGS_DIR / f"{run_id}.log",
+        EXECUTION_LOGS_DIR / f"{run_id}.done",
+    ]
+
+
 def _candidate_paths(run_id: str | None) -> list[Path]:
     """Return the on-disk artifacts that belong to ``run_id``.
 
@@ -157,18 +181,7 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
         If the parent directory doesn't exist, returns an empty list to avoid
         attempting to create paths in non-existent directories.
     """
-    if not run_id:
-        return []
-    
-    # Check if the parent directory exists before creating paths
-    if not EXECUTION_LOGS_DIR.exists():
-        return []
-    
-    return [
-        EXECUTION_LOGS_DIR / run_id,
-        EXECUTION_LOGS_DIR / f"{run_id}.log",
-        EXECUTION_LOGS_DIR / f"{run_id}.done",
-    ]
+    return _resolve_directory_artifact(run_id) + _resolve_flat_artifacts(run_id)
 
 
 def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
