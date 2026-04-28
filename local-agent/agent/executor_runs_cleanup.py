@@ -148,8 +148,7 @@ def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
     """Safely return a list of Path objects for flat artifact files.
 
     Returns:
-        - A list with Path objects for .log and .done files if run_id is not None
-          or empty, and the parent directory exists.
+        - A list with Path objects for .log and .done files if they exist.
         - An empty list [] otherwise.
 
     This helper function allows legacy code to delegate flat file handling
@@ -162,10 +161,17 @@ def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
     if not EXECUTION_LOGS_DIR.exists():
         return []
     
-    return [
-        EXECUTION_LOGS_DIR / f"{run_id}.log",
-        EXECUTION_LOGS_DIR / f"{run_id}.done",
-    ]
+    paths = []
+    log_path = EXECUTION_LOGS_DIR / f"{run_id}.log"
+    done_path = EXECUTION_LOGS_DIR / f"{run_id}.done"
+    
+    # Only include paths for files that actually exist
+    if log_path.exists():
+        paths.append(log_path)
+    if done_path.exists():
+        paths.append(done_path)
+    
+    return paths
 
 
 def _candidate_paths(run_id: str | None) -> list[Path]:
@@ -181,7 +187,19 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
         If the parent directory doesn't exist, returns an empty list to avoid
         attempting to create paths in non-existent directories.
     """
-    return _resolve_directory_artifact(run_id) + _resolve_flat_artifacts(run_id)
+    # Always return candidate paths even if they don't exist - this allows
+    # _remove_artifacts to log "would skip missing path" for each candidate
+    paths = []
+    if run_id:
+        # Directory artifact
+        dir_path = EXECUTION_LOGS_DIR / run_id
+        paths.append(dir_path)
+        # Flat artifacts
+        log_path = EXECUTION_LOGS_DIR / f"{run_id}.log"
+        done_path = EXECUTION_LOGS_DIR / f"{run_id}.done"
+        paths.append(log_path)
+        paths.append(done_path)
+    return paths
 
 
 def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:

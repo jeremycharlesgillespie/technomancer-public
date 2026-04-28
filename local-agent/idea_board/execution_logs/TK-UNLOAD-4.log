@@ -1,8 +1,24 @@
-[20260428 17:44:57.647] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 17:44:57.647] === A/B Run A: same:tag @ localhost ===
-[20260428 17:44:57.648] === A/B Run B: same:tag @ localhost ===
-[20260428 17:44:57.648] [AB] scored same: err=''
-[20260428 17:44:57.648] [AB] scored same: err=''
-[20260428 17:44:57.648] [AB] comparison: winner='model_a' err=''
-[20260428 17:44:57.650] [AB] enqueued TK-UNLOAD-4 for AIV validation (sha=none)
-[20260428 17:44:57.650] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 18:12:25.447] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 18:12:25.447] === A/B Run A: same:tag @ localhost ===
+[20260428 18:12:25.448] === A/B Run B: same:tag @ localhost ===
+[20260428 18:12:25.448] [AB] scored same: err=''
+[20260428 18:12:25.448] [AB] scored same: err=''
+[20260428 18:12:25.448] [AB] comparison: winner='model_a' err=''
+[20260428 18:12:25.451] [AB] enqueued TK-UNLOAD-4 for AIV validation (sha=none)
+[20260428 18:12:25.451] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 18:15:08.334] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 18:15:08.334] === A/B Run A: same:tag @ localhost ===
+[20260428 18:15:08.335] === A/B Run B: same:tag @ localhost ===
+[20260428 18:15:08.335] [AB] scored same: err=''
+[20260428 18:15:08.335] [AB] scored same: err=''
+[20260428 18:15:08.335] [AB] comparison: winner='model_a' err=''
+[20260428 18:15:08.338] [AB] enqueued TK-UNLOAD-4 for AIV validation (sha=none)
+[20260428 18:15:08.338] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 18:17:48.173] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 18:17:48.173] === A/B Run A: same:tag @ localhost ===
+[20260428 18:17:48.174] === A/B Run B: same:tag @ localhost ===
+[20260428 18:17:48.174] [AB] scored same: err=''
+[20260428 18:17:48.174] [AB] scored same: err=''
+[20260428 18:17:48.174] [AB] comparison: winner='model_a' err=''
+[20260428 18:17:48.176] [AB] enqueued TK-UNLOAD-4 for AIV validation (sha=none)
+[20260428 18:17:48.176] [AB] removed worktree: /tmp/fake-worktree-abc12345

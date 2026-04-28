@@ -503,6 +503,286 @@ class TestErrorHandling:
         assert result[0] == dir_path
         assert result[0].exists()
         assert result[0].is_dir()
+
+    # ==================================================================
+    # _resolve_flat_artifacts tests
+    # =====================================================================
+
+
+class TestResolveFlatArtifacts:
+    """Tests for _resolve_flat_artifacts helper function."""
+
+    def test_resolve_flat_artifacts_happy_path(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns correct paths for valid run_id."""
+        logs_dir = _isolate_db
+        run_id = "test-run-id"
+        
+        # Create the parent directory
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create .log and .done files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        # Verify files exist before calling the function
+        assert log_file.exists()
+        assert done_file.exists()
+        
+        # Test the function
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_resolve_flat_artifacts_none_run_id(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns empty list for None run_id."""
+        result = executor_runs_cleanup._resolve_flat_artifacts(None)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_flat_artifacts_empty_string_run_id(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns empty list for empty string run_id."""
+        result = executor_runs_cleanup._resolve_flat_artifacts("")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_flat_artifacts_nonexistent_run_id(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns empty list for non-existent run_id."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts("nonexistent-run-id")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_flat_artifacts_missing_parent_directory(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns empty list when parent directory doesn't exist."""
+        logs_dir = _isolate_db
+        # Don't create the logs_dir - it should be empty
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts("test-run-id")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_resolve_flat_artifacts_only_log_file_exists(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns only .log path when only .log exists."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "test-only-log"
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert log_file in result
+        # .done file should not be in the result
+        assert not any(p.name == f"{run_id}.done" for p in result)
+
+    def test_resolve_flat_artifacts_only_done_file_exists(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns only .done path when only .done exists."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "test-only-done"
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert done_file in result
+        # .log file should not be in the result
+        assert not any(p.name == f"{run_id}.log" for p in result)
+
+    def test_resolve_flat_artifacts_with_special_characters(self, _isolate_db):
+        """Test _resolve_flat_artifacts handles run_id with special characters."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "run-id-with-dashes_123"
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_resolve_flat_artifacts_with_unicode(self, _isolate_db):
+        """Test _resolve_flat_artifacts handles run_id with unicode characters."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "run-id-中文"
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_resolve_flat_artifacts_returns_paths_not_strings(self, _isolate_db):
+        """Test _resolve_flat_artifacts returns Path objects, not strings."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "test-path-type"
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert all(isinstance(p, Path) for p in result)
+        assert all(p.exists() for p in result)
+
+    def test_resolve_flat_artifacts_integration_with_cleanup(self, _isolate_db):
+        """Test _resolve_flat_artifacts works correctly in the cleanup workflow."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "integration-test"
+        started = datetime.now() - timedelta(days=45)
+        _seed_run(started, run_id, "TK-1")
+        
+        # Create flat files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        # Verify files exist
+        assert log_file.exists()
+        assert done_file.exists()
+        
+        # Get paths using the helper
+        paths = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        # Should return both files
+        assert len(paths) == 2
+        assert log_file in paths
+        assert done_file in paths
+        
+        # Run cleanup
+        result = executor_runs_cleanup.cleanup_old_runs(
+            max_age_days=30, keep_last_n=0
+        )
+        
+        # Verify cleanup removed the files
+        assert result["rows_deleted"] == 1
+        assert result["dirs_deleted"] >= 1
+        assert not log_file.exists()
+        assert not done_file.exists()
+
+    def test_resolve_flat_artifacts_dry_run(self, _isolate_db):
+        """Test _resolve_flat_artifacts in dry_run mode doesn't raise exceptions."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "dry-run-test"
+        
+        # Should not raise any exceptions
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 0  # No files exist yet
+
+    def test_resolve_flat_artifacts_with_existing_directory(self, _isolate_db):
+        """Test _resolve_flat_artifacts when directory exists but files don't."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "dir-but-no-files"
+        
+        # Create directory but no files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        assert isinstance(result, list)
+        assert len(result) == 0  # No flat files exist
+
+    def test_resolve_flat_artifacts_handles_permission_error(self, _isolate_db):
+        """Test _resolve_flat_artifacts handles permission errors gracefully."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "permission-test"
+        
+        # Create files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        # Temporarily make files unreadable
+        log_file.chmod(0o000)
+        done_file.chmod(0o000)
+        
+        try:
+            # Should not raise exceptions even with unreadable files
+            result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+            
+            assert isinstance(result, list)
+            assert len(result) == 2
+        finally:
+            # Restore permissions for cleanup
+            log_file.chmod(0o644)
+            done_file.chmod(0o644)
+
+    def test_resolve_flat_artifacts_multiple_calls(self, _isolate_db):
+        """Test _resolve_flat_artifacts can be called multiple times safely."""
+        logs_dir = _isolate_db
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        
+        run_id = "multiple-calls"
+        
+        # Create files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+        
+        # Call multiple times
+        result1 = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        result2 = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        result3 = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+        
+        # All should return the same paths
+        assert len(result1) == 2
+        assert len(result2) == 2
+        assert len(result3) == 2
+        assert log_file in result1
+        assert log_file in result2
+        assert log_file in result3
+        assert done_file in result1
+        assert done_file in result2
+        assert done_file in result3
+
     def test_remove_artifacts_handles_oserror_on_directory_removal(self, _isolate_db, caplog):
         """Test that _remove_artifacts gracefully handles OSError when removing directories."""
         logs_dir = _isolate_db
