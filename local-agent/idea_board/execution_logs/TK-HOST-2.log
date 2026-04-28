@@ -1,10 +1,20 @@
-[20260428 16:30:38.678] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 16:30:38.679] === A/B Run A: model-a:tag @ localhost ===
-[20260428 16:30:38.679] [AB] cross-host run: A on localhost, B on http://192.168.1.150:11434 — skipping eviction
-[20260428 16:30:38.679] === A/B Run B: model-b:tag @ http://192.168.1.150:11434 ===
-[20260428 16:30:38.680] [AB] scored model-a: err=''
-[20260428 16:30:38.680] [AB] scored model-b: err=''
-[20260428 16:30:38.680] [AB] comparison: winner='model_a' err=''
-[20260428 16:30:38.682] [AB] enqueued TK-HOST-2 for AIV validation (sha=none)
-[20260428 16:30:38.682] [AB] unloading model B (model-b:tag) on http://192.168.1.150:11434 at run end
-[20260428 16:30:38.682] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 16:46:35.771] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 16:46:35.772] === A/B Run A: model-a:tag @ localhost ===
+[20260428 16:46:35.772] [AB] cross-host run: A on localhost, B on http://192.168.1.150:11434 — skipping eviction
+[20260428 16:46:35.772] === A/B Run B: model-b:tag @ http://192.168.1.150:11434 ===
+[20260428 16:46:35.773] [AB] scored model-a: err=''
+[20260428 16:46:35.773] [AB] scored model-b: err=''
+[20260428 16:46:35.773] [AB] comparison: winner='model_a' err=''
+[20260428 16:46:35.775] [AB] enqueued TK-HOST-2 for AIV validation (sha=none)
+[20260428 16:46:35.775] [AB] unloading model B (model-b:tag) on http://192.168.1.150:11434 at run end
+[20260428 16:46:35.775] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 16:49:14.471] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 16:49:14.472] === A/B Run A: model-a:tag @ localhost ===
+[20260428 16:49:14.472] [AB] cross-host run: A on localhost, B on http://192.168.1.150:11434 — skipping eviction
+[20260428 16:49:14.472] === A/B Run B: model-b:tag @ http://192.168.1.150:11434 ===
+[20260428 16:49:14.473] [AB] scored model-a: err=''
+[20260428 16:49:14.473] [AB] scored model-b: err=''
+[20260428 16:49:14.473] [AB] comparison: winner='model_a' err=''
+[20260428 16:49:14.475] [AB] enqueued TK-HOST-2 for AIV validation (sha=none)
+[20260428 16:49:14.475] [AB] unloading model B (model-b:tag) on http://192.168.1.150:11434 at run end
+[20260428 16:49:14.475] [AB] removed worktree: /tmp/fake-worktree-abc12345

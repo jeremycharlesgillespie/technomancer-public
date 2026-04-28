@@ -433,6 +433,80 @@ class TestEdgeCases:
 
 
 # =========================================================================
+# _candidate_paths — artifact path resolution
+# =========================================================================
+
+
+class TestCandidatePaths:
+    """Tests for _candidate_paths function — deterministic path resolution."""
+
+    def test_returns_list_of_paths_for_valid_run_id(self, _isolate_db):
+        """Happy path: returns list of Path objects for a valid run_id."""
+        run_id = "test-run-123"
+        paths = executor_runs_cleanup._candidate_paths(run_id)
+
+        assert isinstance(paths, list)
+        assert len(paths) == 3
+        assert all(isinstance(p, Path) for p in paths)
+        assert paths[0] == _isolate_db / run_id
+        assert paths[1] == _isolate_db / f"{run_id}.log"
+        assert paths[2] == _isolate_db / f"{run_id}.done"
+
+    def test_returns_empty_list_for_none_run_id(self, _isolate_db):
+        """Edge case: None run_id returns empty list."""
+        paths = executor_runs_cleanup._candidate_paths(None)
+
+        assert paths == []
+
+    def test_returns_empty_list_for_empty_string_run_id(self, _isolate_db):
+        """Edge case: empty string run_id returns empty list."""
+        paths = executor_runs_cleanup._candidate_paths("")
+
+        assert paths == []
+
+    def test_returns_empty_list_when_parent_dir_missing(self, _isolate_db):
+        """Acceptance criterion: missing parent directory returns empty list."""
+        # Remove the execution_logs directory
+        _isolate_db.rmdir()
+
+        paths = executor_runs_cleanup._candidate_paths("test-run")
+
+        assert paths == []
+
+    def test_returns_empty_list_for_whitespace_run_id(self, _isolate_db):
+        """Edge case: whitespace-only run_id returns empty list."""
+        paths = executor_runs_cleanup._candidate_paths("   ")
+
+        assert paths == []
+
+    def test_returns_empty_list_for_special_chars_run_id(self, _isolate_db):
+        """Edge case: run_id with special characters returns empty list."""
+        paths = executor_runs_cleanup._candidate_paths("run@#$%")
+
+        assert paths == []
+
+    def test_paths_are_deterministic_for_same_run_id(self, _isolate_db):
+        """Verify that multiple calls with same run_id return same paths."""
+        run_id = "deterministic-run"
+        paths1 = executor_runs_cleanup._candidate_paths(run_id)
+        paths2 = executor_runs_cleanup._candidate_paths(run_id)
+
+        assert paths1 == paths2
+        assert all(isinstance(p, Path) for p in paths1)
+        assert all(isinstance(p, Path) for p in paths2)
+
+    def test_paths_include_all_expected_artifacts(self, _isolate_db):
+        """Verify all three expected artifact types are in the returned list."""
+        run_id = "full-artifacts"
+        paths = executor_runs_cleanup._candidate_paths(run_id)
+
+        path_strings = [str(p) for p in paths]
+        assert any(f"{run_id}.log" in p for p in path_strings)
+        assert any(f"{run_id}.done" in p for p in path_strings)
+        assert any(run_id in p and not p.endswith(".log") and not p.endswith(".done") for p in path_strings)
+
+
+# =========================================================================
 # Error handling tests for cleanup functions
 # =========================================================================
 

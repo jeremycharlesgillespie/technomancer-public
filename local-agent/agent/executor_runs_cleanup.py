@@ -130,8 +130,21 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
     the current executor writes flat ``<id>.log`` / ``<id>.done`` files.
     We return both so the cleanup works regardless of which layout is in
     play when it runs.
+
+    Returns an empty list if the parent directory doesn't exist, handling
+    the case where the execution_logs directory hasn't been created yet.
+    Also returns empty list for invalid run_id values (None, empty string,
+    whitespace-only, or strings with special characters).
     """
     if not run_id:
+        return []
+    # Reject whitespace-only strings
+    if run_id.strip() == "":
+        return []
+    # Reject strings with special characters (only allow alphanumeric, hyphen, underscore, dot)
+    if not run_id.replace("-", "").replace("_", "").replace(".", "").isalnum():
+        return []
+    if not EXECUTION_LOGS_DIR.exists():
         return []
     return [
         EXECUTION_LOGS_DIR / run_id,
