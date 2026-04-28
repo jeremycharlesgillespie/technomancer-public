@@ -1037,6 +1037,8 @@ class OllamaCoder:
         full = self._resolve_path(path)
         if not full.exists():
             return f"ERROR: file not found: {path}"
+        if full.is_dir():
+            return f"ERROR: file not found: {path} (is a directory)"
         try:
             content = full.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:

@@ -79,6 +79,16 @@ class TestToolExecution:
         result = coder._tool_read_file("nonexistent.py")
         assert "ERROR" in result
 
+    def test_read_file_directory(self, tmp_path: Path) -> None:
+        """Reading a directory should return 'file not found' error."""
+        coder = _make_coder(tmp_path)
+        # Create a directory
+        (tmp_path / "some_dir").mkdir()
+        result = coder._tool_read_file("some_dir")
+        assert "ERROR" in result
+        assert "file not found" in result
+        assert "directory" in result
+
     def test_read_file_with_offset_and_length(self, tmp_path: Path) -> None:
         """When the model passes offset+length, paginate by lines."""
         f = tmp_path / "many.py"
