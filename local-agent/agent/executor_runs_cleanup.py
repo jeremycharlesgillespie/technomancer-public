@@ -171,7 +171,7 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
             removed += 1
             freed += size
             log.info("Successful deletion of %s (%d bytes)", path, size)
-        except OSError as exc:
+        except (OSError, PermissionError) as exc:
             log.warning("Failed to remove %s: %s", path, exc)
     # If no paths were checked (e.g., run_id was None), log that no paths were processed
     if paths_checked == 0:
