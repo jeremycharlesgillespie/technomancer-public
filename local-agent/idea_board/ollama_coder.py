@@ -1313,15 +1313,43 @@ class OllamaCoder:
                 if self._sleep_with_cancel(delay):
                     return None
                 continue
+            if status == "retry_timeout" and attempt < 3:
+                # Read timeouts almost always recover on the next attempt
+                # because the model is already warm by the time we retry.
+                # Short backoff (1s, 2s, 4s) — same shape as 500 retry.
+                delay = 2 ** attempt
+                logger.warning(
+                    "[OllamaCoder] read timeout (attempt %d/4), "
+                    "retrying in %ds: %s",
+                    attempt + 1, delay, str(payload)[:120],
+                )
+                if self._sleep_with_cancel(delay):
+                    return None
+                continue
             # Any other status is a non-retryable failure.
             return None
         return None
 
-    # Per-chunk read timeout for the streaming chat. Short enough that
-    # a stuck connection releases promptly, long enough that the model's
-    # natural inter-chunk gap (typically <2 s for token-by-token
-    # streaming) doesn't trigger spurious timeouts.
-    CHAT_CHUNK_TIMEOUT = 30
+    # Per-chunk read timeout for the streaming chat. The biggest gap
+    # we ever wait on is the FIRST chunk — that's when Ollama is doing
+    # prompt-eval on the entire context, which on a 30b model with a
+    # 30k-token prompt can take 20-30s. Subsequent chunks arrive every
+    # ~50ms during normal generation. So we size for the worst case
+    # (prompt-eval) and rely on the outer CHAT_TOTAL_TIMEOUT plus
+    # cancel-flag polling between chunks for liveness.
+    #
+    # Empirical data (2026-04-27, 321 chat requests):
+    #   - 75% of first chunks arrive in <1s (warm model)
+    #   - 7% of first chunks take 10-30s (cold start + large prompt)
+    #   - 4 timeouts at exactly 30.0s on prompts >35k chars
+    #     → prompt-eval was juuust over the old 30s ceiling
+    #   - 1 stalled-on-subsequent-chunk after 30s pause at chunk 275
+    #
+    # Lifting to 90s gives ~3x headroom over the worst observed
+    # legitimate first-chunk latency (15.8s). Cancel latency in the
+    # pathological "Ollama wedged forever" case grows from 30s to
+    # 90s — still well inside the worker's join window.
+    CHAT_CHUNK_TIMEOUT = 90
 
     # Hard cap on total streaming wall-clock. Defends against the
     # pathological case where Ollama keeps emitting heartbeat-shaped
@@ -1340,21 +1368,23 @@ class OllamaCoder:
     ) -> tuple[str, Any] | None:
         """Run one streaming /api/chat attempt.
 
-        Returns ``None`` on a network error (caller maps to None).
-        Otherwise returns ``(status, payload)`` where ``status`` is one of:
+        Returns ``None`` on a non-retryable network error (caller maps
+        to None). Otherwise returns ``(status, payload)`` where
+        ``status`` is one of:
 
         - ``"ok"``: payload is the assembled response dict.
         - ``"cancelled"``: payload is None; cancel flag fired mid-stream.
         - ``"retry_500"``: payload is the response text; caller may retry.
+        - ``"retry_timeout"``: payload is the exception text; caller may
+          retry. Distinct from connection errors (DNS fail, refused) so
+          we only retry the failure modes that empirically come back.
         - ``"http_error"``: payload is the response text; non-retryable.
         - ``"non_json"``: payload is the offending line; non-retryable.
 
         Diagnostic logging: every attempt logs prompt size + model + host
         at INFO before the request fires; on success, on network error,
         and on mid-stream timeout we log how long it took to fail and
-        how far we got. This is the data we need to decide whether the
-        timeout fix is "longer first-chunk timeout" vs "retry on read
-        timeout" vs "smaller prompt".
+        how far we got.
         """
         url = f"{self.host}/api/chat"
         # Use a (connect, read) timeout tuple so the connect handshake
@@ -1387,7 +1417,22 @@ class OllamaCoder:
                     t_request_start=t_request_start,
                     prompt_chars=prompt_chars,
                 )
+        except requests.exceptions.Timeout as exc:
+            # Read/connect timeout — retryable. Empirically these come
+            # back: 4/8 of yesterday's failed runs were here, and on
+            # retry the model is already warm so prompt-eval finishes
+            # in <1s instead of 30+.
+            elapsed = time.time() - t_request_start
+            logger.warning(
+                "[OllamaCoder] Network timeout after %.1fs: model=%s "
+                "host=%s prompt_chars=%d attempt=%d exc=%s",
+                elapsed, self.model, self.host, prompt_chars, attempt, exc,
+            )
+            return ("retry_timeout", str(exc))
         except requests.RequestException as exc:
+            # ConnectionError (refused, DNS fail, etc.). Not retryable
+            # — if Ollama isn't accepting connections, hammering it
+            # won't fix it. Return None to keep the existing contract.
             elapsed = time.time() - t_request_start
             logger.warning(
                 "[OllamaCoder] Network error after %.1fs: model=%s host=%s "
@@ -1513,11 +1558,32 @@ class OllamaCoder:
                         if k != "message":
                             final_metadata[k] = v
                     break
+        except requests.exceptions.Timeout as exc:
+            # Mid-stream read timeout — retryable. If we already got
+            # some chunks (subsequent_chunk stall), the prior partial
+            # generation is lost on retry, but the alternative is a
+            # whole failed round. If we got zero chunks (first_chunk
+            # stall), retry is essentially free.
+            elapsed = time.time() - t_request_start
+            time_since_last = time.time() - last_chunk_time
+            logger.warning(
+                "[OllamaCoder] stream read timeout after %.1fs: model=%s "
+                "host=%s prompt_chars=%d chunks_received=%d "
+                "first_chunk_latency=%s time_since_last_chunk=%.1fs "
+                "stalled_on=%s exc=%s",
+                elapsed, self.model, self.host, prompt_chars,
+                chunks_received,
+                f"{first_chunk_time - t_request_start:.1f}s"
+                if first_chunk_time else "never",
+                time_since_last,
+                "first_chunk" if first_chunk_time is None else "subsequent_chunk",
+                exc,
+            )
+            return ("retry_timeout", str(exc))
         except requests.RequestException as exc:
-            # Per-chunk read timeout or socket error mid-stream. The
-            # forensic log: how far we got, and where the stall sits
-            # (waiting on first chunk = prompt-eval, waiting on later
-            # chunk = generation hiccup or remote socket issue).
+            # Other socket error mid-stream (connection reset, etc.).
+            # Not retryable through the same code path — usually means
+            # something flipped on the server side.
             elapsed = time.time() - t_request_start
             time_since_last = time.time() - last_chunk_time
             logger.warning(

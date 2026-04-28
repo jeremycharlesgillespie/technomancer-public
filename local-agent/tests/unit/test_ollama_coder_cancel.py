@@ -445,34 +445,104 @@ class TestDiagnosticLogging:
         assert "prompt_chars=" in msg
         assert "attempt=" in msg
 
-    def test_stream_read_error_log_distinguishes_first_vs_subsequent_chunk(self, caplog):
+    def test_stream_read_timeout_log_distinguishes_first_vs_subsequent_chunk(self, caplog):
         """Mid-stream timeout BEFORE first chunk should be flagged ``stalled_on=first_chunk``.
 
         This is the diagnostic that tells us whether the qwen3 timeout
         is happening during prompt-eval (first chunk) or during
         generation (subsequent chunks). Two completely different fixes.
+
+        Note: read timeouts are now retryable, so 4 attempts fire
+        before _chat_with_tools gives up. Each attempt produces one
+        "stream read timeout" log.
         """
         import requests as real_requests
         coder = _make_coder()
 
         def _raising_iter_lines(decode_unicode=True):
-            raise real_requests.exceptions.ReadTimeout("read timeout=30")
+            raise real_requests.exceptions.ReadTimeout("read timeout=90")
 
-        r = MagicMock()
-        r.status_code = 200
-        r.text = ""
-        r.iter_lines = _raising_iter_lines
-        r.close = MagicMock()
-        r.__enter__ = MagicMock(return_value=r)
-        r.__exit__ = MagicMock(return_value=False)
+        def _make_response():
+            r = MagicMock()
+            r.status_code = 200
+            r.text = ""
+            r.iter_lines = _raising_iter_lines
+            r.close = MagicMock()
+            r.__enter__ = MagicMock(return_value=r)
+            r.__exit__ = MagicMock(return_value=False)
+            return r
 
-        with patch("idea_board.ollama_coder.requests.post", return_value=r):
+        # Patch sleep so we don't actually wait through 1+2+4=7s of backoff.
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            side_effect=lambda *a, **kw: _make_response(),
+        ), patch.object(coder, "_sleep_with_cancel", return_value=False):
             with caplog.at_level("WARNING", logger="idea_board.ollama_coder"):
                 coder._chat_with_tools("sys", [])
 
-        stall_logs = [r for r in caplog.records if "stream read error after" in r.message]
-        assert len(stall_logs) == 1
+        stall_logs = [r for r in caplog.records if "stream read timeout after" in r.message]
+        # 4 attempts → 4 timeout logs.
+        assert len(stall_logs) == 4
         msg = stall_logs[0].message
         assert "stalled_on=first_chunk" in msg, f"unexpected log: {msg}"
         assert "first_chunk_latency=never" in msg
         assert "chunks_received=0" in msg
+
+    def test_read_timeout_retries_then_succeeds(self):
+        """Read timeout on attempt 0 → retry on attempt 1 → success.
+
+        The empirical case: cold model takes 30s+ on first request and
+        times out, but the second request finds it warm and completes
+        in <1s. Without retry, we lose the round; with retry, we save it.
+        """
+        import requests as real_requests
+        coder = _make_coder()
+
+        good_lines = [
+            json.dumps({"message": {"content": "ok"}}),
+            json.dumps({"message": {}, "done": True}),
+        ]
+        responses = [
+            real_requests.exceptions.ReadTimeout("read timeout=90"),
+            _stream_response(good_lines, status_code=200),
+        ]
+
+        def _post_side_effect(*args, **kwargs):
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            side_effect=_post_side_effect,
+        ), patch.object(coder, "_sleep_with_cancel", return_value=False):
+            result = coder._chat_with_tools("sys", [])
+
+        assert result is not None
+        assert result["message"]["content"] == "ok"
+
+    def test_connection_error_does_not_retry(self):
+        """ConnectionError (DNS fail / refused) is NOT retried.
+
+        Distinguishes the new retry path: only Timeout retries; other
+        RequestException subclasses still abort immediately.
+        """
+        import requests as real_requests
+        coder = _make_coder()
+
+        call_count = {"n": 0}
+
+        def _post_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            raise real_requests.exceptions.ConnectionError("refused")
+
+        with patch(
+            "idea_board.ollama_coder.requests.post",
+            side_effect=_post_side_effect,
+        ):
+            result = coder._chat_with_tools("sys", [])
+
+        assert result is None
+        # Single attempt, no retries.
+        assert call_count["n"] == 1
