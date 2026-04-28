@@ -18,6 +18,7 @@ _install_ollama_shim()
 _install_anthropic_shim()
 
 from unittest.mock import MagicMock, patch
+import logging
 
 import pytest
 
@@ -62,6 +63,32 @@ def _force_local_board_provider():
     factory._provider = stub
     yield
     reset_provider()
+
+
+@pytest.fixture(autouse=True)
+def _reset_logging():
+    """Reset logging configuration at session start to ensure isolation.
+
+    This fixture ensures that each test session starts with a clean logging
+    state, preventing cross-test pollution of loggers, handlers, and filters.
+    """
+    # Reset logging to basic configuration
+    logging.shutdown()
+    logging.basicConfig(level=logging.NOTSET)
+    
+    # Clear all loggers to ensure clean state
+    for name in list(logging.Logger.manager.loggerDict.keys()):
+        logging.Logger.manager.loggerDict.pop(name, None)
+    
+    # Clear the root logger handlers
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.setLevel(logging.NOTSET)
+    
+    yield
+    
+    # Cleanup after session
+    logging.shutdown()
 
 # =============================================================================
 # OLLAMA MOCK
