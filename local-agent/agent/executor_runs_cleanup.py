@@ -123,6 +123,27 @@ def _path_size_bytes(path: Path) -> int:
     return total
 
 
+def _resolve_directory_artifact(run_id: str | None) -> list[Path]:
+    """Safely return a list with a single Path object for the directory artifact.
+
+    Returns:
+        - A list with a single Path object [EXECUTION_LOGS_DIR / run_id] if run_id
+          is not None or empty, and the directory exists.
+        - An empty list [] otherwise.
+
+    This helper function allows legacy code to delegate directory handling
+    without raising exceptions on missing files.
+    """
+    if not run_id:
+        return []
+    
+    path = EXECUTION_LOGS_DIR / run_id
+    if not path.exists() or not path.is_dir():
+        return []
+    
+    return [path]
+
+
 def _candidate_paths(run_id: str | None) -> list[Path]:
     """Return the on-disk artifacts that belong to ``run_id``.
 
