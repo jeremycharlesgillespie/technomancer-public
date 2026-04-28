@@ -86,8 +86,12 @@ def _project_key_for(idea_id: str | None) -> str | None:
         return None
     
     # If Jira project key is explicitly set, return it (overrides prefix extraction)
-    if settings.jira_project_key:
-        return settings.jira_project_key
+    try:
+        if settings.jira_project_key:
+            return settings.jira_project_key
+    except AttributeError:
+        # Handle case where settings.jira_project_key is not accessible
+        return None
     
     # Early exit for invalid idea IDs - this is the required change for TK-1036
     if not _is_valid_idea_id(idea_id):
