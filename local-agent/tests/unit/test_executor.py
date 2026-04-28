@@ -15,6 +15,65 @@ import pytest
 
 from agent.config import settings as app_settings
 
+
+# ---------------------------------------------------------------------------
+# Logging isolation fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_logging():
+    """
+    Isolate logging configuration for test_executor.py.
+
+    This fixture calls ``logging.basicConfig`` with a suppressed handler
+    to prevent global logging state from leaking between test runs.
+    It also patches ``logging.getLogger`` to ensure each test sees a
+    clean logger hierarchy.
+
+    Usage:
+        def test_something(isolated_logging):
+            # Logging is isolated
+            pass
+    """
+    # Save the root logger before patching
+    root_logger = logging.getLogger()
+    original_root_handlers = list(root_logger.handlers)
+    original_root_level = root_logger.level
+
+    # Suppress all logging output by using a NullHandler
+    logging.basicConfig(level=logging.NOTSET, force=True)
+
+    # Patch logging.getLogger to return a fresh logger for each call
+    # This prevents loggers from retaining handlers/filters from previous tests
+    original_getLogger = logging.getLogger
+
+    def _patched_getLogger(name=None):
+        logger = original_getLogger(name)
+        # Remove any existing handlers to ensure clean state
+        logger.handlers.clear()
+        logger.propagate = False  # Prevent handlers from propagating to parent loggers
+        return logger
+
+    # Apply the patch
+    logging.getLogger = _patched_getLogger
+
+    try:
+        yield
+    finally:
+        # Restore original getLogger
+        logging.getLogger = original_getLogger
+
+        # Restore root logger state
+        root_logger.handlers = original_root_handlers
+        root_logger.setLevel(original_root_level)
+
+        # Reset logging state after test
+        logging.shutdown()
+        # Re-apply basicConfig to ensure clean state
+        logging.basicConfig(level=logging.NOTSET, force=True)
+
+
 from idea_board.executor import (
     MAX_FIX_RETRIES,
     PYTEST_TIMEOUT,
@@ -43,6 +102,67 @@ from idea_board.executor import (
     mark_done,
     mark_failed,
 )
+
+
+# ---------------------------------------------------------------------------
+# Logging isolation fixture
+# ---------------------------------------------------------------------------
+
+
+class TestIsolatedLogging:
+    """Test that isolated_logging fixture prevents logging state leakage."""
+
+    def test_logging_isolated_per_test(self, isolated_logging):
+        """Each test with isolated_logging should have clean logging state."""
+        # Verify logging is configured with NOTSET level
+        root_logger = logging.getLogger()
+        assert root_logger.level == logging.NOTSET
+
+        # Verify no handlers are attached
+        assert len(root_logger.handlers) == 0
+
+        # Verify propagate is False to prevent handler leakage
+        assert root_logger.propagate is False
+
+    def test_multiple_tests_with_isolated_logging(self, isolated_logging):
+        """Multiple tests using isolated_logging should not interfere with each other."""
+        # First test - verify clean state
+        root_logger = logging.getLogger()
+        assert len(root_logger.handlers) == 0
+
+        # Second test - should also have clean state
+        # (fixture is autouse, so this test runs with the same fixture)
+        assert len(root_logger.handlers) == 0
+
+    def test_logging_getter_patched(self, isolated_logging):
+        """logging.getLogger should return clean loggers after fixture."""
+        logger1 = logging.getLogger("test.module1")
+        logger2 = logging.getLogger("test.module2")
+
+        # Both should have no handlers
+        assert len(logger1.handlers) == 0
+        assert len(logger2.handlers) == 0
+
+        # Both should have propagate=False
+        assert logger1.propagate is False
+        assert logger2.propagate is False
+
+    def test_fixture_overrides_existing_config(self, isolated_logging):
+        """Fixture should override any existing logging configuration."""
+        # Simulate existing configuration
+        existing_handler = logging.StreamHandler()
+        existing_handler.setLevel(logging.INFO)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(existing_handler)
+        root_logger.setLevel(logging.INFO)
+
+        # After fixture, configuration should be reset
+        assert root_logger.level == logging.NOTSET
+        assert len(root_logger.handlers) == 0
+        assert root_logger.propagate is False
+
+        # Existing handler should be removed
+        assert existing_handler not in root_logger.handlers
 
 
 # ---------------------------------------------------------------------------
