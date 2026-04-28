@@ -48,28 +48,28 @@ from idea_board.executor import (
 @pytest.fixture(autouse=True)
 def _isolated_logging():
     """Ensure isolated logging configuration for executor tests.
-    
+
     This fixture prevents global logging.basicConfig side effects from
     leaking between test runs, which can cause flaky tests or import errors
     across the logging module.
     """
-    # Reset logging to clean state
-    logging.shutdown()
-    logging.basicConfig(level=logging.NOTSET, force=True)
-    
-    # Clear all loggers to ensure clean state
-    for name in list(logging.Logger.manager.loggerDict.keys()):
-        logging.Logger.manager.loggerDict.pop(name, None)
-    
-    # Clear the root logger handlers
-    root_logger = logging.getLogger()
-    root_logger.handlers.clear()
-    root_logger.setLevel(logging.NOTSET)
-    
-    yield
-    
-    # Cleanup after test
-    logging.shutdown()
+    with patch("logging.basicConfig"):
+        # Reset logging to clean state
+        logging.shutdown()
+
+        # Clear all loggers to ensure clean state
+        for name in list(logging.Logger.manager.loggerDict.keys()):
+            logging.Logger.manager.loggerDict.pop(name, None)
+
+        # Clear the root logger handlers
+        root_logger = logging.getLogger()
+        root_logger.handlers.clear()
+        root_logger.setLevel(logging.NOTSET)
+
+        yield
+
+        # Cleanup after test
+        logging.shutdown()
 
 
 # ---------------------------------------------------------------------------
