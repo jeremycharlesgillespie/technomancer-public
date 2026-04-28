@@ -263,6 +263,89 @@ class TestArtifactCleanup:
 
 
 # =========================================================================
+# _resolve_directory_artifact — safe directory resolution
+# =========================================================================
+
+
+class TestResolveDirectoryArtifact:
+    def test_returns_single_path_for_valid_directory(self, _isolate_db):
+        """Acceptance criterion: returns list with single Path when run_id is valid."""
+        logs_dir = _isolate_db
+        run_id = "valid-run-id"
+
+        # Create the directory
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+
+        assert len(result) == 1
+        assert result[0] == dir_path
+        assert result[0].exists()
+        assert result[0].is_dir()
+
+    def test_returns_empty_list_for_none_run_id(self, _isolate_db):
+        """Acceptance criterion: returns empty list when run_id is None."""
+        result = executor_runs_cleanup._resolve_directory_artifact(None)
+        assert result == []
+
+    def test_returns_empty_list_for_empty_string(self, _isolate_db):
+        """Acceptance criterion: returns empty list when run_id is empty string."""
+        result = executor_runs_cleanup._resolve_directory_artifact("")
+        assert result == []
+
+    def test_returns_empty_list_for_nonexistent_directory(self, _isolate_db):
+        """Acceptance criterion: returns empty list when directory does not exist."""
+        result = executor_runs_cleanup._resolve_directory_artifact("nonexistent-run-id")
+        assert result == []
+
+    def test_returns_empty_list_for_file_instead_of_directory(self, _isolate_db):
+        """Acceptance criterion: returns empty list when path exists but is a file."""
+        logs_dir = _isolate_db
+        run_id = "file-instead-of-dir"
+
+        # Create a file instead of a directory
+        file_path = logs_dir / run_id
+        file_path.write_text("test content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+
+        assert result == []
+        assert file_path.exists()
+        assert file_path.is_file()
+
+    def test_returns_empty_list_for_missing_parent_directory(self, _isolate_db):
+        """Acceptance criterion: returns empty list when parent directory doesn't exist."""
+        # Create a nested path where parent doesn't exist
+        run_id = "nested/nonexistent-run-id"
+
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+
+        assert result == []
+
+    def test_does_not_raise_exception_for_nonexistent_directory(self, _isolate_db):
+        """Acceptance criterion: does not raise exceptions for non-existent directories."""
+        # This should not raise any exception
+        result = executor_runs_cleanup._resolve_directory_artifact("ghost-run-id")
+        assert result == []
+        assert isinstance(result, list)
+
+    def test_returns_path_with_correct_parent(self, _isolate_db):
+        """Verify that the returned Path has the correct parent directory."""
+        logs_dir = _isolate_db
+        run_id = "correct-parent-run-id"
+
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        result = executor_runs_cleanup._resolve_directory_artifact(run_id)
+
+        assert len(result) == 1
+        assert result[0].parent == logs_dir
+        assert result[0].name == run_id
+
+
+# =========================================================================
 # Edge case tests for artifact removal functions
 # =========================================================================
 

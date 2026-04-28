@@ -1,10 +1,10 @@
-[20260428 16:51:38.568] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 16:51:38.568] === A/B Run A: model-a:tag @ localhost ===
-[20260428 16:51:38.569] [AB] cross-host run: A on localhost, B on http://192.168.1.150:11434 — skipping eviction
-[20260428 16:51:38.569] === A/B Run B: model-b:tag @ http://192.168.1.150:11434 ===
-[20260428 16:51:38.570] [AB] scored model-a: err=''
-[20260428 16:51:38.570] [AB] scored model-b: err=''
-[20260428 16:51:38.570] [AB] comparison: winner='model_a' err=''
-[20260428 16:51:38.572] [AB] enqueued TK-HOST-1 for AIV validation (sha=none)
-[20260428 16:51:38.572] [AB] unloading model B (model-b:tag) on http://192.168.1.150:11434 at run end
-[20260428 16:51:38.572] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 17:02:35.320] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 17:02:35.320] === A/B Run A: model-a:tag @ localhost ===
+[20260428 17:02:35.321] [AB] cross-host run: A on localhost, B on http://192.168.1.150:11434 — skipping eviction
+[20260428 17:02:35.321] === A/B Run B: model-b:tag @ http://192.168.1.150:11434 ===
+[20260428 17:02:35.322] [AB] scored model-a: err=''
+[20260428 17:02:35.322] [AB] scored model-b: err=''
+[20260428 17:02:35.322] [AB] comparison: winner='model_a' err=''
+[20260428 17:02:35.324] [AB] enqueued TK-HOST-1 for AIV validation (sha=none)
+[20260428 17:02:35.325] [AB] unloading model B (model-b:tag) on http://192.168.1.150:11434 at run end
+[20260428 17:02:35.325] [AB] removed worktree: /tmp/fake-worktree-abc12345
