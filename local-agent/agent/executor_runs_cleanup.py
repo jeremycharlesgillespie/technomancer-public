@@ -165,6 +165,7 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
                 path.unlink()
             removed += 1
             freed += size
+            log.info("Successful deletion of %s (%d bytes)", path, size)
         except OSError as exc:
             log.warning("Failed to remove %s: %s", path, exc)
     return removed, freed
