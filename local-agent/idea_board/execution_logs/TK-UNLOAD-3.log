@@ -1,8 +1,8 @@
-[20260428 16:30:38.609] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 16:30:38.609] === A/B Run A: model-a:tag @ localhost ===
-[20260428 16:30:38.610] [AB] unloading model A (model-a:tag) on localhost before B
-[20260428 16:30:38.610] === A/B Run B: model-b:tag @ localhost ===
-[20260428 16:30:38.610] [AB] comparison: winner='model_a' err=''
-[20260428 16:30:38.610] [AB] both runs failed — no merge
-[20260428 16:30:38.610] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260428 16:30:38.610] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 16:40:58.100] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 16:40:58.101] === A/B Run A: model-a:tag @ localhost ===
+[20260428 16:40:58.101] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 16:40:58.101] === A/B Run B: model-b:tag @ localhost ===
+[20260428 16:40:58.102] [AB] comparison: winner='model_a' err=''
+[20260428 16:40:58.102] [AB] both runs failed — no merge
+[20260428 16:40:58.102] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 16:40:58.102] [AB] removed worktree: /tmp/fake-worktree-abc12345

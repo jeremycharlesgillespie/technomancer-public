@@ -130,9 +130,19 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
     the current executor writes flat ``<id>.log`` / ``<id>.done`` files.
     We return both so the cleanup works regardless of which layout is in
     play when it runs.
+
+    Returns:
+        A list of Path objects for the main run directory, .log file, and .done file.
+        If the parent directory doesn't exist, returns an empty list to avoid
+        attempting to create paths in non-existent directories.
     """
     if not run_id:
         return []
+    
+    # Check if the parent directory exists before creating paths
+    if not EXECUTION_LOGS_DIR.exists():
+        return []
+    
     return [
         EXECUTION_LOGS_DIR / run_id,
         EXECUTION_LOGS_DIR / f"{run_id}.log",
