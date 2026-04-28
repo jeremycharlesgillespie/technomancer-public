@@ -470,6 +470,27 @@ class TestNullableColumns:
         ).fetchone()[0]
         assert count == 1
 
+    def test_record_phase_accepts_project_none(self):
+        """record_phase must create a row with project=IS NULL when called with project=None."""
+        row_id = story_timings.record_phase(
+            run_id="r",
+            story_id="TK-NULL-TEST",
+            project=None,
+            phase="test",
+            started_at="2026-04-17T10:00:00",
+            ended_at="2026-04-17T10:00:01",
+            duration_ms=1000,
+            success=True,
+        )
+        assert row_id > 0
+
+        conn = story_timings._get_conn()
+        row = conn.execute(
+            "SELECT project FROM story_phase_timings WHERE id = ?",
+            (row_id,),
+        ).fetchone()
+        assert row["project"] is None
+
 
 class TestQueryByPhase:
     """`WHERE phase = ?` — aggregate a single phase across all stories."""
