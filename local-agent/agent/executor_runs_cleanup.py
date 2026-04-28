@@ -149,7 +149,7 @@ def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
 
     Returns:
         - A list with Path objects for .log and .done files if run_id is not None
-          or empty, and the parent directory exists.
+          or empty, and the files exist.
         - An empty list [] otherwise.
 
     This helper function allows legacy code to delegate flat file handling
@@ -158,14 +158,17 @@ def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
     if not run_id:
         return []
     
-    # Check if the parent directory exists before creating paths
-    if not EXECUTION_LOGS_DIR.exists():
-        return []
+    paths = []
+    log_path = EXECUTION_LOGS_DIR / f"{run_id}.log"
+    done_path = EXECUTION_LOGS_DIR / f"{run_id}.done"
     
-    return [
-        EXECUTION_LOGS_DIR / f"{run_id}.log",
-        EXECUTION_LOGS_DIR / f"{run_id}.done",
-    ]
+    if log_path.exists():
+        paths.append(log_path)
+    
+    if done_path.exists():
+        paths.append(done_path)
+    
+    return paths
 
 
 def _candidate_paths(run_id: str | None) -> list[Path]:
