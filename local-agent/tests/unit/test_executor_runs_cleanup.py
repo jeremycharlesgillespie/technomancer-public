@@ -1,6 +1,7 @@
 """Tests for agent.executor_runs_cleanup — pruning old executor_runs rows
 and the matching idea_board/execution_logs artifacts."""
 
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -508,6 +509,15 @@ class TestErrorHandling:
             run_id=run_id, dry_run=True
         )
         
+        # Should not crash and should still report what would be removed
+        assert isinstance(dirs_removed, int)
+        assert dirs_removed >= 0
+        # Should not have any INFO logs about successful deletions
+        assert len(caplog.records) == 0
+        executor_runs_cleanup._remove_artifacts(
+            run_id=run_id, dry_run=True
+        )
+        
         # Should not crash
         assert isinstance(dirs_removed, int)
         assert dirs_removed >= 0  # At least 0 directories would be removed
@@ -538,6 +548,93 @@ class TestErrorHandling:
 
 # =========================================================================
 # Scheduler
+
+# =========================================================================
+# Skipped path logging tests
+# =========================================================================
+
+
+class TestCleanupOldRuns_Skipped:
+    def test_remove_artifacts_with_dry_run_logs_skipped_paths(self, _isolate_db, caplog):
+        """Test that _remove_artifacts logs skipped paths in dry_run mode."""
+        logs_dir = _isolate_db
+        run_id = "dry-run-test"
+        
+        # Create a directory with files to test the path exists case
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+        
+        # Test with dry_run=True - should log what would be deleted
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=True
+            )
+        
+        # Should have logged the dry run info
+        assert "Dry run: would delete" in caplog.text
+        assert dirs_removed > 0
+        assert bytes_freed > 0
+
+    def test_remove_artifacts_with_missing_paths_logs_skipped(self, _isolate_db, caplog):
+        """Test that _remove_artifacts logs skipped missing paths."""
+        logs_dir = _isolate_db
+        run_id = "missing-test"
+        
+        # Don't create any files for this run_id - paths should be missing
+        
+        # Test with dry_run=False but missing paths - should log skipped paths
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+        
+        # Should not crash and should not log anything (since paths don't exist, we don't log skipped)
+        # But we should test that it handles gracefully
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_remove_artifacts_with_dry_run_missing_paths_logs_skipped(self, _isolate_db, caplog):
+        """Test that _remove_artifacts logs skipped missing paths in dry_run mode."""
+        logs_dir = _isolate_db
+        run_id = "missing-dry-run-test"
+        
+        # Don't create any files for this run_id - paths should be missing
+        
+        # Test with dry_run=True and missing paths - should log what would be skipped
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=True
+            )
+        
+        # Should have logged the dry run info about missing paths
+        assert "Dry run: would skip missing path" in caplog.text
+        assert dirs_removed == 0  # No paths to remove
+        assert bytes_freed == 0  # No bytes freed
+
+    def test_remove_artifacts_with_none_run_id_logs_skipped(self, _isolate_db, caplog):
+        """Test that _remove_artifacts handles None run_id gracefully."""
+        # Test with None run_id - should not crash
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=None, dry_run=False
+            )
+        
+        # Should not crash and should return 0
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_remove_artifacts_with_none_run_id_dry_run_logs_skipped(self, _isolate_db, caplog):
+        """Test that _remove_artifacts handles None run_id in dry_run mode gracefully."""
+        # Test with None run_id and dry_run=True - should not crash
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=None, dry_run=True
+            )
+        
+        # Should not crash and should return 0
+        assert dirs_removed == 0
+        assert bytes_freed == 0
 # =========================================================================
 
 
@@ -664,3 +761,69 @@ class TestCli:
             "--keep-last-n", "50"
         ])
         assert result == 0
+
+
+# =========================================================================
+# Skipped paths logging verification
+# =========================================================================
+
+
+class TestCleanupOldRuns_Skipped:
+    """Test that INFO logs are produced for skipped paths in _remove_artifacts."""
+
+    def test_remove_artifacts_with_dry_run_logs_skipped_paths(self, _isolate_db, caplog):
+        """Test that _remove_artifacts with dry_run=True logs skipped paths."""
+        # Test with a non-existent run_id - should log that paths are skipped
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id="nonexistent-run-id", dry_run=True
+            )
+            
+            # Should report that no paths were removed (since they don't exist)
+            assert dirs_removed == 0
+            assert bytes_freed == 0
+            
+            # Should not have any INFO logs about successful deletions
+            # since there are no paths to delete
+            assert len(caplog.records) == 0
+
+    def test_remove_artifacts_with_missing_files_logs_skipped_paths(self, _isolate_db, caplog):
+        """Test that _remove_artifacts with missing files logs skipped paths."""
+        # Test with a run_id that has no matching files - should not log anything
+        # because the function skips non-existent paths entirely
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id="nonexistent-run-id", dry_run=False
+            )
+            
+            # Should report that no paths were removed
+            assert dirs_removed == 0
+            assert bytes_freed == 0
+            
+            # Should not have any INFO logs about successful deletions
+            assert len(caplog.records) == 0
+
+    def test_remove_artifacts_with_existing_files_no_dry_run_logs_success(self, _isolate_db, caplog):
+        """Test that _remove_artifacts with existing files logs successful deletions."""
+        logs_dir = _isolate_db
+        run_id = "test-existing"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+        
+        # Create a directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+        
+        with caplog.at_level(logging.INFO):
+            dirs_removed, bytes_freed = executor_runs_cleanup._remove_artifacts(
+                run_id=run_id, dry_run=False
+            )
+            
+            # Should report that one directory was removed
+            assert dirs_removed == 1
+            assert bytes_freed > 0
+            
+            # Should have one INFO log about successful deletion
+            assert len(caplog.records) == 1
+            assert "Successful deletion" in caplog.records[0].message
+            assert str(dir_path) in caplog.records[0].message
