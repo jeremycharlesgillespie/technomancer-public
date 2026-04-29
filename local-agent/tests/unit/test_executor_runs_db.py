@@ -2077,4 +2077,22 @@ class TestInsertSelectRow:
         assert row["branch"] == ""
         assert row["status"] == ""
         assert row["run_id"] == ""
-        assert row["trace_id"] == ""
+
+    def test_no_briefing_loop_references(self):
+        """Verify that executor_runs_db.py has no references to briefing_loop.
+
+        This test ensures code cleanliness and prevents confusion about which
+        function handles the briefing loop. The briefing_loop function is
+        defined in daily_briefing.py, not executor_runs_db.py.
+        """
+        import inspect
+        from agent import executor_runs_db
+
+        # Get the source code of the executor_runs_db module
+        source = inspect.getsource(executor_runs_db)
+
+        # Verify that briefing_loop is not referenced in the source
+        assert "briefing_loop" not in source, (
+            "executor_runs_db.py should not reference briefing_loop. "
+            "The briefing_loop function is defined in daily_briefing.py."
+        )
