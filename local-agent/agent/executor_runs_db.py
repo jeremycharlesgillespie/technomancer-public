@@ -1193,6 +1193,33 @@ RETENTION_DAYS = 30
 PURGE_HOUR = 3
 
 
+def _execute_cleanup(artifact_paths: list[str]) -> int:
+    """Delete files at the given paths, handling non-existent paths gracefully.
+
+    Args:
+        artifact_paths: List of file paths (as strings) to delete. Invalid
+            values (None, empty strings) are skipped.
+
+    Returns:
+        Number of files successfully deleted.
+    """
+    deleted = 0
+    for path_str in artifact_paths:
+        # Skip invalid path values
+        if not path_str:
+            continue
+        try:
+            path = Path(path_str)
+            if path.exists():
+                path.unlink()
+                deleted += 1
+        except OSError:
+            log.warning(
+                "Failed to delete artifact file %s", path, exc_info=True
+            )
+    return deleted
+
+
 def _purge_old_artifact_files(cutoff_ts: float) -> int:
     """Unlink archived files whose mtime is older than ``cutoff_ts``.
 

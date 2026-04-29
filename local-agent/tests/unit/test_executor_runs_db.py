@@ -595,6 +595,133 @@ class TestExecutorToolCalls:
         assert tool_calls == []
 
 
+class TestExecuteCleanup:
+    """Tests for the private _execute_cleanup helper function."""
+
+    def test_deletes_existing_files(self, tmp_path):
+        """_execute_cleanup deletes files that exist."""
+        # Create test files
+        file1 = tmp_path / "test1.txt"
+        file2 = tmp_path / "test2.txt"
+        file1.write_text("content1", encoding="utf-8")
+        file2.write_text("content2", encoding="utf-8")
+
+        # Verify files exist
+        assert file1.exists()
+        assert file2.exists()
+
+        # Delete files using _execute_cleanup
+        deleted = executor_runs_db._execute_cleanup([str(file1), str(file2)])
+
+        # Verify deletion
+        assert deleted == 2
+        assert not file1.exists()
+        assert not file2.exists()
+
+    def test_skips_nonexistent_files(self, tmp_path):
+        """_execute_cleanup skips files that don't exist."""
+        # Create one existing file
+        existing_file = tmp_path / "existing.txt"
+        existing_file.write_text("content", encoding="utf-8")
+
+        # Non-existent file paths
+        nonexistent1 = tmp_path / "nonexistent1.txt"
+        nonexistent2 = tmp_path / "nonexistent2.txt"
+
+        # Verify only existing file exists
+        assert existing_file.exists()
+        assert not nonexistent1.exists()
+        assert not nonexistent2.exists()
+
+        # Delete files using _execute_cleanup
+        deleted = executor_runs_db._execute_cleanup([
+            str(existing_file),
+            str(nonexistent1),
+            str(nonexistent2),
+        ])
+
+        # Verify only existing file was deleted
+        assert deleted == 1
+        assert not existing_file.exists()
+        assert not nonexistent1.exists()
+        assert not nonexistent2.exists()
+
+    def test_handles_mixed_valid_invalid(self, tmp_path):
+        """_execute_cleanup handles a mix of existing and non-existent files."""
+        # Create multiple files
+        files = [
+            tmp_path / "valid1.txt",
+            tmp_path / "valid2.txt",
+            tmp_path / "valid3.txt",
+        ]
+        for f in files:
+            f.write_text("content", encoding="utf-8")
+
+        # Non-existent files
+        nonexistent = [
+            tmp_path / "invalid1.txt",
+            tmp_path / "invalid2.txt",
+        ]
+
+        # Verify all files exist
+        for f in files:
+            assert f.exists()
+        for f in nonexistent:
+            assert not f.exists()
+
+        # Delete files using _execute_cleanup
+        all_paths = [str(f) for f in files] + [str(f) for f in nonexistent]
+        deleted = executor_runs_db._execute_cleanup(all_paths)
+
+        # Verify only valid files were deleted
+        assert deleted == 3
+        for f in files:
+            assert not f.exists()
+        for f in nonexistent:
+            assert not f.exists()
+
+    def test_handles_os_error_on_delete(self, tmp_path, monkeypatch):
+        """_execute_cleanup handles OSError when deleting files."""
+        # Create a file
+        file1 = tmp_path / "test.txt"
+        file1.write_text("content", encoding="utf-8")
+
+        # Mock unlink to raise OSError
+        original_unlink = Path.unlink
+
+        def mock_unlink(self):
+            if self == file1:
+                raise OSError("Permission denied")
+            return original_unlink(self)
+
+        monkeypatch.setattr(Path, "unlink", mock_unlink)
+
+        # Delete files using _execute_cleanup
+        deleted = executor_runs_db._execute_cleanup([str(file1)])
+
+        # Verify OSError was handled gracefully
+        assert deleted == 0
+        assert file1.exists()
+
+    def test_empty_input_list(self, tmp_path):
+        """_execute_cleanup handles empty input list gracefully."""
+        deleted = executor_runs_db._execute_cleanup([])
+        assert deleted == 0
+
+    def test_handles_none_values(self, tmp_path):
+        """_execute_cleanup handles None values in the list."""
+        # Create a file
+        file1 = tmp_path / "test.txt"
+        file1.write_text("content", encoding="utf-8")
+
+        # Delete files using _execute_cleanup with None values
+        deleted = executor_runs_db._execute_cleanup([str(file1), None, ""])
+
+        # Verify only the valid file was deleted
+        assert deleted == 1
+        assert not file1.exists()
+
+
 class TestCleanupIntegration:
     """Tests for integration between cleanup functions and executor_runs_db."""
 
