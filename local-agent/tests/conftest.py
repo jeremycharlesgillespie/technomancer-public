@@ -763,3 +763,29 @@ def patched_dev_learning(tmp_path, monkeypatch):
     monkeypatch.setattr(dl_module, "load_user_profile", mock_load_profile)
 
     return tmp_path
+
+
+# =============================================================================
+# SESSION-SCOPED TEARDOWN
+# =============================================================================
+
+
+@pytest.fixture(scope="session", autouse=True)
+def clear_db_session():
+    """
+    Session-scoped teardown for executor_runs_db.
+
+    Ensures that global state is guaranteed to be reset before the next
+    test session starts without code duplication. Calls
+    ``executor_runs_db.teardown_session()`` at the end of the session.
+
+    This fixture is automatically invoked at the end of ``pytest --collect-only``
+    or simply before any subsequent test session runs, preventing leak_counter
+    or open connections from persisting between test runs.
+    """
+    import agent.executor_runs_db as db_module
+
+    yield
+
+    # Teardown the executor_runs_db connection at session end
+    db_module.teardown_session()
