@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,22 @@ import pytest
 
 from agent import executor_runs_db, tracing
 from agent.executor_runs_db import leak_counter
+
+
+def get_zero_leak_counter() -> threading.local:
+    """Return a fresh leak_counter instance with count set to 0.
+
+    This helper provides a reusable way to create a zero-initialized
+    leak counter for testing purposes. The leak_counter is a threading.local()
+    object that can store thread-local data, and this function ensures it
+    starts with a clean state.
+
+    Returns:
+        A fresh threading.local instance with .count set to 0.
+    """
+    counter = threading.local()
+    counter.count = 0
+    return counter
 
 
 @pytest.fixture(autouse=True)
@@ -1351,3 +1368,46 @@ class TestLeakCounter:
         # Ensure _local.conn is None before checking (fixture should clean it up)
         executor_runs_db._local.__dict__.pop("conn", None)
         assert getattr(executor_runs_db._local, "conn", None) is None
+
+
+class TestGetZeroLeakCounter:
+    """Tests for get_zero_leak_counter() helper function."""
+
+    def test_returns_threading_local(self):
+        """get_zero_leak_counter returns a threading.local instance."""
+        counter = get_zero_leak_counter()
+        assert isinstance(counter, threading.local)
+
+    def test_count_is_zero(self):
+        """get_zero_leak_counter returns an object with count set to 0."""
+        counter = get_zero_leak_counter()
+        assert counter.count == 0
+
+    def test_returns_fresh_instance(self):
+        """Multiple calls return different instances."""
+        counter1 = get_zero_leak_counter()
+        counter2 = get_zero_leak_counter()
+        assert counter1 is not counter2
+
+    def test_count_is_reset_on_new_instance(self):
+        """Each call to get_zero_leak_counter creates a new instance with count=0."""
+        counter1 = get_zero_leak_counter()
+        counter1.count = 5  # Modify first instance
+        counter2 = get_zero_leak_counter()
+        assert counter1.count == 5
+        assert counter2.count == 0
+
+    def test_can_modify_count(self):
+        """The returned object can have its count modified."""
+        counter = get_zero_leak_counter()
+        counter.count = 10
+        assert counter.count == 10
+
+    def test_multiple_calls_no_accumulation(self):
+        """Sequential calls don't accumulate count across instances."""
+        counter1 = get_zero_leak_counter()
+        counter1.count = 3
+        counter2 = get_zero_leak_counter()
+        counter2.count = 7
+        assert counter1.count == 3
+        assert counter2.count == 7
