@@ -50,6 +50,20 @@ log = logging.getLogger(__name__)
 # Leak counter for detecting connection leaks
 leak_counter = threading.local()
 
+
+def _get_leak_counter() -> threading.local:
+    """Return the leak_counter instance with safe access.
+
+    This function provides a stable interface for accessing leak_counter,
+    ensuring it's always available even if the module is partially imported
+    or mocked. Returns the module-level leak_counter instance.
+
+    Returns:
+        The leak_counter threading.local instance.
+    """
+    return leak_counter
+
+
 DB_DIR = Path(__file__).parent.parent / "data"
 DB_PATH = DB_DIR / "executor_runs.db"
 

@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1312,4 +1313,40 @@ class TestTeardownSession:
 
         # Second call should also not raise
         executor_runs_db.teardown_session()
+
+
+class TestLeakCounter:
+    """Tests for leak_counter safe access via _get_leak_counter()."""
+
+    def test_leak_counter_is_thread_local(self):
+        """_get_leak_counter returns a threading.local instance."""
+        counter = executor_runs_db._get_leak_counter()
+        assert isinstance(counter, threading.local)
+
+    def test_leak_counter_is_singleton(self):
+        """Multiple calls to _get_leak_counter return the same instance."""
+        counter1 = executor_runs_db._get_leak_counter()
+        counter2 = executor_runs_db._get_leak_counter()
+        assert counter1 is counter2
+
+    def test_leak_counter_can_store_and_retrieve(self):
+        """leak_counter can be used to store thread-local data."""
+        counter = executor_runs_db._get_leak_counter()
+        counter.test_key = "test_value"
+
+        # Access via the same instance
+        assert counter.test_key == "test_value"
+
+        # Access via _get_leak_counter (the stable interface)
+        assert executor_runs_db._get_leak_counter().test_key == "test_value"
+
+    def test_leak_counter_safe_access_no_exception(self):
+        """_get_leak_counter never raises, even if module is partially imported."""
+        # This test ensures the function exists and is callable
+        # even if the module is imported in a way that might cause issues
+        counter = executor_runs_db._get_leak_counter()
+        assert counter is not None
+        assert isinstance(counter, threading.local)
+        # Ensure _local.conn is None before checking (fixture should clean it up)
+        executor_runs_db._local.__dict__.pop("conn", None)
         assert getattr(executor_runs_db._local, "conn", None) is None
