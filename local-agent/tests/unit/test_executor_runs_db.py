@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from agent import executor_runs_db, tracing
+from agent.executor_runs_db import leak_counter
 
 
 @pytest.fixture(autouse=True)
