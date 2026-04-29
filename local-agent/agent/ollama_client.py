@@ -27,7 +27,28 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_HOST: str = "http://127.0.0.1:11434"
+def _resolve_default_host() -> str:
+    """Resolve the default Ollama host from settings, falling back to
+    localhost if settings can't be loaded (e.g. early-import scenarios).
+
+    Reading from settings here lets a single ``OLLAMA_HOST`` env var
+    redirect every Ollama caller in the process — AIM brain, AIV
+    classifier/scorer, the bot's tool-calling loop, the worker eviction
+    janitor, etc. — without each call site having to thread a host
+    argument. Per-caller overrides still win (they pass ``host=...``
+    or use the module override at the AIW boundary).
+    """
+    try:
+        from agent.config import settings
+        host = (settings.ollama_host or "").strip()
+        if host:
+            return host
+    except Exception:
+        pass
+    return "http://127.0.0.1:11434"
+
+
+OLLAMA_HOST: str = _resolve_default_host()
 
 
 #: Default num_ctx. Ollama loads the model's theoretical context_length

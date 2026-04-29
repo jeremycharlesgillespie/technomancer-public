@@ -16,8 +16,12 @@ class TestSettingsDefaults:
         s = Settings(discord_bot_token="test-token")
         assert s.discord_alerts_channel == "bot_alerts"
 
-    def test_ollama_host_default(self):
-        s = Settings(discord_bot_token="test-token")
+    def test_ollama_host_default(self, monkeypatch):
+        # Bypass .env file loading so the test verifies the field's
+        # default value, not whatever the developer's local .env sets
+        # OLLAMA_HOST to (which on a multi-machine deploy will vary).
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        s = Settings(discord_bot_token="test-token", _env_file=None)
         assert s.ollama_host == "http://127.0.0.1:11434"
 
     def test_briefing_hour_default(self):
