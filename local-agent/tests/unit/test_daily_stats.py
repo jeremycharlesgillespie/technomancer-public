@@ -122,6 +122,70 @@ class TestInitDb:
         rows = conn.execute("SELECT COUNT(*) FROM daily_stats").fetchone()
         assert rows[0] == 2
 
+    def test_init_db_force_only_recreates_table(self):
+        """When force=True, init_db recreates the table even if it exists."""
+        # First init creates the table
+        daily_stats.init_db()
+        assert daily_stats.DB_PATH.exists()
+        conn = daily_stats._get_conn()
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='daily_stats'"
+        ).fetchall()
+        assert len(tables) == 1
+
+        # Insert some test data
+        conn.execute(
+            "INSERT INTO daily_stats (date, project, shipped) VALUES (?, ?, ?)",
+            ("2026-04-17", "TK", 5),
+        )
+        conn.commit()
+        rows = conn.execute("SELECT COUNT(*) FROM daily_stats").fetchone()
+        assert rows[0] == 1
+
+        # Second init with force=True recreates the table
+        daily_stats.init_db(force=True)
+        assert daily_stats.DB_PATH.exists()
+        conn = daily_stats._get_conn()
+
+        # Table should be recreated (empty)
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='daily_stats'"
+        ).fetchall()
+        assert len(tables) == 1
+
+        # Old data should be gone
+        rows = conn.execute("SELECT COUNT(*) FROM daily_stats").fetchone()
+        assert rows[0] == 0
+
+        # Schema should still be correct
+        cols = {
+            r["name"]: r["type"].upper()
+            for r in conn.execute("PRAGMA table_info(daily_stats)").fetchall()
+        }
+        expected_types = {
+            "date": "TEXT",
+            "project": "TEXT",
+            "shipped": "INTEGER",
+            "failed": "INTEGER",
+            "split_children": "INTEGER",
+            "cost_usd": "REAL",
+            "p50_wall_s": "REAL",
+            "p95_wall_s": "REAL",
+            "loc_added": "INTEGER",
+            "loc_removed": "INTEGER",
+            "first_attempt_success": "INTEGER",
+            "splitter_child_success": "INTEGER",
+            "splitter_child_fail": "INTEGER",
+            "phase_timings_json": "TEXT",
+        }
+        for name, expected_type in expected_types.items():
+            assert name in cols, f"missing column {name}"
+            assert cols[name] == expected_type, (
+                f"column {name} has type {cols[name]}, expected {expected_type}"
+            )
+
 
 class TestRoundTrip:
     def test_insert_and_query_round_trips_all_columns(self):

@@ -44,9 +44,23 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
-def init_db() -> None:
-    """Create the ``daily_stats`` table if missing. Idempotent."""
+def init_db(force: bool = False) -> None:
+    """Create the ``daily_stats`` table if missing.
+
+    Args:
+        force: If False (default), silently skip if table already exists.
+               If True, force re-initialization including migrations.
+    """
     conn = _get_conn()
+    # Check if table exists
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='daily_stats'"
+    ).fetchone() is not None
+
+    if force and table_exists:
+        # Drop existing table to force recreation
+        conn.execute("DROP TABLE IF EXISTS daily_stats")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS daily_stats (
             date                   TEXT    NOT NULL,
