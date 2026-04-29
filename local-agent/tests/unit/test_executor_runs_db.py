@@ -1,6 +1,8 @@
 """Tests for agent.executor_runs_db — SQLite-backed executor run metadata."""
 
+import asyncio
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -8,13 +10,48 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agent import executor_runs_db, tracing
 from agent.executor_runs_db import leak_counter
+from agent.task_manager import _background_tasks
 
 pytestmark = pytest.mark.executor_runs_db
+
+
+def _check_for_coroutine_leaks(test_name: str) -> list[str]:
+    """Check for leaked asyncio tasks in the test context.
+
+    This helper inspects the task_manager's _background_tasks registry
+    to detect coroutines that were created during the test but not
+    properly cleaned up. Leaked tasks can cause resource leaks and
+    prevent proper test isolation.
+
+    Args:
+        test_name: Name of the test being run (for logging).
+
+    Returns:
+        List of task names that are still alive. Empty list means no leaks.
+
+    Example:
+        >>> leaked = _check_for_coroutine_leaks("test_something")
+        >>> if leaked:
+        ...     pytest.fail(f"Leaked tasks: {leaked}")
+    """
+    leaked = []
+    for name, task in _background_tasks.items():
+        if not task.done():
+            leaked.append(name)
+
+    if leaked:
+        logging.warning(
+            f"[{test_name}] Leaked asyncio tasks detected: {leaked}. "
+            "These tasks may prevent proper test isolation and resource cleanup."
+        )
+
+    return leaked
 
 
 def get_zero_leak_counter() -> threading.local:
@@ -47,6 +84,78 @@ def _isolate_db(tmp_path, monkeypatch):
     if conn:
         conn.close()
         executor_runs_db._local.conn = None
+
+
+@pytest.fixture(autouse=True)
+def _check_coroutine_leaks(request):
+    """Check for leaked coroutines after each test completes.
+
+    This fixture runs at the end of every test and inspects the
+    task_manager's _background_tasks registry for tasks that were
+    created during the test but not properly cleaned up.
+
+    The fixture only checks for leaks if the test actually created
+    any tasks (to avoid false positives on tests that don't use
+    asyncio). If no tasks were created, it asserts that the registry
+    is empty (to catch any pre-existing leaks).
+
+    Yields:
+        None
+
+    Raises:
+        pytest.fail: If leaked tasks are detected.
+    """
+    # Yield control to the test
+    yield
+
+    # Get the test name for logging
+    test_name = request.node.name
+
+    # Check for leaked tasks using the helper function
+    leaked = _check_for_coroutine_leaks(test_name)
+
+    # If leaked tasks exist, fail the test
+    if leaked:
+        pytest.fail(
+            f"Test '{test_name}' leaked {len(leaked)} asyncio task(s): {leaked}. "
+            "Ensure all tasks are properly cancelled or cleaned up."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _check_coroutine_leaks(request):
+    """Check for leaked coroutines after each test completes.
+
+    This fixture runs at the end of every test and inspects the
+    task_manager's _background_tasks registry for tasks that were
+    created during the test but not properly cleaned up.
+
+    The fixture only checks for leaks if the test actually created
+    any tasks (to avoid false positives on tests that don't use
+    asyncio). If no tasks were created, it asserts that the registry
+    is empty (to catch any pre-existing leaks).
+
+    Yields:
+        None
+
+    Raises:
+        pytest.fail: If leaked tasks are detected.
+    """
+    # Yield control to the test
+    yield
+
+    # Get the test name for logging
+    test_name = request.node.name
+
+    # Check for leaked tasks
+    leaked = _check_for_coroutine_leaks(test_name)
+
+    # If leaked tasks exist, fail the test
+    if leaked:
+        pytest.fail(
+            f"Test '{test_name}' leaked {len(leaked)} asyncio task(s): {leaked}. "
+            "Ensure all tasks are properly cancelled or cleaned up."
+        )
 
 
 class TestInitDb:
@@ -1413,3 +1522,137 @@ class TestGetZeroLeakCounter:
         counter2.count = 7
         assert counter1.count == 3
         assert counter2.count == 7
+
+
+class TestCoroutineLeakDetection:
+    """Tests for _check_for_coroutine_leaks helper function."""
+
+    def test_returns_empty_list_when_no_tasks(self):
+        """_check_for_coroutine_leaks returns empty list when no tasks exist."""
+        # Clear any existing tasks
+        _background_tasks.clear()
+
+        leaked = _check_for_coroutine_leaks("test_no_tasks")
+        assert leaked == []
+
+    @pytest.mark.asyncio
+    async def test_returns_list_of_leaked_tasks(self):
+        """_check_for_coroutine_leaks returns list of alive task names."""
+        # Clear any existing tasks
+        _background_tasks.clear()
+
+        # Create a test task
+        async def dummy_task():
+            await asyncio.sleep(999)
+
+        test_task = asyncio.create_task(dummy_task())
+        _background_tasks["test-task"] = test_task
+
+        leaked = _check_for_coroutine_leaks("test_leaked_tasks")
+        assert "test-task" in leaked
+        assert len(leaked) == 1
+
+        # Clean up
+        test_task.cancel()
+        try:
+            await test_task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_returns_multiple_leaked_tasks(self):
+        """_check_for_coroutine_leaks returns multiple task names if multiple leaks."""
+        # Clear any existing tasks
+        _background_tasks.clear()
+
+        # Create multiple test tasks
+        async def dummy_task():
+            await asyncio.sleep(999)
+
+        task1 = asyncio.create_task(dummy_task())
+        task2 = asyncio.create_task(dummy_task())
+        task3 = asyncio.create_task(dummy_task())
+
+        _background_tasks["task-1"] = task1
+        _background_tasks["task-2"] = task2
+        _background_tasks["task-3"] = task3
+
+        leaked = _check_for_coroutine_leaks("test_multiple_leaks")
+        assert len(leaked) == 3
+        assert "task-1" in leaked
+        assert "task-2" in leaked
+        assert "task-3" in leaked
+
+        # Clean up
+        for task in [task1, task2, task3]:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_handles_mixed_done_and_alive_tasks(self):
+        """_check_for_coroutine_leaks only returns alive tasks."""
+        # Clear any existing tasks
+        _background_tasks.clear()
+
+        # Create a completed task
+        async def completed_task():
+            return "done"
+
+        completed = asyncio.create_task(completed_task())
+        _background_tasks["completed-task"] = completed
+
+        # Create an alive task
+        async def alive_task():
+            await asyncio.sleep(999)
+
+        alive = asyncio.create_task(alive_task())
+        _background_tasks["alive-task"] = alive
+
+        # Allow the completed task to finish before checking
+        await asyncio.sleep(0)
+
+        leaked = _check_for_coroutine_leaks("test_mixed_tasks")
+        assert len(leaked) == 1
+        assert "alive-task" in leaked
+        assert "completed-task" not in leaked
+
+        # Clean up
+        completed.cancel()
+        alive.cancel()
+        try:
+            await completed
+        except asyncio.CancelledError:
+            pass
+        try:
+            await alive
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_logs_warning_for_leaked_tasks(self, caplog):
+        """_check_for_coroutine_leaks logs a warning when leaks are detected."""
+        # Clear any existing tasks
+        _background_tasks.clear()
+
+        # Create a test task
+        async def dummy_task():
+            await asyncio.sleep(999)
+
+        test_task = asyncio.create_task(dummy_task())
+        _background_tasks["test-leak"] = test_task
+
+        with caplog.at_level(logging.WARNING):
+            leaked = _check_for_coroutine_leaks("test_logging")
+
+        assert "Leaked asyncio tasks detected" in caplog.text
+        assert "test-leak" in caplog.text
+
+        # Clean up
+        test_task.cancel()
+        try:
+            await test_task
+        except asyncio.CancelledError:
+            pass
