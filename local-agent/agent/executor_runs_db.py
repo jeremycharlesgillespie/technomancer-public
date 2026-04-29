@@ -76,7 +76,56 @@ _ACTIVE_WORKER_STATUSES: frozenset[str] = frozenset(
 ARTIFACTS_DIR = Path(__file__).parent.parent / "executor_artifacts"
 MAX_ARTIFACTS = 50
 
+# Execution logs directory for idea_board artifacts — one artifact per idea/run.
+# Defined at module level so tests can monkeypatch it.
+EXECUTION_LOGS_DIR: Path = Path(__file__).parent.parent / "idea_board" / "execution_logs"
+
 _local = threading.local()
+
+
+def _discover_artifacts(run_id: str) -> list[Path]:
+    """Discover all artifact paths for a given run_id.
+
+    Constructs paths for the directory ``<run_id>/``, the flat file
+    ``<run_id>.log``, and the flat file ``<run_id>.done`` under
+    :data:`EXECUTION_LOGS_DIR`. Returns only paths that exist on disk,
+    handling missing files gracefully.
+
+    This helper is used internally by :func:`cleanup_run_artifacts` to
+    identify all artifacts that belong to a run_id before deletion.
+
+    Args:
+        run_id: The run identifier to discover artifacts for.
+
+    Returns:
+        A list of Path objects for all discovered artifacts. Returns an
+        empty list if run_id is empty or no artifacts exist.
+
+    Example:
+        >>> _discover_artifacts("20260415-120000-TK-123")
+        [Path('/path/to/idea_board/execution_logs/20260415-120000-TK-123'),
+         Path('/path/to/idea_board/execution_logs/20260415-120000-TK-123.log')]
+    """
+    if not run_id:
+        return []
+
+    paths = []
+
+    # Directory artifact: EXECUTION_LOGS_DIR/<run_id>/
+    dir_path = EXECUTION_LOGS_DIR / run_id
+    if dir_path.exists() and dir_path.is_dir():
+        paths.append(dir_path)
+
+    # Flat file artifacts: EXECUTION_LOGS_DIR/<run_id>.log and <run_id>.done
+    log_path = EXECUTION_LOGS_DIR / f"{run_id}.log"
+    if log_path.exists():
+        paths.append(log_path)
+
+    done_path = EXECUTION_LOGS_DIR / f"{run_id}.done"
+    if done_path.exists():
+        paths.append(done_path)
+
+    return paths
 
 # Whitelist of legal column names — prevents SQL injection via **kwargs keys.
 _COLUMNS: frozenset[str] = frozenset({
@@ -1126,7 +1175,7 @@ def archive_run(
     return target
 
 
-def _discover_artifacts(run_id: str, artifacts_dir: Path | None = None) -> list[Path]:
+def _discover_artifacts_in_dir(run_id: str, artifacts_dir: Path | None = None) -> list[Path]:
     """Discover standard artifact files for a given run ID.
 
     Scans the specified directory for a subdirectory matching the run_id and
@@ -1239,8 +1288,8 @@ def _purge_old_artifact_files(cutoff_ts: float) -> int:
     for run_dir in ARTIFACTS_DIR.iterdir():
         if not run_dir.is_dir():
             continue
-        # Use _discover_artifacts to get the list of artifact files
-        artifact_files = _discover_artifacts(run_dir.name)
+        # Use _discover_artifacts_in_dir to get the list of artifact files
+        artifact_files = _discover_artifacts_in_dir(run_dir.name)
         for entry in artifact_files:
             try:
                 if entry.stat().st_mtime < cutoff_ts:
@@ -1276,8 +1325,8 @@ def cleanup_run_artifacts(run_id: str, cutoff_ts: float) -> int:
     Returns:
         Number of artifact files that were unlinked.
     """
-    # Use _discover_artifacts to get the list of artifact files for this run
-    artifact_files = _discover_artifacts(run_id)
+    # Use _discover_artifacts_in_dir to get the list of artifact files for this run
+    artifact_files = _discover_artifacts_in_dir(run_id)
     removed = 0
     for entry in artifact_files:
         try:

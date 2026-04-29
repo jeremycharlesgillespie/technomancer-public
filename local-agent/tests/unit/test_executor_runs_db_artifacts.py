@@ -1,6 +1,6 @@
-"""Tests for executor_runs_db._discover_artifacts function in isolation.
+"""Tests for executor_runs_db._discover_artifacts_in_dir function in isolation.
 
-This test file verifies that the _discover_artifacts function can be tested
+This test file verifies that the _discover_artifacts_in_dir function can be tested
 independently and that all related unit tests pass.
 """
 
@@ -41,27 +41,27 @@ def temp_artifacts_dir(tmp_path, monkeypatch):
 
 
 class TestDiscoverArtifacts:
-    """Tests for _discover_artifacts function in isolation."""
+    """Tests for _discover_artifacts_in_dir function in isolation."""
 
     def test_discover_artifacts_function_exists(self):
-        """Verify that _discover_artifacts function exists in the module."""
-        assert hasattr(executor_runs_db, '_discover_artifacts'), \
-            "_discover_artifacts function should exist in executor_runs_db module"
+        """Verify that _discover_artifacts_in_dir function exists in the module."""
+        assert hasattr(executor_runs_db, '_discover_artifacts_in_dir'), \
+            "_discover_artifacts_in_dir function should exist in executor_runs_db module"
 
     def test_discover_artifacts_with_no_artifacts(self, temp_artifacts_dir):
-        """Test _discover_artifacts with no artifacts present."""
+        """Test _discover_artifacts_in_dir with no artifacts present."""
         # Create a fake run ID
         run_id = "20260416-120000-TK-447"
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
             # This should not raise an exception
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 0
 
     def test_discover_artifacts_with_existing_artifacts(self, temp_artifacts_dir):
-        """Test _discover_artifacts with existing artifacts."""
+        """Test _discover_artifacts_in_dir with existing artifacts."""
         # Create a fake run ID
         run_id = "20260416-120000-TK-447"
         
@@ -80,7 +80,7 @@ class TestDiscoverArtifacts:
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 3
             # Check that all expected files are found
@@ -90,7 +90,7 @@ class TestDiscoverArtifacts:
             assert "diff.patch" in filenames
 
     def test_discover_artifacts_with_mixed_artifacts(self, temp_artifacts_dir):
-        """Test _discover_artifacts with mixed artifact types."""
+        """Test _discover_artifacts_in_dir with mixed artifact types."""
         # Create a fake run ID
         run_id = "20260416-120000-TK-447"
         
@@ -110,7 +110,7 @@ class TestDiscoverArtifacts:
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             # Should only find the expected artifact files
             assert len(result) == 2
@@ -120,17 +120,17 @@ class TestDiscoverArtifacts:
             assert "other.txt" not in filenames  # Should not be included
 
     def test_discover_artifacts_with_nonexistent_run(self, temp_artifacts_dir):
-        """Test _discover_artifacts with a non-existent run directory."""
+        """Test _discover_artifacts_in_dir with a non-existent run directory."""
         run_id = "20260416-120000-TK-447"
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 0
 
     def test_discover_artifacts_with_empty_run_dir(self, temp_artifacts_dir):
-        """Test _discover_artifacts with an empty run directory."""
+        """Test _discover_artifacts_in_dir with an empty run directory."""
         run_id = "20260416-120000-TK-447"
         
         # Create artifact directory structure
@@ -139,26 +139,26 @@ class TestDiscoverArtifacts:
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 0
 
 
 class TestIntegrationWithArchiveRun:
-    """Integration tests that verify _discover_artifacts works with archive_run."""
+    """Integration tests that verify _discover_artifacts_in_dir works with archive_run."""
     
     def test_discover_artifacts_integration(self, temp_artifacts_dir):
-        """Integration test showing _discover_artifacts works with archive_run."""
+        """Integration test showing _discover_artifacts_in_dir works with archive_run."""
         # Create a fake run ID
         run_id = "20260416-120000-TK-447"
         
         # Mock the function to test it exists and behaves correctly
         with patch('agent.executor_runs_db.ARTIFACTS_DIR', temp_artifacts_dir):
             # Test that the function exists and can be called
-            assert hasattr(executor_runs_db, '_discover_artifacts')
+            assert hasattr(executor_runs_db, '_discover_artifacts_in_dir')
             
             # Test with no artifacts
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 0
             
@@ -169,7 +169,7 @@ class TestIntegrationWithArchiveRun:
             stdout_file = run_dir / "stdout.log"
             stdout_file.write_text("test stdout", encoding="utf-8")
             
-            result = executor_runs_db._discover_artifacts(run_id)
+            result = executor_runs_db._discover_artifacts_in_dir(run_id)
             assert isinstance(result, list)
             assert len(result) == 1
             assert "stdout.log" in str(result[0])

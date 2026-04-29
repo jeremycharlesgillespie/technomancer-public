@@ -530,6 +530,203 @@ class TestPurgeCli:
         assert "usage:" in capsys.readouterr().out
 
 
+class TestDiscoverArtifacts:
+    """Tests for _discover_artifacts helper function."""
+
+    def test_returns_empty_list_for_none_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns empty list for None run_id."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        result = executor_runs_db._discover_artifacts(None)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_empty_list_for_empty_string_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns empty list for empty string."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        result = executor_runs_db._discover_artifacts("")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_empty_list_for_nonexistent_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns empty list for non-existent run_id."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        result = executor_runs_db._discover_artifacts("nonexistent-run-id")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_directory_path_for_existing_run_id_dir(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns directory path when it exists."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "test-run-dir"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert dir_path in result
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_returns_log_file_path_for_existing_run_id_log(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns .log file path when it exists."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "test-run-log"
+        log_path = logs_dir / f"{run_id}.log"
+        log_path.write_text("test log content\n", encoding="utf-8")
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert log_path in result
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_returns_done_file_path_for_existing_run_id_done(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns .done file path when it exists."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "test-run-done"
+        done_path = logs_dir / f"{run_id}.done"
+        done_path.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert done_path in result
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_returns_multiple_paths_for_all_artifacts(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts returns all three artifact types when they exist."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "test-run-all"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{run_id}.log"
+        log_path.write_text("test log content\n", encoding="utf-8")
+        done_path = logs_dir / f"{run_id}.done"
+        done_path.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 3
+        assert dir_path in result
+        assert log_path in result
+        assert done_path in result
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_returns_only_existing_paths(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts only returns paths that actually exist."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "test-run-mixed"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{run_id}.log"
+        log_path.write_text("test log content\n", encoding="utf-8")
+        # .done file intentionally not created
+        done_path = logs_dir / f"{run_id}.done"
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert dir_path in result
+        assert log_path in result
+        assert done_path not in result
+
+    def test_returns_paths_with_special_characters_in_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts handles run_ids with special characters."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "run-123-test-abc"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{run_id}.log"
+        log_path.write_text("test log content\n", encoding="utf-8")
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert dir_path in result
+        assert log_path in result
+
+    def test_returns_paths_with_dots_in_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts handles run_ids with dots."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "run.id.with.dots"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert dir_path in result
+
+    def test_returns_paths_with_numbers_in_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts handles run_ids with numbers."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "20260415-120000-TK-1234"
+        log_path = logs_dir / f"{run_id}.log"
+        log_path.write_text("test log content\n", encoding="utf-8")
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert log_path in result
+
+    def test_returns_paths_with_unicode_in_run_id(self, tmp_path, monkeypatch):
+        """Test that _discover_artifacts handles run_ids with unicode characters."""
+        logs_dir = tmp_path / "execution_logs"
+        logs_dir.mkdir()
+        monkeypatch.setattr(executor_runs_db, "EXECUTION_LOGS_DIR", logs_dir)
+
+        run_id = "run-测试-123"
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        result = executor_runs_db._discover_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert dir_path in result
+
+
 class TestExecutorToolCalls:
     """Per-tool telemetry table: executor_tool_calls."""
 
