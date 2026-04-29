@@ -597,7 +597,7 @@ Include common pitfalls and mistakes to watch for.
 - Be practical and actionable
 - Include specific advice for someone using {stack}"""
 
-    # Route via llm_router — defaults to local Ollama (qwen3.5:latest).
+    # Route via llm_router — defaults to local Ollama (qwen3.5:9b).
     # Long-form prose doesn't need Claude's code-reasoning depth; keeping
     # Claude quota for the AIW loop.
     from .llm_router import complete as _llm_complete

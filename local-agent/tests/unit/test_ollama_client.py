@@ -46,14 +46,14 @@ def test_inflight_count_increments_during_call():
         return _ok_response()
 
     with patch.object(requests, "post", side_effect=fake_post):
-        chat("hi", "qwen3.5:latest")
+        chat("hi", "qwen3.5:9b")
 
     assert observed == [1]
 
 
 def test_inflight_count_returns_to_zero_after_success():
     with patch.object(requests, "post", return_value=_ok_response()):
-        chat("hi", "qwen3.5:latest")
+        chat("hi", "qwen3.5:9b")
     assert get_inflight_count() == 0
 
 
@@ -61,7 +61,7 @@ def test_inflight_count_returns_to_zero_after_network_error():
     with patch.object(
         requests, "post", side_effect=requests.ConnectionError("refused")
     ):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
     assert result is None
     assert get_inflight_count() == 0
 
@@ -71,7 +71,7 @@ def test_inflight_count_returns_to_zero_after_non200():
     mock.status_code = 500
     mock.text = "internal error"
     with patch.object(requests, "post", return_value=mock):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
     assert result is None
     assert get_inflight_count() == 0
 
@@ -87,7 +87,7 @@ def test_chat_sheds_load_when_cap_reached():
         oc._inflight_count = MAX_CONCURRENT
 
     with patch.object(requests, "post") as mock_post:
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
 
     assert result is None
     mock_post.assert_not_called()
@@ -99,7 +99,7 @@ def test_chat_allowed_one_below_cap():
         oc._inflight_count = MAX_CONCURRENT - 1
 
     with patch.object(requests, "post", return_value=_ok_response("ok")):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
 
     assert result == "ok"
 
@@ -119,7 +119,7 @@ def test_503_notifies_health_monitor():
         patch.object(requests, "post", return_value=mock),
         patch("agent.ollama_client._notify_monitor_degraded") as notify,
     ):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
 
     assert result is None
     notify.assert_called_once()
@@ -136,7 +136,7 @@ def test_503_resets_inflight_counter():
         patch.object(requests, "post", return_value=mock),
         patch("agent.ollama_client._notify_monitor_degraded"),
     ):
-        chat("hi", "qwen3.5:latest")
+        chat("hi", "qwen3.5:9b")
 
     assert get_inflight_count() == 0
 
@@ -148,21 +148,21 @@ def test_503_resets_inflight_counter():
 
 def test_chat_returns_response_text():
     with patch.object(requests, "post", return_value=_ok_response("pong")):
-        result = chat("ping", "qwen3.5:latest")
+        result = chat("ping", "qwen3.5:9b")
     assert result == "pong"
 
 
 def test_chat_strips_whitespace():
     resp = _ok_response("  trimmed  \n")
     with patch.object(requests, "post", return_value=resp):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
     assert result == "trimmed"
 
 
 def test_chat_returns_none_on_empty_response():
     resp = _ok_response("   ")
     with patch.object(requests, "post", return_value=resp):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
     assert result is None
 
 
@@ -171,5 +171,5 @@ def test_chat_returns_none_on_invalid_json():
     mock.status_code = 200
     mock.json.side_effect = ValueError("bad json")
     with patch.object(requests, "post", return_value=mock):
-        result = chat("hi", "qwen3.5:latest")
+        result = chat("hi", "qwen3.5:9b")
     assert result is None

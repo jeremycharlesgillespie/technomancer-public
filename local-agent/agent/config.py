@@ -325,41 +325,41 @@ class Settings(BaseSettings):
     # claude -p --model <name>. On ollama failure, falls back to
     # llm_fallback_model (a claude model).
     aim_brain_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description="Model for AIM brain decision classification",
     )
     dedup_judge_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description="Model for idea-board near-exact duplicate judge",
     )
     aimm_observer_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description="Model for AIMM observer (finding-worthiness scoring)",
     )
     aimm_suggester_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description="Model for AIMM suggester (approval recommendation)",
     )
     splitter_decomposer_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description=(
             "Model for the splitter's failed-story decomposition call. "
-            "Benchmarked to 93% parse-success with qwen3.5:latest over "
+            "Benchmarked to 93% parse-success with qwen3.5:9b over "
             "100 rounds (p50 2.66s). Falls back to llm_fallback_model on "
             "any ollama error."
         ),
     )
     evergreen_generator_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description=(
             "Model for evergreen idle-cycle story generation. "
-            "Benchmarked to 96% parse-success with qwen3.5:latest over "
+            "Benchmarked to 96% parse-success with qwen3.5:9b over "
             "100 rounds (p50 2.34s). Falls back to llm_fallback_model on "
             "any ollama error."
         ),
     )
     aiv_classifier_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description=(
             "Model for AIV verifier-method classification (pick web-render / "
             "api-call / db-query / tests-only for ambiguous diffs). Short "
@@ -367,7 +367,7 @@ class Settings(BaseSettings):
         ),
     )
     aiv_scorer_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description=(
             "Model for AIV post-merge story quality scoring (7-axis rubric + "
             "red flags). Structured JSON; qwen3.5 equivalent to Haiku on "
@@ -398,7 +398,7 @@ class Settings(BaseSettings):
         ),
     )
     dev_learning_model: str = Field(
-        default="ollama:qwen3.5:latest",
+        default="ollama:qwen3.5:9b",
         description=(
             "Model for daily learning-article generation. Long-form prose, "
             "not code — qwen3.5 produces acceptable quality and saves Claude "
@@ -461,7 +461,7 @@ class Settings(BaseSettings):
         description=(
             "Experiment knob that overrides ALL per-role models in one place. "
             "Accepted values: '' (default — per-role settings apply), "
-            "'ollama' (force every role to ollama:qwen3.5:latest), "
+            "'ollama' (force every role to ollama:qwen3.5:9b), "
             "'claude' (force every role to claude-haiku-4-5), or any "
             "explicit model name (e.g. 'ollama:llama3.1:8b', "
             "'claude-sonnet-4-6') to apply that everywhere. Useful for "

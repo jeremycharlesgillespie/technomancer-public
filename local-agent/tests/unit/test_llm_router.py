@@ -168,12 +168,12 @@ class TestRoleMapping:
             llm_router.complete("dedup_judge", "x")
             llm_router.complete("aimm_observer", "x")
             llm_router.complete("aimm_suggester", "x")
-        # Every role should have hit ollama:qwen3.5:latest despite per-role settings.
-        assert captured == ["qwen3.5:latest"] * 4
+        # Every role should have hit ollama:qwen3.5:9b despite per-role settings.
+        assert captured == ["qwen3.5:9b"] * 4
 
     def test_experiment_mode_claude_overrides_all_roles(self, monkeypatch):
         settings = _fake_settings(
-            aim_brain_model="ollama:qwen3.5:latest",
+            aim_brain_model="ollama:qwen3.5:9b",
             llm_experiment_mode="claude",
         )
         monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
@@ -203,7 +203,7 @@ class TestRoleMapping:
         settings = _fake_settings(llm_experiment_mode="ollama")
         monkeypatch.setattr(llm_router, "get_settings", lambda: settings)
         routing = llm_router.current_routing()
-        assert set(routing.values()) == {"ollama:qwen3.5:latest"}
+        assert set(routing.values()) == {"ollama:qwen3.5:9b"}
         assert set(routing) == {
             "aim_brain", "dedup_judge", "aimm_observer", "aimm_suggester",
             "splitter_decomposer", "evergreen_generator",

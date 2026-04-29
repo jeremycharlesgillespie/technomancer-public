@@ -175,7 +175,7 @@ def chat(
 
     Args:
         prompt: Full prompt text (user message content; no role structure).
-        model: Ollama model tag (e.g. ``"qwen3.5:latest"``, ``"llama3.2"``).
+        model: Ollama model tag (e.g. ``"qwen3.5:9b"``, ``"llama3.2"``).
         timeout: Seconds to wait before giving up. Default 30.
         options: Optional ollama generation options (temperature, seed,
             num_ctx, etc.). Passed through verbatim. If ``num_ctx`` is

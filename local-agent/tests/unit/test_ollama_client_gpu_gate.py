@@ -136,9 +136,9 @@ def test_unload_competing_models_network_error_handling():
 def test_normal_operation_not_affected():
     """Test that normal operation is not affected by the changes."""
     # Don't set the coder active flag - normal operation
-    
+
     with patch.object(requests, "post", return_value=_ok_response("pong")):
-        result = chat("ping", "qwen3.5:latest")
+        result = chat("ping", "qwen3.5:9b")
     assert result == "pong"
     assert get_inflight_count() == 0
 

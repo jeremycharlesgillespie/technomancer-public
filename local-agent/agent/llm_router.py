@@ -126,7 +126,7 @@ _ROLE_TO_SETTING: dict[Role, str] = {
 
 
 _EXPERIMENT_ALIASES: dict[str, str] = {
-    "ollama": "ollama:qwen3.5:latest",
+    "ollama": "ollama:qwen3.5:9b",
     "claude": "claude-haiku-4-5",
 }
 
