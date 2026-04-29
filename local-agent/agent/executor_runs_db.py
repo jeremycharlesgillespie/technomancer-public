@@ -638,9 +638,27 @@ def get_all_story_model_usage() -> list[dict[str, Any]]:
 
 def _coerce(key: str, value: Any) -> Any:
     """Coerce booleans to 0/1 for INTEGER columns — sqlite stores either but
-    queries are more predictable when we normalize."""
+    queries are more predictable when we normalize.
+
+    Also coerces numeric types to their proper types for INTEGER and REAL columns.
+    """
     if key in ("tests_passed", "deployed") and isinstance(value, bool):
         return 1 if value else 0
+    # Coerce numeric types for INTEGER and REAL columns
+    if key in ("duration_ms", "exit_code", "pid"):
+        if isinstance(value, bool):
+            return 1 if value else 0
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+    if key == "cost_usd":
+        if isinstance(value, bool):
+            return 1.0 if value else 0.0
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return 0.0
     return value
 
 
@@ -1031,7 +1049,15 @@ def get_run(run_id: int) -> dict[str, Any] | None:
            WHERE id = ?""",
         (int(run_id),),
     ).fetchone()
-    return dict(row) if row is not None else None
+    if row is None:
+        return None
+    result = dict(row)
+    # Convert boolean columns from SQLite INTEGER (0/1) to Python bool
+    if "tests_passed" in result:
+        result["tests_passed"] = bool(result["tests_passed"])
+    if "deployed" in result:
+        result["deployed"] = bool(result["deployed"])
+    return result
 
 
 class RunNotFoundError(LookupError):

@@ -484,6 +484,145 @@ class TestGetRunByRunId:
         assert row["status"] == "success"
 
 
+class TestSuccessfulRowInsertionAndSelection:
+    """Verify basic write-read cycle for executor_runs table.
+
+    Tests that inserting a row via record_run and fetching it back works
+    correctly, proving core persistence before adding coroutine logic.
+    """
+
+    def test_insert_and_select_basic(self):
+        """A single insert and select completes without error.
+
+        The returned row matches the inserted data.
+        """
+        # Insert a basic run row
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-874",
+            branch="2026-04-16-test",
+            status="running",
+        )
+
+        # Fetch it back by id
+        row = executor_runs_db.get_run(run_id)
+
+        # Verify the row exists and matches
+        assert row is not None
+        assert isinstance(row, dict)
+        assert row["id"] == run_id
+        assert row["jira_key"] == "TK-874"
+        assert row["branch"] == "2026-04-16-test"
+        assert row["status"] == "running"
+        assert row["started_at"] is not None
+
+    def test_insert_and_select_with_all_fields(self):
+        """Insert and select with all optional fields to verify completeness."""
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-874-full",
+            branch="2026-04-16-full-test",
+            started_at="2026-04-16T12:00:00",
+            ended_at="2026-04-16T12:01:00",
+            duration_ms=60000,
+            cost_usd=0.50,
+            status="success",
+            exit_code=0,
+            tests_passed=True,
+            deployed=True,
+            artifacts_path="/tmp/artifacts",
+            pid=12345,
+        )
+
+        row = executor_runs_db.get_run(run_id)
+
+        assert row is not None
+        assert row["id"] == run_id
+        assert row["jira_key"] == "TK-874-full"
+        assert row["branch"] == "2026-04-16-full-test"
+        assert row["status"] == "success"
+        assert row["exit_code"] == 0
+        assert row["tests_passed"] is True
+        assert row["deployed"] is True
+        assert row["artifacts_path"] == "/tmp/artifacts"
+        assert row["pid"] == 12345
+        assert row["duration_ms"] == 60000
+        assert row["cost_usd"] == 0.50
+
+    def test_insert_with_none_value(self):
+        """Insert with None for optional fields that accept None."""
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-874-none",
+            branch="2026-04-16-none-test",
+            status="running",
+            killed_at=None,
+            kill_reason=None,
+        )
+
+        row = executor_runs_db.get_run(run_id)
+
+        assert row is not None
+        assert row["id"] == run_id
+        assert row["killed_at"] is None
+        assert row["kill_reason"] is None
+
+    def test_insert_with_empty_string(self):
+        """Insert with empty string for optional string fields."""
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-874-empty",
+            branch="",
+            status="running",
+            artifacts_path="",
+        )
+
+        row = executor_runs_db.get_run(run_id)
+
+        assert row is not None
+        assert row["id"] == run_id
+        assert row["branch"] == ""
+        assert row["artifacts_path"] == ""
+
+    def test_insert_with_wrong_type(self):
+        """Insert with wrong type for numeric fields (should be coerced)."""
+        run_id = executor_runs_db.record_run(
+            jira_key="TK-874-wrong-type",
+            branch="2026-04-16-wrong-type-test",
+            status="running",
+            duration_ms="invalid",  # Should be coerced to int
+            cost_usd="invalid",  # Should be coerced to float
+        )
+
+        row = executor_runs_db.get_run(run_id)
+
+        assert row is not None
+        assert row["id"] == run_id
+        # Values should be coerced to proper types
+        assert isinstance(row["duration_ms"], int)
+        assert isinstance(row["cost_usd"], float)
+
+    def test_insert_and_select_nonexistent_id(self):
+        """Fetching a non-existent id returns None."""
+        row = executor_runs_db.get_run(999999)
+        assert row is None
+
+    def test_insert_and_select_multiple_runs(self):
+        """Insert multiple runs and verify each can be fetched individually."""
+        ids = []
+        for i in range(3):
+            run_id = executor_runs_db.record_run(
+                jira_key=f"TK-874-{i}",
+                branch=f"2026-04-16-{i}",
+                status="running",
+            )
+            ids.append(run_id)
+
+        # Fetch each run back
+        for i, run_id in enumerate(ids):
+            row = executor_runs_db.get_run(run_id)
+            assert row is not None
+            assert row["id"] == run_id
+            assert row["jira_key"] == f"TK-874-{i}"
+            assert row["branch"] == f"2026-04-16-{i}"
+
+
 class TestWalMode:
     """WAL journal mode must be active so reads and writes don't serialize."""
 
