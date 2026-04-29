@@ -355,6 +355,41 @@ def _prune_worktrees() -> None:
         log(f"worktree prune failed: {exc}", "WARNING")
 
 
+#: Where the in-tree coverage cache lives. ``generate_readme.py`` reads
+#: this on every README regen — if missing or stale the badge reads 0%.
+#: We refresh it from the worktree pytest run on every deploy.
+COVERAGE_JSON_REL = Path("profiling") / "coverage.json"
+
+
+def _copy_coverage_out_of_worktree(worktree_local_agent: Path) -> None:
+    """Copy coverage.json from the worktree into the real repo.
+
+    The worktree is removed after each pytest run, so any artifact left
+    inside it (like ``profiling/coverage.json``) dies with it. Copy the
+    file out before that happens so ``generate_readme.py`` can read a
+    real coverage % instead of falling back to 0.
+
+    Best-effort — never raises. If the file is missing (coverage step
+    failed) or the copy fails, leave the existing cache alone rather
+    than overwriting good data with garbage.
+    """
+    src = worktree_local_agent / COVERAGE_JSON_REL
+    if not src.is_file():
+        log(
+            f"Coverage report not found at {src} — leaving existing "
+            "profiling/coverage.json untouched",
+            "WARNING",
+        )
+        return
+    dst = SCRIPT_DIR / COVERAGE_JSON_REL
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        log(f"Copied coverage report to {dst}")
+    except OSError as exc:
+        log(f"Could not copy coverage report out of worktree: {exc}", "WARNING")
+
+
 def _run_pytest_subprocess(
     nodeids: Optional[List[str]] = None,
     junit_xml: Optional[Path] = None,
@@ -374,8 +409,26 @@ def _run_pytest_subprocess(
     for the flaky retry. No global ``--reruns`` flag: a test that doesn't
     pass on its first attempt is a bug, not a reason to paper over with
     a retry loop.
+
+    On the full first run (``nodeids is None``) we also produce a JSON
+    coverage report and copy it out of the worktree before teardown,
+    so the README badge reflects real coverage instead of the 0% it
+    falls back to when the file is missing.
     """
     cmd = [sys.executable, "-m", "pytest", "-q", "--tb=short"]
+    # Coverage is only meaningful on the full suite — skip it on the
+    # flaky retry, which runs only the previously failing tests.
+    collect_coverage = nodeids is None
+    if collect_coverage:
+        cmd.extend([
+            "--cov=agent",
+            f"--cov-report=json:{COVERAGE_JSON_REL}",
+            # Disable the fail_under threshold here. safe_update gates
+            # on test pass/fail, not coverage thresholds — let the human
+            # decide what's acceptable rather than blocking deploys on
+            # a coverage drop.
+            "--cov-fail-under=0",
+        ])
     if nodeids:
         cmd.extend(nodeids)
     if junit_xml is not None:
@@ -400,6 +453,8 @@ def _run_pytest_subprocess(
             cwd=worktree_local_agent,
             env=_worker_shaped_env(),
         )
+        if collect_coverage:
+            _copy_coverage_out_of_worktree(worktree_local_agent)
         return result.returncode, result.stdout + result.stderr
     finally:
         _remove_safe_update_worktree(worktree_root)
