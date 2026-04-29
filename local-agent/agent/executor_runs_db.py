@@ -1316,7 +1316,7 @@ def _purge_old_artifact_files(cutoff_ts: float) -> int:
 
 
 def cleanup_run_artifacts(run_id: str, cutoff_ts: float) -> int:
-    """Clean up artifact files for a specific run ID using _discover_artifacts helper.
+    """Clean up artifact files for a specific run ID.
 
     Args:
         run_id: The run ID to clean up artifacts for.
