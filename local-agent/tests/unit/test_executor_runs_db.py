@@ -1834,3 +1834,247 @@ class TestCoroutineLeakDetection:
             await test_task
         except asyncio.CancelledError:
             pass
+
+
+class TestInsertSelectRow:
+    """Test basic CRUD operations on executor_runs table using _get_conn()."""
+
+    def test_insert_and_select_row_with_valid_columns(self, tmp_path, monkeypatch):
+        """Insert a row with valid columns and fetch it using sqlite3.Row.
+
+        This test validates that the table schema matches expectations and
+        that the row_factory is active after init. The row fetched should have
+        the correct types (e.g., id is int, status is str).
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        # Clear cached per-thread connection
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        # Initialize DB
+        executor_runs_db.init_db()
+
+        # Insert a row with valid columns
+        conn = executor_runs_db._get_conn()
+        conn.execute(
+            """
+            INSERT INTO executor_runs (
+                jira_key, branch, started_at, status, run_id, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("TK-871", "2026-04-16-052408-TK-871", "2026-04-16T12:00:00", "running", "run-123", "trace-abc"),
+        )
+        conn.commit()
+
+        # Select the row using sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM executor_runs WHERE jira_key = ?",
+            ("TK-871",),
+        ).fetchone()
+
+        # Verify row is fetched
+        assert row is not None
+        assert row["jira_key"] == "TK-871"
+        assert row["branch"] == "2026-04-16-052408-TK-871"
+        assert row["started_at"] == "2026-04-16T12:00:00"
+        assert row["status"] == "running"
+        assert row["run_id"] == "run-123"
+        assert row["trace_id"] == "trace-abc"
+
+        # Verify row types are correct
+        assert isinstance(row["id"], int)
+        assert isinstance(row["jira_key"], str)
+        assert isinstance(row["branch"], str)
+        assert isinstance(row["started_at"], str)
+        assert isinstance(row["status"], str)
+        assert isinstance(row["run_id"], str)
+        assert isinstance(row["trace_id"], str)
+
+    def test_insert_and_select_row_with_all_columns(self, tmp_path, monkeypatch):
+        """Insert a row with all columns and fetch it using sqlite3.Row.
+
+        This test exercises the full column set including INTEGER and REAL types.
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        conn.execute(
+            """
+            INSERT INTO executor_runs (
+                jira_key, branch, started_at, ended_at, duration_ms, cost_usd,
+                status, exit_code, tests_passed, deployed, run_id, artifacts_path,
+                pid, killed_at, kill_reason, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "TK-872",
+                "2026-04-16-052408-TK-872",
+                "2026-04-16T12:00:00",
+                "2026-04-16T12:01:00",
+                60000,
+                0.42,
+                "success",
+                0,
+                1,
+                1,
+                "run-456",
+                "/path/to/artifacts",
+                12345,
+                None,
+                None,
+                "trace-def",
+            ),
+        )
+        conn.commit()
+
+        # Select the row
+        row = conn.execute(
+            "SELECT * FROM executor_runs WHERE jira_key = ?",
+            ("TK-872",),
+        ).fetchone()
+
+        # Verify all columns
+        assert row is not None
+        assert row["jira_key"] == "TK-872"
+        assert row["branch"] == "2026-04-16-052408-TK-872"
+        assert row["started_at"] == "2026-04-16T12:00:00"
+        assert row["ended_at"] == "2026-04-16T12:01:00"
+        assert row["duration_ms"] == 60000
+        assert row["cost_usd"] == 0.42
+        assert row["status"] == "success"
+        assert row["exit_code"] == 0
+        assert row["tests_passed"] == 1
+        assert row["deployed"] == 1
+        assert row["run_id"] == "run-456"
+        assert row["artifacts_path"] == "/path/to/artifacts"
+        assert row["pid"] == 12345
+        assert row["killed_at"] is None
+        assert row["kill_reason"] is None
+        assert row["trace_id"] == "trace-def"
+
+        # Verify types
+        assert isinstance(row["id"], int)
+        assert isinstance(row["duration_ms"], int)
+        assert isinstance(row["cost_usd"], float)
+        assert isinstance(row["exit_code"], int)
+        assert isinstance(row["tests_passed"], int)
+        assert isinstance(row["deployed"], int)
+        assert isinstance(row["pid"], int)
+
+    def test_insert_and_select_multiple_rows(self, tmp_path, monkeypatch):
+        """Insert multiple rows and verify they can be fetched individually.
+
+        This test ensures that multiple inserts work correctly and that
+        each row can be retrieved with the correct data.
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+
+        # Insert multiple rows
+        for i in range(3):
+            conn.execute(
+                """
+                INSERT INTO executor_runs (
+                    jira_key, branch, started_at, status, run_id, trace_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (f"TK-{870 + i}", f"2026-04-16-052408-TK-{870 + i}", f"2026-04-16T12:0{i}:00", "running", f"run-{i}", f"trace-{i}"),
+            )
+        conn.commit()
+
+        # Fetch all rows
+        rows = conn.execute("SELECT * FROM executor_runs ORDER BY jira_key").fetchall()
+
+        # Verify we got all 3 rows
+        assert len(rows) == 3
+
+        # Verify each row
+        for i, row in enumerate(rows):
+            assert row["jira_key"] == f"TK-{870 + i}"
+            assert row["run_id"] == f"run-{i}"
+            assert row["trace_id"] == f"trace-{i}"
+            assert isinstance(row["id"], int)
+
+    def test_insert_select_with_null_values(self, tmp_path, monkeypatch):
+        """Insert a row with NULL values and verify they are preserved.
+
+        This test exercises handling of optional columns that can be NULL.
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        conn.execute(
+            """
+            INSERT INTO executor_runs (
+                jira_key, branch, started_at, status, killed_at, kill_reason
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("TK-873", "2026-04-16-052408-TK-873", "2026-04-16T12:00:00", "running", None, None),
+        )
+        conn.commit()
+
+        # Select the row
+        row = conn.execute(
+            "SELECT * FROM executor_runs WHERE jira_key = ?",
+            ("TK-873",),
+        ).fetchone()
+
+        # Verify NULL values are preserved
+        assert row is not None
+        assert row["jira_key"] == "TK-873"
+        assert row["killed_at"] is None
+        assert row["kill_reason"] is None
+
+    def test_insert_select_with_empty_string_values(self, tmp_path, monkeypatch):
+        """Insert a row with empty string values and verify they are preserved.
+
+        This test exercises handling of empty strings for TEXT columns.
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        conn.execute(
+            """
+            INSERT INTO executor_runs (
+                jira_key, branch, started_at, status, run_id, trace_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("TK-874", "", "2026-04-16T12:00:00", "", "", ""),
+        )
+        conn.commit()
+
+        # Select the row
+        row = conn.execute(
+            "SELECT * FROM executor_runs WHERE jira_key = ?",
+            ("TK-874",),
+        ).fetchone()
+
+        # Verify empty strings are preserved
+        assert row is not None
+        assert row["jira_key"] == "TK-874"
+        assert row["branch"] == ""
+        assert row["status"] == ""
+        assert row["run_id"] == ""
+        assert row["trace_id"] == ""
