@@ -429,6 +429,244 @@ class TestResolveFlatArtifacts:
 
 
 # =========================================================================
+# cleanup_run_artifacts — on-demand artifact cleanup
+# =========================================================================
+
+
+class TestCleanupRunArtifacts:
+    """Tests for cleanup_run_artifacts function."""
+
+    def test_cleanup_run_artifacts_with_existing_directory(self, _isolate_db):
+        """Test cleanup_run_artifacts removes existing directory when dry_run=False."""
+        logs_dir = _isolate_db
+        run_id = "test-run-dir"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create a directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+        (dir_path / "file2.txt").write_text("content2\n", encoding="utf-8")
+
+        # Verify directory exists before cleanup
+        assert dir_path.exists()
+        assert (dir_path / "file1.txt").exists()
+        assert (dir_path / "file2.txt").exists()
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=False
+        )
+
+        assert dirs_removed == 1  # Directory was removed
+        assert bytes_freed > 0  # Bytes were freed
+        assert not dir_path.exists()  # Directory no longer exists
+
+    def test_cleanup_run_artifacts_with_existing_flat_file(self, _isolate_db):
+        """Test cleanup_run_artifacts removes existing flat file when dry_run=False."""
+        logs_dir = _isolate_db
+        run_id = "test-run-flat"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create a flat .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        # Verify file exists before cleanup
+        assert log_file.exists()
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=False
+        )
+
+        assert dirs_removed == 1  # File was removed
+        assert bytes_freed > 0  # Bytes were freed
+        assert not log_file.exists()  # File no longer exists
+
+    def test_cleanup_run_artifacts_with_dry_run(self, _isolate_db):
+        """Test cleanup_run_artifacts reports counts without mutating when dry_run=True."""
+        logs_dir = _isolate_db
+        run_id = "test-run-dry"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create a directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+        (dir_path / "file2.txt").write_text("content2\n", encoding="utf-8")
+
+        # Verify directory exists before cleanup
+        assert dir_path.exists()
+        assert (dir_path / "file1.txt").exists()
+        assert (dir_path / "file2.txt").exists()
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=True
+        )
+
+        # Files should still exist after dry run
+        assert dirs_removed == 1  # Would be removed
+        assert bytes_freed > 0  # Would be freed
+        assert dir_path.exists()  # Directory still exists
+        assert (dir_path / "file1.txt").exists()  # Files still exist
+
+    def test_cleanup_run_artifacts_with_none_run_id(self, _isolate_db):
+        """Test cleanup_run_artifacts returns zero for None run_id."""
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=None, dry_run=False
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_cleanup_run_artifacts_with_empty_string_run_id(self, _isolate_db):
+        """Test cleanup_run_artifacts returns zero for empty string run_id."""
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id="", dry_run=False
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_cleanup_run_artifacts_with_missing_files(self, _isolate_db):
+        """Test cleanup_run_artifacts returns zero for non-existent run_id."""
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id="nonexistent-run-id", dry_run=False
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_cleanup_run_artifacts_with_dry_run_none(self, _isolate_db):
+        """Test cleanup_run_artifacts with None run_id in dry_run mode."""
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=None, dry_run=True
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_cleanup_run_artifacts_with_dry_run_missing(self, _isolate_db):
+        """Test cleanup_run_artifacts with missing files in dry_run mode."""
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id="nonexistent-run-id", dry_run=True
+        )
+        assert dirs_removed == 0
+        assert bytes_freed == 0
+
+    def test_cleanup_run_artifacts_with_multiple_artifacts(self, _isolate_db):
+        """Test cleanup_run_artifacts removes both directory and flat files."""
+        logs_dir = _isolate_db
+        run_id = "test-run-multi"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+
+        # Create flat .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        # Create flat .done file
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        # Verify all artifacts exist before cleanup
+        assert dir_path.exists()
+        assert (dir_path / "file1.txt").exists()
+        assert log_file.exists()
+        assert done_file.exists()
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=False
+        )
+
+        # All artifacts should be removed
+        assert dirs_removed >= 3  # At least 3 paths removed (dir + 2 files)
+        assert bytes_freed > 0  # Bytes were freed
+        assert not dir_path.exists()  # Directory removed
+        assert not log_file.exists()  # .log file removed
+        assert not done_file.exists()  # .done file removed
+
+    def test_cleanup_run_artifacts_dry_run_multiple_artifacts(self, _isolate_db):
+        """Test cleanup_run_artifacts dry run reports counts without mutating."""
+        logs_dir = _isolate_db
+        run_id = "test-run-multi-dry"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+
+        # Create flat .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        # Create flat .done file
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        # Verify all artifacts exist before cleanup
+        assert dir_path.exists()
+        assert (dir_path / "file1.txt").exists()
+        assert log_file.exists()
+        assert done_file.exists()
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=True
+        )
+
+        # Files should still exist after dry run
+        assert dirs_removed >= 3  # Would be removed
+        assert bytes_freed > 0  # Would be freed
+        assert dir_path.exists()  # Directory still exists
+        assert (dir_path / "file1.txt").exists()  # Files still exist
+        assert log_file.exists()  # .log file still exists
+        assert done_file.exists()  # .done file still exists
+
+    def test_cleanup_run_artifacts_with_special_characters(self, _isolate_db):
+        """Test cleanup_run_artifacts handles run_ids with special characters."""
+        logs_dir = _isolate_db
+        run_id = "run-123-test-abc"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+
+        # Create flat .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=False
+        )
+
+        assert dirs_removed >= 2  # At least 2 paths removed
+        assert bytes_freed > 0  # Bytes were freed
+        assert not dir_path.exists()  # Directory removed
+        assert not log_file.exists()  # .log file removed
+
+    def test_cleanup_run_artifacts_with_unicode(self, _isolate_db):
+        """Test cleanup_run_artifacts handles run_ids with unicode characters."""
+        logs_dir = _isolate_db
+        run_id = "run-测试-123"
+        _seed_run(datetime.now() - timedelta(days=45), run_id, "TK-1")
+
+        # Create directory with files
+        dir_path = logs_dir / run_id
+        dir_path.mkdir(parents=True, exist_ok=True)
+        (dir_path / "file1.txt").write_text("content1\n", encoding="utf-8")
+
+        dirs_removed, bytes_freed = executor_runs_cleanup.cleanup_run_artifacts(
+            run_id=run_id, dry_run=False
+        )
+
+        assert dirs_removed >= 1  # At least 1 path removed
+        assert bytes_freed > 0  # Bytes were freed
+        assert not dir_path.exists()  # Directory removed
+
+
+# =========================================================================
 # Edge case tests for artifact removal functions
 # =========================================================================
 

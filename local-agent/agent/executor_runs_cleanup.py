@@ -194,6 +194,38 @@ def _remove_artifacts(run_id: str | None, dry_run: bool) -> tuple[int, int]:
     return removed, freed
 
 
+def cleanup_run_artifacts(run_id: str | None, dry_run: bool = False) -> tuple[int, int]:
+    """Clean up execution-log artifacts for a specific run ID.
+
+    This function walks the candidate paths for a given run_id, sizes them
+    using :func:`_path_size_bytes`, and deletes them when ``dry_run`` is
+    False. When ``dry_run`` is True, it only sizes the paths and reports
+    what would be deleted without touching the filesystem.
+
+    Args:
+        run_id: The run ID to clean up artifacts for. If None or empty,
+            returns (0, 0) without performing any operations.
+        dry_run: When True, report what would be deleted without touching
+            the filesystem.
+
+    Returns:
+        A tuple ``(dirs_removed, bytes_freed)`` where ``dirs_removed`` is
+        the count of successfully removed paths (directories or files) and
+        ``bytes_freed`` is the total bytes that would be freed.
+
+    Example:
+        >>> cleanup_run_artifacts("20260301-120000-TK-1", dry_run=True)
+        (1, 1024)
+        >>> cleanup_run_artifacts("20260301-120000-TK-1", dry_run=False)
+        (1, 1024)
+    """
+    if not run_id:
+        log.info("cleanup_run_artifacts: run_id is None or empty, skipping")
+        return 0, 0
+
+    return _remove_artifacts(run_id, dry_run=dry_run)
+
+
 def cleanup_old_runs(
     max_age_days: int = 30,
     keep_last_n: int = 200,
