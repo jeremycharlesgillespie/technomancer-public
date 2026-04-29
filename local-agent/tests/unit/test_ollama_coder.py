@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from idea_board.ollama_coder import (
+    BASH_OUTPUT_MAX_CHARS,
     OllamaCoder,
+    READ_FILE_MAX_CHARS,
+    SEARCH_RESULT_MAX_CHARS,
     _classify_error_hint,
     _find_related_tests_for_files,
     _fmt_args,
@@ -310,6 +313,50 @@ class TestToolExecution:
         # Both lines must be reported.
         assert "import subprocess" in result
         assert "subprocess.run" in result
+
+    def test_read_file_truncates_to_new_limit(self, tmp_path: Path) -> None:
+        """READ_FILE_MAX_CHARS is now 2000, not 20000."""
+        f = tmp_path / "big.py"
+        f.write_text("x" * 25_000, encoding="utf-8")
+        coder = _make_coder(tmp_path)
+        result = coder._tool_read_file("big.py")
+        assert "truncated" in result
+        assert len(result) < 2_200  # Should be well under 2000
+
+    def test_list_files_truncates_to_new_limit(self, tmp_path: Path) -> None:
+        """LIST_FILES_MAX is now 100, not 200."""
+        # Create more than 100 files
+        for i in range(150):
+            (tmp_path / f"file_{i}.py").write_text("", encoding="utf-8")
+        coder = _make_coder(tmp_path)
+        result = coder._tool_list_files(".")
+        # Should only show first 100 files
+        file_count = result.count(".py")
+        assert file_count <= 100
+
+    def test_run_bash_truncates_output_to_new_limit(self, tmp_path: Path) -> None:
+        """BASH_OUTPUT_MAX_CHARS is now 2000, not 4000."""
+        coder = _make_coder(tmp_path)
+        # Create a long output
+        long_output = "output " * 1000  # ~7000 chars
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=long_output, stderr="", returncode=0)
+            result = coder._tool_run_bash("echo test")
+            # Should be truncated to 2000 chars
+            assert len(result) <= BASH_OUTPUT_MAX_CHARS
+            assert "truncated" not in result  # Only truncated if > limit
+
+    def test_search_code_truncates_result_to_new_limit(self, tmp_path: Path) -> None:
+        """SEARCH_RESULT_MAX_CHARS is now 2000, not 4000."""
+        coder = _make_coder(tmp_path)
+        # Create a long search result
+        long_result = "match " * 1000  # ~7000 chars
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=long_result, returncode=0)
+            result = coder._tool_search_code("pattern", path=".")
+            # Should be truncated to 2000 chars
+            assert len(result) <= SEARCH_RESULT_MAX_CHARS
+            assert "truncated" not in result  # Only truncated if > limit
 
 
 # ---------------------------------------------------------------------------

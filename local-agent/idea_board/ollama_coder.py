@@ -89,8 +89,10 @@ DRIFT_WINDOW = 4
 # loop — flailing models will.
 DRIFT_EMPTY_EXHAUSTION_THRESHOLD = 2
 
-READ_FILE_MAX_CHARS = 20_000
-LIST_FILES_MAX = 200
+READ_FILE_MAX_CHARS = 2_000
+LIST_FILES_MAX = 100
+BASH_OUTPUT_MAX_CHARS = 2_000
+SEARCH_RESULT_MAX_CHARS = 2_000
 
 # Per-round dedup thresholds. The inner loop tracks each (tool_name, args)
 # signature within a round; once the count *exceeds* this number, the call
@@ -1169,8 +1171,8 @@ class OllamaCoder:
                 timeout=120,
             )
             output = (result.stdout or "") + (result.stderr or "")
-            if len(output) > 4000:
-                output = output[-4000:]
+            if len(output) > BASH_OUTPUT_MAX_CHARS:
+                output = output[-BASH_OUTPUT_MAX_CHARS:]
             return output or "(no output)"
         except subprocess.TimeoutExpired:
             return "ERROR: command timed out after 120s"
@@ -1202,7 +1204,7 @@ class OllamaCoder:
                 capture_output=True, text=True, cwd=str(self.project_root), timeout=30,
             )
             if result.returncode in (0, 1):
-                out = result.stdout[:4000]
+                out = result.stdout[:SEARCH_RESULT_MAX_CHARS]
                 return out or "(no matches)"
         except FileNotFoundError:
             pass
