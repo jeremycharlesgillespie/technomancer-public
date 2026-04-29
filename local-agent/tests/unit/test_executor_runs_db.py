@@ -14,6 +14,8 @@ import pytest
 from agent import executor_runs_db, tracing
 from agent.executor_runs_db import leak_counter
 
+pytestmark = pytest.mark.executor_runs_db
+
 
 def get_zero_leak_counter() -> threading.local:
     """Return a fresh leak_counter instance with count set to 0.

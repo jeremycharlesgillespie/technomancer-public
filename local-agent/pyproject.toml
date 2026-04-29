@@ -102,6 +102,7 @@ markers = [
     "unit: marks tests as unit tests",
     "integration: marks tests as integration tests",
     "allow_network: permit real network calls in this test",
+    "executor_runs_db: marks tests for executor_runs_db module",
 ]
 
 [tool.coverage.run]
