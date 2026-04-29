@@ -2257,7 +2257,7 @@ def execute_idea(
                         max_turns=settings.aiw_ollama_coder_max_turns,
                         max_rounds=settings.aiw_ollama_coder_max_rounds,
                         num_ctx=settings.aiw_ollama_coder_num_ctx,
-                        host=host_override or "",
+                        host=host_override or settings.aiw_ollama_coder_host,
                         story_title=idea.title,
                     )
                     coder.run()

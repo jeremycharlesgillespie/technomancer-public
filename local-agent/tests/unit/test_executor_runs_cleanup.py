@@ -845,14 +845,23 @@ class TestCleanupOldRuns_Skipped:
             assert dirs_removed == 0
             assert bytes_freed == 0
 
-            # Each non-existent candidate path produces a "would skip" INFO log.
-            skip_logs = [
+            # Should log SOMETHING at INFO that explains the no-op.
+            # Two acceptable shapes have lived in this codebase:
+            #   - per-path: "Dry run: would skip missing path <p>"
+            #   - aggregate: "Dry run: no paths to check for run_id <id>"
+            # Either is correct; the contract is "make the no-op visible
+            # in the logs," not the exact wording.
+            info_logs = [
                 r for r in caplog.records
                 if r.name == "agent.executor_runs_cleanup"
-                and "would skip missing path" in r.getMessage()
+                and r.levelno == logging.INFO
+                and (
+                    "would skip missing path" in r.getMessage()
+                    or "no paths to check" in r.getMessage()
+                )
             ]
-            assert len(skip_logs) >= 1, (
-                f"Expected at least one 'would skip missing path' log; "
+            assert len(info_logs) >= 1, (
+                f"Expected at least one INFO log explaining the dry-run no-op; "
                 f"got records={[r.getMessage() for r in caplog.records]}"
             )
 

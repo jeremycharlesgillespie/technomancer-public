@@ -534,6 +534,17 @@ class Settings(BaseSettings):
             "would otherwise contend for the same GPU."
         ),
     )
+    aiw_ollama_coder_host: str = Field(
+        default="",
+        description=(
+            "Optional Ollama base URL for single-model AIW runs (e.g. "
+            "'http://192.168.1.150:11434'). Empty string keeps the default "
+            "OLLAMA_HOST (localhost). Used when AIW_AB_TEST is disabled and "
+            "you want the single coder to run on a remote box. The A/B "
+            "harness has its own per-side host overrides "
+            "(aiw_ab_model_a_host, aiw_ab_model_b_host) and ignores this."
+        ),
+    )
     aiw_ollama_coder_max_turns: int = Field(
         default=40,
         description="Max tool-call turns per fix round in OllamaCoder's inner loop.",
