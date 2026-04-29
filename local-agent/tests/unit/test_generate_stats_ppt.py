@@ -1,6 +1,7 @@
 """Tests for scripts.generate_stats_ppt — stats data aggregation logic."""
 
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +23,18 @@ def _isolate_db(tmp_path, monkeypatch):
     if conn:
         conn.close()
         agent.daily_stats._local.__dict__.pop("conn", None)
+
+
+@pytest.fixture
+def mock_vault_dir(tmp_path, monkeypatch):
+    """Create a mock vault directory for testing."""
+    vault_path = tmp_path / "data"
+    vault_path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(
+        "scripts.generate_stats_ppt.Path",
+        lambda x: tmp_path / x if not Path(x).is_absolute() else Path(x),
+    )
+    return vault_path
 
 
 @pytest.fixture
@@ -61,6 +74,84 @@ def sample_daily_stats_data(tmp_path):
     conn.commit()
 
     return db_path
+
+
+class TestInitialize:
+    """Tests for initialize function."""
+
+    def test_creates_database(self, tmp_path, monkeypatch):
+        """Should create the daily_stats database if it doesn't exist."""
+        db_path = tmp_path / "daily_stats.db"
+        vault_path = tmp_path / "data"
+        vault_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("agent.daily_stats.DB_DIR", tmp_path)
+        monkeypatch.setattr("agent.daily_stats.DB_PATH", db_path)
+        agent.daily_stats._local.__dict__.pop("conn", None)
+
+        # Verify DB doesn't exist before initialization
+        assert not db_path.exists()
+
+        # Call initialize
+        generate_stats_ppt.initialize(vault_path=vault_path)
+
+        # Verify DB was created
+        assert db_path.exists()
+
+    def test_idempotent(self, tmp_path, monkeypatch):
+        """Should be safe to call multiple times."""
+        db_path = tmp_path / "daily_stats.db"
+        vault_path = tmp_path / "data"
+        vault_path.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr("agent.daily_stats.DB_DIR", tmp_path)
+        monkeypatch.setattr("agent.daily_stats.DB_PATH", db_path)
+        agent.daily_stats._local.__dict__.pop("conn", None)
+
+        # Call initialize multiple times
+        generate_stats_ppt.initialize(vault_path=vault_path)
+        generate_stats_ppt.initialize(vault_path=vault_path)
+        generate_stats_ppt.initialize(vault_path=vault_path)
+
+        # Should not raise any errors
+        assert db_path.exists()
+
+    def test_validates_vault_exists(self, tmp_path, monkeypatch):
+        """Should raise FileNotFoundError if vault directory is missing."""
+        # Don't create the vault directory
+        vault_path = tmp_path / "data"
+        assert not vault_path.exists()
+
+        # Should raise FileNotFoundError
+        with pytest.raises(FileNotFoundError, match="Vault directory not found"):
+            generate_stats_ppt.initialize(vault_path=vault_path)
+
+    def test_validates_vault_exists_with_data_dir(self, tmp_path, monkeypatch):
+        """Should succeed when vault directory exists."""
+        vault_path = tmp_path / "data"
+        vault_path.mkdir(parents=True, exist_ok=True)
+
+        # Should not raise any errors
+        generate_stats_ppt.initialize(vault_path=vault_path)
+
+    def test_handles_missing_vault_with_absolute_path(self, tmp_path, monkeypatch):
+        """Should handle absolute path to missing vault directory."""
+        vault_path = tmp_path / "data"
+        assert not vault_path.exists()
+
+        # Should raise FileNotFoundError
+        with pytest.raises(FileNotFoundError, match="Vault directory not found"):
+            generate_stats_ppt.initialize(vault_path=vault_path)
+
+    def test_handles_vault_with_subdirectories(self, tmp_path, monkeypatch):
+        """Should succeed when vault directory exists with subdirectories."""
+        vault_path = tmp_path / "data"
+        vault_path.mkdir(parents=True, exist_ok=True)
+
+        # Create some subdirectories
+        (vault_path / "Permanent").mkdir(exist_ok=True)
+        (vault_path / "Context").mkdir(exist_ok=True)
+
+        # Should not raise any errors
+        generate_stats_ppt.initialize(vault_path=vault_path)
 
 
 class TestAggregateStats:
