@@ -1365,6 +1365,45 @@ def start_purge_scheduler(days: int = RETENTION_DAYS, hour: int = PURGE_HOUR) ->
 
 
 # ---------------------------------------------------------------------------
+# Row selection helper for cleanup — used by executor_runs_cleanup
+# ---------------------------------------------------------------------------
+
+
+def _select_rows_to_delete(
+    conn: sqlite3.Connection,
+    max_age_days: int,
+    keep_last_n: int,
+) -> list[sqlite3.Row]:
+    """Return rows that are both older than ``max_age_days`` and outside the
+    newest ``keep_last_n`` window.
+
+    Matches the story's spec:
+        DELETE FROM executor_runs
+        WHERE started_at < now - N days
+          AND id NOT IN (
+              SELECT id FROM executor_runs
+              ORDER BY started_at DESC LIMIT keep_last_n
+          )
+    """
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT id, run_id, jira_key, started_at
+        FROM executor_runs
+        WHERE started_at IS NOT NULL
+          AND datetime(started_at) < datetime('now', ?)
+          AND id NOT IN (
+              SELECT id FROM executor_runs
+              ORDER BY started_at DESC
+              LIMIT ?
+          )
+        """,
+        (f"-{int(max_age_days)} days", int(keep_last_n)),
+    ).fetchall()
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
 # CLI: ``python -m agent.executor_runs_db purge <days>``
 # ---------------------------------------------------------------------------
 

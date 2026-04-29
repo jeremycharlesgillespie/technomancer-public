@@ -18,3 +18,23 @@
 [20260428 22:31:05.121] [AB] enqueued TK-STATE-2 for AIV validation (sha=none)
 [20260428 22:31:05.122] [AB] unloading model B (model-b:tag) on localhost at run end
 [20260428 22:31:05.122] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 22:35:07.412] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 22:35:07.412] === A/B Run A: model-a:tag @ localhost ===
+[20260428 22:35:07.413] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 22:35:07.413] === A/B Run B: model-b:tag @ localhost ===
+[20260428 22:35:07.413] [AB] scored model-a: err=''
+[20260428 22:35:07.413] [AB] scored model-b: err=''
+[20260428 22:35:07.413] [AB] comparison: winner='model_a' err=''
+[20260428 22:35:07.415] [AB] enqueued TK-STATE-2 for AIV validation (sha=none)
+[20260428 22:35:07.415] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 22:35:07.415] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 22:37:25.589] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 22:37:25.589] === A/B Run A: model-a:tag @ localhost ===
+[20260428 22:37:25.590] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 22:37:25.590] === A/B Run B: model-b:tag @ localhost ===
+[20260428 22:37:25.590] [AB] scored model-a: err=''
+[20260428 22:37:25.590] [AB] scored model-b: err=''
+[20260428 22:37:25.590] [AB] comparison: winner='model_a' err=''
+[20260428 22:37:25.592] [AB] enqueued TK-STATE-2 for AIV validation (sha=none)
+[20260428 22:37:25.592] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 22:37:25.592] [AB] removed worktree: /tmp/fake-worktree-abc12345
