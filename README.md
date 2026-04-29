@@ -150,7 +150,7 @@ Technomancer provides multiple interfaces for interaction and monitoring:
 ## Highlights
 
 - **6172 automated tests** with 83.7% code coverage
-- **104 Python modules** across 43,031 lines of code
+- **104 Python modules** across 43,098 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
 - **Local-first** — Ollama for primary inference, Claude API for escalation only
@@ -310,7 +310,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Test count | 6172 |
 | Code coverage | 83.7% |
 | Python modules | 104 |
-| Lines of code | 43,031 |
+| Lines of code | 43,098 |
 | Test files | 253 |
 
 ## License

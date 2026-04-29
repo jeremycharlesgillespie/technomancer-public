@@ -21,10 +21,10 @@ from typing import Optional
 # Default log directory (can be overridden)
 DEFAULT_LOG_DIR = Path(__file__).parent.parent  # local-agent/
 
-# Log format: timestamp, level, request id, logger name, message.
-# ``%(request_id)s`` is supplied by ``RequestIdFilter`` below; the default
-# value is ``-`` whenever no caller has seeded the ContextVar.
-LOG_FORMAT = "%(asctime)s [%(levelname)s] [rid=%(request_id)s] %(name)s: %(message)s"
+# Log format: timestamp, role, model, level, request id, logger name, message.
+# ``%(role)s`` and ``%(model)s`` are supplied by ``_RoleModelFilter`` below.
+# ``%(request_id)s`` is supplied by ``RequestIdFilter`` below.
+LOG_FORMAT = "%(asctime)s [%(role)s][%(model)s] [%(levelname)s] [rid=%(request_id)s] %(name)s: %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 # Rotation settings
@@ -35,12 +35,25 @@ BACKUP_COUNT = 5  # Keep 5 old log files
 # by ``RequestIdFilter`` whenever no caller has set the ContextVar.
 DEFAULT_REQUEST_ID = "-"
 
+# Default value for role and model when unset
+DEFAULT_ROLE = "-"
+DEFAULT_MODEL = "-"
+
 # Process-wide ContextVar for the active request id. Coroutines, threads
 # created via ``asyncio.to_thread`` (which calls ``contextvars.copy_context``),
 # and ThreadPoolExecutor workers spawned with ``contextvars.copy_context().run``
 # all inherit the value automatically.
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
     "request_id", default=DEFAULT_REQUEST_ID
+)
+
+# Process-wide ContextVars for role and model.
+# Coroutines, threads, and subprocesses all inherit the value automatically.
+role_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "log_role", default=DEFAULT_ROLE
+)
+model_var: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "log_model", default=DEFAULT_MODEL
 )
 
 
@@ -72,8 +85,28 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
-# Singleton filter — handlers can share one instance.
+class _RoleModelFilter(logging.Filter):
+    """Inject ``role`` and ``model`` onto every ``LogRecord`` passing through.
+
+    Installed on every handler created by :func:`setup_logger` and
+    :func:`get_logger` so the ``%(role)s`` and ``%(model)s`` formatter tokens
+    never raise ``KeyError``, even for records that originate from loggers that
+    were configured elsewhere and propagated up to a handler we own.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Respect values already attached to the record; otherwise pull from
+        # the ContextVars, falling back to the sentinel defaults.
+        if not hasattr(record, "role"):
+            record.role = role_var.get()
+        if not hasattr(record, "model"):
+            record.model = model_var.get()
+        return True
+
+
+# Singleton filters — handlers can share one instance.
 _request_id_filter = RequestIdFilter()
+_role_model_filter = _RoleModelFilter()
 
 
 def setup_logger(
@@ -116,6 +149,7 @@ def setup_logger(
         console_handler.setLevel(level)
         console_handler.setFormatter(formatter)
         console_handler.addFilter(_request_id_filter)
+        console_handler.addFilter(_role_model_filter)
         logger.addHandler(console_handler)
 
     # File handler with rotation
@@ -130,6 +164,7 @@ def setup_logger(
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         file_handler.addFilter(_request_id_filter)
+        file_handler.addFilter(_role_model_filter)
         logger.addHandler(file_handler)
 
     return logger
@@ -155,8 +190,29 @@ def get_logger(name: str) -> logging.Logger:
         handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter(LOG_FORMAT, DATE_FORMAT))
         handler.addFilter(_request_id_filter)
+        handler.addFilter(_role_model_filter)
         logger.addHandler(handler)
     return logger
+
+
+def set_role(role: str) -> None:
+    """Bind the role that every subsequent log record inherits in this
+    thread/task.
+
+    Args:
+        role: The role name (e.g., "AIM", "AIW", "AIV", "AIMM", "BOT", "HUB").
+    """
+    role_var.set(role)
+
+
+def set_model(model: str | None) -> None:
+    """Bind the LLM model for records emitted inside the current call.
+
+    Args:
+        model: The model name (e.g., "claude-sonnet-4-6", "ollama:qwen3.5:27b").
+               Pass ``None`` to unset (default ``"-"``).
+    """
+    model_var.set(model or DEFAULT_MODEL)
 
 
 # Pre-configured loggers for main modules

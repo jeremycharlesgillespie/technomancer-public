@@ -226,30 +226,37 @@ def complete(
     primary = _resolve_primary(role)
     fallback = _resolve_fallback(role)
 
-    if primary.startswith("ollama:"):
-        tag = primary.split(":", 1)[1]
-        out = ollama_chat(prompt, tag, timeout=timeout, format=format)
-        if out is not None:
-            return out
-        # Retry once before considering this a hard failure.
-        logger.info("[llm_router] %s ollama:%s failed, retrying once", role, tag)
-        out = ollama_chat(prompt, tag, timeout=timeout, format=format)
-        if out is not None:
-            return out
-        if not fallback:
-            logger.warning(
-                "[llm_router] %s ollama:%s failed twice; no claude fallback configured, returning None",
-                role, tag,
-            )
-            return None
-        logger.info(
-            "[llm_router] %s ollama:%s failed twice, falling back to %s",
-            role, tag, fallback,
-        )
-        return _claude_chat(prompt, fallback, timeout=timeout)
+    # Set model for logging purposes
+    from agent.logging_config import set_model
+    set_model(primary)
 
-    # Claude primary
-    return _claude_chat(prompt, primary, timeout=timeout)
+    try:
+        if primary.startswith("ollama:"):
+            tag = primary.split(":", 1)[1]
+            out = ollama_chat(prompt, tag, timeout=timeout, format=format)
+            if out is not None:
+                return out
+            # Retry once before considering this a hard failure.
+            logger.info("[llm_router] %s ollama:%s failed, retrying once", role, tag)
+            out = ollama_chat(prompt, tag, timeout=timeout, format=format)
+            if out is not None:
+                return out
+            if not fallback:
+                logger.warning(
+                    "[llm_router] %s ollama:%s failed twice; no claude fallback configured, returning None",
+                    role, tag,
+                )
+                return None
+            logger.info(
+                "[llm_router] %s ollama:%s failed twice, falling back to %s",
+                role, tag, fallback,
+            )
+            return _claude_chat(prompt, fallback, timeout=timeout)
+
+        # Claude primary
+        return _claude_chat(prompt, primary, timeout=timeout)
+    finally:
+        set_model(None)
 
 
 if __name__ == "__main__":

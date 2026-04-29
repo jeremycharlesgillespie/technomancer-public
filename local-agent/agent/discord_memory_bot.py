@@ -1838,6 +1838,10 @@ Respond naturally and helpfully. Be conversational and friendly."""
 
 
 def main() -> None:
+    # Set log role for Discord bot
+    from .logging_config import set_role
+    set_role("BOT")
+
     log("Starting with AUTO-REMEMBER...")
     try:
         client.run(settings.discord_bot_token)
