@@ -33,6 +33,7 @@ import requests
 
 from agent.ollama_client import (
     OLLAMA_HOST,
+    _unload_competing_models,
     acquire_coder_priority,
     release_coder_priority,
 )
@@ -351,6 +352,8 @@ class OllamaCoder:
     def run(self) -> None:
         """Run the full outer fix-round loop. Acquires GPU priority for duration."""
         acquire_coder_priority()
+        # Evict any non-coder models before starting to ensure full GPU for coding
+        _unload_competing_models(self.model)
         self._start_mcp_bridge()
         try:
             self._log(f"[OllamaCoder] Starting with model={self.model}, "
