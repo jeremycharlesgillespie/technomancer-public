@@ -1,6 +1,6 @@
 # Technomancer
 
-![tests](https://img.shields.io/badge/tests-6153-brightgreen) ![coverage](https://img.shields.io/badge/coverage-0%25-red) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-104-blue) ![lines](https://img.shields.io/badge/lines-43k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
+![tests](https://img.shields.io/badge/tests-6153-brightgreen) ![coverage](https://img.shields.io/badge/coverage-83.6%25-brightgreen) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![modules](https://img.shields.io/badge/modules-104-blue) ![lines](https://img.shields.io/badge/lines-43k-blue) ![license](https://img.shields.io/badge/license-MIT-green)
 
 Technomancer is a **fully autonomous AI dev team** that ships production code
 the way humans do — from ranked Jira tickets, through feature branches, with
@@ -149,7 +149,7 @@ Technomancer provides multiple interfaces for interaction and monitoring:
 
 ## Highlights
 
-- **6153 automated tests** with 0% code coverage
+- **6153 automated tests** with 83.6% code coverage
 - **104 Python modules** across 43,005 lines of code
 - **Self-improving knowledge base** — auto-fills gaps from Wikipedia and web search
 - **Epic/Story/Task hierarchy** on the idea board with full lifecycle tracking
@@ -308,7 +308,7 @@ Access at `http://localhost:8322` — a web dashboard for managing improvement i
 | Metric | Value |
 |--------|-------|
 | Test count | 6153 |
-| Code coverage | 0% |
+| Code coverage | 83.6% |
 | Python modules | 104 |
 | Lines of code | 43,005 |
 | Test files | 253 |

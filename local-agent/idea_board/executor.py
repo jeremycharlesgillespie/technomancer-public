@@ -2781,7 +2781,20 @@ def execute_idea(
             if _settings.test_command:
                 full_cmd = base_test_cmd
             else:
-                full_cmd = base_test_cmd + ["-q", "--tb=short"]
+                # Coverage flags produce profiling/coverage.json so
+                # generate_readme.py can show a real coverage % on the
+                # README badge instead of falling back to 0%. The path
+                # is relative to test_cwd (local-agent/), which is
+                # exactly where generate_readme reads from. Disable the
+                # fail_under threshold — safe_update gates on test
+                # pass/fail, not coverage drops.
+                full_cmd = base_test_cmd + [
+                    "-q",
+                    "--tb=short",
+                    "--cov=agent",
+                    "--cov-report=json:profiling/coverage.json",
+                    "--cov-fail-under=0",
+                ]
             full_result = _run_pytest_with_progress(
                 full_cmd,
                 cwd=local_agent_dir,
