@@ -186,6 +186,45 @@ class TestInitDb:
         }
         assert expected.issubset(cols)
 
+    def test_get_conn_and_close_without_crash(self, tmp_path, monkeypatch):
+        """Verify _get_conn() can be called and connection closed without errors.
+
+        This test ensures that the module can be imported and the connection
+        can be established and closed cleanly, preventing connection leaks or
+        timeout issues during test setup/teardown.
+        """
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        # Clear any existing connection
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        # Call _get_conn() - should not raise
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Verify connection is usable
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='executor_runs'"
+        ).fetchone()
+        assert row is not None
+
+        # Close the connection - should not raise
+        conn.close()
+
+        # Verify connection is closed by checking it's not usable
+        # sqlite3.Connection doesn't have a 'closed' attribute, so we verify
+        # by attempting to execute a query (should raise ProgrammingError)
+        try:
+            conn.execute("SELECT 1").fetchone()
+            pytest.fail("Connection should be closed and unusable")
+        except sqlite3.ProgrammingError as e:
+            # Expected - connection is closed
+            assert "closed" in str(e).lower() or "cannot operate" in str(e).lower()
+
+        # Clear from _local
+        executor_runs_db._local.conn = None
+
 
 class TestStatusStartedIndex:
     """Composite index on (status, started_at DESC) — dashboard queries filter
