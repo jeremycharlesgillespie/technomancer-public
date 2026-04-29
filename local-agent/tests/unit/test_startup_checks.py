@@ -390,6 +390,24 @@ class TestMakeDailyStatsCheck:
         assert check.required is True
         assert check.timeout == 5.0
 
+    def test_creates_optional_check(self):
+        check = make_daily_stats_check(required=False)
+        assert check.name == "daily_stats"
+        assert check.required is False
+        assert check.timeout == 5.0
+
+    def test_creates_check_with_custom_timeout(self):
+        check = make_daily_stats_check(timeout=10.0)
+        assert check.name == "daily_stats"
+        assert check.required is True
+        assert check.timeout == 10.0
+
+    def test_creates_check_with_custom_timeout_and_required(self):
+        check = make_daily_stats_check(required=False, timeout=15.0)
+        assert check.name == "daily_stats"
+        assert check.required is False
+        assert check.timeout == 15.0
+
 
 # ---------------------------------------------------------------------------
 # _run_with_retry behaviour
@@ -526,6 +544,30 @@ class TestRunReadinessChecks:
         assert ran["n"] == 0
         assert all(r.status == STATUS_SKIPPED for r in report.results)
 
+    def test_escape_hatch_skips_daily_stats_check(self, monkeypatch, _no_retry_sleep):
+        """The escape hatch should skip the daily_stats check when set."""
+        monkeypatch.setenv(SKIP_REQUIRED_ENV, "1")
+
+        # Sentinel — the daily_stats check must NOT run when the gate is skipped.
+        ran = {"n": 0}
+
+        def should_not_run():
+            ran["n"] += 1
+
+        # Create a daily_stats check and add it to the list
+        daily_stats_check = make_daily_stats_check()
+        checks = [
+            daily_stats_check,
+            Check(name="other", fn=should_not_run, timeout=1.0),
+        ]
+        report = run_readiness_checks(checks=checks)
+        assert report.ok is True
+        assert report.skipped is True
+        assert ran["n"] == 0
+        # Verify the daily_stats check was skipped
+        daily_stats_result = next(r for r in report.results if r.name == "daily_stats")
+        assert daily_stats_result.status == STATUS_SKIPPED
+
     def test_escape_hatch_requires_exactly_1(self, monkeypatch, _no_retry_sleep, _clear_skip_env):
         """Any other truthy value does NOT activate the escape hatch."""
         monkeypatch.setenv(SKIP_REQUIRED_ENV, "true")
@@ -538,6 +580,22 @@ class TestRunReadinessChecks:
         assert report.skipped is False
         assert report.ok is False
 
+    def test_daily_stats_check_failure_without_escape_hatch(self, monkeypatch, _no_retry_sleep, _clear_skip_env):
+        """When daily_stats check fails and escape hatch is not set, the gate should fail."""
+        def bad_daily_stats():
+            raise RuntimeError("daily_stats table missing")
+
+        checks = [
+            Check(name="daily_stats", fn=bad_daily_stats, timeout=1.0, required=True),
+        ]
+        report = run_readiness_checks(checks=checks, attempts=1)
+        assert report.ok is False
+        assert report.skipped is False
+        # Verify the daily_stats check failed
+        daily_stats_result = next(r for r in report.results if r.name == "daily_stats")
+        assert daily_stats_result.status == STATUS_FAIL
+        assert "daily_stats" in daily_stats_result.error.lower()
+
     def test_default_checks_returns_four_required(self):
         """default_checks now includes the daily stats check."""
         checks = default_checks()
@@ -545,6 +603,28 @@ class TestRunReadinessChecks:
         names = [c.name for c in checks]
         assert names == ["ollama", "vault", "executor_db", "daily_stats"]
         assert all(c.required for c in checks)
+
+    def test_default_checks_includes_daily_stats_check(self):
+        """Verify that the daily_stats check is present in default_checks."""
+        checks = default_checks()
+        daily_stats_check = next((c for c in checks if c.name == "daily_stats"), None)
+        assert daily_stats_check is not None
+        assert daily_stats_check.required is True
+        assert daily_stats_check.timeout == 5.0
+
+    def test_make_daily_stats_check_with_none_required(self):
+        """Test that make_daily_stats_check handles None for required parameter."""
+        # This should work - None is falsy and should be treated as False
+        check = make_daily_stats_check(required=None)
+        assert check.name == "daily_stats"
+        assert check.required is False  # None is falsy
+
+    def test_make_daily_stats_check_with_zero_timeout(self):
+        """Test that make_daily_stats_check handles zero timeout."""
+        check = make_daily_stats_check(timeout=0.0)
+        assert check.name == "daily_stats"
+        assert check.required is True
+        assert check.timeout == 0.0
 
     def test_orchestrator_uses_default_checks_when_none_supplied(
         self, monkeypatch, _no_retry_sleep, _clear_skip_env

@@ -275,6 +275,7 @@ def make_daily_stats_check(
 
     Args:
         required: If True, the gate fails if this check fails. Default is True.
+            None is treated as False (falsy).
         timeout: Per-check timeout in seconds. Default is 5.0.
 
     Returns:
@@ -285,6 +286,9 @@ def make_daily_stats_check(
         >>> assert check.required is False
         >>> assert check.timeout == 10.0
     """
+    # Coerce None to False for falsy handling
+    if required is None:
+        required = False
     return Check(
         name="daily_stats",
         fn=_check_daily_stats,
