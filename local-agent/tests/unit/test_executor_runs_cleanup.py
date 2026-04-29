@@ -263,6 +263,172 @@ class TestArtifactCleanup:
 
 
 # =========================================================================
+# _resolve_flat_artifacts tests
+# =========================================================================
+
+
+class TestResolveFlatArtifacts:
+    """Tests for _resolve_flat_artifacts function."""
+
+    def test_returns_two_paths_for_valid_run_id_with_both_files(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns 2 paths when both .log and .done exist."""
+        logs_dir = _isolate_db
+        run_id = "test-run-id"
+
+        # Create both flat files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+        assert all(isinstance(p, Path) for p in result)
+
+    def test_returns_one_path_for_valid_run_id_with_only_log_file(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns 1 path when only .log exists."""
+        logs_dir = _isolate_db
+        run_id = "test-log-only"
+
+        # Create only .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert log_file in result
+
+    def test_returns_one_path_for_valid_run_id_with_only_done_file(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns 1 path when only .done exists."""
+        logs_dir = _isolate_db
+        run_id = "test-done-only"
+
+        # Create only .done file
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert done_file in result
+
+    def test_returns_empty_list_for_none_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns empty list for None run_id."""
+        result = executor_runs_cleanup._resolve_flat_artifacts(None)
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_empty_list_for_empty_string_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns empty list for empty string."""
+        result = executor_runs_cleanup._resolve_flat_artifacts("")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_empty_list_for_nonexistent_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts returns empty list for non-existent run_id."""
+        result = executor_runs_cleanup._resolve_flat_artifacts("nonexistent-run-id")
+        assert isinstance(result, list)
+        assert len(result) == 0
+
+    def test_returns_paths_with_correct_base_directory(self, _isolate_db):
+        """Test that returned paths are correctly resolved relative to EXECUTION_LOGS_DIR."""
+        logs_dir = _isolate_db
+        run_id = "test-base-dir"
+
+        # Create .log file
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 1
+        # Verify the path is correctly resolved
+        assert result[0] == log_file
+        assert result[0].exists()
+        assert result[0].is_file()
+
+    def test_returns_paths_with_special_characters_in_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts handles run_ids with special characters."""
+        logs_dir = _isolate_db
+        run_id = "run-123-test-abc"
+
+        # Create both files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_returns_paths_with_dots_in_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts handles run_ids with dots."""
+        logs_dir = _isolate_db
+        run_id = "run.id.with.dots"
+
+        # Create both files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_returns_paths_with_numbers_in_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts handles run_ids with numbers."""
+        logs_dir = _isolate_db
+        run_id = "20260415-120000-TK-1234"
+
+        # Create both files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+    def test_returns_paths_with_unicode_in_run_id(self, _isolate_db):
+        """Test that _resolve_flat_artifacts handles run_ids with unicode characters."""
+        logs_dir = _isolate_db
+        run_id = "run-测试-123"
+
+        # Create both files
+        log_file = logs_dir / f"{run_id}.log"
+        log_file.write_text("test log content\n", encoding="utf-8")
+        done_file = logs_dir / f"{run_id}.done"
+        done_file.write_text("test done content\n", encoding="utf-8")
+
+        result = executor_runs_cleanup._resolve_flat_artifacts(run_id)
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert log_file in result
+        assert done_file in result
+
+
+# =========================================================================
 # Edge case tests for artifact removal functions
 # =========================================================================
 

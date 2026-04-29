@@ -1,10 +1,20 @@
-[20260428 22:06:30.644] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260428 22:06:30.644] === A/B Run A: model-a:tag @ localhost ===
-[20260428 22:06:30.645] [AB] unloading model A (model-a:tag) on localhost before B
-[20260428 22:06:30.645] === A/B Run B: model-b:tag @ localhost ===
-[20260428 22:06:30.646] [AB] scored model-a: err=''
-[20260428 22:06:30.646] [AB] scored model-b: err=''
-[20260428 22:06:30.646] [AB] comparison: winner='model_a' err=''
-[20260428 22:06:30.648] [AB] enqueued TK-WT-2 for AIV validation (sha=none)
-[20260428 22:06:30.648] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260428 22:06:30.648] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 22:28:49.331] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 22:28:49.331] === A/B Run A: model-a:tag @ localhost ===
+[20260428 22:28:49.332] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 22:28:49.332] === A/B Run B: model-b:tag @ localhost ===
+[20260428 22:28:49.332] [AB] scored model-a: err=''
+[20260428 22:28:49.332] [AB] scored model-b: err=''
+[20260428 22:28:49.332] [AB] comparison: winner='model_a' err=''
+[20260428 22:28:49.334] [AB] enqueued TK-WT-2 for AIV validation (sha=none)
+[20260428 22:28:49.334] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 22:28:49.334] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260428 22:31:05.186] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260428 22:31:05.186] === A/B Run A: model-a:tag @ localhost ===
+[20260428 22:31:05.187] [AB] unloading model A (model-a:tag) on localhost before B
+[20260428 22:31:05.187] === A/B Run B: model-b:tag @ localhost ===
+[20260428 22:31:05.187] [AB] scored model-a: err=''
+[20260428 22:31:05.187] [AB] scored model-b: err=''
+[20260428 22:31:05.187] [AB] comparison: winner='model_a' err=''
+[20260428 22:31:05.189] [AB] enqueued TK-WT-2 for AIV validation (sha=none)
+[20260428 22:31:05.189] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260428 22:31:05.189] [AB] removed worktree: /tmp/fake-worktree-abc12345
