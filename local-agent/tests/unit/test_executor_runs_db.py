@@ -1161,8 +1161,155 @@ class TestCleanupIntegration:
         # Verify tool calls were removed
         tool_calls = executor_runs_db.get_tool_calls(db_run_id)
         assert tool_calls == []
-        
+
         # Verify run was removed from DB
         conn = executor_runs_db._get_conn()
         rows = conn.execute("SELECT COUNT(*) as count FROM executor_runs").fetchone()
         assert rows["count"] == 0
+
+
+class TestTeardownSession:
+    """Tests for teardown_session function."""
+
+    def test_closes_connection_when_none_passed(self, tmp_path, monkeypatch):
+        """Calling teardown_session with None closes the thread-local connection."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        # Get the connection
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Close it via teardown_session
+        executor_runs_db.teardown_session()
+
+        # _local.conn should be None
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_clears_local_attribute(self, tmp_path, monkeypatch):
+        """Calling teardown_session clears _local.conn."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        # Get the connection
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Close it via teardown_session
+        executor_runs_db.teardown_session()
+
+        # _local.conn should be None
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_idempotent_when_called_twice(self, tmp_path, monkeypatch):
+        """Calling teardown_session twice is idempotent and does not raise."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # First call
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+        # Second call should not raise
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_idempotent_with_explicit_connection(self, tmp_path, monkeypatch):
+        """Calling teardown_session with an already-closed connection is safe."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Close the connection manually
+        conn.close()
+
+        # teardown_session should handle this gracefully
+        executor_runs_db.teardown_session(conn)
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+        # Calling again with same connection should not raise
+        executor_runs_db.teardown_session(conn)
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_handles_missing_connection(self, tmp_path, monkeypatch):
+        """Calling teardown_session when no connection exists is safe."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+
+        # No connection exists yet
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+        # teardown_session should not raise
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_handles_connection_close_error(self, tmp_path, monkeypatch):
+        """Calling teardown_session when close() raises is handled gracefully."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Create a mock connection that raises on close
+        mock_conn = type('MockConnection', (), {
+            'close': lambda self: (_ for _ in ()).throw(RuntimeError("Simulated close error")),
+            'closed': 0,
+        })()
+
+        # Replace the connection in _local with the mock
+        executor_runs_db._local.conn = mock_conn
+
+        # teardown_session should swallow the exception and still clear _local
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+    def test_clears_local_even_if_close_fails(self, tmp_path, monkeypatch):
+        """teardown_session clears _local even when close() raises."""
+        db_path = tmp_path / "executor_runs.db"
+        monkeypatch.setattr(executor_runs_db, "DB_DIR", tmp_path)
+        monkeypatch.setattr(executor_runs_db, "DB_PATH", db_path)
+        executor_runs_db._local.__dict__.pop("conn", None)
+        executor_runs_db.init_db()
+
+        conn = executor_runs_db._get_conn()
+        assert conn is not None
+
+        # Create a mock connection that raises on close
+        mock_conn = type('MockConnection', (), {
+            'close': lambda self: (_ for _ in ()).throw(RuntimeError("close failed")),
+            'closed': 0,
+        })()
+
+        # Replace the connection in _local with the mock
+        executor_runs_db._local.conn = mock_conn
+
+        # teardown_session should not raise
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None
+
+        # Second call should also not raise
+        executor_runs_db.teardown_session()
+        assert getattr(executor_runs_db._local, "conn", None) is None

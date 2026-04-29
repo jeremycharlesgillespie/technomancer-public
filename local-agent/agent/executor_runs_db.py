@@ -211,6 +211,43 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def teardown_session(conn: sqlite3.Connection | None = None) -> None:
+    """Close the thread-local SQLite connection and clear it from ``_local``.
+
+    Called manually at the end of a test file execution or explicitly by
+    ``conftest.py`` to clean up global state after tests complete.
+
+    Args:
+        conn: Optional connection to close. If ``None``, the function
+            retrieves the current thread-local connection from ``_local``.
+            Passing ``None`` is safe and idempotent — the function will
+            close whatever connection exists (if any) and clear ``_local``.
+
+    The function is idempotent: calling it multiple times with ``None`` or
+    with an already-closed connection does not raise exceptions.
+
+    Example:
+        >>> # In conftest.py teardown
+        >>> @pytest.fixture(autouse=True)
+        >>> def cleanup_db():
+        >>>     yield
+        >>>     executor_runs_db.teardown_session()
+    """
+    if conn is None:
+        conn = getattr(_local, "conn", None)
+        if conn is None:
+            return
+
+    try:
+        conn.close()
+    except Exception:
+        # Silently swallow close errors — the connection might already be
+        # closed or in a bad state. The important part is clearing ``_local``.
+        pass
+    finally:
+        _local.conn = None
+
+
 def init_db() -> None:
     """Create the executor_runs table if it doesn't exist, and migrate
     older schemas by adding columns introduced after the original CREATE."""
