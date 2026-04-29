@@ -335,7 +335,7 @@ def create_jira_issue(
         return None
 
     jira_type = TYPE_MAP.get(idea_type, "Story")
-    summary = f"[{idea_id}] {title}"[:255]
+    summary = title[:255]
 
     fields: dict[str, Any] = {
         "project": {"key": settings.jira_project_key},

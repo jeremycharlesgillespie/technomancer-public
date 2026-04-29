@@ -1,24 +1,16 @@
-[20260429 04:53:23.756] [Inner] tick
-[20260429 04:53:23.756] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 04:53:23.756] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 04:53:23.756] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260429 04:55:33.317] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 04:55:33.317] [Inner] tick
-[20260429 04:55:33.317] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 04:55:33.317] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260429 05:00:08.692] [Inner] tick
-[20260429 05:00:08.692] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 05:00:08.692] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 05:00:08.692] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260429 05:03:09.651] [Inner] tick
-[20260429 05:03:09.651] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 05:03:09.651] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 05:03:09.651] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260429 05:06:07.814] [Inner] tick
-[20260429 05:06:07.814] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 05:06:07.814] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 05:06:07.814] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260429 05:08:21.014] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260429 05:08:21.014] [Inner] tick
-[20260429 05:08:21.014] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260429 05:08:21.014] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260429 06:23:21.517] [Inner] tick
+[20260429 06:23:21.517] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260429 06:23:21.517] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260429 06:23:21.517] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260429 06:25:34.035] [Inner] tick
+[20260429 06:25:34.035] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260429 06:25:34.035] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260429 06:25:34.035] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260429 06:30:01.050] [Inner] tick
+[20260429 06:30:01.050] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260429 06:30:01.050] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260429 06:30:01.050] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260429 06:32:13.939] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260429 06:32:13.939] [Inner] tick
+[20260429 06:32:13.939] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260429 06:32:13.939] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)

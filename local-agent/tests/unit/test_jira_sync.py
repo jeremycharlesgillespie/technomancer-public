@@ -175,7 +175,7 @@ class TestCreateJiraIssue:
         create_call = mock_api.call_args_list[0]
         fields = create_call[1]["json"]["fields"]
         assert fields["issuetype"]["name"] == "Story"
-        assert "[idea-001]" in fields["summary"]
+        assert fields["summary"] == "My Story"
 
     @patch("idea_board.jira_sync.find_jira_issue", return_value=None)
     @patch("idea_board.jira_sync._api")
@@ -234,6 +234,38 @@ class TestCreateJiraIssue:
         create_call = mock_api.call_args_list[0]
         fields = create_call[1]["json"]["fields"]
         assert fields["parent"]["key"] == "TK-5"
+
+    @patch("idea_board.jira_sync.find_jira_issue", return_value=None)
+    @patch("idea_board.jira_sync._api")
+    @patch("idea_board.jira_sync.is_jira_configured", return_value=True)
+    @patch("idea_board.jira_sync.settings")
+    def test_summary_does_not_duplicate_bracket_prefix(
+        self, mock_settings, mock_conf, mock_api, mock_find
+    ):
+        """Regression test for TK-925: titles starting with bracket prefixes
+        should not be duplicated in the summary.
+        """
+        mock_settings.jira_project_key = "TK"
+        mock_settings.server_host = "localhost"
+        mock_resp = MagicMock()
+        mock_resp.status_code = 201
+        mock_resp.json.return_value = {"key": "TK-925"}
+        mock_api.return_value = mock_resp
+
+        # Title starts with a bracket prefix like '[5080] Foo'
+        result = create_jira_issue(
+            "idea-925", "[5080] Tighter tool-result truncation in OllamaCoder",
+            "Description here"
+        )
+        assert result == "TK-925"
+
+        create_call = mock_api.call_args_list[0]
+        fields = create_call[1]["json"]["fields"]
+
+        # Summary should be the original title, not duplicated
+        assert fields["summary"] == "[5080] Tighter tool-result truncation in OllamaCoder"
+        # Should not contain the duplicated prefix
+        assert fields["summary"].count("[5080]") == 1
 
 
 # ---------------------------------------------------------------------------
