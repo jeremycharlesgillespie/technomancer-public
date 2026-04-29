@@ -140,6 +140,9 @@ def _resolve_flat_artifacts(run_id: str | None) -> list[Path]:
 def _candidate_paths(run_id: str | None) -> list[Path]:
     """Return the on-disk artifacts that belong to ``run_id``.
 
+    Combines directory-based artifacts (from EXECUTION_LOGS_DIR/<run_id>/) with flat
+    file artifacts (.log, .done) for backward compatibility.
+
     The story spec describes ``execution_logs/<run_id>/`` directories, but
     the current executor writes flat ``<id>.log`` / ``<id>.done`` files.
     We return both so the cleanup works regardless of which layout is in
@@ -150,6 +153,7 @@ def _candidate_paths(run_id: str | None) -> list[Path]:
         If the parent directory doesn't exist, returns an empty list to avoid
         attempting to create paths in non-existent directories.
     """
+    # Combine directory artifact with flat file artifacts
     return _resolve_directory_artifact(run_id) + _resolve_flat_artifacts(run_id)
 
 

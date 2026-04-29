@@ -1126,19 +1126,23 @@ def archive_run(
     return target
 
 
-def _discover_artifacts(run_id: str) -> list[Path]:
+def _discover_artifacts(run_id: str, artifacts_dir: Path | None = None) -> list[Path]:
     """Discover standard artifact files for a given run ID.
 
-    Scans the ARTIFACTS_DIR for a directory matching the run_id and
+    Scans the specified directory for a subdirectory matching the run_id and
     returns a list of standard artifact files (stdout.log, stderr.log, diff.patch).
 
     Args:
         run_id: The run ID to discover artifacts for.
+        artifacts_dir: Directory to scan for artifacts. Defaults to ARTIFACTS_DIR.
 
     Returns:
         List of Path objects pointing to artifact files.
     """
-    run_dir = ARTIFACTS_DIR / run_id
+    if artifacts_dir is None:
+        artifacts_dir = ARTIFACTS_DIR
+    
+    run_dir = artifacts_dir / run_id
     if not run_dir.exists() or not run_dir.is_dir():
         return []
     
