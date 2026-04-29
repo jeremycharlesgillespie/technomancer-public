@@ -1,27 +1,72 @@
-[20260429 16:20:44.011] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
-[20260429 16:20:44.012] === A/B Run A: model-a:tag @ localhost ===
-[20260429 16:20:44.012] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 16:20:44.012] === A/B Run B: model-b:tag @ localhost ===
-[20260429 16:20:44.013] [AB] scored model-a: err=''
-[20260429 16:20:44.013] [AB] scored model-b: err=''
-[20260429 16:20:44.013] [AB] comparison: winner='model_a' err=''
-[20260429 16:20:44.015] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
-[20260429 16:20:44.015] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 16:25:40.585] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
-[20260429 16:25:40.586] === A/B Run A: model-a:tag @ localhost ===
-[20260429 16:25:40.586] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 16:25:40.586] === A/B Run B: model-b:tag @ localhost ===
-[20260429 16:25:40.587] [AB] scored model-a: err=''
-[20260429 16:25:40.587] [AB] scored model-b: err=''
-[20260429 16:25:40.587] [AB] comparison: winner='model_a' err=''
-[20260429 16:25:40.589] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
-[20260429 16:25:40.589] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 16:27:54.670] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
-[20260429 16:27:54.670] === A/B Run A: model-a:tag @ localhost ===
-[20260429 16:27:54.671] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 16:27:54.671] === A/B Run B: model-b:tag @ localhost ===
-[20260429 16:27:54.671] [AB] scored model-a: err=''
-[20260429 16:27:54.671] [AB] scored model-b: err=''
-[20260429 16:27:54.671] [AB] comparison: winner='model_a' err=''
-[20260429 16:27:54.674] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
-[20260429 16:27:54.674] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:33:13.267] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:33:13.267] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:33:13.268] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:33:13.268] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:33:13.268] [AB] scored model-a: err=''
+[20260429 16:33:13.269] [AB] scored model-b: err=''
+[20260429 16:33:13.269] [AB] comparison: winner='model_a' err=''
+[20260429 16:33:13.271] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:33:13.271] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:35:48.532] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:35:48.533] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:35:48.533] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:35:48.533] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:35:48.534] [AB] scored model-a: err=''
+[20260429 16:35:48.534] [AB] scored model-b: err=''
+[20260429 16:35:48.534] [AB] comparison: winner='model_a' err=''
+[20260429 16:35:48.536] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:35:48.537] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:38:53.817] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:38:53.817] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:38:53.818] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:38:53.818] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:38:53.818] [AB] scored model-a: err=''
+[20260429 16:38:53.818] [AB] scored model-b: err=''
+[20260429 16:38:53.819] [AB] comparison: winner='model_a' err=''
+[20260429 16:38:53.821] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:38:53.821] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:41:37.397] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:41:37.397] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:41:37.398] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:41:37.398] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:41:37.398] [AB] scored model-a: err=''
+[20260429 16:41:37.398] [AB] scored model-b: err=''
+[20260429 16:41:37.398] [AB] comparison: winner='model_a' err=''
+[20260429 16:41:37.401] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:41:37.401] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:43:52.391] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:43:52.391] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:43:52.392] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:43:52.392] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:43:52.392] [AB] scored model-a: err=''
+[20260429 16:43:52.392] [AB] scored model-b: err=''
+[20260429 16:43:52.392] [AB] comparison: winner='model_a' err=''
+[20260429 16:43:52.394] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:43:52.395] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:48:18.063] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:48:18.063] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:48:18.064] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:48:18.064] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:48:18.064] [AB] scored model-a: err=''
+[20260429 16:48:18.064] [AB] scored model-b: err=''
+[20260429 16:48:18.064] [AB] comparison: winner='model_a' err=''
+[20260429 16:48:18.066] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:48:18.067] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:51:02.492] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:51:02.492] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:51:02.493] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:51:02.493] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:51:02.493] [AB] scored model-a: err=''
+[20260429 16:51:02.493] [AB] scored model-b: err=''
+[20260429 16:51:02.493] [AB] comparison: winner='model_a' err=''
+[20260429 16:51:02.495] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:51:02.496] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 16:53:15.834] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260429 16:53:15.835] === A/B Run A: model-a:tag @ localhost ===
+[20260429 16:53:15.835] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 16:53:15.836] === A/B Run B: model-b:tag @ localhost ===
+[20260429 16:53:15.836] [AB] scored model-a: err=''
+[20260429 16:53:15.836] [AB] scored model-b: err=''
+[20260429 16:53:15.836] [AB] comparison: winner='model_a' err=''
+[20260429 16:53:15.838] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260429 16:53:15.839] [AB] unloading model B (model-b:tag) on localhost at run end

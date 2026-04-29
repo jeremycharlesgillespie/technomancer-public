@@ -20,6 +20,7 @@ from agent.startup_checks import (
     STATUS_OK,
     STATUS_SKIPPED,
     STATUS_TIMEOUT,
+    _check_db_schema,
     _check_daily_stats,
     _check_executor_db,
     _check_ollama,
@@ -376,6 +377,43 @@ class TestCheckDailyStats:
         report = run_readiness_checks(checks=checks, attempts=1)
         assert report.ok is False
         assert [r.name for r in report.failed_required()] == ["daily_stats"]
+
+
+# ---------------------------------------------------------------------------
+# _check_db_schema — schema verification
+# ---------------------------------------------------------------------------
+
+
+class TestCheckDbSchema:
+    def test_ok_after_init(self, fake_daily_stats_db):
+        """The check passes when daily_stats table exists after init_db()."""
+        _check_db_schema()
+
+    def test_fails_when_table_missing(self, fake_daily_stats_db, monkeypatch):
+        """If the daily_stats table is missing, the check must fail with a clear error."""
+        db_path = fake_daily_stats_db
+        conn = sqlite3.connect(str(db_path))
+        # Create a minimal table without the daily_stats table
+        conn.execute("CREATE TABLE other_table (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        # Neutralise init_db so it doesn't re-add the table.
+        monkeypatch.setattr(
+            startup_checks.daily_stats, "init_db", lambda: None
+        )
+
+        with pytest.raises(RuntimeError, match="daily_stats table not initialized"):
+            _check_db_schema()
+
+    def test_multiple_calls_do_not_duplicate_tables(self, fake_daily_stats_db):
+        """Calling the check multiple times should not raise errors or duplicate tables."""
+        # First call
+        _check_db_schema()
+        # Second call should be idempotent
+        _check_db_schema()
+        # Third call should still work
+        _check_db_schema()
 
 
 # ---------------------------------------------------------------------------

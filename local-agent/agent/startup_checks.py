@@ -3,12 +3,13 @@ Startup Readiness Gate — validate external dependencies before the bot marks i
 
 The readiness gate runs a small set of required checks during bot startup so
 failures surface immediately instead of the bot coming up and dying on the
-first user message. Four checks are currently enforced:
+first user message. Five checks are currently enforced:
 
 * ``_check_ollama`` — Ollama ``/api/tags`` reachable and ``settings.ollama_model`` present.
 * ``_check_vault`` — vault root exists and ``LLM Memory/Context/`` is writable.
 * ``_check_executor_db`` — executor_runs SQLite opens with migrations current.
 * ``_check_daily_stats`` — daily_stats SQLite DB exists and is accessible.
+* ``_check_db_schema`` — daily_stats table schema is initialized via init_db().
 
 Each check runs with a per-check timeout and up to two attempts, with a short
 backoff between retries. An escape hatch — ``BOT_SKIP_REQUIRED_CHECKS=1`` in
@@ -25,6 +26,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import sqlite3
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -199,6 +201,28 @@ def _check_daily_stats() -> None:
     """
     daily_stats.init_db()
     daily_stats.validate_daily_stats_db()
+
+
+def _check_db_schema() -> None:
+    """Verify the daily_stats table schema is initialized.
+
+    Calls ``daily_stats.init_db()`` to ensure the table exists, then
+    validates via a SELECT query. This isolates the schema verification
+    from the initialization logic itself, allowing the check to report
+    the specific failure (uninitialized DB) clearly.
+
+    Raises:
+        RuntimeError: if the daily_stats table does not exist or is
+            inaccessible after initialization.
+    """
+    daily_stats.init_db()
+    try:
+        conn = daily_stats._get_conn()
+        conn.execute("SELECT 1 FROM daily_stats LIMIT 1")
+    except sqlite3.OperationalError as exc:
+        raise RuntimeError(
+            f"daily_stats table not initialized: {exc}"
+        ) from exc
 
 
 def _migrate_daily_stats_schema() -> None:
