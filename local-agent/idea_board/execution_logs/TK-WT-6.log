@@ -16,3 +16,30 @@
 [20260430 09:26:19.997] [AB] comparison: winner='model_a' err=''
 [20260430 09:26:19.999] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
 [20260430 09:26:19.999] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260430 09:30:13.619] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260430 09:30:13.619] === A/B Run A: model-a:tag @ localhost ===
+[20260430 09:30:13.620] [AB] unloading model A (model-a:tag) on localhost before B
+[20260430 09:30:13.620] === A/B Run B: model-b:tag @ localhost ===
+[20260430 09:30:13.620] [AB] scored model-a: err=''
+[20260430 09:30:13.620] [AB] scored model-b: err=''
+[20260430 09:30:13.620] [AB] comparison: winner='model_a' err=''
+[20260430 09:30:13.622] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260430 09:30:13.623] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260430 09:34:50.010] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260430 09:34:50.010] === A/B Run A: model-a:tag @ localhost ===
+[20260430 09:34:50.011] [AB] unloading model A (model-a:tag) on localhost before B
+[20260430 09:34:50.011] === A/B Run B: model-b:tag @ localhost ===
+[20260430 09:34:50.012] [AB] scored model-a: err=''
+[20260430 09:34:50.012] [AB] scored model-b: err=''
+[20260430 09:34:50.012] [AB] comparison: winner='model_a' err=''
+[20260430 09:34:50.014] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260430 09:34:50.015] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260430 09:37:11.614] [AB] WORKTREE FAILED (git worktree add failed: simulated) — falling back to shared project_root=/tmp/fake-root. CONCURRENT RUNS MAY COLLIDE.
+[20260430 09:37:11.614] === A/B Run A: model-a:tag @ localhost ===
+[20260430 09:37:11.615] [AB] unloading model A (model-a:tag) on localhost before B
+[20260430 09:37:11.615] === A/B Run B: model-b:tag @ localhost ===
+[20260430 09:37:11.615] [AB] scored model-a: err=''
+[20260430 09:37:11.615] [AB] scored model-b: err=''
+[20260430 09:37:11.615] [AB] comparison: winner='model_a' err=''
+[20260430 09:37:11.618] [AB] enqueued TK-WT-6 for AIV validation (sha=none)
+[20260430 09:37:11.618] [AB] unloading model B (model-b:tag) on localhost at run end

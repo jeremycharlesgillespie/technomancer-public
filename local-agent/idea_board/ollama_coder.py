@@ -768,6 +768,12 @@ class OllamaCoder:
             if finished:
                 return True
 
+        # Round loop exhausted without success — stage and commit WIP state
+        # so operators can inspect what the model tried.
+        self._log(f"[OllamaCoder] Round loop exhausted after {self.max_rounds} rounds")
+        files_to_stage = self._files_to_stage()
+        if files_to_stage:
+            self._commit_wip_changes(files=files_to_stage)
         return False
 
     # ------------------------------------------------------------------
@@ -2102,6 +2108,33 @@ class OllamaCoder:
         header = " ".join(parts)
         return f"{header} r{round_num}: {auto_summary}"
 
+    def _build_wip_commit_message(self, files: list[str]) -> str:
+        """Build the WIP commit message for ``_commit_wip_changes``.
+
+        Uses the same format as _build_commit_message but with [WIP][exhausted]
+        tag instead of round number, so _merge_winner can gate on its absence.
+        """
+        # File path for the auto-summary
+        first = files[0]
+        try:
+            first_rel = str(Path(first).relative_to(self.project_root))
+        except (ValueError, TypeError):
+            first_rel = Path(first).name
+
+        verb = "create" if first not in self._pre_round_existing else "edit"
+        extra = len(files) - 1
+        suffix = f" (+{extra} more)" if extra > 0 else ""
+        auto_summary = f"{verb} {first_rel}{suffix}"
+
+        # Build header with WIP tag
+        parts = [f"[{self.idea_id}]"]
+        if self.story_title:
+            parts.append(self.story_title)
+        if self.model:
+            parts.append(self.model)
+        header = " ".join(parts)
+        return f"{header} [WIP][exhausted]: {auto_summary}"
+
     def _tag_round_commits(self, round_num: int) -> None:
         """Amend the latest commit message to include round tag if on a story branch."""
         if round_num == 0:
@@ -2136,6 +2169,50 @@ class OllamaCoder:
                 # Re-raise to stop the execution loop
                 raise
             logger.warning("git status failed or dirty repo detected: %s", exc)
+
+    def _commit_wip_changes(self, files: list[str] | None = None) -> None:
+        """Commit uncommitted changes with a [WIP][exhausted] tag.
+
+        Called when the round loop exhausts without a passing test run.
+        The commit message includes the exhausted tag so _merge_winner can
+        gate on its absence and never merge WIP branches.
+
+        Uses the same staging logic as _commit_changes but with a distinct
+        message format: ``[<idea_id>] <title> <model> [WIP][exhausted]: <verb> <file> (+M more)``.
+        """
+        try:
+            target_files = files if files is not None else self._get_changed_files()
+            if not target_files:
+                self._log("[OllamaCoder] No uncommitted changes to WIP commit")
+                return
+
+            # Stage exactly the files to commit
+            subprocess.run(
+                ["git", "add"] + list(target_files),
+                capture_output=True, cwd=str(self.project_root),
+            )
+
+            commit_msg = self._build_wip_commit_message(list(target_files))
+            subprocess.run(
+                ["git", "commit", "-m", commit_msg],
+                capture_output=True, cwd=str(self.project_root),
+            )
+
+            msg_result = subprocess.run(
+                ["git", "log", "-1", "--format=%s"],
+                capture_output=True, text=True, cwd=str(self.project_root),
+            )
+            msg = msg_result.stdout.strip()
+            if "[WIP]" not in msg:
+                # Amend silently to add WIP tag
+                subprocess.run(
+                    ["git", "commit", "--amend", "--no-edit", "-m",
+                     f"{msg} [WIP][exhausted]"],
+                    capture_output=True, cwd=str(self.project_root),
+                )
+            self._log(f"[OllamaCoder] WIP commit created: {msg}")
+        except Exception as exc:
+            logger.warning("[OllamaCoder] WIP commit failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
