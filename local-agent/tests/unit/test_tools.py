@@ -431,8 +431,9 @@ class TestGetSystemInfo:
     """Tests for get_system_info function."""
 
     def test_returns_json(self):
-        """get_system_info returns valid JSON."""
+        """get_system_info returns valid JSON with correct structure."""
         import json
+        import re
 
         result = get_system_info()
 
@@ -443,13 +444,24 @@ class TestGetSystemInfo:
         assert "python_version" in data
         assert "cwd" in data
 
+        # Verify hostname is non-empty string
+        assert isinstance(data["hostname"], str), "hostname should be a string"
+        assert data["hostname"], "hostname should not be empty"
+
+        # Verify python_version matches semantic version pattern (e.g., "3.11.0")
+        assert isinstance(data["python_version"], str), "python_version should be a string"
+        version_pattern = r"^\d+\.\d+\.\d+$"
+        assert re.match(version_pattern, data["python_version"]), f"python_version '{data['python_version']}' doesn't match semantic version pattern"
+
 
 class TestGetCurrentTime:
     """Tests for get_current_time function."""
 
     def test_returns_json(self):
-        """get_current_time returns valid JSON."""
+        """get_current_time returns valid JSON with correct date/time format."""
         import json
+        import re
+        from datetime import datetime
 
         result = get_current_time()
 
@@ -458,6 +470,21 @@ class TestGetCurrentTime:
         assert "time" in data
         assert "day_of_week" in data
         assert "formatted" in data
+
+        # Verify date matches YYYY-MM-DD format
+        assert isinstance(data["date"], str), "date should be a string"
+        date_pattern = r"^\d{4}-\d{2}-\d{2}$"
+        assert re.match(date_pattern, data["date"]), f"date '{data['date']}' doesn't match YYYY-MM-DD format"
+
+        # Verify time matches HH:MM:SS format
+        assert isinstance(data["time"], str), "time should be a string"
+        time_pattern = r"^\d{2}:\d{2}:\d{2}$"
+        assert re.match(time_pattern, data["time"]), f"time '{data['time']}' doesn't match HH:MM:SS format"
+
+        # Verify day_of_week matches the actual day of the week for the current date
+        assert isinstance(data["day_of_week"], str), "day_of_week should be a string"
+        today = datetime.now().strftime("%A")
+        assert data["day_of_week"] == today, f"day_of_week '{data['day_of_week']}' doesn't match actual day '{today}'"
 
 
 # =============================================================================
@@ -469,7 +496,7 @@ class TestToolGetters:
     """Tests for tool getter functions."""
 
     def test_get_file_tools(self):
-        """get_file_tools returns list of Tool objects."""
+        """get_file_tools returns list of Tool objects with valid structure."""
         tools = get_file_tools()
 
         assert len(tools) >= 4  # At least read, write, append, list, search
@@ -478,8 +505,22 @@ class TestToolGetters:
         assert "write_file" in tool_names
         assert "list_directory" in tool_names
 
+        # Verify each Tool object has required attributes
+        for tool in tools:
+            assert hasattr(tool, "name"), f"Tool {tool.name} missing name attribute"
+            assert hasattr(tool, "description"), f"Tool {tool.name} missing description attribute"
+            assert hasattr(tool, "parameters"), f"Tool {tool.name} missing parameters attribute"
+            assert hasattr(tool, "function"), f"Tool {tool.name} missing function attribute"
+            assert isinstance(tool.name, str), f"Tool {tool.name} name is not a string"
+            assert isinstance(tool.description, str), f"Tool {tool.name} description is not a string"
+            assert isinstance(tool.parameters, dict), f"Tool {tool.name} parameters is not a dict"
+            assert callable(tool.function), f"Tool {tool.name} function is not callable"
+            assert "type" in tool.parameters, f"Tool {tool.name} parameters missing 'type' key"
+            assert "properties" in tool.parameters, f"Tool {tool.name} parameters missing 'properties' key"
+            assert "required" in tool.parameters, f"Tool {tool.name} parameters missing 'required' key"
+
     def test_get_system_tools(self):
-        """get_system_tools returns list of Tool objects."""
+        """get_system_tools returns list of Tool objects with valid structure."""
         tools = get_system_tools()
 
         tool_names = [t.name for t in tools]
@@ -487,11 +528,34 @@ class TestToolGetters:
         assert "get_system_info" in tool_names
         assert "get_current_time" in tool_names
 
+        # Verify each Tool object has required attributes
+        for tool in tools:
+            assert hasattr(tool, "name"), f"Tool {tool.name} missing name attribute"
+            assert hasattr(tool, "description"), f"Tool {tool.name} missing description attribute"
+            assert hasattr(tool, "parameters"), f"Tool {tool.name} missing parameters attribute"
+            assert hasattr(tool, "function"), f"Tool {tool.name} missing function attribute"
+            assert isinstance(tool.name, str), f"Tool {tool.name} name is not a string"
+            assert isinstance(tool.description, str), f"Tool {tool.name} description is not a string"
+            assert isinstance(tool.parameters, dict), f"Tool {tool.name} parameters is not a dict"
+            assert callable(tool.function), f"Tool {tool.name} function is not callable"
+            assert "type" in tool.parameters, f"Tool {tool.name} parameters missing 'type' key"
+            assert "properties" in tool.parameters, f"Tool {tool.name} parameters missing 'properties' key"
+            assert "required" in tool.parameters, f"Tool {tool.name} parameters missing 'required' key"
+
     def test_get_all_tools(self):
-        """get_all_tools combines all tools."""
+        """get_all_tools combines all tools without duplicates."""
         all_tools = get_all_tools()
         file_tools = get_file_tools()
         system_tools = get_system_tools()
 
         # Should have at least file + system tools
         assert len(all_tools) >= len(file_tools) + len(system_tools)
+
+        # Verify no duplicate tool names across categories
+        all_names = [t.name for t in all_tools]
+        file_names = [t.name for t in file_tools]
+        system_names = [t.name for t in system_tools]
+
+        # File and system tools should be disjoint sets
+        assert set(all_names) == set(file_names) | set(system_names), "Duplicate tool names found"
+        assert set(file_names).isdisjoint(system_names), "File and system tools have overlapping names"
