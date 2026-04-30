@@ -1191,10 +1191,26 @@ def continue_workflow(slot: int = DEFAULT_SLOT):
         log("Step 8: Running post-deploy quality tests...")
         qa_ok = run_quality_tests()
 
-        # Step 9: Update README with live stats
+        # Step 9: Regenerate coverage data for README badge
+        log("Step 9: Regenerating coverage data...")
+        coverage_cmd = [
+            sys.executable, "-m", "pytest",
+            "--cov=agent",
+            "--cov-report=json:profiling/coverage.json",
+            "--cov-report=term-missing",
+        ]
+        if _test_count:
+            coverage_cmd += ["--test-count", str(_test_count)]
+        result = subprocess.run(
+            coverage_cmd,
+            capture_output=True, text=True, timeout=300,
+            cwd=Path(__file__).parent,
+        )
+
+        # Step 10: Update README with live stats
         readme_script = Path(__file__).parent / "generate_readme.py"
         if readme_script.exists():
-            log("Step 9: Updating README...")
+            log("Step 10: Updating README...")
             try:
                 readme_cmd = [sys.executable, str(readme_script)]
                 if _test_count:

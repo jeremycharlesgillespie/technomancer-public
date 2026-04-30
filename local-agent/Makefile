@@ -26,7 +26,7 @@ test:
 	pytest -v
 
 test-cov:
-	pytest --cov=agent --cov-report=term-missing --cov-report=html
+	pytest --cov=agent --cov-report=term-missing --cov-report=html --cov-report=json:profiling/coverage.json
 
 test-fast:
 	pytest -x -q
