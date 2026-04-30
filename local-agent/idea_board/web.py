@@ -1890,6 +1890,7 @@ def api_aim_status() -> tuple:
         "last_error": state.last_error,
         "last_decisions": last_decisions,
         "snapshot_at": datetime.now().isoformat(timespec="seconds"),
+        "aiw_worker_backend": settings.aiw_worker_backend,
     })
 
 

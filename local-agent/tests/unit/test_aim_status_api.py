@@ -94,6 +94,15 @@ class TestAimStatusWorkerFields:
             assert data["worker"]["last_observation"] == "Ran tests"
             assert data["worker"]["consecutive_failures"] == 1
 
+    def test_aiw_worker_backend_present(self, client):
+        """Acceptance: response contains aiw_worker_backend field."""
+        with patch("idea_board.web.aim_state.load_state", return_value=_make_state()), \
+             patch("idea_board.web.aim_event_log.read_events", return_value=[]):
+            resp = client.get("/api/aim/status")
+            data = resp.get_json()
+            assert "aiw_worker_backend" in data
+            assert data["aiw_worker_backend"] == "ollama"
+
     def test_current_idea_id_mirrored_at_top_level(self, client):
         with patch(
             "idea_board.web.aim_state.load_state",
