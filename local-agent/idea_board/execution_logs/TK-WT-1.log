@@ -1,40 +1,20 @@
-[20260429 19:01:05.475] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:01:05.475] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:01:05.476] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:01:05.476] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:01:05.476] [AB] scored model-a: err=''
-[20260429 19:01:05.476] [AB] scored model-b: err=''
-[20260429 19:01:05.476] [AB] comparison: winner='model_a' err=''
-[20260429 19:01:05.479] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
-[20260429 19:01:05.479] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:01:05.479] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:03:20.319] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:03:20.319] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:03:20.320] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:03:20.320] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:03:20.320] [AB] scored model-a: err=''
-[20260429 19:03:20.320] [AB] scored model-b: err=''
-[20260429 19:03:20.320] [AB] comparison: winner='model_a' err=''
-[20260429 19:03:20.322] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
-[20260429 19:03:20.323] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:03:20.323] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:08:16.546] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:08:16.546] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:08:16.547] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:08:16.547] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:08:16.547] [AB] scored model-a: err=''
-[20260429 19:08:16.547] [AB] scored model-b: err=''
-[20260429 19:08:16.547] [AB] comparison: winner='model_a' err=''
-[20260429 19:08:16.549] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
-[20260429 19:08:16.549] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:08:16.549] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:10:36.176] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:10:36.176] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:10:36.177] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:10:36.177] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:10:36.177] [AB] scored model-a: err=''
-[20260429 19:10:36.177] [AB] scored model-b: err=''
-[20260429 19:10:36.177] [AB] comparison: winner='model_a' err=''
-[20260429 19:10:36.180] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
-[20260429 19:10:36.180] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:10:36.180] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260429 20:32:33.749] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260429 20:32:33.749] === A/B Run A: model-a:tag @ localhost ===
+[20260429 20:32:33.750] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 20:32:33.750] === A/B Run B: model-b:tag @ localhost ===
+[20260429 20:32:33.750] [AB] scored model-a: err=''
+[20260429 20:32:33.750] [AB] scored model-b: err=''
+[20260429 20:32:33.750] [AB] comparison: winner='model_a' err=''
+[20260429 20:32:33.753] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
+[20260429 20:32:33.753] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 20:32:33.753] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260429 20:34:56.304] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260429 20:34:56.304] === A/B Run A: model-a:tag @ localhost ===
+[20260429 20:34:56.305] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 20:34:56.305] === A/B Run B: model-b:tag @ localhost ===
+[20260429 20:34:56.305] [AB] scored model-a: err=''
+[20260429 20:34:56.306] [AB] scored model-b: err=''
+[20260429 20:34:56.306] [AB] comparison: winner='model_a' err=''
+[20260429 20:34:56.308] [AB] enqueued TK-WT-1 for AIV validation (sha=none)
+[20260429 20:34:56.308] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 20:34:56.308] [AB] removed worktree: /tmp/fake-worktree-abc12345

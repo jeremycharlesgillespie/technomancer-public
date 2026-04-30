@@ -9,11 +9,13 @@ Usage:
     python safe_update.py <short-name>     # Start new update workflow
     python safe_update.py continue         # Continue after making changes
     python safe_update.py abort            # Abort and return to main
-    python safe_update.py status           # Show current status
+    python safe_update.py status [--slot N]  # Show current status (default slot 0)
+    python safe_update.py status --slot 1   # Show status for slot 1
 
 Examples:
     python safe_update.py add-search-tests
     python safe_update.py fix-memory-bug
+    python safe_update.py status --slot 1
 """
 
 import os
@@ -35,9 +37,24 @@ SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent  # technomancer/
 MAIN_BRANCH = "main"
 STATE_FILE = SCRIPT_DIR / ".safe_update_state"
+DEFAULT_SLOT = 0
 
 # Initialize logger
 _logger = get_safe_update_logger()
+
+
+def get_state_file(slot: int = DEFAULT_SLOT) -> Path:
+    """Get the state file path for a given slot.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+
+    Returns:
+        Path to the state file (e.g., .safe_update_state.1 for slot 1).
+    """
+    if slot == DEFAULT_SLOT:
+        return SCRIPT_DIR / ".safe_update_state"
+    return SCRIPT_DIR / f".safe_update_state.{slot}"
 
 
 class SafeUpdateError(Exception):
@@ -892,28 +909,51 @@ def _send_rollback_notification(
         log(f"Failed to send rollback notification: {e}", "WARNING")
 
 
-def save_state(branch_name: str):
-    """Save workflow state to file."""
-    STATE_FILE.write_text(branch_name, encoding="utf-8")
+def save_state(branch_name: str, slot: int = DEFAULT_SLOT):
+    """Save workflow state to file.
+
+    Args:
+        branch_name: Name of the current branch.
+        slot: Slot number (default 0 for backwards compatibility).
+    """
+    state_file = get_state_file(slot)
+    state_file.write_text(branch_name, encoding="utf-8")
 
 
-def load_state() -> Optional[str]:
-    """Load workflow state from file."""
-    if STATE_FILE.exists():
-        return STATE_FILE.read_text(encoding="utf-8").strip()
+def load_state(slot: int = DEFAULT_SLOT) -> Optional[str]:
+    """Load workflow state from file.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+
+    Returns:
+        State string or None if file doesn't exist.
+    """
+    state_file = get_state_file(slot)
+    if state_file.exists():
+        return state_file.read_text(encoding="utf-8").strip()
     return None
 
 
-def clear_state():
-    """Clear workflow state."""
-    if STATE_FILE.exists():
-        STATE_FILE.unlink()
+def clear_state(slot: int = DEFAULT_SLOT):
+    """Clear workflow state for a given slot.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+    """
+    state_file = get_state_file(slot)
+    if state_file.exists():
+        state_file.unlink()
 
 
-def show_status():
-    """Show current git status and workflow state."""
+def show_status(slot: int = DEFAULT_SLOT):
+    """Show current git status and workflow state for a given slot.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+    """
     print("=" * 60)
-    print("Safe Update Status")
+    print(f"Safe Update Status (slot {slot})")
     print("=" * 60)
 
     # Current branch
@@ -925,7 +965,7 @@ def show_status():
         return
 
     # Workflow state
-    saved_branch = load_state()
+    saved_branch = load_state(slot)
     if saved_branch:
         print(f"Active workflow: {saved_branch}")
         if branch == saved_branch:
@@ -954,17 +994,22 @@ def show_status():
     print("=" * 60)
 
 
-def start_workflow(short_name: str):
-    """Start a new update workflow."""
+def start_workflow(short_name: str, slot: int = DEFAULT_SLOT):
+    """Start a new update workflow.
+
+    Args:
+        short_name: Short name for the feature branch.
+        slot: Slot number (default 0 for backwards compatibility).
+    """
     log("=" * 60)
     log("Safe Update Workflow - Starting")
     log("=" * 60)
 
     # Check for existing workflow
-    existing = load_state()
+    existing = load_state(slot)
     if existing:
         log(f"Existing workflow found for branch: {existing}", "ERROR")
-        log("Run 'python safe_update.py abort' first, or 'continue' to resume")
+        log("Run 'python safe_update.py abort --slot N' first, or 'continue --slot N' to resume")
         sys.exit(1)
 
     # Validate short name
@@ -985,7 +1030,7 @@ def start_workflow(short_name: str):
         branch_name = create_branch(short_name)
 
         # Save state
-        save_state(branch_name)
+        save_state(branch_name, slot)
 
         # Step 3: Prompt for code changes
         print()
@@ -998,19 +1043,23 @@ def start_workflow(short_name: str):
         print("Next steps:")
         print("  1. Make your code changes")
         print("  2. Stage and commit: git add . && git commit -m 'Description'")
-        print("  3. Run: python safe_update.py continue")
+        print(f"  3. Run: python safe_update.py continue --slot {slot}")
         print()
-        print("Or to abort: python safe_update.py abort")
+        print("Or to abort: python safe_update.py abort --slot {slot}")
         print("=" * 60)
 
     except SafeUpdateError as e:
         log(f"Workflow failed: {e}", "ERROR")
-        clear_state()
+        clear_state(slot)
         sys.exit(1)
 
 
-def continue_workflow():
-    """Continue workflow after code changes."""
+def continue_workflow(slot: int = DEFAULT_SLOT):
+    """Continue workflow after code changes.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+    """
     # Block execution from executor context — the executor handles deploy itself
     if os.environ.get("EXECUTOR_MODE"):
         log("BLOCKED: safe_update.py continue cannot run inside the executor.", "ERROR")
@@ -1021,9 +1070,9 @@ def continue_workflow():
     log("Safe Update Workflow - Continuing")
     log("=" * 60)
 
-    branch_name = load_state()
+    branch_name = load_state(slot)
     if not branch_name:
-        log("No active workflow. Run 'python safe_update.py <name>' first.", "ERROR")
+        log(f"No active workflow for slot {slot}. Run 'python safe_update.py <name> --slot {slot}' first.", "ERROR")
         sys.exit(1)
 
     log(f"Resuming workflow for branch: {branch_name}")
@@ -1058,8 +1107,8 @@ def continue_workflow():
             print("TESTS FAILED")
             print("=" * 60)
             print()
-            print("Fix the failing tests and run: python safe_update.py continue")
-            print("Or abort: python safe_update.py abort")
+            print(f"Fix the failing tests and run: python safe_update.py continue --slot {slot}")
+            print(f"Or abort: python safe_update.py abort --slot {slot}")
             print("=" * 60)
             sys.exit(1)
 
@@ -1242,13 +1291,17 @@ def continue_workflow():
         sys.exit(1)
 
 
-def abort_workflow():
-    """Abort current workflow and return to main."""
+def abort_workflow(slot: int = DEFAULT_SLOT):
+    """Abort current workflow and return to main.
+
+    Args:
+        slot: Slot number (default 0 for backwards compatibility).
+    """
     log("Aborting workflow...")
 
-    branch_name = load_state()
+    branch_name = load_state(slot)
     if not branch_name:
-        log("No active workflow to abort")
+        log(f"No active workflow for slot {slot} to abort")
         return
 
     log(f"Aborting workflow for branch: {branch_name}")
@@ -1264,12 +1317,12 @@ def abort_workflow():
             run_git(["branch", "-D", branch_name], check=False)
             log(f"Deleted branch: {branch_name}")
 
-        clear_state()
-        log("Workflow aborted, returned to main")
+        clear_state(slot)
+        log(f"Workflow aborted, returned to main (slot {slot})")
 
     except Exception as e:
         log(f"Abort error: {e}", "WARNING")
-        clear_state()
+        clear_state(slot)
 
 
 def print_usage():
@@ -1284,13 +1337,30 @@ def main():
         sys.exit(1)
 
     command = sys.argv[1].lower()
+    slot = DEFAULT_SLOT
 
+    # Parse --slot argument if present
     if command == "status":
-        show_status()
+        # Check for --slot argument
+        if "--slot" in sys.argv:
+            try:
+                slot_idx = sys.argv.index("--slot")
+                if slot_idx + 1 < len(sys.argv):
+                    slot = int(sys.argv[slot_idx + 1])
+                    if slot < 0:
+                        print("Error: Slot number must be non-negative")
+                        sys.exit(1)
+                else:
+                    print("Error: --slot requires a number argument")
+                    sys.exit(1)
+            except (ValueError, IndexError):
+                print("Error: --slot requires a number argument")
+                sys.exit(1)
+        show_status(slot)
     elif command == "continue":
-        continue_workflow()
+        continue_workflow(slot)
     elif command == "abort":
-        abort_workflow()
+        abort_workflow(slot)
     elif command in ("help", "-h", "--help"):
         print_usage()
     elif command.startswith("-"):
@@ -1299,7 +1369,7 @@ def main():
         sys.exit(1)
     else:
         # Treat as short name for new workflow
-        start_workflow(command)
+        start_workflow(command, slot)
 
 
 if __name__ == "__main__":

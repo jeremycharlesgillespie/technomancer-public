@@ -1,40 +1,20 @@
-[20260429 19:01:05.354] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:01:05.354] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:01:05.355] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:01:05.355] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:01:05.355] [AB] model model-b:tag not pulled on localhost — short-circuit failure
-[20260429 19:01:05.356] [AB] scored model-a: err=''
-[20260429 19:01:05.356] [AB] comparison: winner='model_a' err=''
-[20260429 19:01:05.358] [AB] enqueued TK-5 for AIV validation (sha=none)
-[20260429 19:01:05.358] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:01:05.358] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:03:20.185] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:03:20.185] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:03:20.186] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:03:20.186] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:03:20.186] [AB] model model-b:tag not pulled on localhost — short-circuit failure
-[20260429 19:03:20.186] [AB] scored model-a: err=''
-[20260429 19:03:20.187] [AB] comparison: winner='model_a' err=''
-[20260429 19:03:20.189] [AB] enqueued TK-5 for AIV validation (sha=none)
-[20260429 19:03:20.189] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:03:20.189] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:08:16.419] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:08:16.419] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:08:16.420] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:08:16.420] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:08:16.420] [AB] model model-b:tag not pulled on localhost — short-circuit failure
-[20260429 19:08:16.420] [AB] scored model-a: err=''
-[20260429 19:08:16.420] [AB] comparison: winner='model_a' err=''
-[20260429 19:08:16.423] [AB] enqueued TK-5 for AIV validation (sha=none)
-[20260429 19:08:16.423] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:08:16.423] [AB] removed worktree: /tmp/fake-worktree-abc12345
-[20260429 19:10:36.048] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
-[20260429 19:10:36.048] === A/B Run A: model-a:tag @ localhost ===
-[20260429 19:10:36.049] [AB] unloading model A (model-a:tag) on localhost before B
-[20260429 19:10:36.049] === A/B Run B: model-b:tag @ localhost ===
-[20260429 19:10:36.049] [AB] model model-b:tag not pulled on localhost — short-circuit failure
-[20260429 19:10:36.049] [AB] scored model-a: err=''
-[20260429 19:10:36.049] [AB] comparison: winner='model_a' err=''
-[20260429 19:10:36.052] [AB] enqueued TK-5 for AIV validation (sha=none)
-[20260429 19:10:36.052] [AB] unloading model B (model-b:tag) on localhost at run end
-[20260429 19:10:36.052] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260429 20:32:33.625] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260429 20:32:33.625] === A/B Run A: model-a:tag @ localhost ===
+[20260429 20:32:33.626] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 20:32:33.626] === A/B Run B: model-b:tag @ localhost ===
+[20260429 20:32:33.626] [AB] model model-b:tag not pulled on localhost — short-circuit failure
+[20260429 20:32:33.626] [AB] scored model-a: err=''
+[20260429 20:32:33.626] [AB] comparison: winner='model_a' err=''
+[20260429 20:32:33.628] [AB] enqueued TK-5 for AIV validation (sha=none)
+[20260429 20:32:33.628] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 20:32:33.629] [AB] removed worktree: /tmp/fake-worktree-abc12345
+[20260429 20:34:56.179] [AB] using isolated worktree: /tmp/fake-worktree-abc12345
+[20260429 20:34:56.179] === A/B Run A: model-a:tag @ localhost ===
+[20260429 20:34:56.180] [AB] unloading model A (model-a:tag) on localhost before B
+[20260429 20:34:56.180] === A/B Run B: model-b:tag @ localhost ===
+[20260429 20:34:56.180] [AB] model model-b:tag not pulled on localhost — short-circuit failure
+[20260429 20:34:56.181] [AB] scored model-a: err=''
+[20260429 20:34:56.181] [AB] comparison: winner='model_a' err=''
+[20260429 20:34:56.183] [AB] enqueued TK-5 for AIV validation (sha=none)
+[20260429 20:34:56.183] [AB] unloading model B (model-b:tag) on localhost at run end
+[20260429 20:34:56.183] [AB] removed worktree: /tmp/fake-worktree-abc12345
