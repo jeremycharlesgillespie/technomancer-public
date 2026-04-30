@@ -108,6 +108,23 @@ def _project_key_for(idea_id: str | None) -> str | None:
     return None
 
 
+def _get_cwd(project_root: Path, worktree_dir: Path | None, local_agent_dir: str) -> str:
+    """Return the appropriate working directory for subprocess calls.
+
+    Args:
+        project_root: The base project root (from settings or auto-detect)
+        worktree_dir: Optional worktree directory for parallel worker isolation
+        local_agent_dir: The default test_cwd (local-agent/ or project root)
+
+    Returns:
+        The cwd to use for subprocess calls. If worktree_dir is provided,
+        it takes precedence over project_root and local_agent_dir.
+    """
+    if worktree_dir is not None:
+        return str(worktree_dir)
+    return local_agent_dir
+
+
 def _state_timer(state: "ExecutionState", phase: str, metadata: Any = None):
     """Shortcut: ``phase_timer`` pre-populated from an ``ExecutionState``.
 
@@ -1952,6 +1969,7 @@ def execute_idea(
     branch_suffix: str | None = None,
     skip_merge: bool = False,
     project_root_override: Path | None = None,
+    worktree_dir: Path | None = None,
 ) -> ExecutionState | None:
     """Start executing an idea with Claude Code.
 
@@ -1979,7 +1997,12 @@ def execute_idea(
         project_root_override: When set, overrides the settings-derived
             project root for this single execution. Used by the A/B
             harness to point each inner run at its own per-orchestrator
-            git worktree, so concurrent orchestrators (zombie + fresh)
+            git worktree, so concurrent orchestrators never write to the
+            same checkout.
+        worktree_dir: When set, overrides the working directory for all
+            subprocess calls (git, claude -p, pytest). Used by parallel
+            workers to operate in isolated filesystems. ``None`` falls
+            back to the default behavior (cwd=project_root or cwd=test_cwd).ors (zombie + fresh)
             never write to the same checkout.
             ``None`` or empty keeps the default localhost.
         branch_suffix: When set, appends ``-{branch_suffix}`` to the
@@ -2058,8 +2081,12 @@ def execute_idea(
         # ``project_root_override`` wins over both — used by the A/B harness
         # to point an inner run at a per-orchestrator git worktree, so two
         # competing orchestrators never write to the same checkout.
+        # ``worktree_dir`` wins over project_root_override — used by parallel
+        # workers to operate in isolated filesystems.
         from agent.config import settings as _settings
-        if project_root_override is not None:
+        if worktree_dir is not None:
+            project_root = Path(worktree_dir)
+        elif project_root_override is not None:
             project_root = Path(project_root_override)
         elif _settings.project_root:
             project_root = Path(_settings.project_root)
@@ -2095,6 +2122,9 @@ def execute_idea(
         else:
             # Technomancer default — local-agent/ subdirectory.
             test_cwd_path = Path(__file__).parent.parent
+        # Use worktree_dir for test_cwd if provided (parallel worker isolation)
+        if worktree_dir is not None:
+            test_cwd_path = Path(worktree_dir)
         local_agent_dir = str(test_cwd_path)
         # Technomancer-specific tooling (validate.py, safe_update.py,
         # README + publish) only runs when those files actually exist in
@@ -2549,7 +2579,7 @@ def execute_idea(
                     validate_result = subprocess.run(
                         [sys.executable, "validate.py", "import"],
                         capture_output=True, text=True, timeout=60,
-                        cwd=local_agent_dir,
+                        cwd=_get_cwd(project_root, worktree_dir, local_agent_dir),
                     )
                 else:
                     # No validate.py in test_cwd — skip straight to tests.
@@ -2797,7 +2827,7 @@ def execute_idea(
                 ]
             full_result = _run_pytest_with_progress(
                 full_cmd,
-                cwd=local_agent_dir,
+                cwd=_get_cwd(project_root, worktree_dir, local_agent_dir),
                 state=state,
                 label="tests",
                 timeout=settings.executor_pytest_timeout,
