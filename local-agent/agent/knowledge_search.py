@@ -25,6 +25,7 @@ from typing import Any
 from . import embedding_store
 from .config import settings
 from .embeddings import SemanticCache, embed_text, embed_texts
+from .prometheus_metrics import record_search
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +234,8 @@ class KnowledgeIndex:
             List of dicts with keys: score, text, source, and source-specific
             metadata fields.
         """
+        t0 = time.monotonic()
+
         query_emb = embed_text(query)
         if not query_emb:
             return []
@@ -248,6 +251,9 @@ class KnowledgeIndex:
             results.append({"score": round(score, 4), "text": text, **meta})
             if len(results) >= top_k:
                 break
+
+        total_duration = time.monotonic() - t0
+        record_search(source_filter or "all")
 
         return results
 

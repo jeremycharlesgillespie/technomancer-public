@@ -47,6 +47,7 @@ _llm_input_tokens_total: Optional["Counter"] = None
 _llm_output_tokens_total: Optional["Counter"] = None
 _knowledge_lookup_total: Optional["Counter"] = None
 _knowledge_lookup_duration: Optional["Histogram"] = None
+_search_latency_seconds: Optional["Histogram"] = None
 _ollama_model_loads_total: Optional["Counter"] = None
 _ollama_model_unloads_total: Optional["Counter"] = None
 _ollama_model_resident: Optional["Gauge"] = None
@@ -114,6 +115,12 @@ def _ensure_metrics() -> bool:
             labelnames=["tier"],
             buckets=_KNOWLEDGE_LATENCY_BUCKETS,
         )
+        _search_latency_seconds = Histogram(
+            "search_latency_seconds",
+            "Latency of KnowledgeIndex.search() calls by source filter",
+            labelnames=["source_filter"],
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+        )
         _ollama_model_loads_total = Counter(
             "ollama_model_loads_total",
             "Total number of Ollama model loads",
@@ -174,6 +181,19 @@ def record_knowledge_lookup(source: str, duration: float) -> None:
 
     _knowledge_lookup_total.labels(source=source).inc()
     _knowledge_lookup_duration.labels(tier=source).observe(duration)
+
+
+def record_search(source_filter: str) -> None:
+    """Record a single KnowledgeIndex.search() call by source filter.
+
+    ``source_filter`` is one of: ``all`` (no filter), ``fact``, ``vault_article``,
+    ``memory``, ``conversation``. Safe to call when prometheus_client is not installed.
+    """
+    if not _ensure_metrics():
+        return
+
+    if _search_latency_seconds is not None:
+        _search_latency_seconds.labels(source_filter=source_filter).observe(0)
 
 
 def record_ollama_model_load(model: str) -> None:

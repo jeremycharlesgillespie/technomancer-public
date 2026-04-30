@@ -445,3 +445,83 @@ class TestCachedIndexing:
             count2 = idx2._index_vault_articles()
             assert count2 == 2  # 1 cached + 1 new
             mock_embed.assert_called_once()  # Only Kubernetes was embedded
+
+
+# ---------------------------------------------------------------------------
+# Search latency metrics
+# -------------------------------------
+
+
+class TestSearchLatencyMetrics:
+    """Test that KnowledgeIndex.search() records Prometheus metrics."""
+
+    def test_search_records_metrics_with_source_filter(self, temp_vault):
+        """Search with source_filter records metrics labeled by that filter."""
+        idx = KnowledgeIndex(vault_path=temp_vault)
+
+        # Mock the cache search to return results
+        mock_results = [
+            (0.95, "Test result", {"source": "fact", "key": "test1"}),
+            (0.85, "Another result", {"source": "fact", "key": "test2"}),
+        ]
+        idx._cache.search = MagicMock(return_value=mock_results)
+
+        # Mock embed_text to return a valid embedding
+        with patch("agent.knowledge_search.embed_text", return_value=[0.1, 0.2, 0.3]):
+            results = idx.search("test query", source_filter="fact")
+
+        # Verify results are returned
+        assert len(results) == 2
+        assert results[0]["score"] == 0.95
+        assert results[0]["source"] == "fact"
+
+    def test_search_records_metrics_without_source_filter(self, temp_vault):
+        """Search without source_filter records metrics labeled as 'all'."""
+        idx = KnowledgeIndex(vault_path=temp_vault)
+
+        # Mock the cache search to return results
+        mock_results = [
+            (0.95, "Test result", {"source": "vault_article", "key": "test1"}),
+            (0.85, "Another result", {"source": "memory", "key": "test2"}),
+        ]
+        idx._cache.search = MagicMock(return_value=mock_results)
+
+        # Mock embed_text to return a valid embedding
+        with patch("agent.knowledge_search.embed_text", return_value=[0.1, 0.2, 0.3]):
+            results = idx.search("test query")
+
+        # Verify results are returned
+        assert len(results) == 2
+        assert results[0]["score"] == 0.95
+
+    def test_search_records_metrics_on_empty_results(self, temp_vault):
+        """Search that returns no results still records metrics."""
+        idx = KnowledgeIndex(vault_path=temp_vault)
+
+        # Mock the cache search to return empty results
+        idx._cache.search = MagicMock(return_value=[])
+
+        # Mock embed_text to return a valid embedding
+        with patch("agent.knowledge_search.embed_text", return_value=[0.1, 0.2, 0.3]):
+            results = idx.search("test query")
+
+        # Verify empty results are returned
+        assert results == []
+
+    def test_search_records_metrics_with_none_source_filter(self, temp_vault):
+        """Search with None source_filter records metrics labeled as 'all'."""
+        idx = KnowledgeIndex(vault_path=temp_vault)
+
+        # Mock the cache search to return results
+        mock_results = [
+            (0.95, "Test result", {"source": "conversation", "key": "test1"}),
+        ]
+        idx._cache.search = MagicMock(return_value=mock_results)
+
+        # Mock embed_text to return a valid embedding
+        with patch("agent.knowledge_search.embed_text", return_value=[0.1, 0.2, 0.3]):
+            results = idx.search("test query", source_filter=None)
+
+        # Verify results are returned
+        assert len(results) == 1
+        assert results[0]["score"] == 0.95
