@@ -421,25 +421,33 @@ def check_ollama_ready(model: str, timeout: float = 5.0) -> tuple[bool, str]:
     """
     host = settings.ollama_host.rstrip("/")
 
+    log.info("checking Ollama health for model=%s host=%s timeout=%.2fs", model, host, timeout)
+
     try:
         resp = requests.get(f"{host}/api/tags", timeout=timeout)
     except (requests.ConnectionError, ConnectionRefusedError) as exc:
+        log.error("Ollama health check failed: status=unavailable error=%s", exc)
         return False, f"connection refused: {exc}"
     except (requests.Timeout, TimeoutError) as exc:
+        log.error("Ollama health check failed: status=unavailable error=%s", exc)
         return False, f"timeout contacting {host}/api/tags: {exc}"
     except Exception as exc:
+        log.error("Ollama health check failed: status=unavailable error=%s", exc)
         return False, f"error contacting {host}/api/tags: {type(exc).__name__}: {exc}"
 
     if resp.status_code != 200:
+        log.error("Ollama health check failed: status=unavailable http_status=%d", resp.status_code)
         return False, f"/api/tags returned HTTP {resp.status_code}"
 
     try:
         tags = resp.json().get("models", [])
     except Exception as exc:
+        log.error("Ollama health check failed: status=unavailable error=%s", exc)
         return False, f"invalid /api/tags response: {exc}"
 
     if not _model_is_listed(model, tags):
         available = sorted({m.get("name", "") for m in tags if isinstance(m, dict)})
+        log.error("Ollama health check failed: status=unavailable model=%s available=%s", model, available)
         return False, f"model not loaded: {model} (available: {available})"
 
     # Local import avoids a circular dep at module-load time (core imports us).
@@ -459,19 +467,24 @@ def check_ollama_ready(model: str, timeout: float = 5.0) -> tuple[bool, str]:
         try:
             future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
+            log.error("Ollama health check failed: status=unavailable timeout=%.2fs", timeout)
             return False, f"generate warmup exceeded {timeout:.1f}s timeout"
         except (requests.ConnectionError, ConnectionRefusedError) as exc:
+            log.error("Ollama health check failed: status=unavailable error=%s", exc)
             return False, f"connection refused during generate: {exc}"
         except ResponseError as exc:
             status = getattr(exc, "status_code", -1)
+            log.error("Ollama health check failed: status=unavailable http_status=%d error=%s", status, exc)
             return False, f"generate returned HTTP {status}: {exc}"
         except Exception as exc:
+            log.error("Ollama health check failed: status=unavailable error=%s", exc)
             return False, f"generate failed: {type(exc).__name__}: {exc}"
     finally:
         # Don't block startup on a still-running probe thread.
         executor.shutdown(wait=False)
 
     elapsed = time.monotonic() - start
+    log.info("Ollama health check succeeded: status=healthy model=%s version=%s warmup=%.2fs", model, host, elapsed)
     return True, f"ready (warmup {elapsed:.2f}s)"
 
 
