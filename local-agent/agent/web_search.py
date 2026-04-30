@@ -29,6 +29,41 @@ log = logging.getLogger(__name__)
 
 
 # =============================================================================
+# TYPE DEFINITIONS
+# =============================================================================
+
+from typing import TypedDict
+
+
+class SearchResult(TypedDict):
+    """DuckDuckGo text search result structure."""
+
+    title: str
+    body: str
+    href: str
+
+
+class NewsResult(TypedDict):
+    """DuckDuckGo news search result structure."""
+
+    title: str
+    body: str
+    date: str
+    url: str
+    source: str
+
+
+class ScoredSearchResult(TypedDict):
+    """Internal scored search result with credibility information."""
+
+    title: str
+    body: str
+    url: str
+    score: int
+    tier: str
+
+
+# =============================================================================
 # ERROR ROUTING
 # =============================================================================
 # Exceptions in search functions used to be swallowed with bare stringified
@@ -381,7 +416,7 @@ def web_search_smart(query: str, max_results: int = 8) -> str:
         return f"No results found for: {query} (searched: {optimized_query})"
 
     # Step 3: Score and sort by credibility
-    scored_results = []
+    scored_results: list[ScoredSearchResult] = []
     for r in raw_results:
         url = r.get("href", "")
         score, tier = get_domain_credibility(url)
@@ -446,7 +481,7 @@ def web_search(query: str, max_results: int = 5) -> str:
             with DDGS() as ddgs:
                 return list(ddgs.text(query, max_results=max_results))
 
-        results = _retry_search(_do_search)
+        results: list[SearchResult] = _retry_search(_do_search)
 
         if not results:
             return f"No results found for: {query}"
@@ -500,7 +535,7 @@ def web_search_news(query: str, max_results: int = 5) -> str:
             with DDGS() as ddgs:
                 return list(ddgs.news(query, max_results=max_results))
 
-        results = _retry_search(_do_news)
+        results: list[NewsResult] = _retry_search(_do_news)
 
         if not results:
             return f"No news found for: {query}"

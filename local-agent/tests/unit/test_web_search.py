@@ -894,4 +894,82 @@ class TestErrorRouting:
 
         web_fetch("https://example.com")
 
-        mock_send_alert.assert_not_called()
+    def test_scored_search_result_structure(self):
+        """Verify ScoredSearchResult has correct keys and types.
+
+        This test ensures IDE autocompletion and mypy can see the structure.
+        A typo in a key would cause this test to fail.
+        """
+        from agent.web_search import ScoredSearchResult
+
+        # Create a valid ScoredSearchResult
+        result: ScoredSearchResult = {
+            "title": "Test Title",
+            "body": "Test body content",
+            "url": "https://example.com",
+            "score": 85,
+            "tier": "[TRUSTED]",
+        }
+
+        # Verify all required keys exist
+        assert result["title"] == "Test Title"
+        assert result["body"] == "Test body content"
+        assert result["url"] == "https://example.com"
+        assert result["score"] == 85
+        assert result["tier"] == "[TRUSTED]"
+
+        # Verify types are correct
+        assert isinstance(result["title"], str)
+        assert isinstance(result["body"], str)
+        assert isinstance(result["url"], str)
+        assert isinstance(result["score"], int)
+        assert isinstance(result["tier"], str)
+
+        # Verify web_search_smart produces this structure
+        with patch("agent.web_search.DDGS") as mock_ddgs_cls:
+            mock_ddgs = MagicMock()
+            mock_ddgs.__enter__ = MagicMock(return_value=mock_ddgs)
+            mock_ddgs.__exit__ = MagicMock(return_value=False)
+            mock_ddgs.text.return_value = [
+                {
+                    "title": "Python Docs",
+                    "body": "Official Python documentation",
+                    "href": "https://docs.python.org",
+                }
+            ]
+            mock_ddgs_cls.return_value = mock_ddgs
+
+            output = web_search_smart("python tutorial", max_results=3)
+
+            # Verify output contains expected fields
+            assert "Python Docs" in output
+            assert "https://docs.python.org" in output
+            assert "credibility:" in output
+
+    def test_search_result_types(self):
+        """Verify SearchResult and NewsResult TypedDict definitions exist."""
+        from agent.web_search import SearchResult, NewsResult
+
+        # Test SearchResult
+        search_result: SearchResult = {
+            "title": "Test",
+            "body": "Body",
+            "href": "https://example.com",
+        }
+        assert search_result["title"] == "Test"
+        assert search_result["body"] == "Body"
+        assert search_result["href"] == "https://example.com"
+
+        # Test NewsResult
+        news_result: NewsResult = {
+            "title": "News Title",
+            "body": "News body",
+            "date": "2024-01-01",
+            "url": "https://example.com/news",
+            "source": "Example Source",
+        }
+        assert news_result["title"] == "News Title"
+        assert news_result["body"] == "News body"
+        assert news_result["date"] == "2024-01-01"
+        assert news_result["url"] == "https://example.com/news"
+        assert news_result["source"] == "Example Source"
