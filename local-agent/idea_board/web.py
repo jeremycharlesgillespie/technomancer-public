@@ -2224,6 +2224,35 @@ def api_aim_events_stream() -> Response:
     )
 
 
+@app.route("/api/aimm/status")
+def api_aimm_status() -> tuple:
+    """GET /api/aimm/status — AIMM state snapshot.
+
+    Reads the AIMM state file and returns cycle count, last cycle time,
+    and today's approvals/drafts counters. Intended for the hub home
+    status card to show the full hierarchy (AIMM → AIM → Executor).
+    """
+    try:
+        from aimm.state import load_state as _aimm_load_state
+        state = _aimm_load_state()
+    except Exception as exc:
+        logger.warning("[AIMM-Status] Failed to load AIMM state: %s", exc)
+        return jsonify({
+            "cycle_count": 0,
+            "last_cycle_at": None,
+            "approved_keys_today": [],
+            "drafted_keys_today": [],
+            "error": str(exc),
+        }), 200
+
+    return jsonify({
+        "cycle_count": state.cycle_count,
+        "last_cycle_at": state.last_cycle_at,
+        "approved_keys_today": state.approved_keys_today,
+        "drafted_keys_today": state.drafted_keys_today,
+    })
+
+
 # ============================================================================
 # PER-FUNCTION PERFORMANCE METRICS
 # ============================================================================
@@ -7433,6 +7462,11 @@ def _render_hub() -> str:
             <p>Compact view of the AIM manager and worker state.</p>
             <span class="badge" id="aim-status-badge">Loading&hellip;</span>
         </a>
+        <a href="/aimm" class="card" style="border-left: 4px solid #ff9800;">
+            <h2>AIMM</h2>
+            <p>AI Manager Module — cycle count, approvals, and drafts.</p>
+            <span class="badge" id="aimm-badge">Loading&hellip;</span>
+        </a>
         <a href="/aim/dashboard" class="card" style="border-left: 4px solid #00bcd4;">
             <h2>AIM Dashboard</h2>
             <p>Richer view with backlog, cycles, and recent decisions.</p>
@@ -7550,6 +7584,27 @@ def _render_hub() -> str:
     }}
     updateAimStatus();
     setInterval(updateAimStatus, 15000);
+
+    async function updateAimmStatus() {{
+        try {{
+            const resp = await fetch('/api/aimm/status');
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            const aimmBadge = document.getElementById('aimm-badge');
+            if (aimmBadge) {{
+                const cycleCount = data.cycle_count != null ? data.cycle_count : 0;
+                const lastCycle = data.last_cycle_at ? new Date(data.last_cycle_at).toLocaleTimeString() : 'never';
+                const approved = data.approved_keys_today != null ? data.approved_keys_today.length : 0;
+                const drafted = data.drafted_keys_today != null ? data.drafted_keys_today.length : 0;
+                aimmBadge.textContent = 'cycles: ' + cycleCount + ' \u00b7 last: ' + lastCycle + ' \u00b7 ' + approved + ' approved, ' + drafted + ' drafted';
+            }}
+        }} catch (e) {{
+            const aimmBadge = document.getElementById('aimm-badge');
+            if (aimmBadge) aimmBadge.textContent = 'status: unavailable';
+        }}
+    }}
+    updateAimmStatus();
+    setInterval(updateAimmStatus, 15000);
     </script>
 
     <script>
