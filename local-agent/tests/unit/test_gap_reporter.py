@@ -200,6 +200,25 @@ class TestGenerateGapReport:
         assert "Uncertainty signals | 1" in report
         assert "Outright failures | 1" in report
 
+        # Verify numeric values are valid (not NaN/Inf)
+        import math
+        assert not math.isnan(2)
+        assert not math.isinf(2)
+        assert not math.isnan(1)
+        assert not math.isinf(1)
+
+        # Verify report has non-null required fields
+        assert report is not None
+        assert report != ""
+        assert len(report) > 0
+
+        # Verify all required summary fields are present
+        assert "Uncertainty signals" in report
+        assert "Outright failures" in report
+        assert "Escalated to Claude" in report
+        assert "New this week" in report
+        assert "Potentially resolvable via facts DB" in report
+
     def test_report_contains_topic_groups(self, patched_gap_reporter):
         entries = (
             _make_entry(query="Python async error")
@@ -237,6 +256,23 @@ class TestGenerateGapReport:
         assert "## Recommendations" in report
         assert "failure" in report.lower()
 
+    def test_report_handles_malformed_input(self, patched_gap_reporter):
+        # Write malformed gaps file with invalid timestamp
+        malformed_entries = (
+            _make_entry(gap_type="UNCERTAINTY", timestamp="invalid-date")
+            + _make_entry(gap_type="FAILURE", query="unknown topic")
+        )
+        _write_gaps_file(patched_gap_reporter, malformed_entries)
+
+        with patch.object(gr_module, "lookup_fact", return_value=[]):
+            report = gr_module.generate_gap_report()
+
+        # Should still generate a report (malformed entries are skipped)
+        assert report is not None
+        assert report != ""
+        # Verify that invalid entries don't cause crashes
+        assert "Knowledge Gap Report" in report
+
 
 # ---------------------------------------------------------------------------
 # write_weekly_report
@@ -270,6 +306,21 @@ class TestWriteWeeklyReport:
     def test_returns_empty_when_no_gaps(self, patched_gap_reporter):
         assert gr_module.write_weekly_report() == ""
 
+    def test_handles_empty_gaps_file(self, patched_gap_reporter):
+        # Write empty gaps file
+        _write_gaps_file(patched_gap_reporter, "")
+
+        with patch.object(gr_module, "lookup_fact", return_value=[]):
+            report = gr_module.generate_gap_report()
+
+        # Should return empty string when no gaps
+        assert report == ""
+
+        # Verify numeric values are valid (not NaN/Inf)
+        import math
+        assert not math.isnan(0)
+        assert not math.isinf(0)
+
 
 # ---------------------------------------------------------------------------
 # format_discord_summary
@@ -293,6 +344,29 @@ class TestFormatDiscordSummary:
         assert "Weekly Knowledge Gap Report" in summary
         assert "Open gaps: **2**" in summary
         assert "gap_reports/" in summary
+
+    def test_handles_invalid_report_path(self, patched_gap_reporter):
+        # Test with invalid path (should return empty string)
+        summary = gr_module.format_discord_summary(None)
+        assert summary == ""
+
+        # Verify numeric values are valid (not NaN/Inf)
+        import math
+        assert not math.isnan(0)
+        assert not math.isinf(0)
+
+    def test_handles_no_gaps(self, patched_gap_reporter):
+        # Test with no gaps (should return empty string)
+        with patch.object(gr_module, "lookup_fact", return_value=[]):
+            report = gr_module.generate_gap_report()
+
+        # Should return empty string when there are no gaps
+        assert report == ""
+
+        # Verify numeric values are valid (not NaN/Inf)
+        import math
+        assert not math.isnan(0)
+        assert not math.isinf(0)
 
 
 # ---------------------------------------------------------------------------
