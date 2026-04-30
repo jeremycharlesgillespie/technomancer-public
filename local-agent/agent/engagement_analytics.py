@@ -22,7 +22,9 @@ import sqlite3
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from .core import Tool
 
 log = logging.getLogger(__name__)
 
@@ -284,7 +286,7 @@ def get_engagement_report(days: int = 7) -> str:
 # LLM tools
 # ---------------------------------------------------------------------------
 
-def get_engagement_tools() -> list:
+def get_engagement_tools() -> list[Tool]:
     """Return engagement analytics tools for the LLM agent."""
     from .core import create_tool
 
