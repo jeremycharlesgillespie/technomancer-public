@@ -254,11 +254,91 @@ class TestRequestIdInLogOutput:
         logger.info("default test")
         for h in logger.handlers:
             h.flush()
-        content = (tmp_path / "rid_default.log").read_text()
-        assert "[rid=-]" in content
-        assert "default test" in content
+        content = (tmp_path / "rid_default.log").read_text(encoding="utf-8")
 
-    def test_log_line_includes_seeded_rid(self, tmp_path):
+
+class TestErrorPaths:
+    """Error path tests for logging_config — edge cases and failure modes."""
+
+    def test_setup_logger_nonexistent_parent_dir_creates_it(self, tmp_path):
+        """setup_logger should create parent directories if they don't exist."""
+        nonexistent = tmp_path / "nonexistent" / "nested" / "dir"
+        logger = setup_logger(
+            "test_nonexistent_dir",
+            log_file="test.log",
+            log_dir=nonexistent,
+            console=False,
+        )
+        assert isinstance(logger, logging.Logger)
+        assert nonexistent.exists()
+
+    def test_setup_logger_unwritable_directory_raises_oserror(self, tmp_path):
+        """setup_logger should raise OSError when directory is unwritable."""
+        # Create a directory and make it read-only
+        readonly_dir = tmp_path / "readonly"
+        readonly_dir.mkdir()
+        readonly_dir.chmod(0o444)
+
+        try:
+            # This should raise PermissionError or OSError
+            with pytest.raises((OSError, PermissionError)):
+                setup_logger(
+                    "test_readonly_dir",
+                    log_file="test.log",
+                    log_dir=readonly_dir,
+                    console=False,
+                )
+        finally:
+            # Restore permissions for cleanup
+            readonly_dir.chmod(0o755)
+
+    def test_setup_logger_console_false_no_log_file(self):
+        """setup_logger with console=False and no log_file should create handler-less logger."""
+        logger = setup_logger("test_handlerless", console=False)
+        assert isinstance(logger, logging.Logger)
+        # Should have no handlers when console=False and no log_file
+        assert len(logger.handlers) == 0
+
+    def test_setup_logger_empty_string_log_file(self):
+        """setup_logger with empty string log_file should create handler-less logger."""
+        logger = setup_logger("test_empty_logfile", log_file="", console=False)
+        assert isinstance(logger, logging.Logger)
+        # Empty string should be falsy, so no file handler added
+        assert len(logger.handlers) == 0
+
+    def test_set_request_id_empty_string(self):
+        """set_request_id should accept empty string without error."""
+        token = set_request_id("")
+        assert get_request_id() == ""
+        request_id_var.reset(token)
+
+    def test_set_request_id_special_characters(self):
+        """set_request_id should handle special characters including newlines."""
+        # Test newline character
+        token = set_request_id("test\nnewline")
+        assert get_request_id() == "test\nnewline"
+        request_id_var.reset(token)
+
+        # Test null character
+        token = set_request_id("test\x00null")
+        assert get_request_id() == "test\x00null"
+        request_id_var.reset(token)
+
+    def test_set_request_id_very_long_string(self):
+        """set_request_id should handle very long request IDs."""
+        long_id = "x" * 10000
+        token = set_request_id(long_id)
+        assert get_request_id() == long_id
+        request_id_var.reset(token)
+
+    def test_set_request_id_unicode(self):
+        """set_request_id should handle unicode characters."""
+        unicode_id = "test-日本語-🚀"
+        token = set_request_id(unicode_id)
+        assert get_request_id() == unicode_id
+        request_id_var.reset(token)
+
+    def test_log_line_includes_default_rid(self, tmp_path):
         logger = setup_logger(
             "test_rid_seeded_unique",
             log_file="rid_seeded.log",

@@ -155,6 +155,8 @@ def setup_logger(
     # File handler with rotation
     if log_file:
         log_path = (log_dir or DEFAULT_LOG_DIR) / log_file
+        # Create parent directories if they don't exist
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
             log_path,
             maxBytes=MAX_LOG_SIZE,
