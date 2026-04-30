@@ -36,7 +36,7 @@ from .config import settings
 from .fn_profiler import profile_fn
 from .memory_system import get_memory_system
 from .perf_monitor import get_monitor as get_perf_monitor
-from .story_format import STORY_DESCRIPTION_FORMAT
+from .story_format import STORY_DESCRIPTION_FORMAT, ATOMIC_LABEL
 
 try:
     from board import get_provider as _get_board_provider
@@ -186,6 +186,8 @@ Output a JSON object (NOT an array) with these fields:
       + acceptance criteria + FILES). All sections are REQUIRED and each MUST
       be on its own line, separated by blank lines. When writing the JSON
       value, escape newlines as \\n.
+    - "atomic": Boolean indicating if the story is atomic (touches one file,
+      no cross-module dependencies) — set to true for small, focused changes.
 
 {story_format}
 
@@ -716,10 +718,14 @@ def _parse_epic_response(response: str) -> dict[str, Any] | None:
     valid_stories: list[dict[str, str]] = []
     for s in stories:
         if isinstance(s, dict) and s.get("title", "").strip():
-            valid_stories.append({
+            story = {
                 "title": str(s["title"]).strip()[:100],
                 "description": str(s.get("description", f"Story under epic: {epic['title']}"))[:2000],
-            })
+            }
+            # Promote atomic label from story object to ATOMIC_LABEL
+            if s.get("atomic", False):
+                story["labels"] = [ATOMIC_LABEL]
+            valid_stories.append(story)
         elif isinstance(s, str) and s.strip():
             valid_stories.append({
                 "title": s.strip()[:100],
