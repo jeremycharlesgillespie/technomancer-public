@@ -224,6 +224,32 @@ class TestFindMentionedFiles:
     def test_no_paths_in_response(self):
         assert find_mentioned_files("Hello, this is just regular text.") == []
 
+    def test_deduplicates_same_path(self, tmp_path):
+        """Verify that duplicate paths are only included once."""
+        test_file = tmp_path / "output.html"
+        test_file.write_text("<html>test</html>")
+
+        # Same path mentioned multiple times
+        response = f"I created {test_file} and then mentioned {test_file} again"
+        files = find_mentioned_files(response)
+
+        # Should find the file exactly once
+        assert len(files) == 1
+        assert files[0].name == "output.html"
+
+    def test_deduplicates_case_insensitive(self, tmp_path):
+        """Verify that paths are deduplicated regardless of case."""
+        test_file = tmp_path / "output.html"
+        test_file.write_text("<html>test</html>")
+
+        # Same path with different case
+        response = f"I created {test_file} and then mentioned {test_file}"
+        files = find_mentioned_files(response)
+
+        # Should find the file exactly once
+        assert len(files) == 1
+        assert files[0].name == "output.html"
+
 
 class TestSendLifecycleNotification:
     """Test lifecycle notification sending."""

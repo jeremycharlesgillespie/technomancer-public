@@ -395,7 +395,7 @@ def find_mentioned_files(response: str) -> list[Path]:
     return found
 
 
-def _try_add_file(path_str: str, found: list, seen: set) -> None:
+def _try_add_file(path_str: str, found: list[Path], seen: set[str]) -> None:
     """Add a path to the file list if it's a real, attachable file."""
     try:
         if not path_str or len(path_str) > 500 or "\x00" in path_str:

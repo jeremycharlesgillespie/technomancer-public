@@ -1,16 +1,8 @@
-[20260430 04:48:30.127] [Inner] tick
-[20260430 04:48:30.127] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260430 04:48:30.127] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260430 04:48:30.127] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260430 04:50:50.186] [Inner] tick
-[20260430 04:50:50.186] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260430 04:50:50.186] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260430 04:50:50.186] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260430 04:55:06.420] [Inner] tick
-[20260430 04:55:06.420] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260430 04:55:06.420] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260430 04:55:06.420] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
-[20260430 04:57:19.496] [Inner] tick
-[20260430 04:57:19.496] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
-[20260430 04:57:19.496] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
-[20260430 04:57:19.497] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260430 06:22:20.296] [Inner] tick
+[20260430 06:22:20.296] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260430 06:22:20.297] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260430 06:22:20.297] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
+[20260430 06:24:43.107] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=350s)
+[20260430 06:24:43.107] [Inner] tick
+[20260430 06:24:43.108] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=700s)
+[20260430 06:24:43.108] [AB] heartbeat: test-model still running (inner_log_lines=1, elapsed=1050s)
