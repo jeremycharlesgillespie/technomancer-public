@@ -10,8 +10,10 @@ from agent.message_validators import (
     DISCORD_MAX_LENGTH,
     MAX_EMPTY_RETRIES,
     TRUNCATION_SUFFIX,
+    _default_suggestion,
     _enrich_empty_content,
     _is_empty_message_error,
+    _mentions_pattern,
     _recent_messages,
     buffer_user_message,
     get_contextual_suggestion,
@@ -111,6 +113,45 @@ class TestSafeSendContent:
 
     def test_fallback_not_used_when_content_valid(self):
         assert safe_send_content("real content", "fallback") == "real content"
+
+
+# ── _mentions_pattern ─────────────────────────────────────────────
+
+
+class TestMentionsPattern:
+    """Tests for _mentions_pattern."""
+
+    def test_matches_code_pattern(self):
+        messages = ["I have a python error"]
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is True
+
+    def test_no_match(self):
+        messages = ["hello world"]
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is False
+
+    def test_case_insensitive(self):
+        messages = ["I have a PYTHON error"]
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is True
+
+    def test_empty_message_list(self):
+        messages = []
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is False
+
+    def test_multiple_messages_one_matches(self):
+        messages = ["hello", "I need help with coding"]
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is False
+
+    def test_multiple_messages_none_match(self):
+        messages = ["hello", "world", "test"]
+        assert _mentions_pattern(messages, r"\b(code|python)\b") is False
+
+    def test_multiple_matches(self):
+        messages = ["I code in Python and JavaScript"]
+        assert _mentions_pattern(messages, r"\b(code|python|javascript)\b") is True
+
+    def test_empty_pattern(self):
+        messages = ["hello"]
+        assert _mentions_pattern(messages, "") is False
 
 
 # ── _is_empty_message_error ─────────────────────────────────────────────

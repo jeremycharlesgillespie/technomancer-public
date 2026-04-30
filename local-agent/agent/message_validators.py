@@ -114,7 +114,13 @@ def get_contextual_suggestion() -> str:
 
 
 def _mentions_pattern(messages: list[str], pattern: str) -> bool:
-    """Check if any recent message matches the given regex pattern."""
+    """Check if any recent message matches the given regex pattern.
+
+    Returns False for empty patterns (no matches possible) and None/empty
+    message lists (no matches possible).
+    """
+    if not pattern or not messages:
+        return False
     compiled = re.compile(pattern, re.IGNORECASE)
     return any(compiled.search(msg) for msg in messages)
 
